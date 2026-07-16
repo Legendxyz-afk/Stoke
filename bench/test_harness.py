@@ -107,6 +107,91 @@ def main():
 
         check("no client errors", report["errors"] == [], report["errors"])
 
+        # Non-token bookkeeping chunks (role preamble, finish_reason-only, usage trailer) must be
+        # invisible to the measurement -- real engines emit them (smoke finding: llama-server +2
+        # raw chunks, ollama +1). The mock's preamble is sent at t~0, BEFORE its prefill sleep, so
+        # if bench._is_token_chunk ever counts it, TTFT p50 collapses toward 0 ms and the bound
+        # below catches it; a counted trailer breaks the exact-20 count instead.
+        report2 = run_scenario(
+            base_url,
+            scenario,
+            model="mock-model",
+            extra={"mock_p_ms": 200, "mock_d_ms": 50, "mock_t": 20,
+                   "mock_preamble": 1, "mock_trailer": 2},
+        )
+        token_counts2 = [c["n_tokens"] for c in report2["per_client"]]
+        check(
+            "preamble/trailer chunks not counted as tokens (still exactly 20)",
+            all(n == 20 for n in token_counts2),
+            token_counts2,
+        )
+        ttft2_p50 = report2["ttft_ms"]["p50"]
+        check("TTFT p50 ignores the t~0 preamble chunk", 190 <= ttft2_p50 <= 280, f"{ttft2_p50:.2f} ms")
+        check("no client errors (preamble/trailer run)", report2["errors"] == [], report2["errors"])
+
+        # The EOS path: a finish_reason="stop" chunk is one real decoded token (both real engines
+        # count it in usage.completion_tokens) and MUST be counted; it arrives one d_ms step after
+        # the last text chunk, so per-client decode tokens become 20 over a 20*d window -- the
+        # aggregate expectation stays exactly 80 tok/s.
+        report3 = run_scenario(
+            base_url,
+            scenario,
+            model="mock-model",
+            extra={"mock_p_ms": 200, "mock_d_ms": 50, "mock_t": 20,
+                   "mock_preamble": 1, "mock_finish_stop": 1, "mock_trailer": 2},
+        )
+        token_counts3 = [c["n_tokens"] for c in report3["per_client"]]
+        check(
+            "EOS finish_reason=stop chunk counted as a token (exactly 21)",
+            all(n == 21 for n in token_counts3),
+            token_counts3,
+        )
+        measured_tps3 = report3["aggregate_decode_tps"]
+        check(
+            f"aggregate_decode_tps with EOS step within +/-10% of {expected_tps:.2f} tok/s",
+            lo <= measured_tps3 <= hi,
+            f"{measured_tps3:.2f} tok/s (allowed [{lo:.2f}, {hi:.2f}])",
+        )
+        check("no client errors (EOS run)", report3["errors"] == [], report3["errors"])
+
+        # Measurement mode for real engines: n_tokens taken from the engine's own
+        # usage.completion_tokens (authoritative under chunk coalescing -- observed on ollama),
+        # arrivals still driving all timing. On the well-behaved mock (one chunk per token, usage
+        # trailer reporting 21 = 20 text + EOS), both counts must agree and every number must
+        # match the chunk-counted run.
+        report4 = run_scenario(
+            base_url,
+            scenario,
+            model="mock-model",
+            extra={"mock_p_ms": 200, "mock_d_ms": 50, "mock_t": 20,
+                   "mock_preamble": 1, "mock_finish_stop": 1, "mock_trailer": 2},
+            use_usage=True,
+        )
+        token_counts4 = [c["n_tokens"] for c in report4["per_client"]]
+        arrival_counts4 = [c["n_arrivals"] for c in report4["per_client"]]
+        check(
+            "use_usage mode: n_tokens from usage trailer (exactly 21)",
+            all(n == 21 for n in token_counts4),
+            token_counts4,
+        )
+        check(
+            "use_usage mode: arrivals agree with usage on non-coalescing mock",
+            arrival_counts4 == token_counts4,
+            arrival_counts4,
+        )
+        check(
+            "use_usage mode: no client marked usage_missing",
+            not any(c["usage_missing"] for c in report4["per_client"]),
+            [c["usage_missing"] for c in report4["per_client"]],
+        )
+        measured_tps4 = report4["aggregate_decode_tps"]
+        check(
+            f"use_usage mode: aggregate within +/-10% of {expected_tps:.2f} tok/s",
+            lo <= measured_tps4 <= hi,
+            f"{measured_tps4:.2f} tok/s (allowed [{lo:.2f}, {hi:.2f}])",
+        )
+        check("no client errors (use_usage run)", report4["errors"] == [], report4["errors"])
+
         print()
         print(f"completed={report['completed']}/{scenario.n_clients} wall_s={report['wall_s']:.3f}")
     finally:

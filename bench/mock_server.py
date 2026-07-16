@@ -6,6 +6,23 @@ level of the JSON body, sleeps mock_p_ms (simulated prefill), then emits mock_t 
 exactly mock_d_ms intervals, then a terminating `data: [DONE]`. Every request also gets its own
 Transfer-Encoding: chunked HTTP framing (independent of the SSE-level "data: ..." framing above).
 
+Optional shape knobs (all default 0) mimic the extra chunks real engines emit, so the harness's
+token filter (bench._is_token_chunk) can be validated against known shapes:
+
+  mock_preamble N    -- N role-announcement chunks with empty content, sent immediately on
+                        request receipt (deliberately BEFORE the prefill sleep, so a filter bug
+                        collapses measured TTFT to ~0ms and trips test_harness.py's TTFT bound).
+                        Must NOT be counted as tokens.
+  mock_finish_stop 1 -- one empty-content finish_reason="stop" chunk sent d_ms after the last
+                        text chunk: the EOS token, a real decode step that produces no text.
+                        MUST be counted as a token (both real engines report it in
+                        usage.completion_tokens).
+  mock_trailer N     -- N post-token bookkeeping chunks (finish_reason="length" markers; the
+                        last carries a usage object) before [DONE]. Must NOT be counted.
+
+Observed real shapes that motivated this: llama-server b10037 = preamble + stop-finish + usage
+trailer; ollama 0.30.11 = stop-finish + usage trailer.
+
 Scheduling uses absolute deadlines (t0 + p + k*d) checked against time.perf_counter() before each
 sleep, rather than mock_t successive `time.sleep(d)` calls -- the latter accumulates the overhead
 of each loop iteration (JSON encode, socket write, scheduler wake latency) onto the next sleep,
@@ -45,6 +62,9 @@ class Handler(server.BaseHTTPRequestHandler):
         p_ms = body.get("mock_p_ms", 200)
         d_ms = body.get("mock_d_ms", 50)
         n_tokens = body.get("mock_t", 20)
+        preamble_n = body.get("mock_preamble", 0)
+        finish_stop = body.get("mock_finish_stop", 0)
+        trailer_n = body.get("mock_trailer", 0)
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -56,14 +76,38 @@ class Handler(server.BaseHTTPRequestHandler):
         p_s = p_ms / 1000.0
         d_s = d_ms / 1000.0
         token_chunk = "data: " + json.dumps({"choices": [{"delta": {"content": "tok"}}]}) + "\n\n"
+        preamble_chunk = "data: " + json.dumps(
+            {"choices": [{"delta": {"role": "assistant", "content": ""}}]}) + "\n\n"
+        stop_chunk = "data: " + json.dumps(
+            {"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]}) + "\n\n"
+        length_chunk = "data: " + json.dumps(
+            {"choices": [{"delta": {}, "finish_reason": "length"}]}) + "\n\n"
+        total_tokens = n_tokens + (1 if finish_stop else 0)
+        usage_chunk = "data: " + json.dumps(
+            {"choices": [], "usage": {"prompt_tokens": 0, "completion_tokens": total_tokens,
+                                      "total_tokens": total_tokens}}) + "\n\n"
 
         try:
+            for _ in range(preamble_n):
+                self._send_sse_chunk(preamble_chunk)
+
             for k in range(n_tokens):
                 deadline = t0 + p_s + k * d_s
                 now = time.perf_counter()
                 if deadline > now:
                     time.sleep(deadline - now)
                 self._send_sse_chunk(token_chunk)
+
+            if finish_stop:
+                # the EOS decode step: one more d_ms-spaced arrival, empty text, finish="stop"
+                deadline = t0 + p_s + n_tokens * d_s
+                now = time.perf_counter()
+                if deadline > now:
+                    time.sleep(deadline - now)
+                self._send_sse_chunk(stop_chunk)
+
+            for k in range(trailer_n):
+                self._send_sse_chunk(usage_chunk if k == trailer_n - 1 else length_chunk)
 
             self._send_sse_chunk("data: [DONE]\n\n")
             self._end_chunked()

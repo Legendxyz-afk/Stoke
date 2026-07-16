@@ -4,10 +4,10 @@ Stdlib only -- http.client, json, statistics, threading, time, plus the ordinary
 `random` (Poisson inter-arrival) and `urllib.parse` (splitting base_url). No httpx/requests/any
 third-party install: the harness must run anywhere with zero deps.
 
-Timing happens at SSE-chunk receipt (time.perf_counter() the instant a `data: ` line is fully
-read off the wire) -- this is the load-bearing measurement code every published number will
-depend on, which is why test_harness.py exists: to validate it against a mock server with
-known-exact timing before it's ever pointed at a real engine.
+Timing happens at SSE-chunk receipt (time.perf_counter() the instant a token-bearing `data: `
+line is fully read off the wire) -- this is the load-bearing measurement code every published
+number will depend on, which is why test_harness.py exists: to validate it against a mock server
+with known-exact timing before it's ever pointed at a real engine.
 """
 import http.client
 import json
@@ -26,16 +26,65 @@ def _split(base_url):
     return parsed.scheme, parsed.hostname, port, (parsed.path or "")
 
 
-def timed_stream(base_url, model, messages, max_tokens, extra=None):
-    """POST one streamed chat-completions request; return (ttft_s, itls_s, n_tokens, total_s).
+def _is_token_chunk(parsed):
+    """True iff this parsed SSE chunk represents one decoded token. Two shapes qualify:
 
-    ttft_s   -- time from just-before-send to the first `data:` line fully received.
-    itls_s   -- gaps between consecutive `data:` line arrivals (len == n_tokens - 1).
-    n_tokens -- number of `data:` lines received before `data: [DONE]`.
-    total_s  -- time from just-before-send to the last `data:` line fully received.
+    1. choices[0].delta.content is a NON-EMPTY string -- a visible text token.
+    2. choices[0].finish_reason == "stop" -- the EOS token. When generation ends on a stop token,
+       the engine decoded one final, real token (<|im_end|> etc) that produces no text; both
+       ollama 0.30.11 and llama-server b10037 report it in usage.completion_tokens and announce
+       it as an empty-content finish_reason="stop" chunk, whose arrival time IS that decode
+       step's time. A finish_reason="length" chunk is NOT counted: hitting max_tokens decodes no
+       extra token (the cap-hitting token already arrived as its own content chunk).
+
+    Everything else is protocol bookkeeping, not a token: the role-announcement preamble
+    ({"delta": {"role": "assistant", "content": ""}}), finish_reason="length" markers, and the
+    choices-less usage trailer emitted under stream_options.include_usage. Empirical anchor
+    (adapters.py --smoke, exact-match gated): content-only filtering undercounted BOTH engines by
+    exactly 1 vs their own usage.completion_tokens on stop-finished generations; with rule 2
+    added the counts match exactly. A chunk carrying both text and finish_reason="stop" would
+    represent two tokens but count once -- neither engine does this; the smoke's exact gate
+    would expose any engine that does."""
+    if not isinstance(parsed, dict):
+        return False
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return False
+    if choices[0].get("finish_reason") == "stop":
+        return True
+    delta = choices[0].get("delta")
+    if not isinstance(delta, dict):
+        return False
+    content = delta.get("content")
+    return isinstance(content, str) and content != ""
+
+
+def timed_stream(base_url, model, messages, max_tokens, extra=None, capture_usage=False):
+    """POST one streamed chat-completions request; return (ttft_s, itls_s, n_tokens, total_s), or
+    (ttft_s, itls_s, n_tokens, total_s, usage) when capture_usage=True.
+
+    ttft_s   -- time from just-before-send to the first TOKEN chunk fully received.
+    itls_s   -- gaps between consecutive token-chunk arrivals (len == n_tokens - 1).
+    n_tokens -- number of token chunks received before `data: [DONE]`.
+    total_s  -- time from just-before-send to the last token chunk fully received.
+
+    A "token chunk" is a `data:` line whose choices[0].delta.content is a non-empty string (see
+    _is_token_chunk). Non-token bookkeeping lines -- role preambles, finish_reason-only chunks,
+    usage trailers -- are received and parsed but never timestamped: real engines emit 1-2 of
+    them per stream, and counting them would poison TTFT (preambles arrive pre-prefill) and every
+    token count.
 
     `extra` is merged into the JSON payload's top level -- this is how mock_p_ms/mock_d_ms/mock_t
     ride along to mock_server.py; real adapters (Task 2+) simply pass extra=None.
+
+    capture_usage (Task 2 addition; opt-in, default off so run_scenario's and test_harness.py's
+    existing 4-tuple unpacking is untouched): when True, also returns the last non-empty `usage`
+    object seen as a 5th tuple element (None if the engine never reports one). OpenAI-style
+    streaming only emits `usage` on a final, choices-less chunk sent just before `data: [DONE]`,
+    and only if the request carries `extra={"stream_options": {"include_usage": True}}`. That
+    trailer has no delta.content, so it is never counted or timestamped -- usage capture does not
+    perturb the measurement. adapters.py --smoke uses it to assert n_tokens ==
+    usage.completion_tokens exactly, per engine.
     """
     payload = {
         "model": model,
@@ -54,6 +103,7 @@ def timed_stream(base_url, model, messages, max_tokens, extra=None):
 
     t0 = time.perf_counter()
     token_times = []
+    usage = None
     try:
         conn.request(
             "POST",
@@ -77,7 +127,15 @@ def timed_stream(base_url, model, messages, max_tokens, extra=None):
                 continue
             if line == "data: [DONE]":
                 break
-            token_times.append(time.perf_counter())
+            t_arrival = time.perf_counter()
+            try:
+                parsed = json.loads(line[len("data: "):])
+            except ValueError:
+                parsed = None
+            if _is_token_chunk(parsed):
+                token_times.append(t_arrival)
+            if capture_usage and isinstance(parsed, dict) and parsed.get("usage"):
+                usage = parsed["usage"]
     finally:
         conn.close()
 
@@ -87,6 +145,8 @@ def timed_stream(base_url, model, messages, max_tokens, extra=None):
     ttft = token_times[0] - t0
     itls = [b - a for a, b in zip(token_times, token_times[1:])]
     total = token_times[-1] - t0
+    if capture_usage:
+        return ttft, itls, len(token_times), total, usage
     return ttft, itls, len(token_times), total
 
 
@@ -101,10 +161,22 @@ def _percentiles(values_ms):
     return {"p50": q[49], "p95": q[94]}  # q[k-1] == k-th percentile
 
 
-def run_scenario(base_url, scenario, model, extra=None):
+def run_scenario(base_url, scenario, model, extra=None, use_usage=False):
     """Run `scenario` against `base_url` and return a Report dict:
     {aggregate_decode_tps, ttft_ms: {p50,p95}, itl_ms: {p50,p95}, per_client: [...],
      wall_s, completed, errors}
+
+    use_usage=False (Task 1 contract, mock-tested): per-client n_tokens = number of token chunks
+    received (bench._is_token_chunk). use_usage=True (real-engine measurement mode): the request
+    additionally carries stream_options.include_usage, and n_tokens comes from the engine's own
+    usage.completion_tokens -- authoritative even when the engine coalesces several tokens into
+    one SSE chunk, which ollama 0.30.11 demonstrably does on longer generations (probe_sse.py
+    showed chunk-anatomy parity on short ones; the smoke's exact-count gate caught a 31-chunk /
+    32-token generation). Chunk arrivals still drive ALL timing (TTFT, ITL, span) in both modes;
+    ITL is therefore "inter-arrival latency" -- a coalesced chunk contributes one gap for two
+    tokens. Each per_client record also carries n_arrivals (counted token chunks) and
+    usage_missing so reports can quantify coalescing; if an engine omits usage, n_tokens falls
+    back to n_arrivals with usage_missing=True.
 
     closed_loop: scenario.n_clients threads all start immediately, each firing
         scenario.requests_per_client requests back-to-back. Task 1 scope is exactly
@@ -134,12 +206,26 @@ def run_scenario(base_url, scenario, model, extra=None):
         messages = scenarios.build_messages(scenario, client_id)
         t_req_start = time.perf_counter()
         try:
-            ttft, itls, n_tokens, total_s = timed_stream(
-                base_url, model, messages, scenario.max_tokens, extra=extra
-            )
+            if use_usage:
+                req_extra = dict(extra) if extra else {}
+                req_extra["stream_options"] = {"include_usage": True}
+                ttft, itls, n_arrivals, total_s, usage = timed_stream(
+                    base_url, model, messages, scenario.max_tokens,
+                    extra=req_extra, capture_usage=True,
+                )
+                usage_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+                usage_missing = not isinstance(usage_tokens, int)
+                n_tokens = n_arrivals if usage_missing else usage_tokens
+            else:
+                ttft, itls, n_arrivals, total_s = timed_stream(
+                    base_url, model, messages, scenario.max_tokens, extra=extra
+                )
+                n_tokens, usage_missing = n_arrivals, False
             per_client[client_id] = {
                 "client_id": client_id,
                 "n_tokens": n_tokens,
+                "n_arrivals": n_arrivals,
+                "usage_missing": usage_missing,
                 "ttft_ms": ttft * 1000.0,
                 "itl_ms": [x * 1000.0 for x in itls],
                 "first_token_abs": t_req_start + ttft,
@@ -152,6 +238,8 @@ def run_scenario(base_url, scenario, model, extra=None):
             per_client[client_id] = {
                 "client_id": client_id,
                 "n_tokens": 0,
+                "n_arrivals": 0,
+                "usage_missing": False,
                 "ttft_ms": None,
                 "itl_ms": [],
                 "first_token_abs": None,
