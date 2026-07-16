@@ -59,7 +59,7 @@ def _is_token_chunk(parsed):
     return isinstance(content, str) and content != ""
 
 
-def timed_stream(base_url, model, messages, max_tokens, extra=None, capture_usage=False):
+def timed_stream(base_url, model, messages, max_tokens, extra=None, capture_usage=False, timeout_s=300):
     """POST one streamed chat-completions request; return (ttft_s, itls_s, n_tokens, total_s), or
     (ttft_s, itls_s, n_tokens, total_s, usage) when capture_usage=True.
 
@@ -99,7 +99,7 @@ def timed_stream(base_url, model, messages, max_tokens, extra=None, capture_usag
 
     scheme, host, port, base_path = _split(base_url)
     conn_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-    conn = conn_cls(host, port, timeout=300)
+    conn = conn_cls(host, port, timeout=timeout_s)
 
     t0 = time.perf_counter()
     token_times = []
@@ -161,7 +161,7 @@ def _percentiles(values_ms):
     return {"p50": q[49], "p95": q[94]}  # q[k-1] == k-th percentile
 
 
-def run_scenario(base_url, scenario, model, extra=None, use_usage=False):
+def run_scenario(base_url, scenario, model, extra=None, use_usage=False, timeout_s=300, salt=None):
     """Run `scenario` against `base_url` and return a Report dict:
     {aggregate_decode_tps, ttft_ms: {p50,p95}, itl_ms: {p50,p95}, per_client: [...],
      wall_s, completed, errors}
@@ -191,6 +191,16 @@ def run_scenario(base_url, scenario, model, extra=None, use_usage=False):
     i.e. total decode-only tokens (excluding each client's own TTFT/prefill token) produced
     across the whole run, divided by the global wall-clock span from the earliest first-token to
     the latest last-token -- a concurrency-adjusted aggregate, not a per-client average.
+
+    timeout_s (Task 3 addition, default 300, passed to every timed_stream call): serialized
+    engines (ollama default) make the LAST of 16 concurrent clients wait several minutes before
+    its first byte; a 300s socket timeout would abort those clients and poison the matrix -- the
+    M0 matrix runner passes timeout_s=900.
+
+    salt (Task 3 addition, default None, passed to every scenarios.build_messages call): identical
+    prompts across measured runs let engines with prefix/prompt caching skip prefill on runs 2-3,
+    silently inflating them; a per-run salt defeats cross-run cache reuse while keeping S3's
+    shared system prefix identical across clients within a single run.
     """
     if scenario.requests_per_client != 1:
         raise NotImplementedError(
@@ -203,7 +213,7 @@ def run_scenario(base_url, scenario, model, extra=None, use_usage=False):
     errors_lock = threading.Lock()
 
     def worker(client_id):
-        messages = scenarios.build_messages(scenario, client_id)
+        messages = scenarios.build_messages(scenario, client_id, salt=salt)
         t_req_start = time.perf_counter()
         try:
             if use_usage:
@@ -211,14 +221,14 @@ def run_scenario(base_url, scenario, model, extra=None, use_usage=False):
                 req_extra["stream_options"] = {"include_usage": True}
                 ttft, itls, n_arrivals, total_s, usage = timed_stream(
                     base_url, model, messages, scenario.max_tokens,
-                    extra=req_extra, capture_usage=True,
+                    extra=req_extra, capture_usage=True, timeout_s=timeout_s,
                 )
                 usage_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
                 usage_missing = not isinstance(usage_tokens, int)
                 n_tokens = n_arrivals if usage_missing else usage_tokens
             else:
                 ttft, itls, n_arrivals, total_s = timed_stream(
-                    base_url, model, messages, scenario.max_tokens, extra=extra
+                    base_url, model, messages, scenario.max_tokens, extra=extra, timeout_s=timeout_s
                 )
                 n_tokens, usage_missing = n_arrivals, False
             per_client[client_id] = {

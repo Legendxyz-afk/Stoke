@@ -243,18 +243,21 @@ class OllamaAdapter(Adapter):
     HOST = "127.0.0.1"
     PORT = 11434
 
-    def __init__(self, num_parallel=None):
+    def __init__(self, num_parallel=None, context_length=None):
         label = "ollama-tuned" if num_parallel else "ollama-default"
         # base_url is the server ROOT: bench.timed_stream() appends /v1/chat/completions itself
         # (contract locked by the committed, mock-tested Task 1 harness).
         super().__init__(label, base_url=f"http://{self.HOST}:{self.PORT}", host=self.HOST, port=self.PORT)
         self.num_parallel = num_parallel
+        self.context_length = context_length
         self.model_name = OLLAMA_MODEL_NAME
 
     def _spawn(self):
         extra_env = {"OLLAMA_KEEP_ALIVE": "1h", "OLLAMA_MAX_LOADED_MODELS": "1"}
         if self.num_parallel:
             extra_env["OLLAMA_NUM_PARALLEL"] = str(self.num_parallel)
+        if self.context_length:
+            extra_env["OLLAMA_CONTEXT_LENGTH"] = str(self.context_length)
         return subprocess.Popen(
             [str(OLLAMA_EXE), "serve"],
             env=_ollama_env(extra_env),
@@ -272,12 +275,13 @@ class LlamaCppAdapter(Adapter):
     HOST = "127.0.0.1"
     PORT = 8089
 
-    def __init__(self, parallel=None):
+    def __init__(self, parallel=None, ctx=None):
         label = "llamacpp-tuned" if parallel else "llamacpp-default"
         self.root_url = f"http://{self.HOST}:{self.PORT}"
         # base_url is the server ROOT: bench.timed_stream() appends /v1/chat/completions itself.
         super().__init__(label, base_url=self.root_url, host=self.HOST, port=self.PORT)
         self.parallel = parallel
+        self.ctx = ctx
         self.model_name = LLAMACPP_MODEL_NAME
 
     def _spawn(self):
@@ -285,8 +289,14 @@ class LlamaCppAdapter(Adapter):
             str(LLAMA_SERVER_EXE), "-m", str(MODEL_GGUF),
             "--port", str(self.PORT), "--host", self.HOST,
         ]
+        # explicit ctx overrides the derived one; current behavior when ctx is omitted is
+        # unchanged (parallel alone still derives -c from parallel * 2048).
+        if self.ctx:
+            argv += ["-c", str(self.ctx)]
         if self.parallel:
-            argv += ["--parallel", str(self.parallel), "-c", str(self.parallel * 2048)]
+            argv += ["--parallel", str(self.parallel)]
+        if self.parallel and not self.ctx:
+            argv += ["-c", str(self.parallel * 2048)]
         return subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )

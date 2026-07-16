@@ -2,7 +2,9 @@ build/
 models/
 .superpowers/
 bench/vendor/
-bench/results/
+bench/results/*
+!bench/results/*.md
+!bench/results/*.json
 *.gguf
 *.o
 *.a
