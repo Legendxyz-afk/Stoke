@@ -1,0 +1,2 @@
+FROM M:\New Drive\Desktop\Programming\stoke\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+PARAMETER num_gpu 0

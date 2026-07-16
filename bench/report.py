@@ -57,7 +57,13 @@ PROTOCOL_PARAGRAPH = (
     "drive TTFT/ITL -- so ITL here is inter-arrival latency, and a coalesced multi-token chunk "
     "contributes a single gap. The underlying timing/measurement code (bench.run_scenario) is "
     "mock-verified against a known-exact server in test_harness.py before ever touching a real "
-    "engine."
+    "engine. All four primary configs execute on CPU ONLY, matching stoke Phase 1's target "
+    "silicon and the premise gate's CPU-bandwidth ceiling: the vendored llama-server build has "
+    "no GPU backends (--list-devices: empty), and ollama is pinned via a num_gpu=0 model "
+    "registration of the same GGUF -- its GPU discovery ignores CUDA_VISIBLE_DEVICES on this "
+    "box, and unpinned it silently offloads the whole model to the RTX 3050 (53 tok/s "
+    "\"single-stream\", double the CPU physics ceiling -- how the pin's necessity was caught). "
+    "Ollama's unpinned GPU default is reported separately in the appendix."
 )
 
 
@@ -347,7 +353,46 @@ def failures_section(raw_cells):
     return "\n".join(lines)
 
 
-def render_markdown(date_str, environment, raw_cells, cells_by_key):
+def gpu_sidebar_section(gpu_cells):
+    """Appendix rendering ollama's UNPINNED default (full GPU offload to the RTX 3050 Laptop 6GB)
+    -- what an out-of-the-box ollama user actually gets on this box. Deliberately NOT part of the
+    primary matrix or the premise gate: different silicon (168 GB/s GDDR6 vs ~77 GB/s DDR5), so
+    the numbers are context, not comparison."""
+    lines = ["## Appendix — ollama GPU default (unpinned), sidebar", ""]
+    if not gpu_cells:
+        lines.append("(no gpu-sidebar cells present)")
+        return "\n".join(lines)
+    lines.append(
+        "Unpinned `ollama serve` on this box offloads the whole model to the RTX 3050 Laptop "
+        "6GB. These cells were measured with the identical protocol before the CPU pin existed "
+        "and are kept as honest context for what ollama's out-of-the-box default delivers here. "
+        "They are NOT comparable to the CPU matrix above (different silicon, ~2x the memory "
+        "bandwidth) and play no part in the premise gate."
+    )
+    lines.append("")
+    headers = ["scenario", "aggregate tok/s", "TTFT p50 ms", "TTFT p95 ms",
+               "ITL p50 ms", "ITL p95 ms", "completed"]
+    rows = []
+    for cell in sorted(gpu_cells, key=lambda c: SCENARIO_NAMES.index(c["scenario"])
+                       if c.get("scenario") in SCENARIO_NAMES else 99):
+        median = select_median(cell.get("runs") or [])
+        if median is None:
+            rows.append({"scenario": cell.get("scenario"), "aggregate tok/s": "FAILED"})
+            continue
+        rows.append({
+            "scenario": cell.get("scenario"),
+            "aggregate tok/s": f"{median['aggregate_decode_tps']:.1f}",
+            "TTFT p50 ms": f"{median['ttft_ms']['p50']:.1f}",
+            "TTFT p95 ms": f"{median['ttft_ms']['p95']:.1f}",
+            "ITL p50 ms": f"{median['itl_ms']['p50']:.1f}",
+            "ITL p95 ms": f"{median['itl_ms']['p95']:.1f}",
+            "completed": f"{median['completed']}/{len(median.get('per_client') or [])}",
+        })
+    lines.append(render_md_table(headers, rows))
+    return "\n".join(lines)
+
+
+def render_markdown(date_str, environment, raw_cells, cells_by_key, gpu_cells=None):
     parts = [
         f"# stoke M0 baselines — Qwen3-4B-Instruct-2507 Q4_K_M — {date_str}",
         "",
@@ -369,6 +414,8 @@ def render_markdown(date_str, environment, raw_cells, cells_by_key):
     parts.append(gate_body)
     parts.append("")
     parts.append(failures_section(raw_cells))
+    parts.append("")
+    parts.append(gpu_sidebar_section(gpu_cells or []))
     return "\n".join(parts), final_line
 
 
@@ -409,13 +456,18 @@ def main(argv=None):
 
     raw_cells = load_raw_cells(raw_dir)
     cells_by_key = {f"{c['config']}--{c['scenario']}": build_cell_entry(c) for c in raw_cells}
+    gpu_cells = load_raw_cells(raw_dir / "gpu-sidebar")
 
-    report_json = {"environment": environment, "cells": cells_by_key}
+    report_json = {
+        "environment": environment,
+        "cells": cells_by_key,
+        "gpu_sidebar": {f"{c['config']}--{c['scenario']}": build_cell_entry(c) for c in gpu_cells},
+    }
     json_path = out_dir / f"{date_str}-baseline-qwen3-4b.json"
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(report_json, f, indent=2)
 
-    md_text, final_line = render_markdown(date_str, environment, raw_cells, cells_by_key)
+    md_text, final_line = render_markdown(date_str, environment, raw_cells, cells_by_key, gpu_cells)
     md_path = out_dir / f"{date_str}-baseline-qwen3-4b.md"
     md_path.write_text(md_text, encoding="utf-8")
 

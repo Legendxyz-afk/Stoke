@@ -120,7 +120,7 @@ def _capture(argv, cwd=None, timeout=30, combined=False):
     best-effort environment.json field goes through this -- a missing tool or odd machine state
     degrades one field, not the whole run."""
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        r = subprocess.run(argv, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=cwd)
         return (r.stdout + r.stderr) if combined else r.stdout
     except Exception as exc:
         return str(exc)
@@ -242,11 +242,11 @@ def run_cell(config_label, scenario, runs, timeout_s):
         adapter.start()
 
         if isinstance(adapter, adapters.OllamaAdapter):
-            adapters.ensure_ollama_model()
+            adapters.ensure_ollama_model(adapter.model_name, adapter.modelfile_path)
             try:
                 show = subprocess.run(
-                    [str(adapters.OLLAMA_EXE), "show", adapters.OLLAMA_MODEL_NAME],
-                    env=adapters._ollama_env(), capture_output=True, text=True, timeout=30,
+                    [str(adapters.OLLAMA_EXE), "show", adapter.model_name],
+                    env=adapters._ollama_env(), capture_output=True, encoding="utf-8", errors="replace", timeout=30,
                 )
                 cell["ollama_show"] = show.stdout
             except Exception as exc:

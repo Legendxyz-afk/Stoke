@@ -44,6 +44,12 @@ MODEL_GGUF = REPO_ROOT / "models" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 MODELFILE_PATH = pathlib.Path(__file__).resolve().parent / "Modelfile.qwen3-4b"
 
 OLLAMA_MODEL_NAME = "stoke-bench-qwen3"     # registered name; used as the `model` field in requests
+# Same GGUF re-registered with `PARAMETER num_gpu 0` -- zero layers offloaded, pure CPU. This is
+# the engine-level pin the M0 primary matrix uses: ollama 0.30.11's GPU discovery ignores
+# CUDA_VISIBLE_DEVICES=-1 (verified empirically 2026-07-16 -- still a 5.4GB GPU compute process
+# with GPU-class decode rates), so the env-var route is insufficient on this box.
+OLLAMA_MODEL_NAME_CPU = "stoke-bench-qwen3-cpu"
+MODELFILE_CPU_PATH = pathlib.Path(__file__).resolve().parent / "Modelfile.qwen3-4b-cpu"
 LLAMACPP_MODEL_NAME = "qwen3-4b"             # llama-server serves one model; field value is arbitrary
 
 OLLAMA_HOST_ADDR = "127.0.0.1:11434"        # forced explicitly so ambient OLLAMA_HOST can't drift us
@@ -243,17 +249,34 @@ class OllamaAdapter(Adapter):
     HOST = "127.0.0.1"
     PORT = 11434
 
-    def __init__(self, num_parallel=None, context_length=None):
+    def __init__(self, num_parallel=None, context_length=None, cpu_only=True):
         label = "ollama-tuned" if num_parallel else "ollama-default"
         # base_url is the server ROOT: bench.timed_stream() appends /v1/chat/completions itself
         # (contract locked by the committed, mock-tested Task 1 harness).
         super().__init__(label, base_url=f"http://{self.HOST}:{self.PORT}", host=self.HOST, port=self.PORT)
         self.num_parallel = num_parallel
         self.context_length = context_length
-        self.model_name = OLLAMA_MODEL_NAME
+        # cpu_only=True (the M0 primary-matrix default) serves the num_gpu=0 registration of the
+        # same GGUF; False serves the unpinned one (ollama's own GPU/CPU choice -- the behavior
+        # recorded in the report's gpu-sidebar appendix).
+        self.cpu_only = cpu_only
+        self.model_name = OLLAMA_MODEL_NAME_CPU if cpu_only else OLLAMA_MODEL_NAME
+        self.modelfile_path = MODELFILE_CPU_PATH if cpu_only else MODELFILE_PATH
 
     def _spawn(self):
-        extra_env = {"OLLAMA_KEEP_ALIVE": "1h", "OLLAMA_MAX_LOADED_MODELS": "1"}
+        # CUDA_VISIBLE_DEVICES=-1 hides every CUDA device from ollama's GPU discovery, forcing
+        # CPU execution. Without it, ollama silently offloads the whole model to this box's RTX
+        # 3050 (caught mid-matrix 2026-07-16: 53 tok/s "single-stream" -- double the ~25 tok/s
+        # CPU bandwidth ceiling -- and nvidia-smi showed ollama's llama-server as a 5.4GB GPU
+        # compute process). The M0 primary matrix is CPU-vs-CPU: stoke Phase 1 is a CPU engine,
+        # the premise gate's 160 tok/s ceiling is CPU physics, and the vendored llama.cpp
+        # baseline is a CPU-only build. Unforced GPU-default numbers live in the report's
+        # gpu-sidebar appendix (bench/results/raw/gpu-sidebar/).
+        extra_env = {
+            "OLLAMA_KEEP_ALIVE": "1h",
+            "OLLAMA_MAX_LOADED_MODELS": "1",
+            "CUDA_VISIBLE_DEVICES": "-1",
+        }
         if self.num_parallel:
             extra_env["OLLAMA_NUM_PARALLEL"] = str(self.num_parallel)
         if self.context_length:
@@ -337,10 +360,13 @@ def build_configs(tuned_n=4, only=None):
 
 
 # -- one-time setup: register the shared GGUF with Ollama ---------------------------------------
-def ensure_ollama_model():
-    """Register models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf with Ollama as `stoke-bench-qwen3`, via
-    `ollama create -f bench/Modelfile.qwen3-4b`, so ollama-default/ollama-tuned serve the exact
-    same weights llama-server does (same-GGUF fairness is the whole point of this bench).
+def ensure_ollama_model(name=OLLAMA_MODEL_NAME_CPU, modelfile=MODELFILE_CPU_PATH):
+    """Register models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf with Ollama under `name` via
+    `ollama create -f <modelfile>`, so ollama-default/ollama-tuned serve the exact same weights
+    llama-server does (same-GGUF fairness is the whole point of this bench). Defaults register
+    the num_gpu=0 CPU-pinned variant the primary matrix uses; pass
+    (OLLAMA_MODEL_NAME, MODELFILE_PATH) for the unpinned GPU-sidebar variant. Callers with an
+    adapter in hand should pass (adapter.model_name, adapter.modelfile_path).
 
     Requires `ollama serve` to already be running -- `ollama create`/`ollama list` are CLI clients
     that talk to the local server, they do nothing standalone. Idempotent: skips `ollama create`
@@ -352,40 +378,48 @@ def ensure_ollama_model():
     in case a future Ollama version regresses this.
     """
     def _list_stdout():
+        # encoding pinned: ollama's console output can carry bytes invalid in the Windows default
+        # cp1252 codec (progress bars during create) -- a raw text=True read crashes the
+        # subprocess reader thread with UnicodeDecodeError.
         r = subprocess.run(
-            [str(OLLAMA_EXE), "list"], env=_ollama_env(), capture_output=True, text=True, timeout=30,
+            [str(OLLAMA_EXE), "list"], env=_ollama_env(), capture_output=True,
+            encoding="utf-8", errors="replace", timeout=30,
         )
         return r.stdout if r.returncode == 0 else ""
 
-    if OLLAMA_MODEL_NAME in _list_stdout():
+    if name in _list_stdout():
         return  # already registered (this run or a previous one)
 
     create = subprocess.run(
-        [str(OLLAMA_EXE), "create", OLLAMA_MODEL_NAME, "-f", str(MODELFILE_PATH)],
-        env=_ollama_env(), capture_output=True, text=True, timeout=600,  # first create hashes+copies 2.5GB
+        [str(OLLAMA_EXE), "create", name, "-f", str(modelfile)],
+        env=_ollama_env(), capture_output=True, encoding="utf-8", errors="replace", timeout=600,  # first create hashes+copies 2.5GB
     )
     if create.returncode != 0:
-        # confirmed-working form failed (env drift, moved file, etc) -- try a quoted-path Modelfile
-        # once before giving up, and flag loudly which form was needed.
-        quoted = f'FROM "{MODEL_GGUF}"\n'
-        MODELFILE_PATH.write_text(quoted, encoding="utf-8")
+        # confirmed-working form failed (env drift, moved file, etc) -- try a quoted-path FROM
+        # once before giving up, preserving any PARAMETER lines, and flag loudly.
+        original = modelfile.read_text(encoding="utf-8")
+        quoted = "\n".join(
+            f'FROM "{MODEL_GGUF}"' if line.startswith("FROM ") else line
+            for line in original.splitlines()
+        ) + "\n"
+        modelfile.write_text(quoted, encoding="utf-8")
         retry = subprocess.run(
-            [str(OLLAMA_EXE), "create", OLLAMA_MODEL_NAME, "-f", str(MODELFILE_PATH)],
-            env=_ollama_env(), capture_output=True, text=True, timeout=600,
+            [str(OLLAMA_EXE), "create", name, "-f", str(modelfile)],
+            env=_ollama_env(), capture_output=True, encoding="utf-8", errors="replace", timeout=600,
         )
         if retry.returncode != 0:
             raise RuntimeError(
-                f"fatal: `ollama create {OLLAMA_MODEL_NAME}` failed with BOTH unquoted and quoted "
+                f"fatal: `ollama create {name}` failed with BOTH unquoted and quoted "
                 f"Modelfile paths.\nunquoted stderr:\n{create.stderr}\nquoted stderr:\n{retry.stderr}"
             )
         print(f"NOTE: ollama create needed the QUOTED Modelfile path form (unquoted failed) -- "
-              f"bench/Modelfile.qwen3-4b has been rewritten to the quoted form.", file=sys.stderr)
+              f"{modelfile.name} has been rewritten to the quoted form.", file=sys.stderr)
 
     verify = _list_stdout()
-    if OLLAMA_MODEL_NAME not in verify:
+    if name not in verify:
         raise RuntimeError(
             f"fatal: `ollama create` reported success but `ollama list` does not show "
-            f"{OLLAMA_MODEL_NAME} -- stdout:\n{verify}"
+            f"{name} -- stdout:\n{verify}"
         )
 
 
@@ -426,8 +460,8 @@ def run_smoke(tuned_n=4, only=None):
             print(f"{adapter.label}: start() OK, base_url={base_url}", flush=True)
 
             if isinstance(adapter, OllamaAdapter):
-                ensure_ollama_model()
-                print(f"{adapter.label}: ollama model '{OLLAMA_MODEL_NAME}' confirmed via `ollama list`", flush=True)
+                ensure_ollama_model(adapter.model_name, adapter.modelfile_path)
+                print(f"{adapter.label}: ollama model '{adapter.model_name}' confirmed via `ollama list`", flush=True)
 
             ttft, itls, n_tokens, total_s, usage = bench.timed_stream(
                 adapter.base_url,
