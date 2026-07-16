@@ -1,0 +1,8 @@
+build/
+models/
+bench/vendor/
+bench/results/
+*.gguf
+*.o
+*.a
+*.exe
