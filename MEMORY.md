@@ -319,7 +319,8 @@ horizon = long.
 Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
 
 - **2026-07-16 — project live.** Named **stoke**; folder renamed; git repo
-  initialized (branch `main`, local only — no remote yet). Decisions locked:
+  initialized (branch `main`, **local-only by directive — no remote/push
+  until Kabir explicitly says so**). Decisions locked:
   from-scratch compute layer, CPU-first, C11, library-first (`libstoke.a` +
   `stoke.h`, server as thin frontend). Spec committed:
   `docs/superpowers/specs/2026-07-16-phase1-concurrent-cpu-core-design.md`.
