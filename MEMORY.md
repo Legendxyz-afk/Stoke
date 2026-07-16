@@ -1,8 +1,10 @@
 # The Local AI Engine — Direction & AySen Alignment
 
-*Project memory / north-star doc — 2026-07-14. Read this before writing any
-spec or code for the engine. This folder (`Programming/engine/`) is the home
-for the next big build. This file is the complete master record: the decision,
+*Project memory / north-star doc — 2026-07-14; updated 2026-07-16. Read this
+before writing any spec or code for the engine. This folder
+(`Programming/stoke/` — renamed from `engine/`) is the home of the current
+build: **the engine is named stoke** (locked 2026-07-16; collision caveats in
+Status). This file is the complete master record: the decision,
 the technical wedge, the AySen alignment, and — in the appendices — the full
 asset inventory and the every-path business journey that led here. Ground-up
 teaching lives in `docs/beginners-primer.md`; the vLLM teardown in
@@ -213,14 +215,21 @@ The stack Kabir is actually building, top to bottom:
 
 ---
 
-## Open questions (answer before the Phase-1 spec)
+## Open questions — ALL ANSWERED 2026-07-16 (Kabir + probe)
 
-- **First hardware target** — Kabir's GPU + CPU exactly; anything with an NPU on
-  hand? (The spec commits to a first backend.)
-- **Model / weight format** — GGUF-compatible? A specific model family to start?
-- **Engine language** — C / C++ / CUDA vs Rust vs Zig; and how much (if any)
-  AS-core in the control plane.
-- **Name** — Kabir's call. (Folder is `engine/` as a placeholder.)
+- **First hardware target** → Kabir's box: i5-13450HX (6P+4E, AVX2+AVX-VNNI,
+  no AVX-512), 16GB DDR5-4800 (~77 GB/s theor.), RTX 3050 Laptop 6GB (168 GB/s,
+  CC 8.6) reserved for Phase 1.5. **No NPU on hand** (HX predates them) —
+  Phase 2 needs future hardware. CPU-first, CUDA second.
+- **Model / weight format** → GGUF. Qwen3-4B-Instruct-2507 primary (Apache,
+  ungated), Llama-3.2-3B-Instruct secondary (family generality).
+- **Engine language** → **C11, from scratch** (no ggml — own kernels, own
+  paged-KV attention, own scheduler; single-stream parity NOT required, the
+  aggregate concurrency headline is the target). CUDA later in `.cu` behind
+  `extern "C"`. AS-core control plane stays a Phase-4 dream via the C seam.
+- **Name** → **stoke** (Kabir, 2026-07-16). Caveats to revisit at M7: PyPI
+  `stoke` taken (Fidelity ML lib), StanfordPL/stoke superoptimizer exists,
+  Stoke Space dominates search; GitHub + crates.io clean.
 
 ---
 
@@ -305,11 +314,26 @@ horizon = long.
 
 ---
 
-## Status
+## Status / build log
 
 Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
-Next step: confirm the hardware target, then brainstorm → write the Phase-1
-spec (`docs/superpowers/specs/`), then an implementation plan.
+
+- **2026-07-16 — project live.** Named **stoke**; folder renamed; git repo
+  initialized (branch `main`, local only — no remote yet). Decisions locked:
+  from-scratch compute layer, CPU-first, C11, library-first (`libstoke.a` +
+  `stoke.h`, server as thin frontend). Spec committed:
+  `docs/superpowers/specs/2026-07-16-phase1-concurrent-cpu-core-design.md`.
+  Plan committed: `docs/superpowers/plans/2026-07-16-phase1-implementation.md`
+  (M0/M1 task detail, M2–M7 roadmap). Landscape re-verified by live web
+  research — wedge confirmed; sharpest datapoints: mistral.rs CPU 17 tok/s vs
+  llama.cpp 124 on same settings; exllamaV3 NVIDIA+Python-only; MLC tiny+TVM;
+  no llama.cpp scheduler redesign found; Ollama `NUM_PARALLEL` default 1 and
+  now runs a three-engine strategy (proof that frontends swap engines — the
+  library-first insertion point). Assets staged: Qwen3-4B-Instruct-2507
+  Q4_K_M GGUF (bartowski, 2.5GB, magic-verified, `models/`), llama.cpp b10037
+  win-cpu vendored (`bench/vendor/`), Ollama 0.30.11 present. **NEXT: M0** —
+  bench harness (mock-verified timing), 4-config baselines, premise
+  kill-switch gate.
 
 Related paths (from this folder):
 - Beginner primer — every concept from scratch: `docs/beginners-primer.md`
