@@ -6,3 +6,5 @@ bench/results/
 *.o
 *.a
 *.exe
+__pycache__/
+*.pyc
