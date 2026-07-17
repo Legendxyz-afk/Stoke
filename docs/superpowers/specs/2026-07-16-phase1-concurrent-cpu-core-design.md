@@ -56,23 +56,69 @@ determinism (documented, not promised), general Jinja chat templates (two
 built-ins: ChatML for Qwen3, Llama-3 header format), prefix-cache persistence,
 auth/multi-tenancy, non-x86-64 (ARM is Phase 1.5+ with CUDA).
 
-## Physics budget (pre-M0 estimates; M0 re-anchors all numbers)
+## Physics budget (estimates anchored by M0 measurement, 2026-07-17)
 
 Decode is memory-bandwidth-bound: each token-step streams the weights once,
 amortized across the whole batch, plus each sequence's KV.
 
 - Weights: Qwen3-4B Q4_K_M ≈ 2.4GB. KV (Qwen3-4B GQA: 36 layers × 8 KV-heads
   × 128 dim): ~147 KB/token fp16, **~74 KB/token Q8_0**.
-- Single stream @ ~60 GB/s real: ceiling ≈ 60/2.4 ≈ **25 tok/s** (llama.cpp
-  real-world will be lower; M0 measures).
+- Single stream @ ~60 GB/s real: ceiling ≈ 60/2.4 ≈ **25 tok/s** (measured
+  best N=1 baseline: 15.6 = 62% of naive ceiling — the gap is real-world
+  bandwidth + overhead, and it binds every engine equally).
 - Batch 8 @ ~1k ctx each: step bytes ≈ 2.4GB + 8×74MB ≈ 3.0GB → ~20 steps/s →
   **~160 tok/s aggregate ceiling**. Compute check (AVX2+VNNI, ~1.3 TFLOPS
   class): batch-8 step ≈ 64 GFLOP ≈ 30ms<50ms bandwidth time → bandwidth still
   binds. Real-world target: 80–120 aggregate.
-- Ollama at 8 concurrent on this box: expected 15–30 aggregate (M0 measures).
-- **Kill-switch**: if M0 shows Ollama/llama-server already near the physics
-  ceiling at concurrency, the premise is wrong — stop and re-examine BEFORE
-  writing kernels. Cheap insurance.
+- Ollama at 8 concurrent: estimated 15–30 aggregate; measured **5.4** default
+  / **14.3** tuned — the default estimate was ~3× too generous.
+- **Kill-switch — FIRED AND PASSED (M0, 2026-07-17)**: best baseline at
+  concurrency = **11.0% of the ~160 ceiling** (threshold ≥70%) — premise
+  CONFIRMED, kernels are GO. Full report:
+  `bench/results/2026-07-17-baseline-qwen3-4b.md`.
+
+### Measured (M0, reference box, CPU-pinned, same GGUF, median of 3 runs)
+
+S2 aggregate decode tok/s vs concurrency:
+
+| N  | ollama-default | ollama-tuned | llamacpp-default | llamacpp-tuned |
+|----|----------------|--------------|------------------|----------------|
+| 1  | 11.0           | 15.1         | 14.9             | 15.6           |
+| 2  | 7.2            | 22.5         | 23.3             | 23.5           |
+| 4  | 6.1            | 17.3         | 30.2             | **33.6**       |
+| 8  | 5.4            | 14.3         | 16.2             | **17.7**       |
+| 16 | 8.4            | 13.3         | 13.5             | **14.2**       |
+
+What the numbers say:
+
+- **Every engine peaks at N=4 then collapses** (llamacpp-tuned 33.6 → 17.7 →
+  14.2). Nobody sustains scaling into N=8/16 on consumer silicon; best
+  baseline at N=8 is 11.0% of ceiling. The wedge is measured fact on this
+  box, not a literature claim — and the N=4 peak proves the ceiling is
+  reachable-ish (33.6 = 21% at N=4; the collapse past it is software.)
+- ollama-default *inverts* (8.4 @N=16 > 5.4 @N=8, with ITL p50 66ms at N=16 —
+  faster per-token than its own N=1). Unexplained; recorded, not chased.
+  Hypothesis only: NUM_PARALLEL auto-raise under queue pressure.
+- s4-longctx: **out-of-box ollama cannot serve a 4k prompt at all** (fixed
+  slot ctx 4096 < 4112 → HTTP 400 ×3). llama-server b10037's default ctx
+  follows the model (`--ctx-size` default 0 = from model), so
+  llamacpp-default DOES serve it — falsifying the pre-measurement guess that
+  both defaults reject — but at a **~77s TTFT** (prefill ~54 tok/s): served,
+  yet unusable interactively. Tuned configs serve it at 6.4 / 7.8 decode.
+- s3 fanout: llamacpp-default (13.3) beats llamacpp-tuned (11.7) — static
+  slot-splitting costs more than it wins when bandwidth-bound. Slots are not
+  free; a real scheduler must beat static partitioning, not reproduce it.
+- s1 interactive: even llamacpp-tuned lands TTFT p50 ≈ 33s at 8 users.
+  Interactive multi-user on one consumer box is unserved territory today.
+
+**M5 bars (concrete, from this table):**
+
+- ≥1.0× llamacpp-tuned: **≥17.7 @N=8, ≥14.2 @N=16**
+- ≥2× ollama-default: **≥10.8 @N=8, ≥16.8 @N=16** — the inversion makes the
+  N=16 headline bar (16.8) higher than every baseline measured
+- Stretch (headline 3×): 16.2 @8 / 25.2 @16 — plausible only by holding a
+  material fraction of the N=4 peak (33.6) into N=8/16
+- Sanity floor (≥50% of llama.cpp single-stream): ≥7.8 @N=1 vs 15.6
 
 KV pool at 16GB RAM: model 2.4GB + pool ~6GB ≈ 85k pooled Q8 tokens ≈ 16
 streams × 5k ctx. On CPU, KV capacity is comfortable; bandwidth is the fight.

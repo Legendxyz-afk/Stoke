@@ -336,6 +336,26 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   bench harness (mock-verified timing), 4-config baselines, premise
   kill-switch gate.
 
+- **2026-07-17 — M0 COMPLETE: baselines banked, premise CONFIRMED, kernels
+  are GO.** Full 32-cell matrix (4 configs × S1/S2-sweep/S3/S4, 3 runs/cell,
+  medians, CPU-pinned, same GGUF) on the reference box; report committed:
+  `bench/results/2026-07-17-baseline-qwen3-4b.{md,json}`. Kill-switch: best
+  baseline at concurrency (llamacpp-tuned **17.7 @N=8**) = **11.0% of the
+  ~160 tok/s physics ceiling** (threshold ≥70%). Key discovery: **every
+  engine peaks at N=4 then collapses** (llamacpp-tuned 33.6 → 17.7 → 14.2) —
+  nobody sustains scaling into N=8/16 on consumer silicon; the wedge is
+  measured fact on this box. Findings kept: ollama-default inverts (8.4 @16 >
+  5.4 @8, ITL faster than its own N=1 — unexplained, recorded not chased);
+  out-of-box ollama hard-rejects a 4k prompt (fixed slot ctx 4096 → HTTP 400)
+  while llamacpp-default serves it (b10037 default ctx follows the model) at
+  ~77s TTFT — falsified the "both defaults reject" guess; llamacpp-default
+  beats llamacpp-tuned on s3 fanout (13.3 vs 11.7) — static slot-splitting
+  isn't free, a real scheduler must beat it. M5 bars now concrete (in spec
+  "Physics budget", re-anchored with the measured table): ≥17.7 @8 / ≥14.2
+  @16 (1× llamacpp-tuned) and ≥10.8 @8 / ≥16.8 @16 (2× ollama-default — the
+  N=16 bar exceeds every measured baseline). **NEXT: M1 (owner: Opus 4.8) —
+  Task 5 gguf.c**, worker-brief protocol in the plan.
+
 Related paths (from this folder):
 - Beginner primer — every concept from scratch: `docs/beginners-primer.md`
 - Background — what vLLM is, in depth: `docs/vllm-and-the-serving-landscape.md`

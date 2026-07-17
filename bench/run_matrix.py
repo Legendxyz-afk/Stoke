@@ -126,6 +126,19 @@ def _capture(argv, cwd=None, timeout=30, combined=False):
         return str(exc)
 
 
+def _version_of(argv):
+    """`<engine> --version` banners can carry extra noise around the version line — ollama with no
+    daemon up prints 'Warning: could not connect...' before 'Warning: client version is X.Y.Z' —
+    so keep only the first line that names a version AND contains a digit (llama-server's build
+    number '10037' has no dots, hence digit not dotted-triple). Falls back to the raw capture when
+    nothing matches, so a weird banner degrades to diagnostics instead of vanishing."""
+    raw = _capture(argv, combined=True).strip()
+    for line in raw.splitlines():
+        if re.search(r"version", line, re.IGNORECASE) and re.search(r"\d", line):
+            return line.strip()
+    return raw
+
+
 # -- environment capture -------------------------------------------------------------------------
 def capture_environment():
     """One best-effort snapshot of the machine/repo state this run happened under. Every
@@ -152,8 +165,8 @@ def capture_environment():
         "battery": _capture(
             ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_Battery).BatteryStatus"]
         ).strip(),
-        "ollama_version": _capture([str(adapters.OLLAMA_EXE), "--version"], combined=True).strip(),
-        "llamacpp_version": _capture([str(adapters.LLAMA_SERVER_EXE), "--version"], combined=True).strip(),
+        "ollama_version": _version_of([str(adapters.OLLAMA_EXE), "--version"]),
+        "llamacpp_version": _version_of([str(adapters.LLAMA_SERVER_EXE), "--version"]),
     }
     try:
         env["model_file"] = adapters.MODEL_GGUF.name

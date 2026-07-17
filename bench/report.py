@@ -340,6 +340,10 @@ def failures_section(raw_cells):
                 f"{[r.get('errors', []) for r in runs]}"
             )
             lines.append("")
+            lines.append("```")
+            lines.append(cell.get("adapter_log_tail") or "(no output captured)")
+            lines.append("```")
+            lines.append("")
         elif median is not None and median.get("errors"):
             any_content = True
             lines.append(f"### {key} (partial client failures in median run)")
