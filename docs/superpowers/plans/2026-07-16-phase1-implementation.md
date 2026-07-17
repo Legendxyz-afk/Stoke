@@ -17,7 +17,26 @@
 - No Claude attribution in commits (global setting enforces).
 - Commit after every green task; never two makes in one BUILDDIR (AySen lesson: stale .o → bare "ld returned 5"; `rm -rf build/<plat>` on weird link errors).
 - Reference model: `models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf` (bartowski). Reference box: i5-13450HX, 16GB DDR5-4800, Windows 11 + WSL2.
-- Manager/worker protocol: Fable writes/reviews; mechanical implementation goes to sonnet workers with surgical briefs. Every brief includes (a) constants PROBED from real files/binaries at dispatch time — never recalled from memory, (b) a mechanical byte-level verification step the worker must run (this caught a shipped emitter bug in AySen pilot #3).
+- Manager/worker protocol: the session manager thinks/plans/reviews; mechanical implementation goes to sonnet workers with surgical briefs. Every brief includes (a) constants PROBED from real files/binaries at dispatch time — never recalled from memory, (b) a mechanical byte-level verification step the worker must run (this caught a shipped emitter bug in AySen pilot #3).
+
+## Model allocation (Kabir, 2026-07-17 — usage economy)
+
+Session-manager tier per milestone. Opus 4.8 drives day-to-day sessions following this plan;
+Fable is summoned at milestone boundaries and for the least-oracle-able design work.
+
+- **Opus 4.8 drives:** M1 (gguf+tok — fully oracle-gated), M3, M4 implementation, M6 server, M7.
+  Enforces the sonnet-worker brief protocol above unchanged.
+- **Fable owns:** every milestone-entry design note (M2's op-by-op spec + parity-debug protocol,
+  M4's sim invariant list, M5 entirely: scheduler policy, preemption, chunked-prefill interleave,
+  sim harness design); every gate stamp/review; the M6 `stoke.h` ABI freeze review; any change to
+  spec targets, scenario locks, or this plan's structure.
+- **Escalate Opus → Fable when:** a gate fails twice for the same cause; parity/correctness
+  debugging exceeds ~a day; results contradict the spec's physics reasoning; anything would
+  loosen a gate instead of fixing the code.
+- **Session-start model gate (NO SILENT FALLBACK):** every session checks its own model against
+  the CURRENT STAGE OWNER line in project memory (`engine-project.md`). Mismatch = HARD STOP:
+  output only the correct `/model` to switch to, do zero work. Opens only via Kabir's explicit
+  override or a declared escalation/gate visit.
 
 ## File Structure (locked)
 
