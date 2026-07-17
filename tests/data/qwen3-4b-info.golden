@@ -1,0 +1,436 @@
+== metadata (36 kv) ==
+[  0] general.architecture (STRING) = qwen3
+[  1] general.type (STRING) = model
+[  2] general.name (STRING) = Qwen3 4B Instruct 2507
+[  3] general.version (STRING) = 2507
+[  4] general.finetune (STRING) = Instruct
+[  5] general.basename (STRING) = Qwen3
+[  6] general.size_label (STRING) = 4B
+[  7] general.license (STRING) = apache-2.0
+[  8] general.license.link (STRING) = https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/main/LICENSE
+[  9] general.tags (ARRAY) = [STRING x 1]
+[ 10] qwen3.block_count (UINT32) = 36
+[ 11] qwen3.context_length (UINT32) = 262144
+[ 12] qwen3.embedding_length (UINT32) = 2560
+[ 13] qwen3.feed_forward_length (UINT32) = 9728
+[ 14] qwen3.attention.head_count (UINT32) = 32
+[ 15] qwen3.attention.head_count_kv (UINT32) = 8
+[ 16] qwen3.rope.freq_base (FLOAT32) = 5e+06
+[ 17] qwen3.attention.layer_norm_rms_epsilon (FLOAT32) = 1e-06
+[ 18] qwen3.attention.key_length (UINT32) = 128
+[ 19] qwen3.attention.value_length (UINT32) = 128
+[ 20] tokenizer.ggml.model (STRING) = gpt2
+[ 21] tokenizer.ggml.pre (STRING) = qwen2
+[ 22] tokenizer.ggml.tokens (ARRAY) = [STRING x 151936]
+[ 23] tokenizer.ggml.token_type (ARRAY) = [INT32 x 151936]
+[ 24] tokenizer.ggml.merges (ARRAY) = [STRING x 151387]
+[ 25] tokenizer.ggml.eos_token_id (UINT32) = 151645
+[ 26] tokenizer.ggml.padding_token_id (UINT32) = 151643
+[ 27] tokenizer.ggml.bos_token_id (UINT32) = 151643
+[ 28] tokenizer.ggml.add_bos_token (BOOL) = 0
+[ 29] tokenizer.chat_template (STRING) = {%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0].role == 'system' %}…(4040 bytes total)
+[ 30] general.quantization_version (UINT32) = 2
+[ 31] general.file_type (UINT32) = 15
+[ 32] quantize.imatrix.file (STRING) = /models_out/Qwen3-4B-Instruct-2507-GGUF/Qwen_Qwen3-4B-Instruct-2507-imatrix.gguf
+[ 33] quantize.imatrix.dataset (STRING) = /training_dir/calibration_datav3.txt
+[ 34] quantize.imatrix.entries_count (UINT32) = 252
+[ 35] quantize.imatrix.chunks_count (UINT32) = 497
+== tensors (398, file order) ==
+[  0] output_norm.weight F32 n_dims=1 dims=[2560] offset=0 nbytes=10240
+[  1] token_embd.weight Q6_K n_dims=2 dims=[2560,151936] offset=10240 nbytes=319065600
+[  2] blk.0.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=319075840 nbytes=1474560
+[  3] blk.0.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=320550400 nbytes=512
+[  4] blk.0.attn_norm.weight F32 n_dims=1 dims=[2560] offset=320550912 nbytes=10240
+[  5] blk.0.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=320561152 nbytes=5898240
+[  6] blk.0.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=326459392 nbytes=5898240
+[  7] blk.0.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=332357632 nbytes=512
+[  8] blk.0.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=332358144 nbytes=2150400
+[  9] blk.0.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=334508544 nbytes=20428800
+[ 10] blk.0.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=354937344 nbytes=14008320
+[ 11] blk.0.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=368945664 nbytes=10240
+[ 12] blk.0.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=368955904 nbytes=14008320
+[ 13] blk.1.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=382964224 nbytes=1474560
+[ 14] blk.1.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=384438784 nbytes=512
+[ 15] blk.1.attn_norm.weight F32 n_dims=1 dims=[2560] offset=384439296 nbytes=10240
+[ 16] blk.1.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=384449536 nbytes=5898240
+[ 17] blk.1.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=390347776 nbytes=5898240
+[ 18] blk.1.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=396246016 nbytes=512
+[ 19] blk.1.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=396246528 nbytes=2150400
+[ 20] blk.1.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=398396928 nbytes=20428800
+[ 21] blk.1.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=418825728 nbytes=14008320
+[ 22] blk.1.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=432834048 nbytes=10240
+[ 23] blk.1.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=432844288 nbytes=14008320
+[ 24] blk.2.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=446852608 nbytes=1474560
+[ 25] blk.2.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=448327168 nbytes=512
+[ 26] blk.2.attn_norm.weight F32 n_dims=1 dims=[2560] offset=448327680 nbytes=10240
+[ 27] blk.2.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=448337920 nbytes=5898240
+[ 28] blk.2.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=454236160 nbytes=5898240
+[ 29] blk.2.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=460134400 nbytes=512
+[ 30] blk.2.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=460134912 nbytes=2150400
+[ 31] blk.2.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=462285312 nbytes=20428800
+[ 32] blk.2.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=482714112 nbytes=14008320
+[ 33] blk.2.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=496722432 nbytes=10240
+[ 34] blk.2.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=496732672 nbytes=14008320
+[ 35] blk.3.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=510740992 nbytes=1474560
+[ 36] blk.3.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=512215552 nbytes=512
+[ 37] blk.3.attn_norm.weight F32 n_dims=1 dims=[2560] offset=512216064 nbytes=10240
+[ 38] blk.3.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=512226304 nbytes=5898240
+[ 39] blk.3.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=518124544 nbytes=5898240
+[ 40] blk.3.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=524022784 nbytes=512
+[ 41] blk.3.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=524023296 nbytes=2150400
+[ 42] blk.3.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=526173696 nbytes=20428800
+[ 43] blk.3.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=546602496 nbytes=14008320
+[ 44] blk.3.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=560610816 nbytes=10240
+[ 45] blk.3.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=560621056 nbytes=14008320
+[ 46] blk.4.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=574629376 nbytes=1474560
+[ 47] blk.4.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=576103936 nbytes=512
+[ 48] blk.4.attn_norm.weight F32 n_dims=1 dims=[2560] offset=576104448 nbytes=10240
+[ 49] blk.4.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=576114688 nbytes=5898240
+[ 50] blk.4.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=582012928 nbytes=5898240
+[ 51] blk.4.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=587911168 nbytes=512
+[ 52] blk.4.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=587911680 nbytes=1474560
+[ 53] blk.4.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=589386240 nbytes=14008320
+[ 54] blk.4.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=603394560 nbytes=14008320
+[ 55] blk.4.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=617402880 nbytes=10240
+[ 56] blk.4.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=617413120 nbytes=14008320
+[ 57] blk.5.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=631421440 nbytes=1474560
+[ 58] blk.5.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=632896000 nbytes=512
+[ 59] blk.5.attn_norm.weight F32 n_dims=1 dims=[2560] offset=632896512 nbytes=10240
+[ 60] blk.5.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=632906752 nbytes=5898240
+[ 61] blk.5.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=638804992 nbytes=5898240
+[ 62] blk.5.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=644703232 nbytes=512
+[ 63] blk.5.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=644703744 nbytes=1474560
+[ 64] blk.5.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=646178304 nbytes=14008320
+[ 65] blk.5.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=660186624 nbytes=14008320
+[ 66] blk.5.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=674194944 nbytes=10240
+[ 67] blk.5.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=674205184 nbytes=14008320
+[ 68] blk.6.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=688213504 nbytes=1474560
+[ 69] blk.6.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=689688064 nbytes=512
+[ 70] blk.6.attn_norm.weight F32 n_dims=1 dims=[2560] offset=689688576 nbytes=10240
+[ 71] blk.6.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=689698816 nbytes=5898240
+[ 72] blk.6.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=695597056 nbytes=5898240
+[ 73] blk.6.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=701495296 nbytes=512
+[ 74] blk.6.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=701495808 nbytes=2150400
+[ 75] blk.6.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=703646208 nbytes=20428800
+[ 76] blk.6.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=724075008 nbytes=14008320
+[ 77] blk.6.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=738083328 nbytes=10240
+[ 78] blk.6.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=738093568 nbytes=14008320
+[ 79] blk.7.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=752101888 nbytes=1474560
+[ 80] blk.7.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=753576448 nbytes=512
+[ 81] blk.7.attn_norm.weight F32 n_dims=1 dims=[2560] offset=753576960 nbytes=10240
+[ 82] blk.7.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=753587200 nbytes=5898240
+[ 83] blk.7.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=759485440 nbytes=5898240
+[ 84] blk.7.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=765383680 nbytes=512
+[ 85] blk.7.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=765384192 nbytes=1474560
+[ 86] blk.7.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=766858752 nbytes=14008320
+[ 87] blk.7.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=780867072 nbytes=14008320
+[ 88] blk.7.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=794875392 nbytes=10240
+[ 89] blk.7.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=794885632 nbytes=14008320
+[ 90] blk.8.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=808893952 nbytes=1474560
+[ 91] blk.8.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=810368512 nbytes=512
+[ 92] blk.8.attn_norm.weight F32 n_dims=1 dims=[2560] offset=810369024 nbytes=10240
+[ 93] blk.8.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=810379264 nbytes=5898240
+[ 94] blk.8.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=816277504 nbytes=5898240
+[ 95] blk.8.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=822175744 nbytes=512
+[ 96] blk.8.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=822176256 nbytes=1474560
+[ 97] blk.8.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=823650816 nbytes=14008320
+[ 98] blk.8.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=837659136 nbytes=14008320
+[ 99] blk.8.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=851667456 nbytes=10240
+[100] blk.8.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=851677696 nbytes=14008320
+[101] blk.9.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=865686016 nbytes=1474560
+[102] blk.9.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=867160576 nbytes=512
+[103] blk.9.attn_norm.weight F32 n_dims=1 dims=[2560] offset=867161088 nbytes=10240
+[104] blk.9.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=867171328 nbytes=5898240
+[105] blk.9.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=873069568 nbytes=5898240
+[106] blk.9.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=878967808 nbytes=512
+[107] blk.9.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=878968320 nbytes=2150400
+[108] blk.9.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=881118720 nbytes=20428800
+[109] blk.9.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=901547520 nbytes=14008320
+[110] blk.9.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=915555840 nbytes=10240
+[111] blk.9.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=915566080 nbytes=14008320
+[112] blk.10.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=929574400 nbytes=1474560
+[113] blk.10.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=931048960 nbytes=512
+[114] blk.10.attn_norm.weight F32 n_dims=1 dims=[2560] offset=931049472 nbytes=10240
+[115] blk.10.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=931059712 nbytes=5898240
+[116] blk.10.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=936957952 nbytes=5898240
+[117] blk.10.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=942856192 nbytes=512
+[118] blk.10.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=942856704 nbytes=1474560
+[119] blk.10.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=944331264 nbytes=14008320
+[120] blk.10.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=958339584 nbytes=14008320
+[121] blk.10.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=972347904 nbytes=10240
+[122] blk.10.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=972358144 nbytes=14008320
+[123] blk.11.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=986366464 nbytes=1474560
+[124] blk.11.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=987841024 nbytes=512
+[125] blk.11.attn_norm.weight F32 n_dims=1 dims=[2560] offset=987841536 nbytes=10240
+[126] blk.11.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=987851776 nbytes=5898240
+[127] blk.11.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=993750016 nbytes=5898240
+[128] blk.11.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=999648256 nbytes=512
+[129] blk.11.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=999648768 nbytes=1474560
+[130] blk.11.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1001123328 nbytes=14008320
+[131] blk.11.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1015131648 nbytes=14008320
+[132] blk.11.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1029139968 nbytes=10240
+[133] blk.11.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1029150208 nbytes=14008320
+[134] blk.12.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1043158528 nbytes=1474560
+[135] blk.12.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1044633088 nbytes=512
+[136] blk.12.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1044633600 nbytes=10240
+[137] blk.12.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1044643840 nbytes=5898240
+[138] blk.12.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1050542080 nbytes=5898240
+[139] blk.12.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1056440320 nbytes=512
+[140] blk.12.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=1056440832 nbytes=2150400
+[141] blk.12.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=1058591232 nbytes=20428800
+[142] blk.12.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1079020032 nbytes=14008320
+[143] blk.12.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1093028352 nbytes=10240
+[144] blk.12.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1093038592 nbytes=14008320
+[145] blk.13.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1107046912 nbytes=1474560
+[146] blk.13.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1108521472 nbytes=512
+[147] blk.13.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1108521984 nbytes=10240
+[148] blk.13.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1108532224 nbytes=5898240
+[149] blk.13.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1114430464 nbytes=5898240
+[150] blk.13.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1120328704 nbytes=512
+[151] blk.13.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1120329216 nbytes=1474560
+[152] blk.13.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1121803776 nbytes=14008320
+[153] blk.13.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1135812096 nbytes=14008320
+[154] blk.13.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1149820416 nbytes=10240
+[155] blk.13.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1149830656 nbytes=14008320
+[156] blk.14.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1163838976 nbytes=1474560
+[157] blk.14.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1165313536 nbytes=512
+[158] blk.14.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1165314048 nbytes=10240
+[159] blk.14.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1165324288 nbytes=5898240
+[160] blk.14.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1171222528 nbytes=5898240
+[161] blk.14.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1177120768 nbytes=512
+[162] blk.14.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1177121280 nbytes=1474560
+[163] blk.14.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1178595840 nbytes=14008320
+[164] blk.14.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1192604160 nbytes=14008320
+[165] blk.14.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1206612480 nbytes=10240
+[166] blk.14.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1206622720 nbytes=14008320
+[167] blk.15.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1220631040 nbytes=1474560
+[168] blk.15.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1222105600 nbytes=512
+[169] blk.15.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1222106112 nbytes=10240
+[170] blk.15.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1222116352 nbytes=5898240
+[171] blk.15.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1228014592 nbytes=5898240
+[172] blk.15.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1233912832 nbytes=512
+[173] blk.15.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=1233913344 nbytes=2150400
+[174] blk.15.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=1236063744 nbytes=20428800
+[175] blk.15.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1256492544 nbytes=14008320
+[176] blk.15.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1270500864 nbytes=10240
+[177] blk.15.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1270511104 nbytes=14008320
+[178] blk.16.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1284519424 nbytes=1474560
+[179] blk.16.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1285993984 nbytes=512
+[180] blk.16.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1285994496 nbytes=10240
+[181] blk.16.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1286004736 nbytes=5898240
+[182] blk.16.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1291902976 nbytes=5898240
+[183] blk.16.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1297801216 nbytes=512
+[184] blk.16.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1297801728 nbytes=1474560
+[185] blk.16.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1299276288 nbytes=14008320
+[186] blk.16.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1313284608 nbytes=14008320
+[187] blk.16.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1327292928 nbytes=10240
+[188] blk.16.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1327303168 nbytes=14008320
+[189] blk.17.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1341311488 nbytes=1474560
+[190] blk.17.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1342786048 nbytes=512
+[191] blk.17.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1342786560 nbytes=10240
+[192] blk.17.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1342796800 nbytes=5898240
+[193] blk.17.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1348695040 nbytes=5898240
+[194] blk.17.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1354593280 nbytes=512
+[195] blk.17.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1354593792 nbytes=1474560
+[196] blk.17.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1356068352 nbytes=14008320
+[197] blk.17.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1370076672 nbytes=14008320
+[198] blk.17.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1384084992 nbytes=10240
+[199] blk.17.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1384095232 nbytes=14008320
+[200] blk.18.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1398103552 nbytes=1474560
+[201] blk.18.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1399578112 nbytes=512
+[202] blk.18.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1399578624 nbytes=10240
+[203] blk.18.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1399588864 nbytes=5898240
+[204] blk.18.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1405487104 nbytes=5898240
+[205] blk.18.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1411385344 nbytes=512
+[206] blk.18.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=1411385856 nbytes=2150400
+[207] blk.18.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=1413536256 nbytes=20428800
+[208] blk.18.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1433965056 nbytes=14008320
+[209] blk.18.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1447973376 nbytes=10240
+[210] blk.18.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1447983616 nbytes=14008320
+[211] blk.19.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1461991936 nbytes=1474560
+[212] blk.19.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1463466496 nbytes=512
+[213] blk.19.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1463467008 nbytes=10240
+[214] blk.19.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1463477248 nbytes=5898240
+[215] blk.19.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1469375488 nbytes=5898240
+[216] blk.19.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1475273728 nbytes=512
+[217] blk.19.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1475274240 nbytes=1474560
+[218] blk.19.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1476748800 nbytes=14008320
+[219] blk.19.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1490757120 nbytes=14008320
+[220] blk.19.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1504765440 nbytes=10240
+[221] blk.19.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1504775680 nbytes=14008320
+[222] blk.20.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1518784000 nbytes=1474560
+[223] blk.20.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1520258560 nbytes=512
+[224] blk.20.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1520259072 nbytes=10240
+[225] blk.20.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1520269312 nbytes=5898240
+[226] blk.20.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1526167552 nbytes=5898240
+[227] blk.20.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1532065792 nbytes=512
+[228] blk.20.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1532066304 nbytes=1474560
+[229] blk.20.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1533540864 nbytes=14008320
+[230] blk.20.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1547549184 nbytes=14008320
+[231] blk.20.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1561557504 nbytes=10240
+[232] blk.20.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1561567744 nbytes=14008320
+[233] blk.21.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1575576064 nbytes=1474560
+[234] blk.21.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1577050624 nbytes=512
+[235] blk.21.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1577051136 nbytes=10240
+[236] blk.21.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1577061376 nbytes=5898240
+[237] blk.21.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1582959616 nbytes=5898240
+[238] blk.21.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1588857856 nbytes=512
+[239] blk.21.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=1588858368 nbytes=2150400
+[240] blk.21.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=1591008768 nbytes=20428800
+[241] blk.21.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1611437568 nbytes=14008320
+[242] blk.21.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1625445888 nbytes=10240
+[243] blk.21.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1625456128 nbytes=14008320
+[244] blk.22.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1639464448 nbytes=1474560
+[245] blk.22.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1640939008 nbytes=512
+[246] blk.22.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1640939520 nbytes=10240
+[247] blk.22.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1640949760 nbytes=5898240
+[248] blk.22.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1646848000 nbytes=5898240
+[249] blk.22.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1652746240 nbytes=512
+[250] blk.22.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1652746752 nbytes=1474560
+[251] blk.22.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1654221312 nbytes=14008320
+[252] blk.22.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1668229632 nbytes=14008320
+[253] blk.22.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1682237952 nbytes=10240
+[254] blk.22.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1682248192 nbytes=14008320
+[255] blk.23.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1696256512 nbytes=1474560
+[256] blk.23.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1697731072 nbytes=512
+[257] blk.23.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1697731584 nbytes=10240
+[258] blk.23.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1697741824 nbytes=5898240
+[259] blk.23.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1703640064 nbytes=5898240
+[260] blk.23.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1709538304 nbytes=512
+[261] blk.23.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1709538816 nbytes=1474560
+[262] blk.23.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1711013376 nbytes=14008320
+[263] blk.23.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1725021696 nbytes=14008320
+[264] blk.23.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1739030016 nbytes=10240
+[265] blk.23.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1739040256 nbytes=14008320
+[266] blk.24.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1753048576 nbytes=1474560
+[267] blk.24.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1754523136 nbytes=512
+[268] blk.24.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1754523648 nbytes=10240
+[269] blk.24.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1754533888 nbytes=5898240
+[270] blk.24.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1760432128 nbytes=5898240
+[271] blk.24.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1766330368 nbytes=512
+[272] blk.24.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=1766330880 nbytes=2150400
+[273] blk.24.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=1768481280 nbytes=20428800
+[274] blk.24.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1788910080 nbytes=14008320
+[275] blk.24.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1802918400 nbytes=10240
+[276] blk.24.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1802928640 nbytes=14008320
+[277] blk.25.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1816936960 nbytes=1474560
+[278] blk.25.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1818411520 nbytes=512
+[279] blk.25.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1818412032 nbytes=10240
+[280] blk.25.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1818422272 nbytes=5898240
+[281] blk.25.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1824320512 nbytes=5898240
+[282] blk.25.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1830218752 nbytes=512
+[283] blk.25.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1830219264 nbytes=1474560
+[284] blk.25.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1831693824 nbytes=14008320
+[285] blk.25.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1845702144 nbytes=14008320
+[286] blk.25.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1859710464 nbytes=10240
+[287] blk.25.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1859720704 nbytes=14008320
+[288] blk.26.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1873729024 nbytes=1474560
+[289] blk.26.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1875203584 nbytes=512
+[290] blk.26.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1875204096 nbytes=10240
+[291] blk.26.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1875214336 nbytes=5898240
+[292] blk.26.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1881112576 nbytes=5898240
+[293] blk.26.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1887010816 nbytes=512
+[294] blk.26.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=1887011328 nbytes=1474560
+[295] blk.26.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=1888485888 nbytes=14008320
+[296] blk.26.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1902494208 nbytes=14008320
+[297] blk.26.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1916502528 nbytes=10240
+[298] blk.26.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1916512768 nbytes=14008320
+[299] blk.27.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1930521088 nbytes=1474560
+[300] blk.27.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1931995648 nbytes=512
+[301] blk.27.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1931996160 nbytes=10240
+[302] blk.27.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1932006400 nbytes=5898240
+[303] blk.27.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=1937904640 nbytes=5898240
+[304] blk.27.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=1943802880 nbytes=512
+[305] blk.27.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=1943803392 nbytes=2150400
+[306] blk.27.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=1945953792 nbytes=20428800
+[307] blk.27.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=1966382592 nbytes=14008320
+[308] blk.27.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=1980390912 nbytes=10240
+[309] blk.27.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=1980401152 nbytes=14008320
+[310] blk.28.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=1994409472 nbytes=1474560
+[311] blk.28.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=1995884032 nbytes=512
+[312] blk.28.attn_norm.weight F32 n_dims=1 dims=[2560] offset=1995884544 nbytes=10240
+[313] blk.28.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=1995894784 nbytes=5898240
+[314] blk.28.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2001793024 nbytes=5898240
+[315] blk.28.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2007691264 nbytes=512
+[316] blk.28.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=2007691776 nbytes=1474560
+[317] blk.28.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=2009166336 nbytes=14008320
+[318] blk.28.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2023174656 nbytes=14008320
+[319] blk.28.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2037182976 nbytes=10240
+[320] blk.28.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2037193216 nbytes=14008320
+[321] blk.29.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2051201536 nbytes=1474560
+[322] blk.29.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2052676096 nbytes=512
+[323] blk.29.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2052676608 nbytes=10240
+[324] blk.29.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2052686848 nbytes=5898240
+[325] blk.29.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2058585088 nbytes=5898240
+[326] blk.29.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2064483328 nbytes=512
+[327] blk.29.attn_v.weight Q4_K n_dims=2 dims=[2560,1024] offset=2064483840 nbytes=1474560
+[328] blk.29.ffn_down.weight Q4_K n_dims=2 dims=[9728,2560] offset=2065958400 nbytes=14008320
+[329] blk.29.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2079966720 nbytes=14008320
+[330] blk.29.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2093975040 nbytes=10240
+[331] blk.29.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2093985280 nbytes=14008320
+[332] blk.30.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2107993600 nbytes=1474560
+[333] blk.30.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2109468160 nbytes=512
+[334] blk.30.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2109468672 nbytes=10240
+[335] blk.30.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2109478912 nbytes=5898240
+[336] blk.30.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2115377152 nbytes=5898240
+[337] blk.30.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2121275392 nbytes=512
+[338] blk.30.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=2121275904 nbytes=2150400
+[339] blk.30.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=2123426304 nbytes=20428800
+[340] blk.30.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2143855104 nbytes=14008320
+[341] blk.30.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2157863424 nbytes=10240
+[342] blk.30.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2157873664 nbytes=14008320
+[343] blk.31.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2171881984 nbytes=1474560
+[344] blk.31.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2173356544 nbytes=512
+[345] blk.31.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2173357056 nbytes=10240
+[346] blk.31.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2173367296 nbytes=5898240
+[347] blk.31.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2179265536 nbytes=5898240
+[348] blk.31.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2185163776 nbytes=512
+[349] blk.31.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=2185164288 nbytes=2150400
+[350] blk.31.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=2187314688 nbytes=20428800
+[351] blk.31.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2207743488 nbytes=14008320
+[352] blk.31.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2221751808 nbytes=10240
+[353] blk.31.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2221762048 nbytes=14008320
+[354] blk.32.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2235770368 nbytes=1474560
+[355] blk.32.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2237244928 nbytes=512
+[356] blk.32.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2237245440 nbytes=10240
+[357] blk.32.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2237255680 nbytes=5898240
+[358] blk.32.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2243153920 nbytes=5898240
+[359] blk.32.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2249052160 nbytes=512
+[360] blk.32.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=2249052672 nbytes=2150400
+[361] blk.32.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=2251203072 nbytes=20428800
+[362] blk.32.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2271631872 nbytes=14008320
+[363] blk.32.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2285640192 nbytes=10240
+[364] blk.32.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2285650432 nbytes=14008320
+[365] blk.33.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2299658752 nbytes=1474560
+[366] blk.33.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2301133312 nbytes=512
+[367] blk.33.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2301133824 nbytes=10240
+[368] blk.33.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2301144064 nbytes=5898240
+[369] blk.33.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2307042304 nbytes=5898240
+[370] blk.33.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2312940544 nbytes=512
+[371] blk.33.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=2312941056 nbytes=2150400
+[372] blk.33.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=2315091456 nbytes=20428800
+[373] blk.33.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2335520256 nbytes=14008320
+[374] blk.33.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2349528576 nbytes=10240
+[375] blk.33.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2349538816 nbytes=14008320
+[376] blk.34.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2363547136 nbytes=1474560
+[377] blk.34.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2365021696 nbytes=512
+[378] blk.34.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2365022208 nbytes=10240
+[379] blk.34.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2365032448 nbytes=5898240
+[380] blk.34.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2370930688 nbytes=5898240
+[381] blk.34.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2376828928 nbytes=512
+[382] blk.34.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=2376829440 nbytes=2150400
+[383] blk.34.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=2378979840 nbytes=20428800
+[384] blk.34.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2399408640 nbytes=14008320
+[385] blk.34.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2413416960 nbytes=10240
+[386] blk.34.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2413427200 nbytes=14008320
+[387] blk.35.attn_k.weight Q4_K n_dims=2 dims=[2560,1024] offset=2427435520 nbytes=1474560
+[388] blk.35.attn_k_norm.weight F32 n_dims=1 dims=[128] offset=2428910080 nbytes=512
+[389] blk.35.attn_norm.weight F32 n_dims=1 dims=[2560] offset=2428910592 nbytes=10240
+[390] blk.35.attn_output.weight Q4_K n_dims=2 dims=[4096,2560] offset=2428920832 nbytes=5898240
+[391] blk.35.attn_q.weight Q4_K n_dims=2 dims=[2560,4096] offset=2434819072 nbytes=5898240
+[392] blk.35.attn_q_norm.weight F32 n_dims=1 dims=[128] offset=2440717312 nbytes=512
+[393] blk.35.attn_v.weight Q6_K n_dims=2 dims=[2560,1024] offset=2440717824 nbytes=2150400
+[394] blk.35.ffn_down.weight Q6_K n_dims=2 dims=[9728,2560] offset=2442868224 nbytes=20428800
+[395] blk.35.ffn_gate.weight Q4_K n_dims=2 dims=[2560,9728] offset=2463297024 nbytes=14008320
+[396] blk.35.ffn_norm.weight F32 n_dims=1 dims=[2560] offset=2477305344 nbytes=10240
+[397] blk.35.ffn_up.weight Q4_K n_dims=2 dims=[2560,9728] offset=2477315584 nbytes=14008320
