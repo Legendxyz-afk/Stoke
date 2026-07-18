@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """tests/tok_fuzz.py -- generates tests/data/tok_corpus.txt: a ~2000-line
 deterministic (fixed seed) multilingual fuzz corpus for the byte-exact BPE
-golden gate (task-6a-brief.md B6/B7). Run manually; output is committed:
+golden gate. Run manually; output is committed:
 
     python3 tests/tok_fuzz.py
 
-Regenerating the golden after a corpus change (task-6a-brief.md B6):
+Regenerating the golden after a corpus change (see tests/regen_goldens.sh
+to do this mechanically for all three goldens at once):
     bench/vendor/llama-b10037/llama-tokenize.exe \\
         -m models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \\
         -f tests/data/tok_corpus.txt --ids --no-escape --no-parse-special --no-bos
     then strip the raw stdout to just the "[...]" list (LF-terminated, no
     other bytes) and save as tests/data/tok_corpus.ids.golden.
 
-Corpus categories (task-6a-brief.md B7): plain ASCII prose, source code
+Corpus categories: plain ASCII prose, source code
 (punctuation clusters), emoji incl. ZWJ sequences, CJK (Chinese/Japanese/
 Korean), Devanagari, Arabic (RTL), long whitespace runs, tabs, a 10 KB
 single line, an empty line, control chars, and lone UTF-8 surrogate/
@@ -145,11 +146,11 @@ def line_long():
 
 
 # ---- lines that must be written as raw bytes (invalid UTF-8 on purpose) ----
-# task-6a-brief.md B7: "lone UTF-8 surrogate/continuation bytes (write raw
-# bytes 0x80-0xBF and 0xED 0xA0 0x80-style sequences to stress invalid-
-# UTF-8 handling)". Written directly as bytes (Python str can't hold
-# unpaired surrogates as UTF-8); harmless surrounding ASCII keeps each line
-# easy to eyeball in a hex dump when debugging a golden mismatch.
+# Lone UTF-8 surrogate/continuation bytes: write raw bytes 0x80-0xBF and
+# 0xED 0xA0 0x80-style sequences to stress invalid-UTF-8 handling. Written
+# directly as bytes (Python str can't hold unpaired surrogates as UTF-8);
+# harmless surrounding ASCII keeps each line easy to eyeball in a hex dump
+# when debugging a golden mismatch.
 RAW_BYTE_LINES = [
     b"lone continuation bytes: " + bytes([0x80, 0x81, 0x9F, 0xBF]) + b" end",
     b"surrogate-style 3-byte seq: " + bytes([0xED, 0xA0, 0x80]) + b" end",

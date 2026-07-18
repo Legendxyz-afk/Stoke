@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """tests/gen_unicode_data.py -- generates src/unicode_data.h: a compact,
 sorted codepoint-range -> flags table covering 0x0..0x10FFFF, derived from
-this Python's `unicodedata` module (task-6a-brief.md B4). The qwen2
-pre-tokenizer regex (src/tok.c) needs, per codepoint: is-letter (\\p{L}),
-is-number (\\p{N}), is-whitespace (\\s). Committed generated output;
-regenerate with:
+this Python's `unicodedata` module. The qwen2 pre-tokenizer regex
+(src/tok.c) needs, per codepoint: is-letter (\\p{L}), is-number (\\p{N}),
+is-whitespace (\\s). Committed generated output; regenerate with:
 
     python3 tests/gen_unicode_data.py
 
-Flag derivation (task-6a-brief.md B4, verbatim):
+Flag derivation:
   LETTER     -- \\p{L}: unicodedata.category(chr(cp))[0] == 'L'
   NUMBER     -- \\p{N}: unicodedata.category(chr(cp))[0] == 'N'
   WHITESPACE -- \\s:    chr(cp).isspace() OR category in {Zs, Zl, Zp}
                (the isspace()/category union is belt-and-suspenders --
                Python's isspace() already covers Zs/Zl/Zp via bidirectional
-               class, but B4 asks for the explicit OR, so both are checked)
+               class, but both are checked explicitly rather than relying
+               on that overlap holding forever)
 
 A codepoint NOT covered by any emitted range has all flags 0 (letter=false,
 number=false, whitespace=false) -- the common case, since most of
@@ -22,15 +22,15 @@ number=false, whitespace=false) -- the common case, since most of
 merged into one range to keep the table compact (a few thousand ranges over
 1.1M codepoints, instead of one entry per codepoint).
 
-task-6a-brief.md B4 / the task dispatcher's environment note: this
-generation was run under Python 3.14.2 (unicodedata Unicode 16.0.0). The
-oracle (llama-tokenize.exe, llama.cpp b10037) may have been built against a
-different Unicode version, so a handful of codepoints could disagree on
-category between this table and the oracle's -- per B4, the byte-exact
-corpus golden (tests/tok_golden.sh) is the arbiter: any residual
-disagreement surfaces as specific corpus lines failing, fixed by hand-
-adjusting just those ranges (see task-6a-report.md self-review for any such
-adjustments actually needed).
+Unicode-version skew note: this generation was run under Python 3.14.2
+(unicodedata Unicode 16.0.0). The oracle (llama-tokenize.exe, llama.cpp
+b10037) may have been built against a different Unicode version, so a
+handful of codepoints could disagree on category between this table and
+the oracle's -- the byte-exact corpus golden (tests/tok_golden.sh and, for
+full codespace coverage including unassigned codepoints,
+tests/unicode_sweep_golden.sh) is the arbiter: any residual disagreement
+surfaces as specific corpus lines failing, fixed by hand-adjusting just
+those ranges.
 """
 import sys
 import unicodedata
@@ -95,9 +95,9 @@ def main():
     lines.append(" *     python3 tests/gen_unicode_data.py")
     lines.append(" *")
     lines.append(f" * Generated against Python {pyver}, unicodedata (Unicode {uver}).")
-    lines.append(" * See that script's docstring for the exact flag derivation")
-    lines.append(" * (task-6a-brief.md B4) and the corpus-gate-is-arbiter note re:")
-    lines.append(" * Unicode-version skew against the llama.cpp b10037 oracle.")
+    lines.append(" * See that script's docstring for the exact flag derivation and")
+    lines.append(" * the corpus-gate-is-arbiter note re: Unicode-version skew against")
+    lines.append(" * the llama.cpp b10037 oracle.")
     lines.append(" *")
     lines.append(" * Per-codepoint flags used by the qwen2 pre-tokenizer regex")
     lines.append(" * (src/tok.c): UNICODE_FLAG_LETTER (\\p{L}), UNICODE_FLAG_NUMBER")

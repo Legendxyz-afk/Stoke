@@ -1,16 +1,14 @@
 /* src/gguf.c -- GGUF v3 parser + mmap. See src/gguf.h for the public
- * contract and task-5-brief.md (+ its appendix) for the wire format this
- * implements; every constant here (magic, value-type enum, ggml type-size
- * table, default alignment) is taken verbatim from that appendix, which was
- * probed from the real model file at dispatch time -- see
- * .superpowers/sdd/task-5-report.md section "A7" for the independent
- * byte-level re-verification this implementation was checked against.
+ * contract. Every constant here (magic, value-type enum, ggml type-size
+ * table, default alignment) was taken verbatim from the GGUF wire format,
+ * probed against and independently byte-level re-verified against the
+ * real model file this engine targets.
  *
- * Design summary (see task-5-report.md self-review for the full reasoning):
+ * Design summary:
  *   - One pass over the file at gguf_open() time parses every metadata KV
  *     and tensor_info, bounds-checking each read against the mapped length
- *     BEFORE dereferencing it (appendix A12). A malformed file fatal()s
- *     during this pass; gguf_open() never returns on bad input.
+ *     BEFORE dereferencing it. A malformed file fatal()s during this pass;
+ *     gguf_open() never returns on bad input.
  *   - Small, bounded data (keys, tensor names, scalar STRING values -- at
  *     most a few hundred items in the real file) is eagerly duplicated into
  *     owned, NUL-terminated buffers, since the raw file bytes are NOT
@@ -20,9 +18,9 @@
  *     during the initial parse, to find where the array ends. The actual
  *     per-element strings are lazily indexed+duplicated on first
  *     gguf_meta_arr_str() call for that key, and cached -- so `stoke info`
- *     (which only ever calls gguf_meta_arr_len(), per appendix A10) never
- *     pays that cost, while a caller that does want the strings (Task 6)
- *     gets O(1) amortized access after the first call.
+ *     (which only ever calls gguf_meta_arr_len()) never pays that cost,
+ *     while a caller that does want the strings (the tokenizer) gets O(1)
+ *     amortized access after the first call.
  *   - ARRAY<integer> elements are fixed-width, so gguf_meta_arr_i64() reads
  *     directly by computed offset -- no walking or caching needed.
  */
@@ -46,7 +44,7 @@
 #endif
 
 /* ===========================================================================
- * Platform mmap helpers (task-5-brief appendix A13)
+ * Platform mmap helpers
  * ===========================================================================
  */
 
@@ -153,8 +151,8 @@ static void map_close(MappedFile* mf) {
 #endif
 
 /* ===========================================================================
- * Bounds-checked, explicit-little-endian byte readers (task-5-brief A12: no
- * dereference without a preceding check; the "len > size - off" form is
+ * Bounds-checked, explicit-little-endian byte readers (no dereference
+ * without a preceding check; the "len > size - off" form is
  * required specifically because it cannot overflow, unlike "off + len >
  * size").
  * ===========================================================================
@@ -277,9 +275,9 @@ static bool is_integer_type(u32 type) {
     }
 }
 
-/* ggml tensor dtype size table -- task-5-brief appendix A4. ONLY these three
- * values were verified against real bytes; gguf_open() fatals on anything
- * else (see parse_tensor_info). Do not extend this from memory. */
+/* ggml tensor dtype size table. ONLY these three values were verified
+ * against real bytes; gguf_open() fatals on anything else (see
+ * parse_tensor_info). Do not extend this from memory. */
 typedef struct {
     u32 type;
     u64 blck_size;
@@ -380,8 +378,8 @@ static void parse_kv(const u8* base, u64 size, u64* cur, GgufKv* out) {
         *cur += 4;
         if (elem_type == GGUF_TYPE_ARRAY) {
             fatal("gguf: metadata key '%s' is an ARRAY of ARRAY -- "
-                  "unsupported (nested arrays are unverified; task-5-brief "
-                  "A2)",
+                  "unsupported (nested arrays are unverified against real "
+                  "GGUF files)",
                   out->key);
         }
         if (elem_type > GGUF_TYPE_FLOAT64) {
@@ -401,7 +399,7 @@ static void parse_kv(const u8* base, u64 size, u64* cur, GgufKv* out) {
             require_fits(size, *cur, total, "array elements");
             *cur += total;
         } else {
-            /* STRING elements: not fixed stride (A2) -- must walk one by
+            /* STRING elements: not fixed stride -- must walk one by
              * one to find where the array ends. Bounds-checked, no
              * allocation; see file header comment for why this is
              * unconditional while duplication is lazy. */
@@ -518,9 +516,8 @@ static void parse_tensor_info(const u8* base, u64 size, u64* cur,
     u64 blck_size, type_size;
     if (!ggml_type_info(ggml_type, &blck_size, &type_size)) {
         fatal("gguf: tensor '%s' uses unsupported ggml_type %u (only "
-              "F32=0, Q4_K=12, Q6_K=14 are implemented -- task-5-brief A4; "
-              "later milestones add types only once probed against real "
-              "bytes)",
+              "F32=0, Q4_K=12, Q6_K=14 are implemented; later milestones "
+              "add types only once probed against real bytes)",
               out->name, ggml_type);
     }
     out->type = ggml_type;
@@ -578,11 +575,11 @@ GgufFile* gguf_open(const char* path) {
 
     u64 cur = 24;
     /* Conservative plausibility pre-checks against the whole remaining
-     * file (task-5-brief A12): the KV section and tensor_info section
-     * together can consume at most size-24 bytes, so bounding each count
-     * against that whole remainder never rejects a valid file, while
-     * rejecting any count that's flatly impossible before we allocate or
-     * loop on it. Minimums: a KV needs >= 8 (key_len) + 0 (key) + 4
+     * file: the KV section and tensor_info section together can consume
+     * at most size-24 bytes, so bounding each count against that whole
+     * remainder never rejects a valid file, while rejecting any count
+     * that's flatly impossible before we allocate or loop on it. Minimums:
+     * a KV needs >= 8 (key_len) + 0 (key) + 4
      * (value_type) + 1 (smallest value, UINT8/INT8/BOOL) = 13 bytes; a
      * tensor_info needs >= 8 (name_len) + 0 (name) + 4 (n_dims, allowing
      * n_dims==0) + 4 (ggml_type) + 8 (offset) = 24 bytes. */
@@ -607,7 +604,7 @@ GgufFile* gguf_open(const char* path) {
     f->tensors = tensors;
     f->tensor_count = tensor_count;
 
-    /* general.alignment (A3): UINT32 key, default 32 when absent. Looked up
+    /* general.alignment: UINT32 key, default 32 when absent. Looked up
      * through the public _or getter -- safe here because it only reads
      * f->kvs/f->kv_count, both already fully populated; f->tensors[*].data
      * (not yet set) is untouched by this call. A present-but-wrong-type
@@ -640,7 +637,7 @@ GgufFile* gguf_open(const char* path) {
              * points into f->tensors, which gguf_close() frees, so using
              * t->name in the fatal() call AFTER closing would read freed
              * memory (caught by ASan: heap-use-after-free, gguf.c, during
-             * the WSL sanitizer matrix -- see task-5-report.md). */
+             * the WSL sanitizer matrix). */
             char name_buf[256];
             snprintf(name_buf, sizeof name_buf, "%s", t->name);
             gguf_close(f);

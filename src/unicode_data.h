@@ -3,9 +3,9 @@
  *     python3 tests/gen_unicode_data.py
  *
  * Generated against Python 3.14.2, unicodedata (Unicode 16.0.0).
- * See that script's docstring for the exact flag derivation
- * (task-6a-brief.md B4) and the corpus-gate-is-arbiter note re:
- * Unicode-version skew against the llama.cpp b10037 oracle.
+ * See that script's docstring for the exact flag derivation and
+ * the corpus-gate-is-arbiter note re: Unicode-version skew against
+ * the llama.cpp b10037 oracle.
  *
  * Per-codepoint flags used by the qwen2 pre-tokenizer regex
  * (src/tok.c): UNICODE_FLAG_LETTER (\p{L}), UNICODE_FLAG_NUMBER

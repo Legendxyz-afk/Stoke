@@ -69,6 +69,7 @@ test: $(TEST_BIN) $(STOKE_BIN)
 	sh tests/golden_info.sh $(BUILDDIR) $(EXE)
 	sh tests/tok_golden.sh $(BUILDDIR) $(EXE)
 	sh tests/tok_special_golden.sh $(BUILDDIR) $(EXE)
+	sh tests/unicode_sweep_golden.sh $(BUILDDIR) $(EXE)
 
 # One BUILDDIR per (platform,sanitizer) combination (see header comment) --
 # object files live here too, built with this invocation's exact CFLAGS, so

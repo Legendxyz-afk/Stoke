@@ -1,6 +1,6 @@
 #!/bin/sh
-# tests/golden_info.sh -- script gate (task-5-brief.md appendix A11): runs
-# `stoke info` on the real 2.5GB Qwen3 model and diffs it against the
+# tests/golden_info.sh -- script gate: runs `stoke info` on the real
+# 2.5GB Qwen3 model and diffs it against the
 # committed golden. models/ and *.gguf are gitignored, so the model exists
 # on the reference box but not in a fresh clone -- this must SKIP cleanly
 # (loud, explicit, exit 0) when the model is absent, and only actually gate
@@ -18,6 +18,13 @@ golden="tests/data/qwen3-4b-info.golden"
 stoke_bin="$builddir/stoke$exe"
 
 if [ ! -f "$model" ]; then
+    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
+        echo "golden_info: FAILED -- $model not present but" \
+             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have the" \
+             "real model; a moved/missing model must not silently" \
+             "downgrade this gate to a no-op)" >&2
+        exit 1
+    fi
     echo "golden_info: SKIP -- $model not present (models/ is gitignored;" \
          "this gate only runs on boxes that have the real model file)"
     exit 0

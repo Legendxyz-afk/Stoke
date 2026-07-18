@@ -8,25 +8,25 @@ dependency) unit tests. Run manually; output is committed binary data:
 
 Contains:
   - all 256 GPT-2 byte-remap single-byte tokens (ids 0..255), computed via
-    the same bytes_to_unicode() algorithm as task-6a-brief.md B2 -- an
-    INDEPENDENT implementation of that published spec (this script does not
-    import src/tok.c; it exercises the real tokenizer against externally-
-    known-correct bytes, same spirit as tests/data/make_fixtures.py's GGUF
-    fixtures not reusing src/gguf.c).
+    the same bytes_to_unicode() algorithm as the real gpt2/qwen2 tokenizer
+    -- an INDEPENDENT implementation of that published spec (this script
+    does not import src/tok.c; it exercises the real tokenizer against
+    externally-known-correct bytes, same spirit as
+    tests/data/make_fixtures.py's GGUF fixtures not reusing src/gguf.c).
   - a handful of extra multi-byte tokens + merge rules on top of those, so
     tests/test_tok.c can exercise: multi-step BPE merging ("hello" built
     from 4 chained merges), a leading-space ('Ġ') merge chain (mirrors the
     real "Hello world" example), and leftmost-on-tied-rank merge order
-    (task-6a-brief.md B5's "on equal rank pick the leftmost" -- see
-    test_tok.c's tie-break test for the worked-out reasoning: "aaa" via
-    rules "a a"->"aa" then "aa a"->"aaa" only reconstructs correctly if the
-    FIRST of two same-rank-candidate positions is merged first).
+    ("on equal rank pick the leftmost" -- see test_tok.c's tie-break test
+    for the worked-out reasoning: "aaa" via rules "a a"->"aa" then
+    "aa a"->"aaa" only reconstructs correctly if the FIRST of two
+    same-rank-candidate positions is merged first).
   - bos/eos ids and add_bos_token=true (deliberately the opposite of the
     real Qwen3 model's `false`, so tok_encode's add_special=true path has
     something to actually exercise here).
-  - (task-6b-brief.md C1/"Unit tests") a tokenizer.ggml.token_type array
-    (now REQUIRED -- C1) covering all 271 base+extra tokens above as
-    NORMAL(1), plus 4 synthetic specials layered on top (ids 271..274):
+  - a tokenizer.ggml.token_type array (REQUIRED by tok_from_gguf) covering
+    all 271 base+extra tokens above as NORMAL(1), plus 4 synthetic
+    specials layered on top (ids 271..274):
     two CONTROL(3) (the literal ChatML strings "<|im_start|>"/"<|im_end|>",
     so tok_apply_chatml has something to exercise on this fixture too, not
     just tok_encode_special's generic partition path), one USER_DEFINED(4)
@@ -46,9 +46,9 @@ broken in exactly ONE way each, so each negative test exercises exactly
 the fatal it claims to).
 
 GGUF-writing Writer class mirrors tests/data/make_fixtures.py's (same wire
-format, task-5-brief.md appendix A1/A2), kept local rather than imported so
-each test-data generator stays self-contained (matches make_fixtures.py's
-own no-external-deps-beyond-struct style).
+format), kept local rather than imported so each test-data generator stays
+self-contained (matches make_fixtures.py's own no-external-deps-beyond-
+struct style).
 """
 import os
 import struct
@@ -134,7 +134,8 @@ def pad_to(cur, align):
 
 
 def bytes_to_unicode():
-    """Verbatim task-6a-brief.md B2 algorithm."""
+    """Verbatim GPT-2 byte<->unicode remap algorithm (the published
+    bytes_to_unicode() spec)."""
     bs = (list(range(ord("!"), ord("~") + 1)) +
           list(range(ord("\xa1"), ord("\xac") + 1)) +
           list(range(ord("\xae"), ord("\xff") + 1)))
@@ -155,7 +156,7 @@ def remap(s):
     """Byte-encodes an ASCII string through the GPT-2 byte-remap table (for
     building readable extra tokens/merges on top of the 256 base ones).
     Ordinary byte-BPE vocab entries are stored this way; special-token
-    strings (task-6b-brief.md C1) are NOT -- they're stored literally, so
+    strings are NOT -- they're stored literally, so
     fixtures add them directly rather than through this function (in
     practice a no-op difference here, since every special string used below
     is pure "nice" printable ASCII 0x21-0x7E, remap()'s identity range --
@@ -170,8 +171,8 @@ BASE_VOCAB_SIZE = 271  # 256 base bytes + 15 extra tokens, asserted below
 def build_base_vocab():
     """The 271-token base byte-BPE vocab (ids 0..270) + its 15 merge rules,
     shared by EVERY fixture in this file. Specials (ids 271+) are layered
-    on top per-fixture, since task-6b-brief.md's fatal-path tests each need
-    a different token_type/specials configuration on top of this same
+    on top per-fixture, since the negative fixtures below each need a
+    different token_type/specials configuration on top of this same
     base. Returns fresh (tokens, merges, id_of, bos_id, eos_id) -- no
     aliasing across separate calls."""
     base_tokens = [chr(BYTE_TO_CPT[b]) for b in range(256)]
@@ -230,9 +231,8 @@ def build_base_vocab():
 
 
 # ===========================================================================
-# tiny_tok.gguf -- the main positive fixture (task-6b-brief.md C1 + "Unit
-# tests"): base vocab + 4 synthetic specials + a well-formed token_type
-# array covering all of it.
+# tiny_tok.gguf -- the main positive fixture: base vocab + 4 synthetic
+# specials + a well-formed token_type array covering all of it.
 # ===========================================================================
 
 # (string, llama_token_type) -- CONTROL(3), CONTROL(3), USER_DEFINED(4),
@@ -311,11 +311,11 @@ def make_bad_pre():
 def make_missing_byte():
     """A vocab missing ONE of the 256 required single-byte tokens (skips
     byte 0x41 'A') -- tok_from_gguf must fatal building byte_to_id[], per
-    task-6a-brief.md B2's "all 256 bytes are in the vocab as single
-    tokens" invariant. model/pre are correct so the fatal under test is
-    specifically the missing-byte one, not an earlier check firing first.
-    No token_type array (still not needed -- this fatal fires before 6b's
-    token_type check is ever reached)."""
+    the "all 256 bytes are in the vocab as single tokens" invariant.
+    model/pre are correct so the fatal under test is specifically the
+    missing-byte one, not an earlier check firing first. No token_type
+    array (still not needed -- this fatal fires before the token_type
+    check is ever reached)."""
     skip_byte = 0x41
     tokens = [chr(BYTE_TO_CPT[b]) for b in range(256) if b != skip_byte]
     w = Writer()
@@ -332,8 +332,8 @@ def make_missing_byte():
 
 
 # ===========================================================================
-# 6b negative fixtures (task-6b-brief.md C1 + "Unit tests" fatal-path
-# list): each is the SAME valid 271-token base vocab, varying only the
+# Special-token/token_type negative fixtures: each is the SAME valid
+# 271-token base vocab, varying only the
 # token_type array or specials set in exactly the one way needed to
 # exercise its fatal.
 # ===========================================================================
@@ -357,7 +357,7 @@ def _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count):
 def make_no_token_type():
     """Otherwise-fully-valid tokenizer (same 271-token base as tiny_tok,
     no specials needed) but NO tokenizer.ggml.token_type key at all --
-    tok_from_gguf must fatal on C1's "required" check."""
+    tok_from_gguf must fatal on the "required" check."""
     tokens, merges, _id_of, bos_id, eos_id = build_base_vocab()
     w = Writer()
     _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count=7)
@@ -368,7 +368,7 @@ def make_no_token_type():
 
 def make_bad_token_type_len():
     """token_type array present but ONE SHORT of vocab_size -- must fatal
-    on C1's length check."""
+    on the length check."""
     tokens, merges, _id_of, bos_id, eos_id = build_base_vocab()
     token_type = [1] * (len(tokens) - 1)
     w = Writer()
@@ -382,7 +382,7 @@ def make_bad_token_type_len():
 def make_bad_token_type_value():
     """token_type array is the correct length, but ONE element (id 100,
     an arbitrary base-byte id) is 7 -- outside llama_token_type's 0..6 --
-    must fatal on C1's per-element range check."""
+    must fatal on the per-element range check."""
     tokens, merges, _id_of, bos_id, eos_id = build_base_vocab()
     token_type = [1] * len(tokens)
     token_type[100] = 7
@@ -400,8 +400,7 @@ def make_no_imstart():
     token literally equal to "<|im_start|>" anywhere in the vocab.
     tok_from_gguf() must SUCCEED (loading a model with no ChatML-style
     specials is not itself an error); tok_apply_chatml() must fatal when
-    actually called (task-6b-brief.md C5's documented "model lacks
-    <|im_start|>" case)."""
+    actually called (the documented "model lacks <|im_start|>" case)."""
     tokens, merges, id_of, bos_id, eos_id = build_base_vocab()
     specials = [("<think>", 4), ("[UNUSED0]", 5)]
     for s, _ty in specials:

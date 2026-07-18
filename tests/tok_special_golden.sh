@@ -1,7 +1,7 @@
 #!/bin/sh
-# tests/tok_special_golden.sh -- script gate (task-6b-brief.md C7/"Gate
-# mechanism", mirrors tests/tok_golden.sh exactly): runs `stoke tokenize`
-# BOTH ways (plain, and --special) on the real 2.5GB Qwen3 model over the
+# tests/tok_special_golden.sh -- script gate (mirrors tests/tok_golden.sh
+# exactly): runs `stoke tokenize` BOTH ways (plain, and --special) on the
+# real 2.5GB Qwen3 model over the
 # committed specials+ChatML corpus and diffs each against its own committed
 # golden (produced by the real llama-tokenize.exe oracle -- see
 # tests/tok_special_fuzz.py's docstring for the exact regeneration
@@ -27,6 +27,13 @@ golden_plain="tests/data/tok_special_corpus.plain.golden"
 stoke_bin="$builddir/stoke$exe"
 
 if [ ! -f "$model" ]; then
+    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
+        echo "tok_special_golden: FAILED -- $model not present but" \
+             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have the" \
+             "real model; a moved/missing model must not silently" \
+             "downgrade this gate to a no-op)" >&2
+        exit 1
+    fi
     echo "tok_special_golden: SKIP -- $model not present (models/ is" \
          "gitignored; this gate only runs on boxes that have the real" \
          "model file)"

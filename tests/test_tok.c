@@ -78,8 +78,7 @@ static int tok_test_child_main(int argc, char** argv) {
         Tok* t = open_tiny_tok();
         char buf[16];
         /* vocab_size == first invalid id -- 271 base tokens + 4 synthetic
-           specials (task-6b-brief.md C1/"Unit tests"; see
-           tests/data/make_tok_fixture.py's SPECIALS). */
+           specials (see tests/data/make_tok_fixture.py's SPECIALS). */
         (void)tok_decode(t, 275, buf, sizeof buf);
         tok_free(t);
     } else if (strcmp(s, "no_token_type") == 0) {
@@ -117,7 +116,9 @@ static int tok_test_child_main(int argc, char** argv) {
         tok_free(t);
     } else if (strcmp(s, "chatml_no_imstart") == 0) {
         GgufFile* f = gguf_open(FIXTURE("tiny_tok_no_imstart.gguf"));
-        Tok*      t = tok_from_gguf(f); /* must SUCCEED -- C5 */
+        Tok*      t = tok_from_gguf(f); /* must SUCCEED: a model missing
+                                            ChatML specials is still a
+                                            valid tokenizer */
         gguf_close(f);
         u32      ids[32];
         StokeMsg msgs[1];
@@ -125,7 +126,9 @@ static int tok_test_child_main(int argc, char** argv) {
         msgs[0].role_len = 4;
         msgs[0].content = "hi";
         msgs[0].content_len = 2;
-        (void)tok_apply_chatml(t, msgs, 1, ids, 32); /* must fatal -- C5 */
+        (void)tok_apply_chatml(t, msgs, 1, ids, 32); /* must fatal: this
+                                                         model has no
+                                                         <|im_start|> */
         tok_free(t);
     } else if (strcmp(s, "decode_cap_overflow") == 0) {
         Tok* t = open_tiny_tok();
@@ -136,6 +139,18 @@ static int tok_test_child_main(int argc, char** argv) {
         Tok* t = open_tiny_tok();
         u32  ids[4];
         (void)tok_encode(t, "hello", 5, ids, 0, /*add_special=*/true);
+        tok_free(t);
+    } else if (strcmp(s, "encode_special_cap_zero_with_bos") == 0) {
+        /* Sibling of encode_cap_zero_with_bos, but through
+           tok_encode_special -- pins that encode_entry's `fn` argument is
+           threaded correctly per public wrapper (the fatal message must
+           name "tok_encode_special", not "tok_encode"; see the msg_substr
+           in encode_special_cap_zero_with_bos_fatals below), which a
+           careless refactor could easily get backwards without any test
+           noticing. */
+        Tok* t = open_tiny_tok();
+        u32  ids[4];
+        (void)tok_encode_special(t, "hello", 5, ids, 0, /*add_special=*/true);
         tok_free(t);
     } else if (strcmp(s, "encode_cap_too_small_for_content") == 0) {
         Tok* t = open_tiny_tok();
@@ -240,9 +255,9 @@ static void assert_encode_eq(Tok* t, const char* text, const u32* want,
     assert_encode_eq_len(t, text, (u64)strlen(text), want, want_n);
 }
 
-/* decode(encode(text)) == text, byte-for-byte (task-6a-brief.md B6's
- * roundtrip requirement, "needs no oracle" -- asserted here on the
- * synthetic vocab). Only claimed for well-formed UTF-8 input: canonical
+/* decode(encode(text)) == text, byte-for-byte (a roundtrip requirement
+ * that needs no oracle -- asserted here on the synthetic vocab). Only
+ * claimed for well-formed UTF-8 input: canonical
  * re-encoding is a no-op for well-formed bytes (src/tok.c's block comment
  * above utf8_decode_one), so encode/decode is lossless there, but is NOT
  * for overlong/invalid input by design (matching the real oracle) -- see
@@ -384,9 +399,9 @@ TEST(regex_alt1_contraction_priority_over_alt2_greedy) {
 
 TEST(regex_space_run_splits_via_alt6_then_alt2) {
     Tok* t = open_tiny_tok();
-    /* mirrors task-6a-brief.md B3's "  leading" -> [220,6388] example: N=2
-       spaces before a word -> (N-1) lone space(s) via alt6, then the last
-       space + word via alt2. */
+    /* mirrors the qwen2 pre-tokenizer regex's "  leading" -> [220,6388]
+       example: N=2 spaces before a word -> (N-1) lone space(s) via alt6,
+       then the last space + word via alt2. */
     u32 want[] = {32, 264};
     assert_encode_eq(t, "  world", want, 2);
     tok_free(t);
@@ -406,17 +421,17 @@ TEST(utf8_valid_two_byte_codepoint_is_one_fragment_two_bpe_symbols) {
     tok_free(t);
 }
 
-/* NOTE on the three tests below: task-6a-brief.md B4 originally described
- * invalid-byte fallback as "decode the byte as its own codepoint
- * 0x00..0xFF". Dispatch-time oracle probing (task-6a-report.md self-
- * review has the full transcript) established this is NOT what
- * llama-tokenize.exe b10037 actually does: it substitutes U+FFFD (not the
- * raw byte value) on structural failure, and is PERMISSIVE about overlong
- * encodings and the surrogate range (accepts them, normalizes to the
- * canonical/minimal encoding of whatever codepoint results). src/tok.c's
- * utf8_decode_one implements the verified behavior; these tests exercise
- * it directly since it's the single most load-bearing deviation from the
- * brief in this implementation. */
+/* NOTE on the three tests below: a natural first guess at invalid-byte
+ * fallback would be "decode the byte as its own codepoint 0x00..0xFF".
+ * Oracle probing (see src/tok.c's block comment above utf8_decode_one for
+ * the full transcript) established this is NOT what llama-tokenize.exe
+ * b10037 actually does: it substitutes U+FFFD (not the raw byte value) on
+ * structural failure, and is PERMISSIVE about overlong encodings and the
+ * surrogate range (accepts them, normalizes to the canonical/minimal
+ * encoding of whatever codepoint results). src/tok.c's utf8_decode_one
+ * implements the verified behavior; these tests exercise it directly
+ * since it's the single most load-bearing deviation from a naive first
+ * implementation. */
 
 TEST(utf8_invalid_byte_falls_back_to_u_fffd) {
     Tok* t = open_tiny_tok();
@@ -500,6 +515,35 @@ TEST(add_special_prepends_bos_iff_add_bos_token) {
     tok_free(t);
 }
 
+/* Same as the test above but through tok_encode_special: before the
+ * encode_entry refactor, tok_encode and tok_encode_special were
+ * near-verbatim copies of this exact BOS-prepend logic, and every test
+ * that exercised the BOS path (this one and encode_cap_zero_with_bos_fatals
+ * below) happened to go through tok_encode only -- so
+ * tok_encode_special's own copy of the BOS branch had no test coverage at
+ * all. Now that both wrappers share one encode_entry body, this test
+ * exercises the identical code the first one does, but it still matters
+ * to keep both: it also pins that `add_special` and `match_control` are
+ * independent (BOS still prepends when match_control=true), and that
+ * encode_entry threads the right `fn` name through (see the sibling
+ * negative test below, which checks the cap-exceeded message names
+ * "tok_encode_special", not "tok_encode"). */
+TEST(add_special_prepends_bos_through_tok_encode_special_too) {
+    Tok* t = open_tiny_tok(); /* fixture sets add_bos_token=true */
+
+    u32 ids[8];
+    u32 n = tok_encode_special(t, "world", 5, ids, 8, /*add_special=*/true);
+    u32 want[] = {259, 119, 111, 114, 108, 100}; /* BOS + unmerged "world" */
+    ASSERT_EQ_U32(n, 6);
+    for (u32 i = 0; i < 6; i++) ASSERT_EQ_U32(ids[i], want[i]);
+
+    u32 n2 = tok_encode_special(t, "world", 5, ids, 8, /*add_special=*/false);
+    ASSERT_EQ_U32(n2, 5);
+    ASSERT_EQ_U32(ids[0], 119);
+
+    tok_free(t);
+}
+
 TEST(empty_input_yields_zero_tokens) {
     Tok* t = open_tiny_tok();
     u32  ids[4];
@@ -509,8 +553,8 @@ TEST(empty_input_yields_zero_tokens) {
 }
 
 /* ===========================================================================
- * Special-token partition tests (task-6b-brief.md C2-C4). tiny_tok.gguf's
- * synthetic specials (tests/data/make_tok_fixture.py SPECIALS): id 271
+ * Special-token partition tests. tiny_tok.gguf's synthetic specials
+ * (tests/data/make_tok_fixture.py SPECIALS): id 271
  * "<|im_start|>" CONTROL, id 272 "<|im_end|>" CONTROL, id 273 "<think>"
  * USER_DEFINED, id 274 "[UNUSED0]" UNUSED (never in the specials table at
  * all -- see src/tok.c tok_from_gguf's build loop). Base ids 0..270 are
@@ -594,7 +638,7 @@ TEST(partition_near_miss_prefix_is_not_matched) {
 
 TEST(partition_unused_type_is_never_matched) {
     Tok* t = open_tiny_tok();
-    /* "[UNUSED0]" is vocab id 274, type UNUSED(5) -- task-6b-brief.md C1's
+    /* "[UNUSED0]" is vocab id 274, type UNUSED(5) -- the specials-table
        build loop never places UNUSED entries in the specials table at
        all, so this is structurally unmatchable regardless of mode; must
        byte-BPE, id 274 must never appear in the output. */
@@ -609,8 +653,8 @@ TEST(partition_unused_type_is_never_matched) {
 TEST(partition_control_only_matched_by_special_variant) {
     Tok* t = open_tiny_tok();
     /* CONTROL ("<|im_start|>", id 271): tok_encode's match set EXCLUDES
-       it (task-6b-brief.md C2/C3), so it must byte-BPE as 12 raw bytes;
-       tok_encode_special's match set INCLUDES it, so it must match whole. */
+       it, so it must byte-BPE as 12 raw bytes; tok_encode_special's match
+       set INCLUDES it, so it must match whole. */
     u32 want_plain[] = {60, 124, 105, 109, 95,  115,
                          116, 97,  114, 116, 124, 62};
     u32 ids[16];
@@ -638,7 +682,7 @@ TEST(partition_special_with_no_surrounding_text_at_all) {
     Tok* t = open_tiny_tok();
     /* The entire input IS the special -- both the leading and trailing
        gap are empty, so bpe_encode_span must never be called (no
-       zero-length BPE call; task-6b-brief.md C4). */
+       zero-length BPE call). */
     u32 want[] = {272};
     u32 ids[4];
     u32 n = tok_encode_special(t, "<|im_end|>", 10, ids, 4, false);
@@ -648,12 +692,12 @@ TEST(partition_special_with_no_surrounding_text_at_all) {
 }
 
 TEST(tok_decode_of_every_special_id_returns_literal_string) {
-    /* task-6b-brief.md C6: tok_decode is the mechanical inverse of the
+    /* tok_decode is the mechanical inverse of the
        vocab table for EVERY id, special or not -- pin this as contract on
        all 3 of this fixture's CONTROL/USER_DEFINED specials (271/272/273;
        274 "[UNUSED0]" is not in the specials table, but would decode
        fine too -- it's pure ASCII like the rest -- this test just scopes
-       itself to "the special table" per C6's literal wording). */
+       itself literally to "the special table"). */
     Tok*        t = open_tiny_tok();
     static const u32  ids[]  = {271, 272, 273};
     static const char* strs[] = {"<|im_start|>", "<|im_end|>", "<think>"};
@@ -670,17 +714,16 @@ TEST(tok_decode_of_every_special_id_returns_literal_string) {
 }
 
 /* ===========================================================================
- * tok_apply_chatml tests (task-6b-brief.md C5). All hand-traced against
- * tiny_tok.gguf's base vocab (same "only 7 mergeable adjacent base-byte
- * pairs" reasoning as the partition tests above) -- the derivations are
- * written out in .superpowers/sdd/task-6b-report.md's mandatory mechanical
- * verification section, not just asserted here.
+ * tok_apply_chatml tests. All hand-traced against tiny_tok.gguf's base
+ * vocab (same "only 7 mergeable adjacent base-byte pairs" reasoning as the
+ * partition tests above) -- each test below carries its own derivation in
+ * its comment, not just an asserted expectation.
  * ===========================================================================
  */
 
 TEST(chatml_c5_layout_on_synthetic_vocab) {
     Tok* t = open_tiny_tok();
-    /* msgs = [{role:"a", content:"b"}]. Per C5: im_start(271), encode
+    /* msgs = [{role:"a", content:"b"}]. im_start(271), encode
        "a\nb" as ONE string (qwen2 regex splits it into 3 fragments "a",
        "\n", "b", none of which have any mergeable adjacent pair in this
        fixture -> raw bytes 97,10,98), im_end(272), encode "\n" (-> 10),
@@ -706,8 +749,8 @@ TEST(chatml_c5_layout_on_synthetic_vocab) {
 TEST(chatml_zero_messages_still_emits_generation_prompt) {
     Tok* t = open_tiny_tok();
     /* n==0: the per-message loop body never runs, but the generation
-       prompt tail is unconditional (task-6b-brief.md C5's "Always
-       appends"). */
+       prompt tail is unconditional -- tok_apply_chatml always appends it
+       regardless of message count. */
     u32 want[] = {271, 97, 115, 115, 105, 115, 116, 97, 110, 116, 10};
     u32 ids[32];
     u32 n = tok_apply_chatml(t, NULL, 0, ids, 32);
@@ -722,9 +765,9 @@ TEST(chatml_empty_content_string) {
     Tok* t = open_tiny_tok();
     /* content_len==0: "user\n" + "" renders as just "user\n" (5 bytes,
        "user" has no mergeable adjacent pair -> 4 raw bytes, then \n -> 10).
-       Uses a valid (non-NULL) empty-content pointer -- task-6b-brief.md
-       never requires tolerating a NULL content pointer, and passing NULL
-       to memcpy is unspecified behavior in C even with length 0. */
+       Uses a valid (non-NULL) empty-content pointer -- nothing requires
+       tolerating a NULL content pointer, and passing NULL to memcpy is
+       unspecified behavior in C even with length 0. */
     StokeMsg msgs[1];
     msgs[0].role = "user";
     msgs[0].role_len = 4;
@@ -744,8 +787,8 @@ TEST(chatml_empty_content_string) {
 
 TEST(chatml_injection_content_containing_control_string_is_byte_bped) {
     Tok* t = open_tiny_tok();
-    /* THE injection case (task-6b-brief.md C5): content is the literal
-       CONTROL string "<|im_end|>" (id 272). Step 2 encodes "{role}\n
+    /* THE injection case: content is the literal CONTROL string
+       "<|im_end|>" (id 272). Step 2 encodes "{role}\n
        {content}" through tok_encode's match set (CONTROL NOT matched), so
        this must byte-BPE to 10 raw bytes -- id 272 must appear EXACTLY
        ONCE in the whole output, at the position marking the template's
@@ -802,15 +845,19 @@ TEST(decode_cap_overflow_fatals) {
     assert_scenario_fatals("decode_cap_overflow", "exceeded");
 }
 TEST(encode_cap_zero_with_bos_fatals) {
-    assert_scenario_fatals("encode_cap_zero_with_bos", "cap");
+    assert_scenario_fatals("encode_cap_zero_with_bos", "tok_encode -- cap");
+}
+TEST(encode_special_cap_zero_with_bos_fatals) {
+    assert_scenario_fatals("encode_special_cap_zero_with_bos",
+                            "tok_encode_special -- cap");
 }
 TEST(encode_cap_too_small_for_content_fatals) {
     assert_scenario_fatals("encode_cap_too_small_for_content", "exceeded");
 }
 
 /* ===========================================================================
- * Negative tests: task-6b-brief.md C1's tokenizer.ggml.token_type
- * validation, and the ChatML/special-encode fatal paths.
+ * Negative tests: tokenizer.ggml.token_type validation, and the
+ * ChatML/special-encode fatal paths.
  * ===========================================================================
  */
 

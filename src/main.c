@@ -1,9 +1,7 @@
-/* src/main.c -- stoke CLI. Task 5 implements the `info` subcommand
- * (task-5-brief.md Step 3 + appendix A10's golden-output rules); task 6a
- * adds `tokenize` (task-6a-brief.md "Files": mechanism tests/tok_golden.sh
- * runs, mirroring how tests/golden_info.sh runs `stoke info`). Later
- * milestones add run/serve/bench (see the plan's file structure note for
- * src/main.c).
+/* src/main.c -- stoke CLI. Task 5 implements the `info` subcommand; task 6a
+ * adds `tokenize` (mechanism: tests/tok_golden.sh runs it, mirroring how
+ * tests/golden_info.sh runs `stoke info`). Later milestones add
+ * run/serve/bench (see the plan's file structure note for src/main.c).
  */
 #include "common.h"
 
@@ -24,8 +22,8 @@
  * Name tables for `stoke info` output. Deliberately NOT part of gguf.h's
  * public API: the numeric type values are already exposed (GgufTensor.type,
  * gguf_meta_type()/gguf_meta_arr_elem_type()); mapping them to display
- * strings is presentation logic that belongs with the CLI that owns
- * appendix A10's formatting rules, not with the parser.
+ * strings is presentation logic that belongs with the CLI that owns the
+ * golden-output formatting rules, not with the parser.
  * ===========================================================================
  */
 
@@ -66,13 +64,14 @@ static const char* ggml_type_name(u32 t) {
 }
 
 /* ===========================================================================
- * STRING KV formatting (task-5-brief appendix A10):
+ * STRING KV formatting:
  *   "print on one line with newlines/tabs escaped (\n, \t); if longer than
  *    96 bytes, truncate to 96 and append <ellipsis>(<N> bytes total)"
  *
- * This implementer's concrete reading of that rule (A10 explicitly defers
- * the exact behavior to "check what your code actually prints and golden
- * that" -- see task-5-report.md self-review for the full reasoning):
+ * This implementer's concrete reading of that rule (the exact escape/
+ * truncation behavior was left to "check what your code actually prints
+ * and golden that", so what follows is the concrete behavior chosen and
+ * golden):
  *   - Escape backslash too (not just \n/\t), so the escaping is lossless/
  *     unambiguous -- without it, a literal "\n" in the source text and an
  *     actual newline byte would print identically.
@@ -150,15 +149,15 @@ static void print_metadata(GgufFile* f) {
         } else if (type == GGUF_TYPE_FLOAT32) {
             printf("%g", (double)gguf_meta_f32(f, key));
         } else if (type == GGUF_TYPE_FLOAT64) {
-            /* No scalar FLOAT64 getter exists (task-5-brief A8 defines
-             * none, and no KV in the target model is FLOAT64) -- fatal
-             * loudly rather than mis-printing or silently skipping. */
+            /* No scalar FLOAT64 getter exists (no KV in the target model
+             * is FLOAT64, so none was implemented) -- fatal loudly rather
+             * than mis-printing or silently skipping. */
             fatal("stoke info: key '%s' is FLOAT64 -- no scalar getter "
                   "for this type exists yet (see src/gguf.h)",
                   key);
         } else {
             /* every remaining GGUF_TYPE_* is an integer or BOOL, which
-             * gguf_meta_i64 widens (task-5-brief A8.4) */
+             * gguf_meta_i64 widens */
             printf("%lld", (long long)gguf_meta_i64(f, key));
         }
         printf("\n");
@@ -189,13 +188,13 @@ static void cmd_info(const char* path) {
 }
 
 /* ===========================================================================
- * `stoke tokenize` (task-6a-brief.md "Files"; `--special` added by
- * task-6b-brief.md "Gate mechanism"): opens the GGUF, builds a Tok, reads
- * the whole input file as raw bytes, encodes it (add_special=false -- no
- * BOS), and prints the ids as a Python list "[a, b, c]\n", byte-identical
- * to tests/data/tok_corpus.ids.golden's format (task-6a-brief.md B6): a
- * single trailing '\n' (not the oracle CLI's own "\r\n" console quirk),
- * comma-space separated, no other output on stdout. Plain `tokenize` calls
+ * `stoke tokenize` (`--special` added alongside the special-token parse
+ * path): opens the GGUF, builds a Tok, reads the whole input file as raw
+ * bytes, encodes it (add_special=false -- no BOS), and prints the ids as a
+ * Python list "[a, b, c]\n", byte-identical to
+ * tests/data/tok_corpus.ids.golden's format: a single trailing '\n' (not
+ * the oracle CLI's own "\r\n" console quirk), comma-space separated, no
+ * other output on stdout. Plain `tokenize` calls
  * tok_encode() (matches the oracle's `--no-parse-special`); `tokenize
  * --special` calls tok_encode_special() (matches the oracle's default,
  * parse-special ON). This is the mechanism tests/tok_golden.sh and
@@ -242,8 +241,18 @@ static char* read_whole_file(const char* path, u64* out_len) {
     return buf;
 }
 
-static void cmd_tokenize(const char* model_path, const char* text_path,
-                          bool special) {
+/* Shared preamble for both cmd_tokenize and cmd_tokenize_roundtrip (they
+ * used to duplicate this open/read/size-guard sequence verbatim): opens
+ * the GGUF model, builds a self-contained Tok, closing the GgufFile right
+ * away (Tok never retains it -- src/tok.h), reads the whole text file into
+ * an owned buffer, and computes the ids cap per tok_encode/
+ * tok_encode_special's "cap >= 3*len" contract, fataling if 3*len would
+ * overflow a u32. `who` names the calling command for the size-guard's
+ * fatal message. Caller owns the returned *out_tok (tok_free) and
+ * *out_buf (free). */
+static void tokenize_cmd_setup(const char* model_path, const char* text_path,
+                                const char* who, Tok** out_tok, char** out_buf,
+                                u64* out_len, u32* out_cap) {
     GgufFile* f = gguf_open(model_path);
     Tok*      t = tok_from_gguf(f);
     gguf_close(f); /* Tok is self-contained after construction (src/tok.h) */
@@ -254,14 +263,29 @@ static void cmd_tokenize(const char* model_path, const char* text_path,
     /* src/tok.h's tok_encode/tok_encode_special contract: cap >= 3*len is
      * always sufficient (the 3x, not 1x, matters only for pathological
      * all-invalid-UTF-8 input -- see that comment and src/tok.c's block
-     * comment above utf8_decode_one for why; task-6b-brief.md C4 confirms
-     * the same bound still holds with special-token matching folded in). */
+     * comment above utf8_decode_one for why; the same bound holds with
+     * special-token matching folded in). */
     if (len > (u64)UINT32_MAX / 3) {
-        fatal("stoke tokenize: '%s' is %llu bytes -- too large for this "
-              "CLI (3x ids cap must fit in u32)",
-              text_path, (unsigned long long)len);
+        fatal("%s: '%s' is %llu bytes -- too large for this CLI (3x ids "
+              "cap must fit in u32)",
+              who, text_path, (unsigned long long)len);
     }
-    u32  cap = (u32)(len * 3);
+
+    *out_tok = t;
+    *out_buf = buf;
+    *out_len = len;
+    *out_cap = (u32)(len * 3);
+}
+
+static void cmd_tokenize(const char* model_path, const char* text_path,
+                          bool special) {
+    Tok*  t;
+    char* buf;
+    u64   len;
+    u32   cap;
+    tokenize_cmd_setup(model_path, text_path, "stoke tokenize", &t, &buf,
+                        &len, &cap);
+
     u32* ids = (u32*)xcalloc(cap > 0 ? cap : 1, sizeof(u32));
 
     u32 n = special
@@ -280,13 +304,13 @@ static void cmd_tokenize(const char* model_path, const char* text_path,
     tok_free(t);
 }
 
-/* `stoke tokenize --roundtrip <model> <text-file>` -- task-6a-brief.md B6
- * explicitly marks this optional ("optionally also add a real-corpus
- * roundtrip mode to `stoke tokenize` for extra assurance on real data").
- * The MANDATORY decode(encode(x))==x assertion lives in tests/test_tok.c
- * on the synthetic vocab (always-run, no model needed); this mode adds
- * the same check against the REAL ~152K-entry vocab, which the synthetic
- * fixture can't exercise. Splits the file on '\n' (matching
+/* `stoke tokenize --roundtrip <model> <text-file>` -- this mode is
+ * optional ("optionally also add a real-corpus roundtrip mode to `stoke
+ * tokenize` for extra assurance on real data"). The MANDATORY
+ * decode(encode(x))==x assertion lives in tests/test_tok.c on the
+ * synthetic vocab (always-run, no model needed); this mode adds the same
+ * check against the REAL ~152K-entry vocab, which the synthetic fixture
+ * can't exercise. Splits the file on '\n' (matching
  * tests/tok_fuzz.py's one-line-per-entry corpus) and reports match/
  * mismatch counts per line. A mismatch is NOT automatically a bug: lines
  * containing invalid/overlong UTF-8 are expected to differ, since
@@ -295,18 +319,12 @@ static void cmd_tokenize(const char* model_path, const char* text_path,
  * can cross-check them against known-invalid corpus lines by hand. */
 static void cmd_tokenize_roundtrip(const char* model_path,
                                     const char* text_path) {
-    GgufFile* f = gguf_open(model_path);
-    Tok*      t = tok_from_gguf(f);
-    gguf_close(f);
-
+    Tok*  t;
+    char* buf;
     u64   len;
-    char* buf = read_whole_file(text_path, &len);
-
-    if (len > (u64)UINT32_MAX / 3) {
-        fatal("stoke tokenize --roundtrip: '%s' is %llu bytes -- too large",
-              text_path, (unsigned long long)len);
-    }
-    u32 cap = (u32)(len * 3);
+    u32   cap;
+    tokenize_cmd_setup(model_path, text_path, "stoke tokenize --roundtrip",
+                        &t, &buf, &len, &cap);
     if (cap == 0) cap = 1;
     u32*  ids = (u32*)xcalloc(cap, sizeof(u32));
     char* out = (char*)xcalloc(cap, 4); /* generous: decode's total output
@@ -351,13 +369,31 @@ static void cmd_tokenize_roundtrip(const char* model_path,
     tok_free(t);
 }
 
+/* Checked stdout finalization before a successful exit. Every subcommand
+ * writes exclusively via stdio's own buffered printf; without this, `stoke
+ * info > out.txt` on a full disk (or any other deferred-write failure)
+ * would exit 0 with a silently truncated file, since a buffered printf's
+ * return value is not checked anywhere else in this file and the actual
+ * write only happens later, at flush/close time. This is the one place in
+ * src/ that used to swallow an error: flush stdout and check its error
+ * indicator, fataling loudly (house style) instead of exiting 0 over a
+ * failed write. */
+static void finish_stdout_or_fatal(void) {
+    if (fflush(stdout) != 0) {
+        fatal("stoke: failed to flush stdout -- %s", strerror(errno));
+    }
+    if (ferror(stdout)) {
+        fatal("stoke: stdout reported a write error");
+    }
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     /* Windows CRT stdout defaults to text mode, which translates '\n' to
-     * "\r\n" on write. task-5-brief appendix A10 requires byte-identical
-     * output (specifically '\n' line endings) across Windows and WSL for
-     * the golden diff to work at all -- force binary mode so this
-     * translation never happens. */
+     * "\r\n" on write. Byte-identical output (specifically '\n' line
+     * endings) is required across Windows and WSL for the golden diff to
+     * work at all -- force binary mode so this translation never
+     * happens. */
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
@@ -370,6 +406,7 @@ int main(int argc, char** argv) {
             fatal("usage: stoke info <path.gguf>");
         }
         cmd_info(argv[2]);
+        finish_stdout_or_fatal();
         return 0;
     }
     if (strcmp(argv[1], "tokenize") == 0) {
@@ -379,6 +416,7 @@ int main(int argc, char** argv) {
                       "<text-file>");
             }
             cmd_tokenize_roundtrip(argv[3], argv[4]);
+            finish_stdout_or_fatal();
             return 0;
         }
         bool special = false;
@@ -392,6 +430,7 @@ int main(int argc, char** argv) {
                   "<text-file>");
         }
         cmd_tokenize(argv[model_argi], argv[model_argi + 1], special);
+        finish_stdout_or_fatal();
         return 0;
     }
     fatal("unknown command '%s' (commands: info, tokenize)", argv[1]);

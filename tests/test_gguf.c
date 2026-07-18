@@ -394,9 +394,10 @@ TEST(multi_tensor_file_order_types_and_data_bytes) {
 
 /* ===========================================================================
  * Negative tests: file-level malformed fixtures (each must fatal in
- * gguf_open). Every one of these maps to an explicit requirement in
- * task-5-brief.md (Step 1's required five, plus appendix A1/A2/A4/A12's
- * other named fatal conditions).
+ * gguf_open). Every one of these maps to an explicit validation this
+ * parser performs: the required magic/version/count checks, plus every
+ * other named fatal condition (bad value types, oversized lengths,
+ * misalignment, unsupported ggml types, ...).
  * ===========================================================================
  */
 
@@ -407,97 +408,101 @@ TEST(bad_version_fatals) {
     assert_scenario_fatals("bad_version", "version");
 }
 TEST(truncated_header_fatals) {
-    assert_scenario_fatals("truncated_header", NULL);
+    assert_scenario_fatals("truncated_header", "too small for a GGUF header");
 }
 TEST(kv_count_overflow_fatals) {
-    assert_scenario_fatals("kv_count_overflow", NULL);
+    assert_scenario_fatals("kv_count_overflow", "metadata_kv_count");
 }
 TEST(tensor_count_overflow_fatals) {
-    assert_scenario_fatals("tensor_count_overflow", NULL);
+    assert_scenario_fatals("tensor_count_overflow", "tensor_count");
 }
 TEST(array_count_overflow_fatals) {
-    assert_scenario_fatals("array_count_overflow", NULL);
+    assert_scenario_fatals("array_count_overflow", "array element span");
 }
 TEST(misaligned_tensor_fatals) {
-    assert_scenario_fatals("misaligned_tensor", NULL);
+    assert_scenario_fatals("misaligned_tensor", "not a multiple of alignment");
 }
 TEST(string_len_exceeds_file_fatals) {
-    assert_scenario_fatals("string_len_exceeds_file", NULL);
+    assert_scenario_fatals("string_len_exceeds_file",
+                            "metadata string value bytes");
 }
 TEST(key_len_exceeds_file_fatals) {
-    assert_scenario_fatals("key_len_exceeds_file", NULL);
+    assert_scenario_fatals("key_len_exceeds_file", "metadata key bytes");
 }
 TEST(tensor_name_len_exceeds_file_fatals) {
-    assert_scenario_fatals("tensor_name_len_exceeds_file", NULL);
+    assert_scenario_fatals("tensor_name_len_exceeds_file", "tensor name bytes");
 }
 TEST(n_dims_too_large_fatals) {
-    assert_scenario_fatals("n_dims_too_large", NULL);
+    assert_scenario_fatals("n_dims_too_large", "must be <= 4");
 }
 TEST(bad_value_type_fatals) {
-    assert_scenario_fatals("bad_value_type", NULL);
+    assert_scenario_fatals("bad_value_type", "invalid value_type");
 }
 TEST(unsupported_ggml_type_fatals) {
-    assert_scenario_fatals("unsupported_ggml_type", NULL);
+    assert_scenario_fatals("unsupported_ggml_type", "unsupported ggml_type");
 }
 TEST(array_of_arrays_fatals) {
-    assert_scenario_fatals("array_of_arrays", NULL);
+    assert_scenario_fatals("array_of_arrays", "ARRAY of ARRAY");
 }
 TEST(tensor_data_exceeds_file_fatals) {
-    assert_scenario_fatals("tensor_data_exceeds_file", NULL);
+    assert_scenario_fatals("tensor_data_exceeds_file", "tensor 't' data");
 }
 TEST(nonexistent_file_fatals) {
-    assert_scenario_fatals("nonexistent_file", NULL);
+    assert_scenario_fatals("nonexistent_file", "cannot open");
 }
 
 /* ===========================================================================
  * Negative tests: API misuse on a VALID file (wrong-type getter, OOB index,
- * missing key). These exercise the "fatal on wrong-type" contract that the
- * plan's interface comment and appendix A8 both spell out per-getter.
+ * missing key). These exercise the "fatal on wrong-type" contract that
+ * src/gguf.h spells out per-getter.
  * ===========================================================================
  */
 
 TEST(meta_i64_on_string_key_fatals) {
-    assert_scenario_fatals("meta_i64_on_string_key", NULL);
+    assert_scenario_fatals("meta_i64_on_string_key", "non-integer type");
 }
 TEST(meta_str_on_int_key_fatals) {
-    assert_scenario_fatals("meta_str_on_int_key", NULL);
+    assert_scenario_fatals("meta_str_on_int_key", "not STRING");
 }
 TEST(meta_f32_on_int_key_fatals) {
-    assert_scenario_fatals("meta_f32_on_int_key", NULL);
+    assert_scenario_fatals("meta_f32_on_int_key", "not FLOAT32");
 }
 TEST(meta_f32_on_float64_key_fatals) {
-    assert_scenario_fatals("meta_f32_on_float64_key", NULL);
+    assert_scenario_fatals("meta_f32_on_float64_key", "not FLOAT32");
 }
 TEST(meta_i64_on_u64_exceeding_int64_max_fatals) {
-    assert_scenario_fatals("meta_i64_on_u64_exceeding_int64_max", NULL);
+    assert_scenario_fatals("meta_i64_on_u64_exceeding_int64_max",
+                            "exceeds INT64_MAX");
 }
 TEST(meta_i64_on_missing_key_fatals) {
-    assert_scenario_fatals("meta_i64_on_missing_key", NULL);
+    assert_scenario_fatals("meta_i64_on_missing_key", "gguf_meta_i64 -- key");
 }
 TEST(meta_str_on_missing_key_fatals) {
-    assert_scenario_fatals("meta_str_on_missing_key", NULL);
+    assert_scenario_fatals("meta_str_on_missing_key", "gguf_meta_str -- key");
 }
 TEST(meta_arr_len_on_missing_key_fatals) {
-    assert_scenario_fatals("meta_arr_len_on_missing_key", NULL);
+    assert_scenario_fatals("meta_arr_len_on_missing_key",
+                            "gguf_meta_arr_len -- key");
 }
 TEST(meta_arr_str_oob_index_fatals) {
-    assert_scenario_fatals("meta_arr_str_oob_index", NULL);
+    assert_scenario_fatals("meta_arr_str_oob_index", "out of range");
 }
 TEST(meta_arr_i64_on_string_array_fatals) {
-    assert_scenario_fatals("meta_arr_i64_on_string_array", NULL);
+    assert_scenario_fatals("meta_arr_i64_on_string_array", "is not integer");
 }
 TEST(meta_arr_str_on_int_array_fatals) {
-    assert_scenario_fatals("meta_arr_str_on_int_array", NULL);
+    assert_scenario_fatals("meta_arr_str_on_int_array", "is not STRING");
 }
 TEST(tensor_oob_index_fatals) {
-    assert_scenario_fatals("tensor_oob_index", NULL);
+    assert_scenario_fatals("tensor_oob_index", "gguf_tensor -- index");
 }
 TEST(tensor_by_name_missing_fatals) {
-    assert_scenario_fatals("tensor_by_name_missing", NULL);
+    assert_scenario_fatals("tensor_by_name_missing", "no tensor named");
 }
 TEST(meta_key_oob_index_fatals) {
-    assert_scenario_fatals("meta_key_oob_index", NULL);
+    assert_scenario_fatals("meta_key_oob_index", "gguf_meta_key -- index");
 }
 TEST(meta_arr_elem_type_on_scalar_key_fatals) {
-    assert_scenario_fatals("meta_arr_elem_type_on_scalar_key", NULL);
+    assert_scenario_fatals("meta_arr_elem_type_on_scalar_key",
+                            "is not an ARRAY");
 }

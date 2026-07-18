@@ -1,6 +1,6 @@
 #!/bin/sh
-# tests/tok_golden.sh -- script gate (task-6a-brief.md B6, mirrors
-# tests/golden_info.sh exactly): runs `stoke tokenize` on the real 2.5GB
+# tests/tok_golden.sh -- script gate (mirrors tests/golden_info.sh
+# exactly): runs `stoke tokenize` on the real 2.5GB
 # Qwen3 model over the committed fuzz corpus and diffs it against the
 # committed golden (produced by the real llama-tokenize.exe oracle --
 # see tests/tok_fuzz.py's docstring for the exact regeneration command).
@@ -22,6 +22,13 @@ golden="tests/data/tok_corpus.ids.golden"
 stoke_bin="$builddir/stoke$exe"
 
 if [ ! -f "$model" ]; then
+    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
+        echo "tok_golden: FAILED -- $model not present but" \
+             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have the" \
+             "real model; a moved/missing model must not silently" \
+             "downgrade this gate to a no-op)" >&2
+        exit 1
+    fi
     echo "tok_golden: SKIP -- $model not present (models/ is gitignored;" \
          "this gate only runs on boxes that have the real model file)"
     exit 0

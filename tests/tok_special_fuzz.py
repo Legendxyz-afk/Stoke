@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """tests/tok_special_fuzz.py -- generates tests/data/tok_special_corpus.txt:
 a deterministic (fixed seed) corpus exercising the special-token PARTITION
-path (task-6b-brief.md C2-C4, C8) -- NOT BPE breadth, which the existing
-2000-line tests/tok_corpus.txt / tests/tok_fuzz.py already covers (C8: "this
-corpus tests partitioning, not BPE breadth"). Run manually; output is
-committed:
+path -- NOT BPE breadth, which the existing 2000-line tests/tok_corpus.txt /
+tests/tok_fuzz.py already covers (this corpus tests partitioning, not BPE
+breadth). Run manually; output is committed:
 
     python3 tests/tok_special_fuzz.py
 
-Regenerating the goldens after a corpus change (task-6b-brief.md C7 -- run
-BOTH commands, parse-special ON and OFF):
+Regenerating the goldens after a corpus change (run BOTH commands,
+parse-special ON and OFF -- see tests/regen_goldens.sh to do this
+mechanically for all three goldens at once):
     bench/vendor/llama-b10037/llama-tokenize.exe \\
         -m models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \\
         -f tests/data/tok_special_corpus.txt --ids --no-escape --no-bos
@@ -21,7 +21,7 @@ BOTH commands, parse-special ON and OFF):
     other bytes) and save as tests/data/tok_special_corpus.ids.golden (ON)
     / tests/data/tok_special_corpus.plain.golden (OFF) respectively.
 
-Corpus categories (task-6b-brief.md C8), all covered below:
+Corpus categories, all covered below:
   - every one of the 26 CONTROL+USER_DEFINED strings, in text, at least
     once (section 1: alone on a line; section 2: at line start/end/middle);
   - specials adjacent to each other (section 3);
@@ -37,8 +37,8 @@ Corpus categories (task-6b-brief.md C8), all covered below:
     specials (section 9).
 
 Deliberately WELL-FORMED UTF-8 only (unlike tok_fuzz.py's RAW_BYTE_LINES):
-invalid/overlong-UTF-8 x special-token interaction is untested by either
-brief and out of scope here -- 6a's corpus already exhaustively covers
+invalid/overlong-UTF-8 x special-token interaction is untested here and out
+of scope -- the plain byte-BPE corpus already exhaustively covers
 invalid-UTF-8 fallback on its own, and mixing that concern into this corpus
 would only add risk of tripping the oracle's own undefined behavior on
 certain out-of-range codepoints (src/tok.c's block comment above
@@ -51,7 +51,7 @@ OUT_PATH = "tests/data/tok_special_corpus.txt"
 
 random.seed(SEED)
 
-# ---- the 26 active specials (task-6b-brief.md C1) ----
+# ---- the 26 active (CONTROL + USER_DEFINED) specials ----
 
 CONTROL = [
     "<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|object_ref_start|>",

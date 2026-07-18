@@ -1,10 +1,9 @@
 /* src/tok.h -- byte-level BPE tokenizer: qwen2 pre-tokenizer regex split ->
  * GPT-2 byte<->unicode remap -> merge-rank BPE, and the exact reverse for
- * decode (task-6a-brief.md), plus the special-token parse path and the
- * ChatML chat template (task-6b-brief.md), layered on the same pipeline.
+ * decode, plus the special-token parse path and the ChatML chat template,
+ * layered on the same pipeline.
  *
- * Contract (task-6a-brief.md "Interfaces" + B1/B6; task-6b-brief.md
- * "Interfaces" + C1-C6):
+ * Contract:
  *   - tok_from_gguf() never returns NULL; fatal() on any malformed or
  *     unexpected tokenizer metadata (wrong tokenizer.ggml.model/pre, a byte
  *     with no single-byte vocab entry, a merge half missing from the
@@ -15,12 +14,12 @@
  *   - tok_encode() must be byte-exact against
  *     `llama-tokenize.exe -m <model> -f <file> --ids --no-escape
  *      --no-parse-special --no-bos` (b10037) run over the same bytes --
- *     tests/tok_golden.sh checks this on a 2000-line multilingual corpus
- *     (task-6a-brief.md B6). tok_encode_special() must be byte-exact
- *     against the same oracle WITHOUT `--no-parse-special` (parse-special
- *     ON, the oracle's default) -- tests/tok_special_golden.sh checks this,
- *     plus tok_encode()'s corrected OFF-mode behavior, on a dedicated
- *     specials+ChatML corpus (task-6b-brief.md C7/C8).
+ *     tests/tok_golden.sh checks this on a 2000-line multilingual corpus.
+ *     tok_encode_special() must be byte-exact against the same oracle
+ *     WITHOUT `--no-parse-special` (parse-special ON, the oracle's
+ *     default) -- tests/tok_special_golden.sh checks this, plus
+ *     tok_encode()'s corrected OFF-mode behavior, on a dedicated
+ *     specials+ChatML corpus.
  *   - Every failure path is fatal(): "tok: <what> -- <why> -- <hint>",
  *     nonzero exit, no silent truncation or fallback.
  */
@@ -35,9 +34,9 @@
 
 typedef struct Tok Tok;
 
-/* Reads tokenizer.ggml.* tables from `f` (task-6a-brief.md B1: model/pre
- * assertions, tokens/merges arrays, bos/eos ids, add_bos_token) and builds
- * a fully self-contained tokenizer. Never returns NULL. */
+/* Reads tokenizer.ggml.* tables from `f` (model/pre assertions,
+ * tokens/merges arrays, bos/eos ids, add_bos_token) and builds a fully
+ * self-contained tokenizer. Never returns NULL. */
 Tok* tok_from_gguf(const GgufFile* f);
 
 /* Frees everything owned by `t`. `t` may be NULL (no-op). */
@@ -45,31 +44,33 @@ void tok_free(Tok* t);
 
 /* Encodes raw UTF-8 bytes `utf8[0..len)`: partitions the input against the
  * USER_DEFINED-type entries of the model's special-token table (exact,
- * leftmost-longest match -- task-6b-brief.md C2-C4), then, independently
- * per gap between/around matches, qwen2 pre-tokenizer split + per-fragment
- * GPT-2 byte->unicode remap + merge-rank BPE (task-6a-brief.md B2/B3/B5).
- * Writes token ids to `ids` and returns the count written.
+ * leftmost-longest match), then, independently per gap between/around
+ * matches, qwen2 pre-tokenizer split + per-fragment GPT-2 byte->unicode
+ * remap + merge-rank BPE. Writes token ids to `ids` and returns the count
+ * written.
  *
  * This matches the oracle's `--no-parse-special` mode: CONTROL-type
  * specials (e.g. `<|im_start|>`) are NOT matched and fall through to
  * byte-BPE like ordinary text, but USER_DEFINED-type specials (e.g.
- * `<think>`) ARE always matched regardless of this flag (task-6b-brief.md
- * C2 -- a correction over task-6a's original tok_encode, which matched
- * neither, invisibly: its gate corpus happened to contain zero
- * USER_DEFINED strings). Use tok_encode_special() for the oracle's default
+ * `<think>`) ARE always matched regardless of this flag (a correction over
+ * this function's original implementation, which matched neither,
+ * invisibly: its test corpus happened to contain zero USER_DEFINED
+ * strings). Use tok_encode_special() for the oracle's default
  * parse-special-ON mode, which also matches CONTROL.
  *
  * Cap sizing: BPE only ever MERGES symbols (never splits), and a matched
  * special consumes >=1 input byte to emit exactly 1 id -- never more ids
  * than BPEing those same bytes would have produced -- so the token count
- * can never exceed the CANONICAL byte count `utf8` decodes to (see
- * src/tok.c's block comment above utf8_decode_one) -- which is at most
- * 3*len (achieved only when every byte is independently invalid UTF-8,
- * each substituting U+FFFD's 3-byte canonical encoding; well-formed input
- * never expands). So cap >= 3*len is always sufficient; cap >= len is
- * enough for any input that's entirely well-formed UTF-8. Fatal if `cap`
- * is exceeded anyway (defensive; every attacker-influenced size in this
- * codebase is bounds-checked, not just documented as the caller's
+ * from `utf8` alone can never exceed the CANONICAL byte count it decodes
+ * to (see src/tok.c's block comment above utf8_decode_one) -- which is at
+ * most 3*len (achieved only when every byte is independently invalid
+ * UTF-8, each substituting U+FFFD's 3-byte canonical encoding; well-formed
+ * input never expands). On top of that, add_special may prepend one more
+ * BOS id (see below), so cap >= 3*len + 1 is always sufficient; cap >=
+ * 3*len covers add_special=false, and cap >= len is enough for any
+ * add_special=false input that's entirely well-formed UTF-8. Fatal if
+ * `cap` is exceeded anyway (defensive; every attacker-influenced size in
+ * this codebase is bounds-checked, not just documented as the caller's
  * responsibility).
  *
  * add_special: when true, prepends BOS iff the model's
@@ -80,10 +81,11 @@ u32 tok_encode(const Tok* t, const char* utf8, u64 len, u32* ids, u32 cap,
 
 /* Same as tok_encode, but ALSO matches CONTROL-type special tokens (e.g.
  * `<|im_start|>`, `<|endoftext|>`) in the input text -- the oracle's
- * default mode (parse-special ON, i.e. `--no-parse-special` OMITTED;
- * task-6b-brief.md C2). Same cap-sizing bound as tok_encode: a matched
- * CONTROL special is likewise 1 emitted id for several consumed bytes,
- * never more ids than pure byte-BPE of the same bytes would emit. */
+ * default mode (parse-special ON, i.e. `--no-parse-special` OMITTED).
+ * Same cap-sizing bound as tok_encode (cap >= 3*len + 1 with add_special,
+ * cap >= 3*len without): a matched CONTROL special is likewise 1 emitted
+ * id for several consumed bytes, never more ids than pure byte-BPE of the
+ * same bytes would emit. */
 u32 tok_encode_special(const Tok* t, const char* utf8, u64 len, u32* ids,
                         u32 cap, bool add_special);
 
@@ -102,11 +104,10 @@ typedef struct {
  * (this is an inference engine; a non-generating variant is deferred until
  * a caller needs one). Llama-3 header format is M7. No BOS is ever added
  * (this model's tokenizer.ggml.add_bos_token is false; unlike tok_encode/
- * tok_encode_special, this function has no add_special parameter at all --
- * task-6b-brief.md C5).
+ * tok_encode_special, this function has no add_special parameter at all).
  *
- * Injection safety (task-6b-brief.md C5): this does NOT render the whole
- * conversation to one string and parse-special-encode it -- that would let
+ * Injection safety: this does NOT render the whole conversation to one
+ * string and parse-special-encode it -- that would let
  * a user whose message CONTENT contains the literal text `<|im_end|>`
  * forge a turn boundary. Instead, each message's `{role}\n{content}` is
  * encoded through tok_encode's match set (USER_DEFINED matched, CONTROL
@@ -131,9 +132,9 @@ u32 tok_apply_chatml(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
  * boundaries) and returns the byte count written. Fatal if `id` is out of
  * vocab range, or if the decoded byte count would exceed `cap`.
  *
- * Policy (task-6b-brief.md C6): tok_decode is the mechanical inverse of
- * the vocab table -- id in, that id's exact stored bytes out -- for EVERY
- * id, special or not; it always yields literal text (e.g. id 151644 ->
+ * Policy: tok_decode is the mechanical inverse of the vocab table -- id
+ * in, that id's exact stored bytes out -- for EVERY id, special or not;
+ * it always yields literal text (e.g. id 151644 ->
  * the 12 bytes "<|im_start|>"). It does not know or care whether an id is
  * a CONTROL/USER_DEFINED special. Deciding whether a control token should
  * be shown to an API client as-is, suppressed, or treated as a stop token
