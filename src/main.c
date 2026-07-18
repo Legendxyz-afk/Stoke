@@ -189,14 +189,17 @@ static void cmd_info(const char* path) {
 }
 
 /* ===========================================================================
- * `stoke tokenize` (task-6a-brief.md "Files"): opens the GGUF, builds a
- * Tok, reads the whole input file as raw bytes, encodes it (pure byte-BPE,
- * add_special=false -- no special-token parsing in this task), and prints
- * the ids as a Python list "[a, b, c]\n", byte-identical to
- * tests/data/tok_corpus.ids.golden's format (task-6a-brief.md B6): a
+ * `stoke tokenize` (task-6a-brief.md "Files"; `--special` added by
+ * task-6b-brief.md "Gate mechanism"): opens the GGUF, builds a Tok, reads
+ * the whole input file as raw bytes, encodes it (add_special=false -- no
+ * BOS), and prints the ids as a Python list "[a, b, c]\n", byte-identical
+ * to tests/data/tok_corpus.ids.golden's format (task-6a-brief.md B6): a
  * single trailing '\n' (not the oracle CLI's own "\r\n" console quirk),
- * comma-space separated, no other output on stdout. This is the mechanism
- * tests/tok_golden.sh runs, mirroring how tests/golden_info.sh runs
+ * comma-space separated, no other output on stdout. Plain `tokenize` calls
+ * tok_encode() (matches the oracle's `--no-parse-special`); `tokenize
+ * --special` calls tok_encode_special() (matches the oracle's default,
+ * parse-special ON). This is the mechanism tests/tok_golden.sh and
+ * tests/tok_special_golden.sh run, mirroring how tests/golden_info.sh runs
  * `stoke info`.
  * ===========================================================================
  */
@@ -239,7 +242,8 @@ static char* read_whole_file(const char* path, u64* out_len) {
     return buf;
 }
 
-static void cmd_tokenize(const char* model_path, const char* text_path) {
+static void cmd_tokenize(const char* model_path, const char* text_path,
+                          bool special) {
     GgufFile* f = gguf_open(model_path);
     Tok*      t = tok_from_gguf(f);
     gguf_close(f); /* Tok is self-contained after construction (src/tok.h) */
@@ -247,10 +251,11 @@ static void cmd_tokenize(const char* model_path, const char* text_path) {
     u64   len;
     char* buf = read_whole_file(text_path, &len);
 
-    /* src/tok.h's tok_encode contract: cap >= 3*len is always sufficient
-     * (the 3x, not 1x, matters only for pathological all-invalid-UTF-8
-     * input -- see that comment and src/tok.c's block comment above
-     * utf8_decode_one for why). */
+    /* src/tok.h's tok_encode/tok_encode_special contract: cap >= 3*len is
+     * always sufficient (the 3x, not 1x, matters only for pathological
+     * all-invalid-UTF-8 input -- see that comment and src/tok.c's block
+     * comment above utf8_decode_one for why; task-6b-brief.md C4 confirms
+     * the same bound still holds with special-token matching folded in). */
     if (len > (u64)UINT32_MAX / 3) {
         fatal("stoke tokenize: '%s' is %llu bytes -- too large for this "
               "CLI (3x ids cap must fit in u32)",
@@ -259,7 +264,9 @@ static void cmd_tokenize(const char* model_path, const char* text_path) {
     u32  cap = (u32)(len * 3);
     u32* ids = (u32*)xcalloc(cap > 0 ? cap : 1, sizeof(u32));
 
-    u32 n = tok_encode(t, buf, len, ids, cap, /*add_special=*/false);
+    u32 n = special
+                ? tok_encode_special(t, buf, len, ids, cap, /*add_special=*/false)
+                : tok_encode(t, buf, len, ids, cap, /*add_special=*/false);
 
     printf("[");
     for (u32 i = 0; i < n; i++) {
@@ -356,7 +363,7 @@ int main(int argc, char** argv) {
 
     if (argc < 2) {
         fatal("usage: stoke <command> [args] (commands: info <path.gguf>, "
-              "tokenize [--roundtrip] <path.gguf> <text-file>)");
+              "tokenize [--special | --roundtrip] <path.gguf> <text-file>)");
     }
     if (strcmp(argv[1], "info") == 0) {
         if (argc < 3) {
@@ -374,10 +381,17 @@ int main(int argc, char** argv) {
             cmd_tokenize_roundtrip(argv[3], argv[4]);
             return 0;
         }
-        if (argc < 4) {
-            fatal("usage: stoke tokenize <path.gguf> <text-file>");
+        bool special = false;
+        int  model_argi = 2;
+        if (argc >= 3 && strcmp(argv[2], "--special") == 0) {
+            special = true;
+            model_argi = 3;
         }
-        cmd_tokenize(argv[2], argv[3]);
+        if (argc < model_argi + 2) {
+            fatal("usage: stoke tokenize [--special] <path.gguf> "
+                  "<text-file>");
+        }
+        cmd_tokenize(argv[model_argi], argv[model_argi + 1], special);
         return 0;
     }
     fatal("unknown command '%s' (commands: info, tokenize)", argv[1]);

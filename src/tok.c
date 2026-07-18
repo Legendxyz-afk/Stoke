@@ -1,13 +1,16 @@
 /* src/tok.c -- byte-level BPE tokenizer. See src/tok.h for the public
- * contract and .superpowers/sdd/task-6a-brief.md (B1-B6) for the exact
- * algorithm this implements -- every constant/regex/algorithm step here is
- * taken verbatim from that brief, which was probed from the real Qwen3
- * tokenizer + llama-tokenize.exe (b10037) at dispatch time.
+ * contract, .superpowers/sdd/task-6a-brief.md (B1-B6) for the byte-BPE
+ * encode/decode algorithm, and .superpowers/sdd/task-6b-brief.md (C1-C8)
+ * for the special-token parse path + ChatML template layered on top --
+ * every constant/regex/algorithm step here is taken verbatim from those
+ * briefs, which were probed from the real Qwen3 tokenizer +
+ * llama-tokenize.exe (b10037) at dispatch time.
  *
- * Pipeline (task-6a-brief.md B2/B3/B5), per tok_encode() call:
- *   1. UTF-8-decode the whole input into codepoints (src/tok.c
- *      utf8_decode_one) -- invalid/overlong/lone-surrogate bytes fall back
- *      to one pseudo-codepoint per raw byte (B4), so this step never fails.
+ * Pipeline (task-6a-brief.md B2/B3/B5), per bpe_encode_span() call (i.e.
+ * per gap between/around special-token matches -- see below):
+ *   1. UTF-8-decode the span into codepoints (src/tok.c utf8_decode_one)
+ *      -- invalid/overlong/lone-surrogate bytes fall back to one
+ *      pseudo-codepoint per raw byte (B4), so this step never fails.
  *   2. Split those codepoints into fragments via the qwen2 pre-tokenizer
  *      regex (B3, 7 alternatives, hand-implemented as match_alt1..7 below
  *      since C has no \p{L}/\p{N} Unicode regex engine) -- classification
@@ -21,14 +24,30 @@
  *      ids.
  * tok_decode() reverses step 3's remap per character of the vocab string.
  *
+ * Special-token partition (task-6b-brief.md C1-C4), wrapping the above:
+ * both tok_encode() and tok_encode_special() (and, via those,
+ * tok_apply_chatml()) scan the FULL input left to right for exact matches
+ * against the model's special-token table (built from
+ * tokenizer.ggml.token_type at tok_from_gguf() time -- CONTROL(3) and
+ * USER_DEFINED(4) entries only), emit the matched id directly on a hit
+ * (never running it through byte-BPE), and hand every gap between/around
+ * matches to bpe_encode_span() independently -- a special is a hard
+ * boundary, so gaps never see each other's content. The two public
+ * entry points differ only in which special TYPES participate in
+ * matching (encode_partitioned()'s match_control flag) -- see C2/C3.
+ *
  * Two hash tables, both built once in tok_from_gguf():
  *   - a TEMPORARY vocab string->id map (open addressing, FNV-1a), used
  *     only to resolve merge-rule halves to ids at init time, then freed;
  *   - a PERMANENT (id_left,id_right)->{rank,merged_id} map (open
- *     addressing, integer hash), used by every tok_encode() call's merge
- *     loop. Resolving merges to id-pairs once at init means the runtime
- *     hot path never hashes a string -- see the block comment above
+ *     addressing, integer hash), used by every encode call's merge loop.
+ *     Resolving merges to id-pairs once at init means the runtime hot
+ *     path never hashes a string -- see the block comment above
  *     merge_hash_init for the invariant this relies on.
+ * The special-token table (task-6b-brief.md C1) is a third, much smaller
+ * structure: a flat array (~26 entries on the real model) scanned linearly
+ * per input position in specials_find_longest() -- no hash table, since
+ * the set is tiny and this is not the hot path BPE's merge loop is.
  */
 #include "common.h"
 
@@ -582,6 +601,40 @@ static bool mergemap_find(const MergeMap* m, u32 id_left, u32 id_right,
 }
 
 /* ===========================================================================
+ * Special-token table (task-6b-brief.md C1) -- built from
+ * tokenizer.ggml.token_type, llama.cpp's llama_token_type enum. Only
+ * CONTROL and USER_DEFINED entries are ever placed in Tok->specials; NORMAL
+ * (ordinary byte-BPE vocab, including the 256 base bytes), UNUSED (e.g.
+ * `[PAD151669]`), UNDEFINED, UNKNOWN, and BYTE never participate in
+ * special-token matching (task-6b-brief.md C2, probed decisive).
+ * ===========================================================================
+ */
+
+typedef enum {
+    TOK_TYPE_UNDEFINED    = 0,
+    TOK_TYPE_NORMAL        = 1,
+    TOK_TYPE_UNKNOWN       = 2,
+    TOK_TYPE_CONTROL       = 3,
+    TOK_TYPE_USER_DEFINED  = 4,
+    TOK_TYPE_UNUSED        = 5,
+    TOK_TYPE_BYTE          = 6,
+} TokLlamaTokenType;
+
+/* `str`/`len` point into the owning Tok's vocab_str[id]/vocab_len[id] --
+ * NOT separately owned or NUL-terminated-by-convention here (vocab_str
+ * entries happen to be NUL-terminated, but specials_find_longest below
+ * only ever uses len-bounded memcmp, never strlen/strcmp). Stored as their
+ * LITERAL vocab bytes (task-6b-brief.md C1: unlike ordinary byte-BPE
+ * tokens, special-token strings are NOT GPT-2-remapped), so matching is a
+ * direct memcmp against raw input bytes. */
+typedef struct {
+    const char* str;
+    u32         len;
+    u32         id;
+    bool        is_control; /* true: CONTROL(3); false: USER_DEFINED(4) */
+} SpecialEntry;
+
+/* ===========================================================================
  * Tok
  * ===========================================================================
  */
@@ -600,6 +653,20 @@ struct Tok {
     u32  bos_id;
     u32  eos_id;
     bool add_bos_token;
+
+    SpecialEntry* specials;   /* [n_specials], owned array (entries' str
+                                  point into vocab_str, not separately
+                                  owned) -- CONTROL/USER_DEFINED only */
+    u32           n_specials;
+    u32 im_start_id; /* vocab id of literal "<|im_start|>", or UINT32_MAX
+                         if this model's special table has none -- cached
+                         at init (task-6b-brief.md C5) so tok_apply_chatml
+                         never re-scans the table per call; the fatal for
+                         "model lacks it" fires at tok_apply_chatml() CALL
+                         time, not here, so tok_from_gguf() still succeeds
+                         for any valid gpt2/qwen2 model regardless of
+                         whether it has ChatML-style specials at all. */
+    u32 im_end_id;   /* same, for literal "<|im_end|>" */
 };
 
 Tok* tok_from_gguf(const GgufFile* f) {
@@ -726,6 +793,64 @@ Tok* tok_from_gguf(const GgufFile* f) {
     t->add_bos_token =
         gguf_meta_i64_or(f, "tokenizer.ggml.add_bos_token", 0) != 0;
 
+    /* ---- special-token table (task-6b-brief.md C1) ----
+     * Deliberately built LAST (after tokens/merges/byte_to_id are already
+     * fully validated above): this key's own validation must never mask
+     * or reorder an earlier fatal (e.g. tiny_tok_missing_byte.gguf's
+     * "byte 0x41 has no vocab entry" -- that fixture carries no
+     * token_type array at all, and must still fatal on the MISSING-BYTE
+     * check, not a token_type-required check it never gets to). */
+    if (!gguf_meta_has(f, "tokenizer.ggml.token_type")) {
+        fatal("tok: tokenizer.ggml.token_type is required (task-6b-brief.md "
+              "C1) but absent from this model -- the special-token table "
+              "(CONTROL/USER_DEFINED entries, e.g. <|im_start|>) cannot be "
+              "built without it");
+    }
+    u64 tt_len = gguf_meta_arr_len(f, "tokenizer.ggml.token_type");
+    if (tt_len != (u64)vocab_size) {
+        fatal("tok: tokenizer.ggml.token_type has length %llu, expected "
+              "%u (== tokenizer.ggml.tokens length)",
+              (unsigned long long)tt_len, vocab_size);
+    }
+
+    t->specials = (SpecialEntry*)xcalloc(vocab_size > 0 ? vocab_size : 1,
+                                          sizeof(SpecialEntry));
+    t->n_specials = 0;
+    for (u32 id = 0; id < vocab_size; id++) {
+        i64 ty = gguf_meta_arr_i64(f, "tokenizer.ggml.token_type", id);
+        if (ty < 0 || ty > 6) {
+            fatal("tok: tokenizer.ggml.token_type[%u] = %lld out of range "
+                  "0..6 (llama_token_type: 0 UNDEFINED, 1 NORMAL, "
+                  "2 UNKNOWN, 3 CONTROL, 4 USER_DEFINED, 5 UNUSED, 6 BYTE)",
+                  id, (long long)ty);
+        }
+        if (ty != TOK_TYPE_CONTROL && ty != TOK_TYPE_USER_DEFINED) continue;
+        SpecialEntry* e = &t->specials[t->n_specials++];
+        e->str = t->vocab_str[id];
+        e->len = t->vocab_len[id];
+        e->id = id;
+        e->is_control = (ty == TOK_TYPE_CONTROL);
+    }
+    /* Shrink to the actual count -- vocab_size was a worst-case upper
+     * bound (every id CONTROL/USER_DEFINED), but the real ratio is tiny
+     * (26 of 151936 on the reference model). xrealloc never fails on a
+     * shrink in practice, and even if the allocator relocates, n_specials
+     * elements are preserved (realloc's contract). */
+    t->specials = (SpecialEntry*)xrealloc(
+        t->specials, (t->n_specials > 0 ? t->n_specials : 1) * sizeof(SpecialEntry));
+
+    t->im_start_id = UINT32_MAX;
+    t->im_end_id = UINT32_MAX;
+    for (u32 i = 0; i < t->n_specials; i++) {
+        const SpecialEntry* e = &t->specials[i];
+        if (e->len == 12 && memcmp(e->str, "<|im_start|>", 12) == 0) {
+            t->im_start_id = e->id;
+        }
+        if (e->len == 10 && memcmp(e->str, "<|im_end|>", 10) == 0) {
+            t->im_end_id = e->id;
+        }
+    }
+
     return t;
 }
 
@@ -735,6 +860,8 @@ void tok_free(Tok* t) {
     free(t->vocab_str);
     free(t->vocab_len);
     free(t->merges.slots);
+    free(t->specials); /* entries' str point into vocab_str, freed above --
+                           only the array itself is separately owned */
     free(t);
 }
 
@@ -812,6 +939,134 @@ static void bpe_encode_fragment(const Tok* t, const u8* bytes, u64 nbytes,
 }
 
 /* ===========================================================================
+ * Special-token matching (task-6b-brief.md C1-C4)
+ * ===========================================================================
+ */
+
+/* Scans utf8[pos..len) for the longest exact match against the ACTIVE
+ * special-token match set: USER_DEFINED entries always participate;
+ * CONTROL entries participate only when `match_control` is true
+ * (task-6b-brief.md C2). Matching is a direct memcmp against each
+ * candidate's literal vocab bytes (C1: special strings are stored raw, not
+ * GPT-2-remapped) -- no per-position hashing, since the table is tiny
+ * (~26 entries on the real model, scanned linearly; this is not the hot
+ * BPE merge loop).
+ *
+ * On a match, returns true with *out_id / *out_len set to the LONGEST
+ * matching entry (this function is only ever called at a fixed, already-
+ * leftmost `pos` by encode_partitioned below, so "leftmost" is the
+ * caller's job and "longest" is this function's -- together, C4's
+ * leftmost-longest). Returns false if nothing matches at `pos`. Note
+ * (C4): this vocab has no special string that is a prefix of another, so
+ * the longest-vs-first tie-break can never be corpus-discriminated --
+ * implemented per C4's explicit instruction anyway; untested by the gate
+ * for that reason. */
+static bool specials_find_longest(const Tok* t, const char* utf8, u64 len,
+                                   u64 pos, bool match_control, u32* out_id,
+                                   u32* out_len) {
+    bool matched = false;
+    u32  best_len = 0;
+    u32  best_id = 0;
+    for (u32 i = 0; i < t->n_specials; i++) {
+        const SpecialEntry* e = &t->specials[i];
+        if (e->is_control && !match_control) continue;
+        if (e->len == 0 || pos + (u64)e->len > len) continue;
+        if (memcmp(utf8 + pos, e->str, e->len) != 0) continue;
+        if (!matched || e->len > best_len) {
+            matched = true;
+            best_len = e->len;
+            best_id = e->id;
+        }
+    }
+    if (matched) {
+        *out_id = best_id;
+        *out_len = best_len;
+    }
+    return matched;
+}
+
+/* The task-6a byte-BPE pipeline (B2/B3/B5) applied to ONE contiguous span
+ * with NO special-token matching: UTF-8 decode -> qwen2 pre-tokenizer
+ * fragment split -> per-fragment GPT-2 remap + merge-rank BPE. This is
+ * task-6a's original tok_encode() body, factored out UNCHANGED (not
+ * copy-pasted -- task-6b-brief.md C4's explicit "structure requirement")
+ * so encode_partitioned() below can call it once per gap between/around
+ * special-token matches, and both tok_encode() and tok_encode_special()
+ * reach this identical code. Appends to `ids`/`*n_out`, checking `cap`
+ * before every write (bpe_encode_fragment's existing job). No-op if
+ * len==0. */
+static void bpe_encode_span(const Tok* t, const u8* utf8, u64 len, u32* ids,
+                             u32* n_out, u32 cap) {
+    if (len == 0) return;
+
+    /* canon: worst case 3 canonical bytes per original byte (see the block
+     * comment above utf8_decode_one and decode_utf8_all's own comment). */
+    DecodedCp* cps = (DecodedCp*)xcalloc(len, sizeof(DecodedCp));
+    u8*        canon = (u8*)xcalloc(len, 3);
+    u64        canon_len = 0;
+    u64        n_cp = decode_utf8_all(utf8, len, cps, canon, &canon_len);
+
+    u64 ci = 0;
+    while (ci < n_cp) {
+        u64 m = match_fragment(cps, n_cp, ci);
+        u64 frag_end_ci = ci + m;
+        u64 byte_start = cps[ci].canon_off;
+        u64 byte_end =
+            (frag_end_ci < n_cp) ? cps[frag_end_ci].canon_off : canon_len;
+
+        bpe_encode_fragment(t, canon + byte_start, byte_end - byte_start,
+                             ids, n_out, cap);
+
+        ci = frag_end_ci;
+    }
+
+    free(cps);
+    free(canon);
+}
+
+/* The shared partition algorithm behind tok_encode/tok_encode_special/
+ * tok_apply_chatml (task-6b-brief.md C3/C4). Scans utf8[0..len) left to
+ * right; every exact match against the active special set (per
+ * `match_control`, see specials_find_longest) is a hard boundary -- the
+ * pending gap before it is byte-BPE'd via bpe_encode_span (never
+ * copy-pasted), the special's own id is emitted directly (never run
+ * through BPE), and the scan resumes immediately after the matched bytes.
+ * No whitespace stripping around a match, no merging across the boundary
+ * (C4). Appends to `ids`/`*n_out`, checking `cap` before every write,
+ * including each special id. */
+static void encode_partitioned(const Tok* t, const char* utf8, u64 len,
+                                u32* ids, u32* n_out, u32 cap,
+                                bool match_control) {
+    u64 gap_start = 0;
+    u64 pos = 0;
+    while (pos < len) {
+        u32 spec_id, spec_len;
+        if (specials_find_longest(t, utf8, len, pos, match_control, &spec_id,
+                                   &spec_len)) {
+            if (pos > gap_start) {
+                bpe_encode_span(t, (const u8*)utf8 + gap_start,
+                                 pos - gap_start, ids, n_out, cap);
+            }
+            if (*n_out >= cap) {
+                fatal("tok: encode -- output cap %u exceeded emitting "
+                      "special token id %u (see src/tok.h's tok_encode/"
+                      "tok_encode_special contract for cap sizing)",
+                      cap, spec_id);
+            }
+            ids[(*n_out)++] = spec_id;
+            pos += spec_len;
+            gap_start = pos;
+        } else {
+            pos++;
+        }
+    }
+    if (len > gap_start) {
+        bpe_encode_span(t, (const u8*)utf8 + gap_start, len - gap_start, ids,
+                         n_out, cap);
+    }
+}
+
+/* ===========================================================================
  * Public encode / decode
  * ===========================================================================
  */
@@ -829,29 +1084,113 @@ u32 tok_encode(const Tok* t, const char* utf8, u64 len, u32* ids, u32 cap,
 
     if (len == 0) return n_out;
 
-    /* canon: worst case 3 canonical bytes per original byte (see the block
-     * comment above utf8_decode_one and decode_utf8_all's own comment). */
-    DecodedCp* cps = (DecodedCp*)xcalloc(len, sizeof(DecodedCp));
-    u8*        canon = (u8*)xcalloc(len, 3);
-    u64        canon_len = 0;
-    u64        n_cp = decode_utf8_all((const u8*)utf8, len, cps, canon, &canon_len);
+    encode_partitioned(t, utf8, len, ids, &n_out, cap, /*match_control=*/false);
+    return n_out;
+}
 
-    u64 ci = 0;
-    while (ci < n_cp) {
-        u64 m = match_fragment(cps, n_cp, ci);
-        u64 frag_end_ci = ci + m;
-        u64 byte_start = cps[ci].canon_off;
-        u64 byte_end =
-            (frag_end_ci < n_cp) ? cps[frag_end_ci].canon_off : canon_len;
+u32 tok_encode_special(const Tok* t, const char* utf8, u64 len, u32* ids,
+                        u32 cap, bool add_special) {
+    u32 n_out = 0;
 
-        bpe_encode_fragment(t, canon + byte_start, byte_end - byte_start,
-                             ids, &n_out, cap);
-
-        ci = frag_end_ci;
+    if (add_special && t->add_bos_token) {
+        if (n_out >= cap) {
+            fatal("tok: tok_encode_special -- cap %u too small to hold BOS",
+                  cap);
+        }
+        ids[n_out++] = t->bos_id;
     }
 
-    free(cps);
-    free(canon);
+    if (len == 0) return n_out;
+
+    encode_partitioned(t, utf8, len, ids, &n_out, cap, /*match_control=*/true);
+    return n_out;
+}
+
+/* ===========================================================================
+ * ChatML template (task-6b-brief.md C5)
+ * ===========================================================================
+ */
+
+/* Fatal on u64 addition overflow -- C5's "accumulate in u64, bounds-check
+ * before allocating ... fatal() on overflow" (Task-5 review A12 house
+ * style: every attacker-influenced size is checked, not just documented
+ * as the caller's responsibility). */
+static u64 checked_add_u64(u64 a, u64 b, const char* what) {
+    if (a > UINT64_MAX - b) {
+        fatal("tok: tok_apply_chatml -- %s overflows u64 (%llu + %llu)",
+              what, (unsigned long long)a, (unsigned long long)b);
+    }
+    return a + b;
+}
+
+u32 tok_apply_chatml(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
+                      u32 cap) {
+    /* Cached at init (Tok->im_start_id/im_end_id), but the fatal for
+     * "this model doesn't have it" fires HERE, at call time -- not in
+     * tok_from_gguf() -- so loading a model with no ChatML-style specials
+     * still succeeds for tok_encode/tok_decode callers who never touch
+     * this function (task-6b-brief.md C5 + "Unit tests" fatal-path list). */
+    if (t->im_start_id == UINT32_MAX) {
+        fatal("tok: tok_apply_chatml -- this model's vocab has no "
+              "'<|im_start|>' CONTROL/USER_DEFINED special token -- it "
+              "cannot use the ChatML template (task-6b-brief.md C5)");
+    }
+    if (t->im_end_id == UINT32_MAX) {
+        fatal("tok: tok_apply_chatml -- this model's vocab has no "
+              "'<|im_end|>' CONTROL/USER_DEFINED special token -- it "
+              "cannot use the ChatML template (task-6b-brief.md C5)");
+    }
+
+    u32 n_out = 0;
+    for (u32 i = 0; i < n; i++) {
+        if (n_out >= cap) {
+            fatal("tok: tok_apply_chatml -- cap %u exceeded emitting "
+                  "<|im_start|> for message %u",
+                  cap, i);
+        }
+        ids[n_out++] = t->im_start_id;
+
+        /* "{role}\n{content}" MUST be encoded as ONE string, not two
+         * separate calls: the qwen2 pre-tokenizer's \s*[\r\n]+ alternative
+         * (match_alt5) can span the newline into content's own leading
+         * whitespace, so separate calls would tokenize differently for
+         * content beginning with whitespace/newline (C5). */
+        u64   role_len = msgs[i].role_len;
+        u64   content_len = msgs[i].content_len;
+        u64   t1 = checked_add_u64(role_len, 1, "role_len+1");
+        u64   total = checked_add_u64(t1, content_len, "role_len+1+content_len");
+        char* buf = (char*)xmalloc((size_t)total);
+        memcpy(buf, msgs[i].role, (size_t)role_len);
+        buf[role_len] = '\n';
+        memcpy(buf + role_len + 1, msgs[i].content, (size_t)content_len);
+        /* tok_encode's match set (USER_DEFINED matched, CONTROL not) --
+         * the injection-safety property: a CONTROL string like <|im_end|>
+         * inside `content` is byte-BPE'd as ordinary text here, never
+         * matched as a turn boundary. */
+        encode_partitioned(t, buf, total, ids, &n_out, cap,
+                            /*match_control=*/false);
+        free(buf);
+
+        if (n_out >= cap) {
+            fatal("tok: tok_apply_chatml -- cap %u exceeded emitting "
+                  "<|im_end|> for message %u",
+                  cap, i);
+        }
+        ids[n_out++] = t->im_end_id;
+
+        encode_partitioned(t, "\n", 1, ids, &n_out, cap,
+                            /*match_control=*/false);
+    }
+
+    if (n_out >= cap) {
+        fatal("tok: tok_apply_chatml -- cap %u exceeded emitting the "
+              "generation-prompt <|im_start|>",
+              cap);
+    }
+    ids[n_out++] = t->im_start_id;
+    encode_partitioned(t, "assistant\n", 10, ids, &n_out, cap,
+                        /*match_control=*/false);
+
     return n_out;
 }
 
@@ -871,8 +1210,13 @@ u32 tok_decode(const Tok* t, u32 id, char* buf, u32 cap) {
         if (cp >= TOK_CPT_TABLE_SIZE || t->cpt_to_byte[cp] < 0) {
             fatal("tok: tok_decode -- id %u ('%.*s') contains codepoint "
                   "U+%04X which is not a valid GPT-2 byte-remap codepoint "
-                  "-- decode in this task (6a) only covers byte-BPE-"
-                  "derived tokens; special/added tokens are 6b's scope",
+                  "-- tok_decode covers any vocab string built entirely "
+                  "from that map's codepoints: every byte-BPE token, and "
+                  "(task-6b-brief.md C6) every CONTROL/USER_DEFINED "
+                  "special token too, since all 26 of this model's are "
+                  "pure ASCII 0x21-0x7E, an identity range of the map -- "
+                  "a vocab string outside that, e.g. a non-ASCII added "
+                  "token, is not supported",
                   id, (int)slen, s, cp);
         }
         if (w >= cap) {

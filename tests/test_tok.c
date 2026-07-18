@@ -77,8 +77,55 @@ static int tok_test_child_main(int argc, char** argv) {
     } else if (strcmp(s, "decode_id_out_of_range") == 0) {
         Tok* t = open_tiny_tok();
         char buf[16];
-        (void)tok_decode(t, 271 /* vocab_size == first invalid id */, buf,
-                          sizeof buf);
+        /* vocab_size == first invalid id -- 271 base tokens + 4 synthetic
+           specials (task-6b-brief.md C1/"Unit tests"; see
+           tests/data/make_tok_fixture.py's SPECIALS). */
+        (void)tok_decode(t, 275, buf, sizeof buf);
+        tok_free(t);
+    } else if (strcmp(s, "no_token_type") == 0) {
+        GgufFile* f = gguf_open(FIXTURE("tiny_tok_no_token_type.gguf"));
+        Tok*      t = tok_from_gguf(f);
+        tok_free(t);
+        gguf_close(f);
+    } else if (strcmp(s, "bad_token_type_len") == 0) {
+        GgufFile* f = gguf_open(FIXTURE("tiny_tok_bad_token_type_len.gguf"));
+        Tok*      t = tok_from_gguf(f);
+        tok_free(t);
+        gguf_close(f);
+    } else if (strcmp(s, "bad_token_type_value") == 0) {
+        GgufFile* f =
+            gguf_open(FIXTURE("tiny_tok_bad_token_type_value.gguf"));
+        Tok*      t = tok_from_gguf(f);
+        tok_free(t);
+        gguf_close(f);
+    } else if (strcmp(s, "encode_special_cap_exceeded") == 0) {
+        Tok* t = open_tiny_tok();
+        u32  ids[4];
+        /* "<|im_start|>" alone matches whole (12 bytes -> 1 id); cap=0
+           leaves no room even for that one id. */
+        (void)tok_encode_special(t, "<|im_start|>", 12, ids, 0, false);
+        tok_free(t);
+    } else if (strcmp(s, "chatml_cap_exceeded") == 0) {
+        Tok*     t = open_tiny_tok();
+        u32      ids[1];
+        StokeMsg msgs[1];
+        msgs[0].role = "a";
+        msgs[0].role_len = 1;
+        msgs[0].content = "b";
+        msgs[0].content_len = 1;
+        (void)tok_apply_chatml(t, msgs, 1, ids, 0);
+        tok_free(t);
+    } else if (strcmp(s, "chatml_no_imstart") == 0) {
+        GgufFile* f = gguf_open(FIXTURE("tiny_tok_no_imstart.gguf"));
+        Tok*      t = tok_from_gguf(f); /* must SUCCEED -- C5 */
+        gguf_close(f);
+        u32      ids[32];
+        StokeMsg msgs[1];
+        msgs[0].role = "user";
+        msgs[0].role_len = 4;
+        msgs[0].content = "hi";
+        msgs[0].content_len = 2;
+        (void)tok_apply_chatml(t, msgs, 1, ids, 32); /* must fatal -- C5 */
         tok_free(t);
     } else if (strcmp(s, "decode_cap_overflow") == 0) {
         Tok* t = open_tiny_tok();
@@ -462,6 +509,272 @@ TEST(empty_input_yields_zero_tokens) {
 }
 
 /* ===========================================================================
+ * Special-token partition tests (task-6b-brief.md C2-C4). tiny_tok.gguf's
+ * synthetic specials (tests/data/make_tok_fixture.py SPECIALS): id 271
+ * "<|im_start|>" CONTROL, id 272 "<|im_end|>" CONTROL, id 273 "<think>"
+ * USER_DEFINED, id 274 "[UNUSED0]" UNUSED (never in the specials table at
+ * all -- see src/tok.c tok_from_gguf's build loop). Base ids 0..270 are
+ * IDENTICAL to 6a's fixture (specials were appended, not inserted), so
+ * every non-special byte below is the same raw-byte/no-merge reasoning
+ * the 6a tests above already establish (e.g. "world" stays 5 unmerged
+ * bytes; this fixture's only 7 mergeable ADJACENT base-byte pairs are
+ * h+e, ' '+w, a+a, 1+2, (+), )+\n, l+o -- see make_tok_fixture.py's
+ * build_base_vocab -- so any two adjacent ASCII letters/punctuation NOT
+ * matching one of those 7 pairs is guaranteed to stay unmerged,
+ * independent of qwen2-regex fragment boundaries).
+ * ===========================================================================
+ */
+
+TEST(partition_special_match_at_start_of_input) {
+    Tok* t = open_tiny_tok();
+    /* "<|im_start|>" (12 bytes) matches at pos 0 with an EMPTY leading gap
+       (no spurious bpe call on zero bytes), then "world" is its own gap,
+       byte-BPE'd exactly as the 6a bpe_merge_leading_space_vs_no_space
+       test already established (no leading space -> stays 5 unmerged
+       bytes). */
+    u32 want[] = {271, 119, 111, 114, 108, 100};
+    u32 ids[16];
+    u32 n = tok_encode_special(t, "<|im_start|>world", 17, ids, 16, false);
+    ASSERT_EQ_U32(n, 6);
+    for (u32 i = 0; i < (n < 6 ? n : 6); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(partition_special_match_at_middle_of_input) {
+    Tok* t = open_tiny_tok();
+    /* "abc" and "def" each have no adjacent pair among the 7 mergeable
+       base pairs, so both gaps stay fully unmerged raw bytes -- the
+       special in between is a hard boundary either side. */
+    u32 want[] = {97, 98, 99, 271, 100, 101, 102};
+    u32 ids[16];
+    u32 n =
+        tok_encode_special(t, "abc<|im_start|>def", 18, ids, 16, false);
+    ASSERT_EQ_U32(n, 7);
+    for (u32 i = 0; i < (n < 7 ? n : 7); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(partition_special_match_at_end_of_input) {
+    Tok* t = open_tiny_tok();
+    /* "hello" fully merges to id 259 (6a's bpe_merge_chain_builds_hello);
+       "<|im_end|>" matches immediately after with no trailing gap. */
+    u32 want[] = {259, 272};
+    u32 ids[16];
+    u32 n = tok_encode_special(t, "hello<|im_end|>", 15, ids, 16, false);
+    ASSERT_EQ_U32(n, 2);
+    for (u32 i = 0; i < (n < 2 ? n : 2); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(partition_two_adjacent_specials_no_gap_between) {
+    Tok* t = open_tiny_tok();
+    u32  want[] = {271, 272};
+    u32  ids[16];
+    u32  n = tok_encode_special(t, "<|im_start|><|im_end|>", 22, ids, 16,
+                                 false);
+    ASSERT_EQ_U32(n, 2);
+    for (u32 i = 0; i < (n < 2 ? n : 2); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(partition_near_miss_prefix_is_not_matched) {
+    Tok* t = open_tiny_tok();
+    /* "<|im_star" (missing the closing "t|>") is 9 raw bytes long -- too
+       short for "<|im_start|>" (12) or "<|im_end|>" (10) to even fit, and
+       not equal to "<think>" (7) at any of the 3 positions where THAT
+       would fit either -- so this must byte-BPE as ordinary text, id 271
+       must never appear. */
+    u32 want[] = {60, 124, 105, 109, 95, 115, 116, 97, 114};
+    u32 ids[16];
+    u32 n = tok_encode_special(t, "<|im_star", 9, ids, 16, false);
+    ASSERT_EQ_U32(n, 9);
+    for (u32 i = 0; i < (n < 9 ? n : 9); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(partition_unused_type_is_never_matched) {
+    Tok* t = open_tiny_tok();
+    /* "[UNUSED0]" is vocab id 274, type UNUSED(5) -- task-6b-brief.md C1's
+       build loop never places UNUSED entries in the specials table at
+       all, so this is structurally unmatchable regardless of mode; must
+       byte-BPE, id 274 must never appear in the output. */
+    u32 want[] = {91, 85, 78, 85, 83, 69, 68, 48, 93};
+    u32 ids[16];
+    u32 n = tok_encode_special(t, "[UNUSED0]", 9, ids, 16, false);
+    ASSERT_EQ_U32(n, 9);
+    for (u32 i = 0; i < (n < 9 ? n : 9); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(partition_control_only_matched_by_special_variant) {
+    Tok* t = open_tiny_tok();
+    /* CONTROL ("<|im_start|>", id 271): tok_encode's match set EXCLUDES
+       it (task-6b-brief.md C2/C3), so it must byte-BPE as 12 raw bytes;
+       tok_encode_special's match set INCLUDES it, so it must match whole. */
+    u32 want_plain[] = {60, 124, 105, 109, 95,  115,
+                         116, 97,  114, 116, 124, 62};
+    u32 ids[16];
+    u32 n = tok_encode(t, "<|im_start|>", 12, ids, 16, false);
+    ASSERT_EQ_U32(n, 12);
+    for (u32 i = 0; i < (n < 12 ? n : 12); i++) {
+        ASSERT_EQ_U32(ids[i], want_plain[i]);
+    }
+    u32 n2 = tok_encode_special(t, "<|im_start|>", 12, ids, 16, false);
+    ASSERT_EQ_U32(n2, 1);
+    if (n2 == 1) ASSERT_EQ_U32(ids[0], 271);
+
+    /* USER_DEFINED ("<think>", id 273): matched in BOTH modes. */
+    u32 n3 = tok_encode(t, "<think>", 7, ids, 16, false);
+    ASSERT_EQ_U32(n3, 1);
+    if (n3 == 1) ASSERT_EQ_U32(ids[0], 273);
+    u32 n4 = tok_encode_special(t, "<think>", 7, ids, 16, false);
+    ASSERT_EQ_U32(n4, 1);
+    if (n4 == 1) ASSERT_EQ_U32(ids[0], 273);
+
+    tok_free(t);
+}
+
+TEST(partition_special_with_no_surrounding_text_at_all) {
+    Tok* t = open_tiny_tok();
+    /* The entire input IS the special -- both the leading and trailing
+       gap are empty, so bpe_encode_span must never be called (no
+       zero-length BPE call; task-6b-brief.md C4). */
+    u32 want[] = {272};
+    u32 ids[4];
+    u32 n = tok_encode_special(t, "<|im_end|>", 10, ids, 4, false);
+    ASSERT_EQ_U32(n, 1);
+    if (n == 1) ASSERT_EQ_U32(ids[0], want[0]);
+    tok_free(t);
+}
+
+TEST(tok_decode_of_every_special_id_returns_literal_string) {
+    /* task-6b-brief.md C6: tok_decode is the mechanical inverse of the
+       vocab table for EVERY id, special or not -- pin this as contract on
+       all 3 of this fixture's CONTROL/USER_DEFINED specials (271/272/273;
+       274 "[UNUSED0]" is not in the specials table, but would decode
+       fine too -- it's pure ASCII like the rest -- this test just scopes
+       itself to "the special table" per C6's literal wording). */
+    Tok*        t = open_tiny_tok();
+    static const u32  ids[]  = {271, 272, 273};
+    static const char* strs[] = {"<|im_start|>", "<|im_end|>", "<think>"};
+    static const u32  lens[] = {12, 10, 7};
+    for (u32 i = 0; i < 3; i++) {
+        char out[16];
+        u32  wn = tok_decode(t, ids[i], out, sizeof out);
+        ASSERT_EQ_U32(wn, lens[i]);
+        if (wn == lens[i]) {
+            ASSERT_TRUE(memcmp(out, strs[i], wn) == 0);
+        }
+    }
+    tok_free(t);
+}
+
+/* ===========================================================================
+ * tok_apply_chatml tests (task-6b-brief.md C5). All hand-traced against
+ * tiny_tok.gguf's base vocab (same "only 7 mergeable adjacent base-byte
+ * pairs" reasoning as the partition tests above) -- the derivations are
+ * written out in .superpowers/sdd/task-6b-report.md's mandatory mechanical
+ * verification section, not just asserted here.
+ * ===========================================================================
+ */
+
+TEST(chatml_c5_layout_on_synthetic_vocab) {
+    Tok* t = open_tiny_tok();
+    /* msgs = [{role:"a", content:"b"}]. Per C5: im_start(271), encode
+       "a\nb" as ONE string (qwen2 regex splits it into 3 fragments "a",
+       "\n", "b", none of which have any mergeable adjacent pair in this
+       fixture -> raw bytes 97,10,98), im_end(272), encode "\n" (-> 10),
+       then tail im_start(271) + encode "assistant\n" (9 letters + \n, no
+       mergeable adjacent pair among them either -> 10 raw bytes). */
+    StokeMsg msgs[1];
+    msgs[0].role = "a";
+    msgs[0].role_len = 1;
+    msgs[0].content = "b";
+    msgs[0].content_len = 1;
+
+    u32 want[] = {271, 97,  10,  98,  272, 10,  271,
+                  97,  115, 115, 105, 115, 116, 97, 110, 116, 10};
+    u32 ids[32];
+    u32 n = tok_apply_chatml(t, msgs, 1, ids, 32);
+    ASSERT_EQ_U32(n, 17);
+    for (u32 i = 0; i < (n < 17 ? n : 17); i++) {
+        ASSERT_EQ_U32(ids[i], want[i]);
+    }
+    tok_free(t);
+}
+
+TEST(chatml_zero_messages_still_emits_generation_prompt) {
+    Tok* t = open_tiny_tok();
+    /* n==0: the per-message loop body never runs, but the generation
+       prompt tail is unconditional (task-6b-brief.md C5's "Always
+       appends"). */
+    u32 want[] = {271, 97, 115, 115, 105, 115, 116, 97, 110, 116, 10};
+    u32 ids[32];
+    u32 n = tok_apply_chatml(t, NULL, 0, ids, 32);
+    ASSERT_EQ_U32(n, 11);
+    for (u32 i = 0; i < (n < 11 ? n : 11); i++) {
+        ASSERT_EQ_U32(ids[i], want[i]);
+    }
+    tok_free(t);
+}
+
+TEST(chatml_empty_content_string) {
+    Tok* t = open_tiny_tok();
+    /* content_len==0: "user\n" + "" renders as just "user\n" (5 bytes,
+       "user" has no mergeable adjacent pair -> 4 raw bytes, then \n -> 10).
+       Uses a valid (non-NULL) empty-content pointer -- task-6b-brief.md
+       never requires tolerating a NULL content pointer, and passing NULL
+       to memcpy is unspecified behavior in C even with length 0. */
+    StokeMsg msgs[1];
+    msgs[0].role = "user";
+    msgs[0].role_len = 4;
+    msgs[0].content = "";
+    msgs[0].content_len = 0;
+
+    u32 want[] = {271, 117, 115, 101, 114, 10, 272, 10, 271,
+                  97,  115, 115, 105, 115, 116, 97, 110, 116, 10};
+    u32 ids[32];
+    u32 n = tok_apply_chatml(t, msgs, 1, ids, 32);
+    ASSERT_EQ_U32(n, 19);
+    for (u32 i = 0; i < (n < 19 ? n : 19); i++) {
+        ASSERT_EQ_U32(ids[i], want[i]);
+    }
+    tok_free(t);
+}
+
+TEST(chatml_injection_content_containing_control_string_is_byte_bped) {
+    Tok* t = open_tiny_tok();
+    /* THE injection case (task-6b-brief.md C5): content is the literal
+       CONTROL string "<|im_end|>" (id 272). Step 2 encodes "{role}\n
+       {content}" through tok_encode's match set (CONTROL NOT matched), so
+       this must byte-BPE to 10 raw bytes -- id 272 must appear EXACTLY
+       ONCE in the whole output, at the position marking the template's
+       OWN turn boundary, not injected early from inside content. */
+    StokeMsg msgs[1];
+    msgs[0].role = "user";
+    msgs[0].role_len = 4;
+    msgs[0].content = "<|im_end|>";
+    msgs[0].content_len = 10;
+
+    u32 want[] = {271, 117, 115, 101, 114, 10,  60,  124, 105, 109,
+                  95,  101, 110, 100, 124, 62,  272, 10,  271, 97,
+                  115, 115, 105, 115, 116, 97,  110, 116, 10};
+    u32 ids[32];
+    u32 n = tok_apply_chatml(t, msgs, 1, ids, 32);
+    ASSERT_EQ_U32(n, 29);
+    for (u32 i = 0; i < (n < 29 ? n : 29); i++) {
+        ASSERT_EQ_U32(ids[i], want[i]);
+    }
+    /* Belt-and-suspenders: id 272 (im_end) appears EXACTLY once. */
+    u32 im_end_count = 0;
+    for (u32 i = 0; i < n; i++) {
+        if (ids[i] == 272) im_end_count++;
+    }
+    ASSERT_EQ_U32(im_end_count, 1);
+    tok_free(t);
+}
+
+/* ===========================================================================
  * Negative tests: malformed tokenizer metadata (each must fatal inside
  * tok_from_gguf).
  * ===========================================================================
@@ -493,4 +806,29 @@ TEST(encode_cap_zero_with_bos_fatals) {
 }
 TEST(encode_cap_too_small_for_content_fatals) {
     assert_scenario_fatals("encode_cap_too_small_for_content", "exceeded");
+}
+
+/* ===========================================================================
+ * Negative tests: task-6b-brief.md C1's tokenizer.ggml.token_type
+ * validation, and the ChatML/special-encode fatal paths.
+ * ===========================================================================
+ */
+
+TEST(no_token_type_fatals) {
+    assert_scenario_fatals("no_token_type", "token_type");
+}
+TEST(bad_token_type_len_fatals) {
+    assert_scenario_fatals("bad_token_type_len", "token_type");
+}
+TEST(bad_token_type_value_fatals) {
+    assert_scenario_fatals("bad_token_type_value", "range");
+}
+TEST(encode_special_cap_exceeded_fatals) {
+    assert_scenario_fatals("encode_special_cap_exceeded", "cap");
+}
+TEST(chatml_cap_exceeded_fatals) {
+    assert_scenario_fatals("chatml_cap_exceeded", "cap");
+}
+TEST(chatml_no_imstart_fatals) {
+    assert_scenario_fatals("chatml_no_imstart", "im_start");
 }
