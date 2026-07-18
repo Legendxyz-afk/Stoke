@@ -1,13 +1,18 @@
-/* src/main.c -- stoke CLI. Task 5 implements only the `info` subcommand
- * (task-5-brief.md Step 3 + appendix A10's golden-output rules); later
- * milestones add tokenize/run/serve/bench (see the plan's file structure
- * note for src/main.c).
+/* src/main.c -- stoke CLI. Task 5 implements the `info` subcommand
+ * (task-5-brief.md Step 3 + appendix A10's golden-output rules); task 6a
+ * adds `tokenize` (task-6a-brief.md "Files": mechanism tests/tok_golden.sh
+ * runs, mirroring how tests/golden_info.sh runs `stoke info`). Later
+ * milestones add run/serve/bench (see the plan's file structure note for
+ * src/main.c).
  */
 #include "common.h"
 
 #include "gguf.h"
+#include "tok.h"
 
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -183,6 +188,162 @@ static void cmd_info(const char* path) {
     gguf_close(f);
 }
 
+/* ===========================================================================
+ * `stoke tokenize` (task-6a-brief.md "Files"): opens the GGUF, builds a
+ * Tok, reads the whole input file as raw bytes, encodes it (pure byte-BPE,
+ * add_special=false -- no special-token parsing in this task), and prints
+ * the ids as a Python list "[a, b, c]\n", byte-identical to
+ * tests/data/tok_corpus.ids.golden's format (task-6a-brief.md B6): a
+ * single trailing '\n' (not the oracle CLI's own "\r\n" console quirk),
+ * comma-space separated, no other output on stdout. This is the mechanism
+ * tests/tok_golden.sh runs, mirroring how tests/golden_info.sh runs
+ * `stoke info`.
+ * ===========================================================================
+ */
+
+/* Reads the whole file at `path` into an owned buffer; *out_len receives
+ * the byte count. Fatal on any I/O failure -- matches this project's
+ * "every failure path is fatal(), no silent fallback" convention. */
+static char* read_whole_file(const char* path, u64* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fatal("stoke tokenize: cannot open '%s' -- %s", path, strerror(errno));
+    }
+    if (fseek(f, 0, SEEK_END) != 0) {
+        int e = errno;
+        fclose(f);
+        fatal("stoke tokenize: cannot seek to end of '%s' -- %s", path,
+              strerror(e));
+    }
+    long size = ftell(f);
+    if (size < 0) {
+        int e = errno;
+        fclose(f);
+        fatal("stoke tokenize: ftell failed for '%s' -- %s", path, strerror(e));
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        int e = errno;
+        fclose(f);
+        fatal("stoke tokenize: cannot rewind '%s' -- %s", path, strerror(e));
+    }
+
+    char*  buf = (char*)xmalloc((size_t)size);
+    size_t got = fread(buf, 1, (size_t)size, f);
+    if (got != (size_t)size) {
+        fatal("stoke tokenize: short read on '%s' (%zu of %ld bytes)", path,
+              got, size);
+    }
+    fclose(f);
+
+    *out_len = (u64)size;
+    return buf;
+}
+
+static void cmd_tokenize(const char* model_path, const char* text_path) {
+    GgufFile* f = gguf_open(model_path);
+    Tok*      t = tok_from_gguf(f);
+    gguf_close(f); /* Tok is self-contained after construction (src/tok.h) */
+
+    u64   len;
+    char* buf = read_whole_file(text_path, &len);
+
+    /* src/tok.h's tok_encode contract: cap >= 3*len is always sufficient
+     * (the 3x, not 1x, matters only for pathological all-invalid-UTF-8
+     * input -- see that comment and src/tok.c's block comment above
+     * utf8_decode_one for why). */
+    if (len > (u64)UINT32_MAX / 3) {
+        fatal("stoke tokenize: '%s' is %llu bytes -- too large for this "
+              "CLI (3x ids cap must fit in u32)",
+              text_path, (unsigned long long)len);
+    }
+    u32  cap = (u32)(len * 3);
+    u32* ids = (u32*)xcalloc(cap > 0 ? cap : 1, sizeof(u32));
+
+    u32 n = tok_encode(t, buf, len, ids, cap, /*add_special=*/false);
+
+    printf("[");
+    for (u32 i = 0; i < n; i++) {
+        if (i > 0) printf(", ");
+        printf("%u", ids[i]);
+    }
+    printf("]\n");
+
+    free(ids);
+    free(buf);
+    tok_free(t);
+}
+
+/* `stoke tokenize --roundtrip <model> <text-file>` -- task-6a-brief.md B6
+ * explicitly marks this optional ("optionally also add a real-corpus
+ * roundtrip mode to `stoke tokenize` for extra assurance on real data").
+ * The MANDATORY decode(encode(x))==x assertion lives in tests/test_tok.c
+ * on the synthetic vocab (always-run, no model needed); this mode adds
+ * the same check against the REAL ~152K-entry vocab, which the synthetic
+ * fixture can't exercise. Splits the file on '\n' (matching
+ * tests/tok_fuzz.py's one-line-per-entry corpus) and reports match/
+ * mismatch counts per line. A mismatch is NOT automatically a bug: lines
+ * containing invalid/overlong UTF-8 are expected to differ, since
+ * canonicalization is not lossless there by design (src/tok.c's block
+ * comment above utf8_decode_one) -- this prints line numbers so a caller
+ * can cross-check them against known-invalid corpus lines by hand. */
+static void cmd_tokenize_roundtrip(const char* model_path,
+                                    const char* text_path) {
+    GgufFile* f = gguf_open(model_path);
+    Tok*      t = tok_from_gguf(f);
+    gguf_close(f);
+
+    u64   len;
+    char* buf = read_whole_file(text_path, &len);
+
+    if (len > (u64)UINT32_MAX / 3) {
+        fatal("stoke tokenize --roundtrip: '%s' is %llu bytes -- too large",
+              text_path, (unsigned long long)len);
+    }
+    u32 cap = (u32)(len * 3);
+    if (cap == 0) cap = 1;
+    u32*  ids = (u32*)xcalloc(cap, sizeof(u32));
+    char* out = (char*)xcalloc(cap, 4); /* generous: decode's total output
+        for one line can't exceed that line's own canonical byte count,
+        itself <= 3x the line's raw length <= 3x len */
+
+    u64 line_no = 0, n_match = 0, n_mismatch = 0;
+    u64 line_start = 0;
+    for (u64 i = 0; i <= len; i++) {
+        if (i == len || buf[i] == '\n') {
+            u64 line_len = i - line_start;
+            line_no++;
+            u32 n = tok_encode(t, buf + line_start, line_len, ids, cap, false);
+            u32 w = 0;
+            for (u32 k = 0; k < n; k++) {
+                w += tok_decode(t, ids[k], out + w, (u32)((u64)cap * 4 - w));
+            }
+            bool ok = (w == line_len) &&
+                      (line_len == 0 ||
+                       memcmp(out, buf + line_start, line_len) == 0);
+            if (ok) {
+                n_match++;
+            } else {
+                n_mismatch++;
+                fprintf(stderr,
+                        "roundtrip: line %llu MISMATCH (original %llu "
+                        "bytes, decoded %u bytes)\n",
+                        (unsigned long long)line_no,
+                        (unsigned long long)line_len, w);
+            }
+            line_start = i + 1;
+        }
+    }
+
+    printf("roundtrip: %llu/%llu lines match exactly, %llu mismatched\n",
+           (unsigned long long)n_match, (unsigned long long)line_no,
+           (unsigned long long)n_mismatch);
+
+    free(out);
+    free(ids);
+    free(buf);
+    tok_free(t);
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     /* Windows CRT stdout defaults to text mode, which translates '\n' to
@@ -194,7 +355,8 @@ int main(int argc, char** argv) {
 #endif
 
     if (argc < 2) {
-        fatal("usage: stoke <command> [args] (commands: info <path.gguf>)");
+        fatal("usage: stoke <command> [args] (commands: info <path.gguf>, "
+              "tokenize [--roundtrip] <path.gguf> <text-file>)");
     }
     if (strcmp(argv[1], "info") == 0) {
         if (argc < 3) {
@@ -203,6 +365,21 @@ int main(int argc, char** argv) {
         cmd_info(argv[2]);
         return 0;
     }
-    fatal("unknown command '%s' (commands: info)", argv[1]);
+    if (strcmp(argv[1], "tokenize") == 0) {
+        if (argc >= 3 && strcmp(argv[2], "--roundtrip") == 0) {
+            if (argc < 5) {
+                fatal("usage: stoke tokenize --roundtrip <path.gguf> "
+                      "<text-file>");
+            }
+            cmd_tokenize_roundtrip(argv[3], argv[4]);
+            return 0;
+        }
+        if (argc < 4) {
+            fatal("usage: stoke tokenize <path.gguf> <text-file>");
+        }
+        cmd_tokenize(argv[2], argv[3]);
+        return 0;
+    }
+    fatal("unknown command '%s' (commands: info, tokenize)", argv[1]);
     return 1; /* unreachable */
 }

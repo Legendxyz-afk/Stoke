@@ -67,6 +67,7 @@ all: $(TEST_BIN) $(STOKE_BIN)
 test: $(TEST_BIN) $(STOKE_BIN)
 	sh tests/run_tests.sh $(BUILDDIR) $(EXE)
 	sh tests/golden_info.sh $(BUILDDIR) $(EXE)
+	sh tests/tok_golden.sh $(BUILDDIR) $(EXE)
 
 # One BUILDDIR per (platform,sanitizer) combination (see header comment) --
 # object files live here too, built with this invocation's exact CFLAGS, so
