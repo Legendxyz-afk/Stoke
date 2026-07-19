@@ -1,0 +1,1 @@
+A train leaves station A traveling at 60 km/h at the same time a second train leaves station B, 300 km away, traveling toward it at 90 km/h. How long until they meet, and how far from station A?

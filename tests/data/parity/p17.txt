@@ -1,0 +1,5 @@
+Complete the following JSON configuration object by adding the missing fields for a typical web server config, then explain each field:
+
+{
+  "host": "0.0.0.0",
+  "port": 8080,

@@ -1,0 +1,9 @@
+Explain what each field in the following JSON object represents, assuming it describes a user account in a web application:
+
+{
+  "id": 4821,
+  "username": "kestrel99",
+  "active": true,
+  "roles": ["admin", "editor"],
+  "last_login": "2026-03-14T09:22:00Z"
+}

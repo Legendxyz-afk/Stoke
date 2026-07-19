@@ -1,0 +1,7 @@
+Complete the following Python class that implements a simple stack with push, pop, and peek methods:
+
+class Stack:
+    def __init__(self):
+        self.items = []
+
+    def push(self, item):

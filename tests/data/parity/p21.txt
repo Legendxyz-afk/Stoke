@@ -1,0 +1,10 @@
+Explain what the following Python code does and what it would print:
+
+def mystery(n):
+    result = []
+    for i in range(n):
+        if i % 3 == 0 or i % 5 == 0:
+            result.append(i)
+    return result
+
+print(mystery(20))

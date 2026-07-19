@@ -1,0 +1,8 @@
+Explain what the following C code does, line by line, and mention any potential bugs:
+
+int sum = 0;
+for (int i = 0; i < n; i++) {
+    sum += arr[i];
+    if (sum < 0) break;
+}
+printf("%d\n", sum);

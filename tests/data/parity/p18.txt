@@ -1,0 +1,9 @@
+Complete this C struct definition for a 3D vector and write a function that computes its magnitude:
+
+typedef struct {
+    float x;
+    float y;
+    float z;
+} Vec3;
+
+float vec3_magnitude(Vec3 v) {

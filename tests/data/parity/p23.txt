@@ -1,0 +1,6 @@
+Explain what this C code does and why the second call to free would cause undefined behavior:
+
+int *p = malloc(sizeof(int));
+*p = 42;
+free(p);
+free(p);
