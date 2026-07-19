@@ -4,3 +4,8 @@
 *.sh text eol=lf
 # cmd.exe batch files are the mirror case: label/goto parsing wants CRLF.
 *.cmd text eol=crlf
+# Parity prompt files are consumed as raw bytes (the file IS the prompt;
+# MANIFEST token counts are computed over exactly these bytes). Exempt them
+# from ALL eol conversion so no checkout can rewrite \n into \r\n and
+# silently change tokenization under the parity gate.
+tests/data/parity/*.txt -text
