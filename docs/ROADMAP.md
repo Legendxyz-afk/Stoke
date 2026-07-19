@@ -1,0 +1,147 @@
+# stoke — Phase 1 roadmap (the operational map)
+
+*Updated 2026-07-19 at the `m1` tag. This is the FIRST document a working
+session reads. It is a map, not the territory: every milestone's binding
+detail lives in the linked spec/plan/design-note sections, and on any
+conflict the linked document wins. Master record + history:
+`../MEMORY.md`. Exact current position + in-flight state: the final
+NEXT-SESSION block of `.superpowers/sdd/progress.md`.*
+
+**What stoke is:** a small, embeddable, from-scratch C11 LLM inference
+engine whose architecture is concurrent-first — paged KV + continuous
+batching + a real scheduler for the bandwidth-bound consumer hardware
+vLLM abandons and llama.cpp/Ollama serve single-user. Library-first:
+`libstoke.a` + `stoke.h`; the OpenAI-compatible server is a thin frontend.
+
+**Phase 1 is done when** (spec "Phase-1 goal", measured on the reference
+box): tokenizer + greedy parity proven against llama.cpp; S2 aggregate
+≥2× ollama-default AND ≥1.0× llama-server-tuned at N=8/16 on the same
+GGUF; single-stream ≥50% of llama.cpp; no >250ms decode stall from a
+co-running prefill; one static binary; OpenAI endpoints pass
+openai-python; ASan/TSan green throughout; README with a reproducible
+benchmark report.
+
+## Governance (Kabir, 2026-07-19)
+
+- **Every session is Opus 4.8** — sessions, probes, briefs, worker
+  dispatch, task-reviews, and GATE STAMPS, M2 through M7. The stamps are
+  mechanical checklists; a gate passes on recorded evidence, never on
+  judgment. (Default model is set to Opus 4.8 in user settings; the
+  session-start model gate in project memory enforces the match.)
+- **Escalation** = STOP + half-page memo to Kabir (what failed, evidence,
+  2–3 options, one recommendation) on: a gate failing twice for the same
+  cause; >1 day stuck on one divergence; results contradicting the spec's
+  physics; ANY temptation to loosen a gate (ε, waiver budget, bars,
+  corpus trims). Kabir may summon Fable ad hoc; nothing depends on it.
+- **Workers**: sonnet, surgical briefs, constants PROBED at dispatch
+  (never recalled — applies to the design notes themselves), a mechanical
+  verification step in every brief, Opus task-review per task. Background
+  workers die at session boundaries — recovery = check `git log` for the
+  expected commit, else re-dispatch from the brief.
+
+## The map
+
+| # | Milestone | Status | Gate (short form) |
+|---|---|---|---|
+| M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
+| M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
+| **M2** | **Scalar forward pass** | **← NOW** | Greedy 64-id parity vs llama-server, 50 prompts, ε=1e-3-nat waiver ≤2 |
+| M3 | AVX2+VNNI kernels + pool | queued | Scalar↔SIMD exact-diff; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
+| M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
+| M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak |
+| M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
+| M7 | Harden + launch-ready | queued | Llama-3.2 parity incl. long-ctx; unsloth-file run; 24h soak; reproducible report; Kabir sign-offs |
+
+Milestone entry = prior gate stamped. Full gate checklists are mechanical
+lists in the design notes — run every box, record in the ledger +
+MEMORY.md, tag if the milestone says so, move on.
+
+## Per-milestone: where the truth lives
+
+**M2 — scalar forward pass (NOW).** Operative doc:
+`superpowers/design-notes/2026-07-19-m2-op-spec-and-parity-protocol.md`
+(op-by-op spec §5–6, config contract §3 with TRAP #1 head_dim=128-not-80 /
+TRAP #2 tied-LM-head / TRAP #3 NEOX-pairing, `stoke run` CLI §7, gate +
+waiver protocol §8, L0–L3 parity-debug ladder + numpy `ref_forward.py` §9,
+dispatch probe pack P1–P5 §10, workers W1–W4 §11). First actions:
+`scripts/win-check.cmd` chore (§12) → acquire Q8_0 parity GGUF (sha256 +
+`stoke info` + tokenizer-table identity assert, §2) → probe pack → W1.
+
+**M3 — SIMD + pool.** Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
+attn_v/ffn_down/token_embd as Q6_K); integer cores on BOTH scalar+SIMD
+paths (exact-diff gate depends on it; re-run parity after the activation
+switch); AVX-VNNI VEX intrinsic (`_mm256_dpbusd_avx_epi32`, NOT the
+AVX-512 name) + dpbusd sign trick — probe idiom from fetched ggml source;
+K-quant layouts python-verified before C; work-stealing 64-row chunks
+(P/E-proof); miss-the-bar attribution ladder runs on the mandated
+`stoke bench --ops` microbench.
+
+**M4 — paged KV + static batch.** Forward note §M4: block=16; `kv_view`
+body swap only (M2 froze the accessor); **batch-composition independence
+by construction** (seqs-inner/weights-outer — same seq ⇒ token-identical
+at any batch size; this is what keeps M5 debuggable); full-reservation
+admission until preemption exists; the 11 sim invariants asserted after
+EVERY op; Q8-KV is property-tested + divergence-counted, never
+token-parity-gated (default ON/OFF is Kabir's call at M5).
+
+**M5 — continuous batching (THE product gate).** Forward note §M5: the
+locked scheduler (WAITING→PREFILLING→RUNNING→FINISHED; ≤1 active prefill;
+128-token chunk co-runs and never displaces a decode — asserted; admission
+watermark W=max(8, 2·|RUNNING|); preempt-youngest, push-front, and
+**replay recorded ids, never re-sample**); the sim harness is built FIRST
+(virtual clock, fake model, trace catalogue incl. the memory-pressure
+trace; reference run = same trace with infinite pool); bar-miss
+attribution starts from M4's static curve (if static N=8 already missed,
+the scheduler was never the problem). Soak uses the detached-runner ops
+lesson. If llamacpp-tuned parity is cleared but the 16.8@16
+inversion-derived bar is not: that is a results-vs-physics memo to Kabir,
+not a grind.
+
+**M6 — freeze + server.** Forward note §M6: error-handling mechanism is
+DECIDED (load-time trap via thread-local jmp_buf in the `fatal()` choke
+point; API misuse returns `STOKE_ERR_*`; internal invariants abort through
+`stoke_set_log_callback`); run the ABI freeze checklist as a mechanical
+pass (incl. C++-TU compile test); server = own HTTP/1.1 + SSE with the
+listed compat traps; **the definitive smoke: the M0 bench harness drives a
+`stoke` adapter UNCHANGED**; stop-strings live consumer-side with a
+tail-window; seeded sampling stays replay-safe via the M5 rule.
+
+**M7 — harden + launch.** Forward note §M7: Llama-3.2's four
+silent-garbage deltas (no QK-norm — gate ops on tensor presence; llama3
+rope SCALING formula fetched exactly — plain NEOX passes short tests and
+fails long ones, so its corpus includes ≥1k-token contexts; llama-bpe =
+second pre-tokenizer regex entry, oracle-gated like M1; header-format
+template #2); unsloth-file `stoke info` diff then parity; 24h detached
+soak with RSS slope watch; re-run ALL baselines at current dated versions
+before the README table; name-collision memo to Kabir BEFORE README work.
+
+**Cross-cutting (every milestone):** forward note's closing section —
+16GB RAM ceilings (concurrency benching stays on Q4_K_M), every gate
+names its GGUF explicitly, never commit a model / cite a git-ignored path,
+history.jsonl row per hot-path-touching green commit, tsan every commit
+from M3 on, `.gitattributes` keeps `*.sh` LF (WSL dash fatals on CRLF;
+verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
+
+## Session protocol (every session, unchanged M2→M7)
+
+1. Model gate: session model must be **Opus 4.8** (memory
+   `engine-project.md` owner line).
+2. Read: this file's map → ledger NEXT-SESSION block
+   (`.superpowers/sdd/progress.md`) → the current milestone's design note.
+3. Work the SDD loop: probe → brief → dispatch sonnet worker → verify
+   green bar YOURSELF (Windows `mingw32-make test` + WSL
+   `scripts/wsl-check.sh` plain/asan/tsan — judge by its printed ALL
+   GREEN, not pipeline exit) → Opus task-review → commit (msg style:
+   `area: what -- detail`; no attribution trailers) → ledger update.
+4. Milestone gate: run the checklist, record evidence in ledger +
+   MEMORY.md build log, tag if specified, update the memory owner line,
+   enter the next milestone's note.
+5. Local git only — NO remote, no push (Kabir 2026-07-16, still binding).
+
+## Beyond Phase 1 (context, not tasks)
+
+Phase 1.5: CUDA (`.cu` behind `extern "C"`, onto the proven scheduler) +
+ARM NEON — planning doc is an M7 deliverable. Phase 2: NPU /
+heterogeneous execution (needs future hardware). Phase 3: the runtime —
+router fold-in + AySen `local()` client in-process. Phase 4 (dream):
+AS-core control plane; open-core company. Full rationale: `../MEMORY.md`.

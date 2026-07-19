@@ -455,6 +455,9 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   M2→M7 end-to-end — sessions, briefs, reviews, gate stamps.**
 
 Related paths (from this folder):
+- **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
+  (position, per-milestone gates + operative-doc pointers, session
+  protocol, escalation; added 2026-07-19 at the `m1` tag)
 - Beginner primer — every concept from scratch: `docs/beginners-primer.md`
 - Background — what vLLM is, in depth: `docs/vllm-and-the-serving-landscape.md`
 - AySen: `../loom/` (handbook: `../loom/docs/HANDBOOK.md`)
