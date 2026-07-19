@@ -356,6 +356,104 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   N=16 bar exceeds every measured baseline). **NEXT: M1 (owner: Opus 4.8) —
   Task 5 gguf.c**, worker-brief protocol in the plan.
 
+- **2026-07-18/19 — M1 COMPLETE (tag `m1`) — front door built,
+  oracle-proven, hardened.** Tasks 4–6b ALL COMPLETE + Opus-task-reviewed, ZERO
+  Critical/Important each: skeleton `9f0fc7d`; gguf.c v3 parser + mmap +
+  `stoke info` `0e89e10` (fuzz-negative gated, real-file golden byte-exact
+  both platforms); tok.c 6a `d02a28f` — from-scratch Unicode byte-BPE
+  (generated unicodedata category tables + qwen2 regex + GPT-2 byte-remap +
+  merge-rank BPE), byte-exact vs vendored `llama-tokenize` b10037 on a
+  2k-line multilingual fuzz corpus, Win+WSL asan/tsan green; the worker
+  caught the brief's invalid-UTF-8 rule being wrong about the oracle (real
+  behavior: structural validation + U+FFFD substitution, lossy) — ratified,
+  proven by the passing gate; tok.c 6b `b314982` — special-token parse +
+  `tok_apply_chatml`, goldens byte-exact in BOTH parse modes. 6b's dispatch
+  probe found the oracle's match set is MODE-DEPENDENT (`--no-parse-special`
+  still matches USER_DEFINED tokens, only suppresses CONTROL) ⇒ 6a's
+  pure-byte `tok_encode` was subtly wrong in a way its own gate couldn't see
+  — corrected in place; 6a's golden re-passed byte-identical as the
+  regression net. ChatML emits structure as ids and encodes content with
+  CONTROL unmatched — the render-then-parse path was rejected as a
+  prompt-injection hole. Task 7 close-out: whole-branch Opus review ZERO
+  Critical → fix wave #1 `b5e2f37` (unicode sweep gate: deterministic
+  22,848-line codepoint sweep incl. unassigned cps, passed byte-exact ⇒ the
+  feared Unicode-16-tables-vs-b10037 skew did not materialize; doc-integrity
+  purge of git-ignored-path citations; fixture/assertion strengthening;
+  green bar reproduced Win 98/98 + WSL plain/asan/tsan) → wave task-review 0
+  Critical / 4 Important (incl. regen_goldens truncate-before-oracle hazard
+  that could silently destroy the regression net) → **fix wave #2 LANDED
+  `9a64d23`** (F1–F8: caller-attribution threading through
+  `bpe_encode_span`/`bpe_encode_fragment` + a test pinning the ChatML-path
+  attribution, bare-label purge [path-regex residual 0], regen-goldens
+  temp-file/exit-status/shape-check safety [both failure modes demonstrated:
+  oracle-fails and oracle-lies, golden untouched each time],
+  `tests/golden_lib.sh` gate dedup [Kabir-decided; SKIP and
+  STOKE_REQUIRE_GOLDEN=1 paths demonstrated], exact-fatal pins [worker left
+  5 of 6 weak pins unfixed — completed at review with runtime-unique
+  substrings, mechanically checked], honest F8 decomposition: ON 1707 / OFF
+  2236 ids, 132 CONTROL + 42 USER_DEFINED-in-both; alignment identity
+  1707−242+771=2236 closes EXACTLY; the brief's narrow arithmetic is short
+  by 110 — all whitespace/punct neighbors {198×53, 220×49, 13×5, 30×1,
+  271×2} absorbed across special seams by the qwen2 regex, matching 6b's
+  seam-merge side-finding; both goldens stay oracle-byte-exact so this is a
+  property, not a bug). The wave's worker died pre-report; Fable
+  (2026-07-19 gate visit) reviewed the diff against the brief, completed
+  F5, ran all verifications, and landed it. Incident caught at
+  verification: the worker's editor rewrote the four gate scripts +
+  regen_goldens.sh with CRLF — msys sh masks it, WSL dash fatals (`set:
+  Illegal option -`), and Git-Bash-side reads HIDE the `\r` (text-mode
+  mount; `od -c` from WSL is authoritative) — normalized to LF and pinned
+  forever via `.gitattributes` (`*.sh text eol=lf`, in `9a64d23`). GREEN
+  BAR at `9a64d23`: Windows `mingw32-make test` 9/9 + 43/43 + 47/47 + 4
+  gates OK; WSL `wsl-check.sh` plain+asan+tsan ALL GREEN. **M1 GATE
+  STAMPED (Fable, 2026-07-19).** Ledger: `.superpowers/sdd/progress.md`.
+
+- **2026-07-19 — M2 entry designed (Fable).** Design note:
+  `docs/superpowers/design-notes/2026-07-19-m2-op-spec-and-parity-protocol.md`
+  — scalar forward pass op-by-op with the traps named (head_dim=128 is a
+  first-class GGUF key, NOT n_embd/n_head=80; LM head is TIED to
+  `token_embd.weight`, no `output.weight` tensor; RoPE is NEOX-paired
+  (i,i+64), re-confirm from source at dispatch). Parity model = a SECOND
+  GGUF, Qwen3-4B-Instruct-2507 **Q8_0** (bartowski, ~4.3GB, acquire + sha256
+  at M2 dispatch — the Q4_K_M dev file's K-quants are M3 scope; it stays
+  put, every M1 gate keeps running against it). GATE = greedy 64-id token
+  parity vs llama-server `/completion` over a committed 50-prompt corpus,
+  near-tie waiver protocol (ε=1e-3 nats, ≤2 waivers, committed reserve
+  pool). Parity-debug ladder L0–L3 with an independent numpy
+  `ref_forward.py` as first-class deliverable; dispatch probe pack P1–P5;
+  worker sketch W1–W4. Plan amendments recorded at this gate (now in the
+  plan's Global Constraints): fatal()-choke-point / no-new-globals /
+  x*-alloc discipline binding M2 onward (keeps the M6 embeddable-ABI
+  conversion local); `scripts/win-check.cmd` early-M2 chore (Windows
+  golden-gate half-gap); specials-matching revisit-condition precision fix.
+
+- **2026-07-19 — Fable exit: M3–M7 pre-designed, project goes Opus-only
+  (Kabir's direction).** Design note
+  `docs/superpowers/design-notes/2026-07-19-m3-m7-forward-designs-and-risk-playbook.md`
+  front-loads every decision the model allocation reserved for Fable: M3
+  locked decisions (Q6_K is REQUIRED for Q4_K_M support — the dev file's
+  attn_v/ffn_down/token_embd are Q6_K; integer cores on both scalar+SIMD
+  paths so the exact-diff gate is exact; AVX-VNNI VEX intrinsic trap;
+  work-stealing pool; the ≥50% attribution ladder), M4 (11 sim invariants,
+  batch-composition independence by construction, full-reservation
+  admission, Q8-KV never token-parity-gated), M5 in full (state machine,
+  step loop, watermark W=max(8,2·|RUNNING|), preempt-youngest + replay-rule,
+  chunk co-run assertion, rings/queue design, sim-harness trace catalogue,
+  bar-miss attribution ladder), M6 (fatal→library mechanism DECIDED:
+  load-time trap via thread-local jmp_buf + API-misuse error returns +
+  invariant aborts through a log callback; full ABI freeze checklist;
+  server/SSE/OpenAI-compat traps; M0-harness-as-adapter is the compat
+  smoke), M7 (Llama-3.2's four silent-garbage deltas incl. llama3 rope
+  scaling + llama-bpe pre-tokenizer as a second regex entry; unsloth-file
+  parity; 24h soak; name memo), cross-cutting rules, and per-milestone
+  mechanical gate checklists Opus stamps itself. **Escalation now = a
+  half-page memo to Kabir** (gate fails twice same cause / >1 day stuck /
+  physics contradiction / any gate-loosening temptation); Kabir may summon
+  Fable ad hoc, nothing depends on it. The companion M2 note's two Fable
+  references were amended to this protocol. Allocation amendment recorded
+  in the note (supersedes the plan's §Model allocation): **Opus 4.8 owns
+  M2→M7 end-to-end — sessions, briefs, reviews, gate stamps.**
+
 Related paths (from this folder):
 - Beginner primer — every concept from scratch: `docs/beginners-primer.md`
 - Background — what vLLM is, in depth: `docs/vllm-and-the-serving-landscape.md`
