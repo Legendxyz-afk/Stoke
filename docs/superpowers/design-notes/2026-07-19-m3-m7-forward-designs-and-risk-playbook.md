@@ -400,12 +400,17 @@ expansion; 24h soak; README + reproducible benchmark report; name decision.
   its GGUF + fetched source at dispatch; every one is a silent-garbage trap
   if assumed): (1) no QK-norm (skip those ops when tensors absent — make
   their presence conditional on config, not arch string matching); (2)
-  rope is `llama3`-scaled: freq_base 500000 PLUS the llama3 smooth
-  frequency-scaling function over `rope.scaling.*` keys (factor 32,
-  low/high freq factors, original context length) — fetch the exact
-  llama.cpp formula; plain NEOX rope produces coherent-then-degrading
-  output that WILL pass short tests and fail long ones, so the parity
-  corpus for this model must include ≥1k-token contexts; (3) tokenizer
+  rope differs TWICE (source-confirmed at the M2 probe, b10037
+  `llama_model_rope_type`): pairing is `LLAMA_ROPE_TYPE_NORM` — ADJACENT
+  pairs (2k, 2k+1), NOT qwen3's NEOX (i, i+half); convert_hf permutes Q/K
+  at GGUF-conversion so NORM-on-GGUF ≡ HF rotate_half, and stoke reads the
+  permuted file — AND it is `llama3`-scaled: freq_base 500000 PLUS the
+  llama3 smooth frequency-scaling function over `rope.scaling.*` keys
+  (factor 32, low/high freq factors, original context length) — fetch the
+  exact freq-factors formula at dispatch; wrong pairing or missing scaling
+  produces coherent-then-degrading output that WILL pass short tests and
+  fail long ones, so the parity corpus for this model must include
+  ≥1k-token contexts; (3) tokenizer
   `pre` is llama-bpe, a DIFFERENT regex (case-insensitive contractions,
   `\p{N}{1,3}` digit runs, different punctuation classes) — tok.c grows a
   per-`pre` regex table (second entry), the unicode table may need
