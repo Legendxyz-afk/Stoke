@@ -22,7 +22,7 @@ endif
 
 CFLAGS  := -std=c11 -Wall -Wextra -Werror -g -O1 -Isrc
 LDFLAGS :=
-LIBS    :=
+LIBS    := -lm
 SAN     ?=
 
 ifeq ($(OS),Windows_NT)
@@ -55,7 +55,7 @@ HEADERS  := $(wildcard src/*.h) $(wildcard tests/*.h)
 # binaries (test.h's main() would collide with it), so it's built/linked
 # only into the $(BUILDDIR)/stoke target below. Every other src/*.c is a
 # library object shared by every test binary and by stoke itself.
-LIB_SRC  := $(filter-out src/main.c,$(wildcard src/*.c))
+LIB_SRC  := $(filter-out src/main.c,$(wildcard src/*.c)) $(wildcard src/kernels/*.c)
 LIB_OBJ  := $(patsubst src/%.c,$(BUILDDIR)/%.o,$(LIB_SRC))
 MAIN_OBJ := $(BUILDDIR)/main.o
 STOKE_BIN := $(BUILDDIR)/stoke$(EXE)
@@ -76,6 +76,7 @@ test: $(TEST_BIN) $(STOKE_BIN)
 # a plain build's .o's are never accidentally linked into an ASan/TSan binary
 # or vice versa.
 $(BUILDDIR)/%.o: src/%.c $(HEADERS) | $(BUILDDIR)
+	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) | $(BUILDDIR)
