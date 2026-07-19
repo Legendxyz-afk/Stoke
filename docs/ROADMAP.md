@@ -133,6 +133,15 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
    `scripts/wsl-check.sh` plain/asan/tsan — judge by its printed ALL
    GREEN, not pipeline exit) → Opus task-review → commit (msg style:
    `area: what -- detail`; no attribution trailers) → ledger update.
+   **Parallelize the independent tier** (Kabir 2026-07-19): dispatch
+   independent workers concurrently as background agents — at M2 that is
+   W1 ‖ W2 ‖ corpus-authoring after the manager's quick P2+P3 probes (M2
+   note §11 has the exact sequencing); every brief pins a disjoint
+   file-ownership list, workers never commit, the manager verifies and
+   commits per-worker paths sequentially. Cross-MILESTONE work is never
+   parallelized (gates sequence learning). Cross-PROJECT sessions (AySen)
+   are Kabir's call, best placed in attention-light windows (M5/M7 soaks,
+   long bench runs).
 4. Milestone gate: run the checklist, record evidence in ledger +
    MEMORY.md build log, tag if specified, update the memory owner line,
    enter the next milestone's note.

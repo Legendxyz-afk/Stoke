@@ -334,6 +334,22 @@ Each worker Opus-reviewed per the SDD flow; W3's review is the deep one
 (shapes, §6 order, kv_view discipline). W2||W1 can overlap; W3 needs both;
 W4 needs W3.
 
+**Parallel dispatch (Kabir 2026-07-19):** run the independent tier as
+concurrent background workers, not a queue. Sequencing that makes it
+sound: the manager starts the Q8_0 download (P1, wall-clock-long) FIRST,
+then personally runs the two quick probes W2's brief depends on — P2
+(Q8_0 byte layout) and P3 (rope/qwen3 source fetch; §5's rope formula is
+only a hypothesis until P3) — then dispatches in parallel: **W1** (python
+tooling + P4/P5 + ref-vs-oracle validation), **W2** (kernels + L0
+vectors), and a third worker authoring the **§8 parity corpus + reserve**
+(committed before any C lands, so it is parallel-safe by construction).
+Rules: every brief pins an explicit file-ownership list (disjoint sets —
+tooling under `tests/tooling/`, kernels under `src/kernels/` +
+`tests/test_kernels.c`, corpus under `tests/data/parity/`); workers never
+commit — the manager verifies each green bar and commits per-worker paths
+sequentially. Same pattern forward: M3 kernel twins per quant kind, M4
+sim harness ‖ kv.c.
+
 ## 12. Recorded at this gate (plan-amendment items owed by the gate reviewer)
 
 - **`fatal()` vs the M6 embeddable ABI**: stoke currently has ~90 fatal/exit
