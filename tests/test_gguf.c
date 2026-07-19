@@ -462,7 +462,14 @@ TEST(meta_i64_on_string_key_fatals) {
     assert_scenario_fatals("meta_i64_on_string_key", "non-integer type");
 }
 TEST(meta_str_on_int_key_fatals) {
-    assert_scenario_fatals("meta_str_on_int_key", "not STRING");
+    /* Bare "not STRING" is a substring of gguf_meta_arr_str's own
+       element-type fatal's "is not STRING" (that one is fine precisely
+       because the reverse containment doesn't hold -- see
+       meta_arr_str_on_int_array_fatals below); qualifying with the
+       function name and key pins gguf_meta_str's OWN wrong-type fatal
+       specifically. */
+    assert_scenario_fatals("meta_str_on_int_key",
+                            "gguf_meta_str -- key 's.u32' has type");
 }
 TEST(meta_f32_on_int_key_fatals) {
     assert_scenario_fatals("meta_f32_on_int_key", "not FLOAT32");
@@ -471,21 +478,30 @@ TEST(meta_f32_on_float64_key_fatals) {
     assert_scenario_fatals("meta_f32_on_float64_key", "not FLOAT32");
 }
 TEST(meta_i64_on_u64_exceeding_int64_max_fatals) {
+    /* "key '<name>' UINT64 value" (no "[i]") discriminates the SCALAR
+       getter's overflow fatal from gguf_meta_arr_i64's element twin,
+       whose key is followed by "[<index>]". */
     assert_scenario_fatals("meta_i64_on_u64_exceeding_int64_max",
-                            "exceeds INT64_MAX");
+                            "gguf_meta_i64 -- key 's.u64_big' UINT64 value");
 }
+/* For the three missing-key tests: "not found" + the key pins
+   find_kv_or_fatal's message for that getter specifically -- the getter
+   name alone is also a prefix of its own wrong-type fatal. */
 TEST(meta_i64_on_missing_key_fatals) {
-    assert_scenario_fatals("meta_i64_on_missing_key", "gguf_meta_i64 -- key");
+    assert_scenario_fatals("meta_i64_on_missing_key",
+                            "gguf_meta_i64 -- key 'nope.key' not found");
 }
 TEST(meta_str_on_missing_key_fatals) {
-    assert_scenario_fatals("meta_str_on_missing_key", "gguf_meta_str -- key");
+    assert_scenario_fatals("meta_str_on_missing_key",
+                            "gguf_meta_str -- key 'nope.key' not found");
 }
 TEST(meta_arr_len_on_missing_key_fatals) {
     assert_scenario_fatals("meta_arr_len_on_missing_key",
-                            "gguf_meta_arr_len -- key");
+                            "gguf_meta_arr_len -- key 'nope.key' not found");
 }
 TEST(meta_arr_str_oob_index_fatals) {
-    assert_scenario_fatals("meta_arr_str_oob_index", "out of range");
+    assert_scenario_fatals("meta_arr_str_oob_index",
+                            "gguf_meta_arr_str -- key 'a.str' index 3 out of range");
 }
 TEST(meta_arr_i64_on_string_array_fatals) {
     assert_scenario_fatals("meta_arr_i64_on_string_array", "is not integer");
@@ -503,6 +519,8 @@ TEST(meta_key_oob_index_fatals) {
     assert_scenario_fatals("meta_key_oob_index", "gguf_meta_key -- index");
 }
 TEST(meta_arr_elem_type_on_scalar_key_fatals) {
+    /* Four getters share the "is not an ARRAY" wording; the function name
+       + key makes this gguf_meta_arr_elem_type's own. */
     assert_scenario_fatals("meta_arr_elem_type_on_scalar_key",
-                            "is not an ARRAY");
+                            "gguf_meta_arr_elem_type -- key 's.u32' is not an ARRAY");
 }

@@ -1,0 +1,4 @@
+# Shell scripts run under WSL dash, which fatals on CRLF ("set: Illegal
+# option -"). Pin them to LF so no Windows-side editor or checkout can
+# reintroduce it (it did once, at the M1 fix wave -- msys sh masked it).
+*.sh text eol=lf

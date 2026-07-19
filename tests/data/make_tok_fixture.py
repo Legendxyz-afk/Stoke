@@ -276,11 +276,11 @@ def make_tiny_tok():
 
 
 # ===========================================================================
-# 6a negative fixtures -- UNCHANGED from task-6a (each fatals before ever
-# reaching the token_type check added in 6b, so none of them need one; see
-# src/tok.c's tok_from_gguf -- the token_type/specials-table block is
-# deliberately built LAST, after model/pre/tokens/merges/byte_to_id are all
-# already validated).
+# Negative fixtures for the base byte-BPE vocab's own malformed-metadata
+# checks (each fatals before ever reaching the token_type check, so none of
+# them need a token_type array at all; see src/tok.c's tok_from_gguf -- the
+# token_type/specials-table block is deliberately built LAST, after
+# model/pre/tokens/merges/byte_to_id are all already validated).
 # ===========================================================================
 
 def make_bad_model():
@@ -339,7 +339,7 @@ def make_missing_byte():
 # ===========================================================================
 
 def _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count):
-    """The 7 tokenizer.ggml.* KVs every 6b fixture below starts with
+    """The 7 tokenizer.ggml.* KVs every fixture below starts with
     (model/pre/tokens/merges/bos/eos/add_bos_token) -- callers add their
     own token_type (or not) afterward and pass the resulting total
     kv_count up front, since GGUF's header declares kv_count before any KV

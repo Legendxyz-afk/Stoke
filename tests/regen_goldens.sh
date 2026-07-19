@@ -25,6 +25,18 @@
 #   <oracle> -m <model> -f <corpus> --ids --no-escape --no-bos [--no-parse-special] \
 #       | tr -d '\r' | grep -o '^\[.*\]$'
 #
+# Safety: the oracle runs to a TEMP file first, its own exit status is
+# checked explicitly (a pipeline's exit status under `set -e` is only ever
+# its LAST command's -- `set -o pipefail` isn't POSIX-portable to msys/WSL
+# `sh` either, so this doesn't lean on it at all), and the filtered result
+# is checked for the expected shape (exactly one line, starting '[' and
+# ending ']') -- all BEFORE the committed golden is touched. Only a
+# known-good replacement is ever `mv`'d over a committed golden; a failure
+# anywhere in between leaves it byte-unchanged (previously, `> "$golden"`
+# truncated the committed file up front, so an oracle failure partway
+# through could leave a 0-byte or wrong golden in place while the script
+# still reported OK).
+#
 # Usage: sh tests/regen_goldens.sh
 set -eu
 
@@ -53,8 +65,58 @@ regen() {
     golden="$2"
     shift 2
     echo "regen_goldens: regenerating $golden ..."
+
+    raw="$golden.tmp_raw"
+    filtered="$golden.tmp_filtered"
+    rm -f "$raw" "$filtered"
+
+    # Run the oracle to a temp file and capture ITS OWN exit status
+    # explicitly, via the `cmd || rc=$?` idiom (the only portable way to
+    # both inspect a failing command's exit code AND stop `set -e` from
+    # aborting the script right here, before the check below ever runs).
+    rc=0
     "$oracle" -m "$model" -f "$corpus" --ids --no-escape --no-bos "$@" \
-        | tr -d '\r' | grep -o '^\[.*\]$' > "$golden"
+        > "$raw" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "regen_goldens: FAILED -- oracle exited $rc regenerating" \
+             "$golden (corpus $corpus) -- $golden left untouched" >&2
+        rm -f "$raw"
+        exit 1
+    fi
+
+    # `|| true`: a pipeline whose last command (grep -o) finds zero
+    # matches exits 1 -- a real failure mode this script must report with
+    # its own message below, not have `set -e` kill the script
+    # unceremoniously first.
+    tr -d '\r' < "$raw" | grep -o '^\[.*\]$' > "$filtered" || true
+    rm -f "$raw"
+
+    # Assert the filtered result is non-empty and has the expected shape
+    # (exactly one line, starting '[' and ending ']') BEFORE the committed
+    # golden is touched at all.
+    n_lines=$(wc -l < "$filtered" | tr -d ' ')
+    if [ "$n_lines" -ne 1 ]; then
+        echo "regen_goldens: FAILED -- filtered oracle output for $golden" \
+             "has $n_lines bracket-shaped line(s), expected exactly 1" \
+             "(corpus $corpus) -- see $filtered -- $golden left untouched" >&2
+        exit 1
+    fi
+    line=$(cat "$filtered")
+    case $line in
+        \[*\]) : ;;
+        *)
+            echo "regen_goldens: FAILED -- $golden's sole filtered line" \
+                 "does not start with '[' and end with ']' -- $golden" \
+                 "left untouched" >&2
+            exit 1
+            ;;
+    esac
+
+    # Only NOW, with a known-good replacement sitting in $filtered, replace
+    # the committed golden -- a same-directory `mv` is a rename, so this
+    # is atomic: $golden is never observably truncated or partially
+    # written.
+    mv -f "$filtered" "$golden"
 }
 
 # --no-parse-special: tok_encode's mode (plain `stoke tokenize`).

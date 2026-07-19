@@ -10,8 +10,15 @@
 # it's present. tests/test_tok.c's own unit tests use a tiny committed
 # synthetic fixture and always run regardless of this gate.
 #
+# Shares its model-check/STOKE_REQUIRE_GOLDEN/binary-check/diff/cleanup
+# body with golden_info.sh, tok_special_golden.sh and
+# unicode_sweep_golden.sh via tests/golden_lib.sh -- see that file for the
+# shared policy this gate calls into.
+#
 # Usage: sh tests/tok_golden.sh <builddir> [exe-suffix]
 set -u
+
+. "$(dirname "$0")/golden_lib.sh"
 
 builddir="${1:?usage: tok_golden.sh <builddir> [exe-suffix]}"
 exe="${2:-}"
@@ -21,48 +28,15 @@ corpus="tests/data/tok_corpus.txt"
 golden="tests/data/tok_corpus.ids.golden"
 stoke_bin="$builddir/stoke$exe"
 
-if [ ! -f "$model" ]; then
-    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
-        echo "tok_golden: FAILED -- $model not present but" \
-             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have the" \
-             "real model; a moved/missing model must not silently" \
-             "downgrade this gate to a no-op)" >&2
-        exit 1
-    fi
-    echo "tok_golden: SKIP -- $model not present (models/ is gitignored;" \
-         "this gate only runs on boxes that have the real model file)"
-    exit 0
-fi
+golden_lib_require_model "$model" "tok_golden"
+golden_lib_require_binary "$stoke_bin" "tok_golden"
+golden_lib_require_data_file "$corpus" "tok_golden" "corpus file"
+golden_lib_require_data_file "$golden" "tok_golden" "golden file"
 
-if [ ! -f "$stoke_bin" ]; then
-    echo "tok_golden: missing binary $stoke_bin (build it before running this gate)" >&2
-    exit 1
-fi
+golden_lib_run_and_diff "tok_golden" "$golden" \
+    "$builddir/tok_corpus.ids.out" "$builddir/tok_corpus.ids.diff" \
+    "$stoke_bin tokenize $model $corpus" \
+    "$stoke_bin" tokenize "$model" "$corpus" || exit 1
 
-if [ ! -f "$corpus" ]; then
-    echo "tok_golden: missing corpus file $corpus" >&2
-    exit 1
-fi
-
-if [ ! -f "$golden" ]; then
-    echo "tok_golden: missing golden file $golden" >&2
-    exit 1
-fi
-
-got="$builddir/tok_corpus.ids.out"
-"$stoke_bin" tokenize "$model" "$corpus" > "$got"
-rc=$?
-if [ "$rc" -ne 0 ]; then
-    echo "tok_golden: FAILED -- '$stoke_bin tokenize $model $corpus' exited $rc" >&2
-    exit 1
-fi
-
-if ! diff -u "$golden" "$got" > "$builddir/tok_corpus.ids.diff" 2>&1; then
-    echo "tok_golden: FAILED -- output differs from $golden" >&2
-    cat "$builddir/tok_corpus.ids.diff" >&2
-    exit 1
-fi
-
-rm -f "$got" "$builddir/tok_corpus.ids.diff"
 echo "tok_golden: OK ($corpus matches $golden via $model)"
 exit 0

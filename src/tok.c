@@ -898,7 +898,8 @@ void tok_free(Tok* t) {
  */
 
 static void bpe_encode_fragment(const Tok* t, const u8* bytes, u64 nbytes,
-                                 u32* ids, u32* n_out, u32 cap) {
+                                 u32* ids, u32* n_out, u32 cap,
+                                 const char* fn) {
     if (nbytes == 0) return;
 
     u32* sym = (u32*)xcalloc(nbytes, sizeof(u32));
@@ -934,12 +935,12 @@ static void bpe_encode_fragment(const Tok* t, const u8* bytes, u64 nbytes,
 
     for (u64 i = 0; i < sym_count; i++) {
         if (*n_out >= cap) {
-            fatal("tok: tok_encode -- output cap %u exceeded (BPE never "
+            fatal("tok: %s -- output cap %u exceeded (BPE never "
                   "emits more tokens than input CANONICAL bytes decode to, "
                   "so cap >= 3*<input byte length> is always sufficient -- "
                   "see src/tok.h's tok_encode contract -- check the "
                   "caller's cap sizing)",
-                  cap);
+                  fn, cap);
         }
         ids[(*n_out)++] = sym[i];
     }
@@ -1001,9 +1002,13 @@ static bool specials_find_longest(const Tok* t, const char* utf8, u64 len,
  * special-token matches, and both tok_encode() and tok_encode_special()
  * reach this identical code. Appends to `ids`/`*n_out`, checking `cap`
  * before every write (bpe_encode_fragment's existing job). No-op if
- * len==0. */
+ * len==0. `fn` names the public entry point this call originated from --
+ * threaded through to bpe_encode_fragment so ITS cap-exceeded fatal names
+ * the real caller too (this is the per-emitted-token check, reached far
+ * more often than encode_partitioned's own special-id cap check below, so
+ * it is the one most likely to actually fire against ordinary content). */
 static void bpe_encode_span(const Tok* t, const u8* utf8, u64 len, u32* ids,
-                             u32* n_out, u32 cap) {
+                             u32* n_out, u32 cap, const char* fn) {
     if (len == 0) return;
 
     /* canon: worst case 3 canonical bytes per original byte (see the block
@@ -1022,7 +1027,7 @@ static void bpe_encode_span(const Tok* t, const u8* utf8, u64 len, u32* ids,
             (frag_end_ci < n_cp) ? cps[frag_end_ci].canon_off : canon_len;
 
         bpe_encode_fragment(t, canon + byte_start, byte_end - byte_start,
-                             ids, n_out, cap);
+                             ids, n_out, cap, fn);
 
         ci = frag_end_ci;
     }
@@ -1055,7 +1060,7 @@ static void encode_partitioned(const Tok* t, const char* utf8, u64 len,
                                    &spec_len)) {
             if (pos > gap_start) {
                 bpe_encode_span(t, (const u8*)utf8 + gap_start,
-                                 pos - gap_start, ids, n_out, cap);
+                                 pos - gap_start, ids, n_out, cap, fn);
             }
             if (*n_out >= cap) {
                 fatal("tok: %s -- output cap %u exceeded emitting special "
@@ -1072,7 +1077,7 @@ static void encode_partitioned(const Tok* t, const char* utf8, u64 len,
     }
     if (len > gap_start) {
         bpe_encode_span(t, (const u8*)utf8 + gap_start, len - gap_start, ids,
-                         n_out, cap);
+                         n_out, cap, fn);
     }
 }
 

@@ -1,7 +1,8 @@
-/* src/main.c -- stoke CLI. Task 5 implements the `info` subcommand; task 6a
- * adds `tokenize` (mechanism: tests/tok_golden.sh runs it, mirroring how
- * tests/golden_info.sh runs `stoke info`). Later milestones add
- * run/serve/bench (see the plan's file structure note for src/main.c).
+/* src/main.c -- stoke CLI. Implements the `info` subcommand
+ * (tests/golden_info.sh runs it) and `tokenize` (tests/tok_golden.sh runs
+ * it, mirroring how tests/golden_info.sh runs `stoke info`). Later
+ * milestones add run/serve/bench (see the plan's file structure note for
+ * src/main.c).
  */
 #include "common.h"
 
@@ -205,35 +206,37 @@ static void cmd_info(const char* path) {
 
 /* Reads the whole file at `path` into an owned buffer; *out_len receives
  * the byte count. Fatal on any I/O failure -- matches this project's
- * "every failure path is fatal(), no silent fallback" convention. */
-static char* read_whole_file(const char* path, u64* out_len) {
+ * "every failure path is fatal(), no silent fallback" convention. `who`
+ * names the calling command (passed straight through from
+ * tokenize_cmd_setup's own `who`), so e.g. a `stoke tokenize --roundtrip`
+ * I/O failure doesn't misreport itself as plain `stoke tokenize`. */
+static char* read_whole_file(const char* path, const char* who, u64* out_len) {
     FILE* f = fopen(path, "rb");
     if (!f) {
-        fatal("stoke tokenize: cannot open '%s' -- %s", path, strerror(errno));
+        fatal("%s: cannot open '%s' -- %s", who, path, strerror(errno));
     }
     if (fseek(f, 0, SEEK_END) != 0) {
         int e = errno;
         fclose(f);
-        fatal("stoke tokenize: cannot seek to end of '%s' -- %s", path,
-              strerror(e));
+        fatal("%s: cannot seek to end of '%s' -- %s", who, path, strerror(e));
     }
     long size = ftell(f);
     if (size < 0) {
         int e = errno;
         fclose(f);
-        fatal("stoke tokenize: ftell failed for '%s' -- %s", path, strerror(e));
+        fatal("%s: ftell failed for '%s' -- %s", who, path, strerror(e));
     }
     if (fseek(f, 0, SEEK_SET) != 0) {
         int e = errno;
         fclose(f);
-        fatal("stoke tokenize: cannot rewind '%s' -- %s", path, strerror(e));
+        fatal("%s: cannot rewind '%s' -- %s", who, path, strerror(e));
     }
 
     char*  buf = (char*)xmalloc((size_t)size);
     size_t got = fread(buf, 1, (size_t)size, f);
     if (got != (size_t)size) {
-        fatal("stoke tokenize: short read on '%s' (%zu of %ld bytes)", path,
-              got, size);
+        fatal("%s: short read on '%s' (%zu of %ld bytes)", who, path, got,
+              size);
     }
     fclose(f);
 
@@ -258,7 +261,7 @@ static void tokenize_cmd_setup(const char* model_path, const char* text_path,
     gguf_close(f); /* Tok is self-contained after construction (src/tok.h) */
 
     u64   len;
-    char* buf = read_whole_file(text_path, &len);
+    char* buf = read_whole_file(text_path, who, &len);
 
     /* src/tok.h's tok_encode/tok_encode_special contract: cap >= 3*len is
      * always sufficient (the 3x, not 1x, matters only for pathological

@@ -15,8 +15,15 @@
 # exit 0) when the model is absent, and only actually gate the build when
 # it's present.
 #
+# Shares its model-check/STOKE_REQUIRE_GOLDEN/binary-check/diff/cleanup
+# body with golden_info.sh, tok_golden.sh and tok_special_golden.sh via
+# tests/golden_lib.sh -- see that file for the shared policy this gate
+# calls into.
+#
 # Usage: sh tests/unicode_sweep_golden.sh <builddir> [exe-suffix]
 set -u
+
+. "$(dirname "$0")/golden_lib.sh"
 
 builddir="${1:?usage: unicode_sweep_golden.sh <builddir> [exe-suffix]}"
 exe="${2:-}"
@@ -26,49 +33,15 @@ corpus="tests/data/unicode_sweep.txt"
 golden="tests/data/unicode_sweep.ids.golden"
 stoke_bin="$builddir/stoke$exe"
 
-if [ ! -f "$model" ]; then
-    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
-        echo "unicode_sweep_golden: FAILED -- $model not present but" \
-             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have the" \
-             "real model; a moved/missing model must not silently" \
-             "downgrade this gate to a no-op)" >&2
-        exit 1
-    fi
-    echo "unicode_sweep_golden: SKIP -- $model not present (models/ is" \
-         "gitignored; this gate only runs on boxes that have the real" \
-         "model file)"
-    exit 0
-fi
+golden_lib_require_model "$model" "unicode_sweep_golden"
+golden_lib_require_binary "$stoke_bin" "unicode_sweep_golden"
+golden_lib_require_data_file "$corpus" "unicode_sweep_golden" "corpus file"
+golden_lib_require_data_file "$golden" "unicode_sweep_golden" "golden file"
 
-if [ ! -f "$stoke_bin" ]; then
-    echo "unicode_sweep_golden: missing binary $stoke_bin (build it before running this gate)" >&2
-    exit 1
-fi
+golden_lib_run_and_diff "unicode_sweep_golden" "$golden" \
+    "$builddir/unicode_sweep.ids.out" "$builddir/unicode_sweep.ids.diff" \
+    "$stoke_bin tokenize $model $corpus" \
+    "$stoke_bin" tokenize "$model" "$corpus" || exit 1
 
-if [ ! -f "$corpus" ]; then
-    echo "unicode_sweep_golden: missing corpus file $corpus" >&2
-    exit 1
-fi
-
-if [ ! -f "$golden" ]; then
-    echo "unicode_sweep_golden: missing golden file $golden" >&2
-    exit 1
-fi
-
-got="$builddir/unicode_sweep.ids.out"
-"$stoke_bin" tokenize "$model" "$corpus" > "$got"
-rc=$?
-if [ "$rc" -ne 0 ]; then
-    echo "unicode_sweep_golden: FAILED -- '$stoke_bin tokenize $model $corpus' exited $rc" >&2
-    exit 1
-fi
-
-if ! diff -u "$golden" "$got" > "$builddir/unicode_sweep.ids.diff" 2>&1; then
-    echo "unicode_sweep_golden: FAILED -- output differs from $golden" >&2
-    cat "$builddir/unicode_sweep.ids.diff" >&2
-    exit 1
-fi
-
-rm -f "$got" "$builddir/unicode_sweep.ids.diff"
 echo "unicode_sweep_golden: OK ($corpus matches $golden via $model)"
 exit 0

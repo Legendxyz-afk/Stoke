@@ -14,8 +14,18 @@
 # tests/test_tok.c's own unit tests use a tiny committed synthetic fixture
 # and always run regardless of this gate.
 #
+# Shares its model-check/STOKE_REQUIRE_GOLDEN/binary-check/diff/cleanup
+# body with golden_info.sh, tok_golden.sh and unicode_sweep_golden.sh via
+# tests/golden_lib.sh -- see that file for the shared policy this gate
+# calls into. This is the one gate with TWO (cmd,golden) pairs to check,
+# so unlike its three siblings it accumulates a `fail` flag across both
+# legs instead of exiting on the first, so a run where both directions
+# happen to fail reports both instead of only the first one found.
+#
 # Usage: sh tests/tok_special_golden.sh <builddir> [exe-suffix]
 set -u
+
+. "$(dirname "$0")/golden_lib.sh"
 
 builddir="${1:?usage: tok_special_golden.sh <builddir> [exe-suffix]}"
 exe="${2:-}"
@@ -26,70 +36,29 @@ golden_ids="tests/data/tok_special_corpus.ids.golden"
 golden_plain="tests/data/tok_special_corpus.plain.golden"
 stoke_bin="$builddir/stoke$exe"
 
-if [ ! -f "$model" ]; then
-    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
-        echo "tok_special_golden: FAILED -- $model not present but" \
-             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have the" \
-             "real model; a moved/missing model must not silently" \
-             "downgrade this gate to a no-op)" >&2
-        exit 1
-    fi
-    echo "tok_special_golden: SKIP -- $model not present (models/ is" \
-         "gitignored; this gate only runs on boxes that have the real" \
-         "model file)"
-    exit 0
-fi
-
-if [ ! -f "$stoke_bin" ]; then
-    echo "tok_special_golden: missing binary $stoke_bin (build it before running this gate)" >&2
-    exit 1
-fi
-
-if [ ! -f "$corpus" ]; then
-    echo "tok_special_golden: missing corpus file $corpus" >&2
-    exit 1
-fi
-
-if [ ! -f "$golden_ids" ] || [ ! -f "$golden_plain" ]; then
-    echo "tok_special_golden: missing golden file(s) ($golden_ids, $golden_plain)" >&2
-    exit 1
-fi
+golden_lib_require_model "$model" "tok_special_golden"
+golden_lib_require_binary "$stoke_bin" "tok_special_golden"
+golden_lib_require_data_file "$corpus" "tok_special_golden" "corpus file"
+golden_lib_require_data_file "$golden_plain" "tok_special_golden" "golden file"
+golden_lib_require_data_file "$golden_ids" "tok_special_golden" "golden file"
 
 fail=0
 
 # Direction 1: plain `tokenize` (tok_encode, USER_DEFINED-only match set)
 # vs the oracle's --no-parse-special golden.
-got_plain="$builddir/tok_special_corpus.plain.out"
-"$stoke_bin" tokenize "$model" "$corpus" > "$got_plain"
-rc=$?
-if [ "$rc" -ne 0 ]; then
-    echo "tok_special_golden: FAILED -- '$stoke_bin tokenize $model $corpus' exited $rc" >&2
-    fail=1
-elif ! diff -u "$golden_plain" "$got_plain" > "$builddir/tok_special_corpus.plain.diff" 2>&1; then
-    echo "tok_special_golden: FAILED -- plain tokenize output differs from $golden_plain" >&2
-    cat "$builddir/tok_special_corpus.plain.diff" >&2
-    fail=1
-else
-    rm -f "$builddir/tok_special_corpus.plain.diff"
-fi
-rm -f "$got_plain"
+golden_lib_run_and_diff "tok_special_golden" "$golden_plain" \
+    "$builddir/tok_special_corpus.plain.out" \
+    "$builddir/tok_special_corpus.plain.diff" \
+    "$stoke_bin tokenize $model $corpus" \
+    "$stoke_bin" tokenize "$model" "$corpus" || fail=1
 
 # Direction 2: `tokenize --special` (tok_encode_special, CONTROL union
 # USER_DEFINED) vs the oracle's default parse-special-ON golden.
-got_ids="$builddir/tok_special_corpus.ids.out"
-"$stoke_bin" tokenize --special "$model" "$corpus" > "$got_ids"
-rc=$?
-if [ "$rc" -ne 0 ]; then
-    echo "tok_special_golden: FAILED -- '$stoke_bin tokenize --special $model $corpus' exited $rc" >&2
-    fail=1
-elif ! diff -u "$golden_ids" "$got_ids" > "$builddir/tok_special_corpus.ids.diff" 2>&1; then
-    echo "tok_special_golden: FAILED -- --special output differs from $golden_ids" >&2
-    cat "$builddir/tok_special_corpus.ids.diff" >&2
-    fail=1
-else
-    rm -f "$builddir/tok_special_corpus.ids.diff"
-fi
-rm -f "$got_ids"
+golden_lib_run_and_diff "tok_special_golden" "$golden_ids" \
+    "$builddir/tok_special_corpus.ids.out" \
+    "$builddir/tok_special_corpus.ids.diff" \
+    "$stoke_bin tokenize --special $model $corpus" \
+    "$stoke_bin" tokenize --special "$model" "$corpus" || fail=1
 
 if [ "$fail" -ne 0 ]; then
     exit 1

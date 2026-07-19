@@ -32,7 +32,7 @@ file): F32=0 (blck=1,size=4), Q4_K=12 (blck=256,size=144), Q6_K=14
 import os
 import struct
 
-# ---- GGUF value-type enum (A2) ----
+# ---- GGUF value-type enum ----
 T_UINT8 = 0
 T_INT8 = 1
 T_UINT16 = 2
@@ -47,7 +47,7 @@ T_UINT64 = 10
 T_INT64 = 11
 T_FLOAT64 = 12
 
-# ---- ggml tensor-type enum (A4 -- only the 3 verified values) ----
+# ---- ggml tensor-type enum (only the 3 verified values) ----
 GGML_F32 = 0
 GGML_Q4_K = 12
 GGML_Q6_K = 14

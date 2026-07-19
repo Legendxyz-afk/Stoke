@@ -114,6 +114,27 @@ static int tok_test_child_main(int argc, char** argv) {
         msgs[0].content_len = 1;
         (void)tok_apply_chatml(t, msgs, 1, ids, 0);
         tok_free(t);
+    } else if (strcmp(s, "chatml_content_bpe_cap_exceeded") == 0) {
+        /* Sibling of chatml_cap_exceeded, but the cap runs out ONE LEVEL
+           DEEPER: cap=3 leaves room for <|im_start|> (id 271) + "a" (97) +
+           "\n" (10) -- msgs[0]'s "{role}\n{content}" = "a\nbc" qwen2-regex
+           -splits into fragments "a", "\n", "bc" (see the partition tests'
+           header comment for why 'b'+'c' is not one of this fixture's 7
+           mergeable pairs, so "bc" byte-BPEs as 2 separate symbols) -- so
+           this cap is exceeded emitting the SECOND byte of "bc", inside
+           the ordinary byte-BPE encode of message content
+           (bpe_encode_fragment), not any of tok_apply_chatml's own direct
+           cap checks (im_start/im_end/generation-prompt). Pins that `fn`
+           is threaded all the way down to bpe_encode_fragment's cap fatal. */
+        Tok*     t = open_tiny_tok();
+        u32      ids[3];
+        StokeMsg msgs[1];
+        msgs[0].role = "a";
+        msgs[0].role_len = 1;
+        msgs[0].content = "bc";
+        msgs[0].content_len = 2;
+        (void)tok_apply_chatml(t, msgs, 1, ids, 3);
+        tok_free(t);
     } else if (strcmp(s, "chatml_no_imstart") == 0) {
         GgufFile* f = gguf_open(FIXTURE("tiny_tok_no_imstart.gguf"));
         Tok*      t = tok_from_gguf(f); /* must SUCCEED: a model missing
@@ -558,9 +579,9 @@ TEST(empty_input_yields_zero_tokens) {
  * "<|im_start|>" CONTROL, id 272 "<|im_end|>" CONTROL, id 273 "<think>"
  * USER_DEFINED, id 274 "[UNUSED0]" UNUSED (never in the specials table at
  * all -- see src/tok.c tok_from_gguf's build loop). Base ids 0..270 are
- * IDENTICAL to 6a's fixture (specials were appended, not inserted), so
- * every non-special byte below is the same raw-byte/no-merge reasoning
- * the 6a tests above already establish (e.g. "world" stays 5 unmerged
+ * IDENTICAL to the base-vocab tests above (specials were appended, not
+ * inserted), so every non-special byte below is the same raw-byte/no-merge
+ * reasoning those tests already establish (e.g. "world" stays 5 unmerged
  * bytes; this fixture's only 7 mergeable ADJACENT base-byte pairs are
  * h+e, ' '+w, a+a, 1+2, (+), )+\n, l+o -- see make_tok_fixture.py's
  * build_base_vocab -- so any two adjacent ASCII letters/punctuation NOT
@@ -573,9 +594,8 @@ TEST(partition_special_match_at_start_of_input) {
     Tok* t = open_tiny_tok();
     /* "<|im_start|>" (12 bytes) matches at pos 0 with an EMPTY leading gap
        (no spurious bpe call on zero bytes), then "world" is its own gap,
-       byte-BPE'd exactly as the 6a bpe_merge_leading_space_vs_no_space
-       test already established (no leading space -> stays 5 unmerged
-       bytes). */
+       byte-BPE'd exactly as the bpe_merge_leading_space_vs_no_space test
+       already established (no leading space -> stays 5 unmerged bytes). */
     u32 want[] = {271, 119, 111, 114, 108, 100};
     u32 ids[16];
     u32 n = tok_encode_special(t, "<|im_start|>world", 17, ids, 16, false);
@@ -600,7 +620,7 @@ TEST(partition_special_match_at_middle_of_input) {
 
 TEST(partition_special_match_at_end_of_input) {
     Tok* t = open_tiny_tok();
-    /* "hello" fully merges to id 259 (6a's bpe_merge_chain_builds_hello);
+    /* "hello" fully merges to id 259 (see bpe_merge_chain_builds_hello);
        "<|im_end|>" matches immediately after with no trailing gap. */
     u32 want[] = {259, 272};
     u32 ids[16];
@@ -721,7 +741,7 @@ TEST(tok_decode_of_every_special_id_returns_literal_string) {
  * ===========================================================================
  */
 
-TEST(chatml_c5_layout_on_synthetic_vocab) {
+TEST(chatml_layout_on_synthetic_vocab) {
     Tok* t = open_tiny_tok();
     /* msgs = [{role:"a", content:"b"}]. im_start(271), encode
        "a\nb" as ONE string (qwen2 regex splits it into 3 fragments "a",
@@ -875,6 +895,15 @@ TEST(encode_special_cap_exceeded_fatals) {
 }
 TEST(chatml_cap_exceeded_fatals) {
     assert_scenario_fatals("chatml_cap_exceeded", "cap");
+}
+TEST(chatml_content_bpe_cap_exceeded_fatals) {
+    /* Unlike chatml_cap_exceeded_fatals above (which pins the shallow
+       "cap %u exceeded emitting <|im_start|>" fatal), this drives the cap
+       fatal reachable through ordinary message-content byte-BPE
+       (bpe_encode_fragment) and pins the caller name that fatal reports --
+       the exact fn-threading this scenario exists to exercise. */
+    assert_scenario_fatals("chatml_content_bpe_cap_exceeded",
+                            "tok_apply_chatml -- ");
 }
 TEST(chatml_no_imstart_fatals) {
     assert_scenario_fatals("chatml_no_imstart", "im_start");
