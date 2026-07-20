@@ -211,6 +211,36 @@ runs required before trusting): `{"prompt": <str>, "n_predict": 64,
 --parallel 1`. Single-thread the oracle: determinism across its own runs is a
 precondition the dispatch probe must demonstrate, not assume.
 
+**PROBED (W1, 2026-07-19 — b10037's real response schema; supersedes the
+expected shape above wherever they differ):**
+
+- The request MUST add `"return_tokens": true`; the generated-id ground
+  truth is the top-level `tokens` field (one id per raw generation step;
+  without the flag it comes back `[]`).
+- `completion_probabilities[*].id` is NOT that sequence: the server
+  coalesces runs of tokens that individually encode incomplete UTF-8 into
+  single entries (measured: 64 real steps → 54 entries on a multilingual
+  prompt), so past any coalescing point its index no longer aligns with
+  `tokens`. `return_tokens` is pure response-shaping — confirmed it does
+  not alter generation.
+- Per-token top-5 logprobs live at `completion_probabilities[i].
+  top_logprobs[j] = {id, token, bytes, logprob}`; gap(top1,top2) =
+  `top_logprobs[0].logprob − top_logprobs[1].logprob`. W4's harness must
+  handle the `tokens`-vs-`completion_probabilities` index misalignment on
+  coalescing prompts (align by consuming `tokens` ids against each
+  entry's `bytes`, or equivalent).
+- `tokens_predicted` echoes the configured `n_predict` even when
+  `completion_probabilities` has fewer entries — never treat it as an
+  output-length field; use `len(tokens)`.
+- Determinism + no-chat-template on `/completion`: CONFIRMED (two
+  identical greedy runs token-identical; `tokens_evaluated` equals the
+  independently known prompt token count).
+- PENDING (attribution experiment recorded in the ledger, 2026-07-20):
+  whether this gate's server invocation gains `-ctk f32 -ctv f32` —
+  ref-vs-oracle validation hit a non-waivable divergence consistent with
+  the oracle's default f16 KV cache rather than a ref bug. Resolve (memo
+  to Kabir if the invocation changes) BEFORE the W4 brief is written.
+
 **Corpus: 50 prompts, committed** under `tests/data/parity/` (one file each,
 UTF-8, ≤512 tokens): ~15 English prose/instruction, ~10 code (C/Python/JSON),
 ~10 multilingual (CJK, Devanagari, Arabic, emoji — reuse tok-corpus material),

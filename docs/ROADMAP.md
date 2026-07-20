@@ -1,6 +1,6 @@
 # stoke — Phase 1 roadmap (the operational map)
 
-*Updated 2026-07-19 at the `m1` tag. This is the FIRST document a working
+*Updated 2026-07-20, mid-M2. This is the FIRST document a working
 session reads. It is a map, not the territory: every milestone's binding
 detail lives in the linked spec/plan/design-note sections, and on any
 conflict the linked document wins. Master record + history:
@@ -26,8 +26,13 @@ benchmark report.
 - **Every session is Opus 4.8** — sessions, probes, briefs, worker
   dispatch, task-reviews, and GATE STAMPS, M2 through M7. The stamps are
   mechanical checklists; a gate passes on recorded evidence, never on
-  judgment. (Default model is set to Opus 4.8 in user settings; the
-  session-start model gate in project memory enforces the match.)
+  judgment. **Model check is the first action of every session** — as of
+  2026-07-20 the user-settings default model is Fable 5, so a fresh
+  session opens on the WRONG model: if the session is not Opus 4.8, run
+  `/model claude-opus-4-8` (this also re-saves the default) before any
+  stoke work. A Fable session is valid only on Kabir's explicit
+  in-session override, and its job is manager-tier state work, not
+  milestone execution.
 - **Escalation** = STOP + half-page memo to Kabir (what failed, evidence,
   2–3 options, one recommendation) on: a gate failing twice for the same
   cause; >1 day stuck on one divergence; results contradicting the spec's
@@ -63,9 +68,19 @@ MEMORY.md, tag if the milestone says so, move on.
 (op-by-op spec §5–6, config contract §3 with TRAP #1 head_dim=128-not-80 /
 TRAP #2 tied-LM-head / TRAP #3 NEOX-pairing, `stoke run` CLI §7, gate +
 waiver protocol §8, L0–L3 parity-debug ladder + numpy `ref_forward.py` §9,
-dispatch probe pack P1–P5 §10, workers W1–W4 §11). First actions:
-`scripts/win-check.cmd` chore (§12) → acquire Q8_0 parity GGUF (sha256 +
-`stoke info` + tokenizer-table identity assert, §2) → probe pack → W1.
+dispatch probe pack P1–P5 §10, workers W1–W4 §11). Position 2026-07-20:
+entry chores + P2/P3 probes done (`6f9109b`); parity corpus committed
+(`f5d99ee` + eol pin `af18af8`); W2 scalar kernels + L0 committed
+(`7fbdd2b`); W1 tooling delivered + manager-adjudicated (untracked under
+`tests/tooling/`, adjudication in the ledger); the manager's Q8_0
+gguf-support fix sits UNCOMMITTED in the working tree. Remaining, in
+order: (1) verify + commit that fix, (2) commit W1's tree + run the
+stoke-side P1/P5 legs, (3) the oracle f16-KV attribution experiment
+(ledger 2026-07-20 — settles §8's oracle invocation AND §9's ref trust
+order), (4) W3 model.c, (5) W4 gate harness + recorded run, (6) gate
+checklist + stamp. The ledger NEXT-SESSION block has the exact steps;
+the playbook §2–§5 carries the full Session A/B/C orchestration incl.
+the f16-KV attribution experiment's E1–E4 decision tree.
 
 **M3 — SIMD + pool.** Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
 attn_v/ffn_down/token_embd as Q6_K); integer cores on BOTH scalar+SIMD
@@ -125,9 +140,16 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 ## Session protocol (every session, unchanged M2→M7)
 
 1. Model gate: session model must be **Opus 4.8** (memory
-   `engine-project.md` owner line).
+   `engine-project.md` owner line). Opened on anything else (the saved
+   default has drifted to Fable before)? STOP — run
+   `/model claude-opus-4-8`, then start over from step 2. No stoke work
+   on a mismatched model without Kabir's explicit in-session override.
 2. Read: this file's map → ledger NEXT-SESSION block
-   (`.superpowers/sdd/progress.md`) → the current milestone's design note.
+   (`.superpowers/sdd/progress.md`) → the current milestone's design note
+   → the session playbook
+   (`superpowers/plans/2026-07-20-opus-session-playbook-m2-m7.md`) —
+   session orchestration, recovery matrices, and the operational problem
+   catalogue live THERE.
 3. Work the SDD loop: probe → brief → dispatch sonnet worker → verify
    green bar YOURSELF (Windows `mingw32-make test` + WSL
    `scripts/wsl-check.sh` plain/asan/tsan — judge by its printed ALL
