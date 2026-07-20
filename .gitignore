@@ -12,3 +12,4 @@ bench/results/*
 *.exe
 __pycache__/
 *.pyc
+tests/tooling/validation/dump_*/
