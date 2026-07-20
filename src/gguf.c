@@ -275,9 +275,12 @@ static bool is_integer_type(u32 type) {
     }
 }
 
-/* ggml tensor dtype size table. ONLY these three values were verified
+/* ggml tensor dtype size table. ONLY these four values were verified
  * against real bytes; gguf_open() fatals on anything else (see
- * parse_tensor_info). Do not extend this from memory. */
+ * parse_tensor_info). Do not extend this from memory. Q8_0: 32 elems /
+ * 34 bytes per block ({f16 d; i8 qs[32]}), probed from b10037 source
+ * (ggml-common.h block_q8_0) and hand-annotated byte-for-byte against a
+ * real block of the Q8_0 parity GGUF. */
 typedef struct {
     u32 type;
     u64 blck_size;
@@ -286,6 +289,7 @@ typedef struct {
 
 static const GgmlTypeInfo GGML_TYPES[] = {
     {GGUF_GGML_TYPE_F32, 1, 4},
+    {GGUF_GGML_TYPE_Q8_0, 32, 34},
     {GGUF_GGML_TYPE_Q4_K, 256, 144},
     {GGUF_GGML_TYPE_Q6_K, 256, 210},
 };
@@ -516,8 +520,8 @@ static void parse_tensor_info(const u8* base, u64 size, u64* cur,
     u64 blck_size, type_size;
     if (!ggml_type_info(ggml_type, &blck_size, &type_size)) {
         fatal("gguf: tensor '%s' uses unsupported ggml_type %u (only "
-              "F32=0, Q4_K=12, Q6_K=14 are implemented; later milestones "
-              "add types only once probed against real bytes)",
+              "F32=0, Q8_0=8, Q4_K=12, Q6_K=14 are implemented; later "
+              "milestones add types only once probed against real bytes)",
               out->name, ggml_type);
     }
     out->type = ggml_type;

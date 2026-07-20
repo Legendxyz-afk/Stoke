@@ -158,12 +158,16 @@ const GgufTensor* gguf_tensor(const GgufFile* f, u64 i);
 const GgufTensor* gguf_tensor_by_name(const GgufFile* f, const char* name);
 
 /* ---- ggml tensor-dtype enum --
- * Only the 3 values verified against the real file's bytes are named.
+ * Only the 4 values verified against real file bytes are named.
  * gguf_open() fatals on any tensor using a ggml_type outside this set --
  * later milestones add types only as each is probed against real bytes
- * (project "probe, don't guess" protocol). */
+ * (project "probe, don't guess" protocol). Q8_0's id and 34-byte block
+ * layout were probed against b10037's ggml.h enum AND hand-annotated
+ * against a real block of the Q8_0 parity GGUF (bit-level f16 decode of
+ * d + 4 dequant values, digit-exact vs an independent parser). */
 enum {
     GGUF_GGML_TYPE_F32  = 0,
+    GGUF_GGML_TYPE_Q8_0 = 8,
     GGUF_GGML_TYPE_Q4_K = 12,
     GGUF_GGML_TYPE_Q6_K = 14,
 };

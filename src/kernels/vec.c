@@ -46,7 +46,7 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out) {
             const f32* row = (const f32*)(base + r * row_bytes);
             y[r] = vec_dot_f32(row, x, n_in);
         }
-    } else if (w->type == KERNELS_GGML_TYPE_Q8_0) {
+    } else if (w->type == GGUF_GGML_TYPE_Q8_0) {
         /* n_in%KERNELS_Q8_0_BLOCK_ELEMS is NOT re-checked here:
          * vec_dot_q8_0_f32 enforces it on the very first row before any
          * row-stride arithmetic (below) is ever used to address memory,
@@ -62,6 +62,6 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out) {
         fatal("kernels: matvec -- tensor '%s' has unsupported ggml type "
               "%u -- only F32(%u) and Q8_0(%u) are dispatched at M2",
               w->name, w->type, (u32)GGUF_GGML_TYPE_F32,
-              (u32)KERNELS_GGML_TYPE_Q8_0);
+              (u32)GGUF_GGML_TYPE_Q8_0);
     }
 }

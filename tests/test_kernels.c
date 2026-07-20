@@ -345,7 +345,7 @@ TEST(matvec_q8_0_dispatch_two_rows) {
     GgufTensor w;
     memset(&w, 0, sizeof w);
     w.name    = "test.q8_0.weight";
-    w.type    = KERNELS_GGML_TYPE_Q8_0;
+    w.type    = GGUF_GGML_TYPE_Q8_0;
     w.n_dims  = 2;
     w.dims[0] = 32;
     w.dims[1] = 2;

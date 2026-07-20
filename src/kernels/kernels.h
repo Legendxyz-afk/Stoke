@@ -26,29 +26,9 @@
 
 #include "gguf.h"
 
-/* ---- Q8_0's ggml type id ----
- * gguf.h's GGUF_GGML_TYPE_* enum only allow-lists the 3 types load-tested
- * so far by gguf.c (F32=0, Q4_K=12, Q6_K=14 -- gguf_open() fatals on any
- * tensor whose type falls outside that set), so it does not yet admit
- * Q8_0. That allow-list lives in src/gguf.c, outside this worker's file
- * ownership (src/kernels/ + tests/test_kernels.c + one Makefile glob line
- * only, per the M2 W2 brief) -- extending it is the integrating worker's
- * job, at the point something first opens a Q8_0 GGUF end to end.
- *
- * matvec still needs Q8_0's numeric type id to dispatch on
- * GgufTensor.type (§5: "the ONLY dispatch point on quant type at M2").
- * Source-probed (not recalled), matching this project's "probe, don't
- * guess" discipline, against `enum ggml_type` in ggml.h at llama.cpp tag
- * b10037 (commit 56d6e9dde2c684cebbc11e1f705da4286cb535f2 -- the same
- * commit m2-probe-notes.md's P3 payloads were pulled from):
- *   GGML_TYPE_F32=0, GGML_TYPE_F16=1, GGML_TYPE_Q4_0=2, GGML_TYPE_Q4_1=3,
- *   GGML_TYPE_Q5_0=6, GGML_TYPE_Q5_1=7, GGML_TYPE_Q8_0=8, GGML_TYPE_Q8_1=9,
- *   GGML_TYPE_Q2_K=10, GGML_TYPE_Q3_K=11, GGML_TYPE_Q4_K=12,
- *   GGML_TYPE_Q5_K=13, GGML_TYPE_Q6_K=14, ...
- * -- the 3 values gguf.h already carries (F32/Q4_K/Q6_K) match this same
- * enum exactly (0/12/14), cross-confirming Q8_0=8 sits in the identical
- * numbering rather than some other quant-family scheme. */
-#define KERNELS_GGML_TYPE_Q8_0 8u
+/* Q8_0's type id comes from gguf.h's GGUF_GGML_TYPE_* enum (Q8_0 was
+ * added there together with gguf.c's open support; both sides trace to
+ * the same b10037 source probe + real-bytes annotation). */
 
 /* Q8_0 block geometry (m2-probe-notes.md P3.1, verbatim from b10037's
  * ggml-common.h): 32 elements per block, 34 bytes per block (2-byte f16
@@ -118,9 +98,8 @@ f32 vec_dot_f32(const f32* a, const f32* b, u64 n);
  *
  * w->type is the ONLY dispatch point on quant type at M2 (§5): F32 rows
  * go through vec_dot_f32, Q8_0 rows through vec_dot_q8_0_f32; any other
- * type is a fatal naming the tensor (probed ids -- see
- * KERNELS_GGML_TYPE_Q8_0 above; F32's id comes straight from gguf.h's
- * own GGUF_GGML_TYPE_F32). */
+ * type is a fatal naming the tensor (both ids from gguf.h's probed
+ * GGUF_GGML_TYPE_* enum). */
 void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out);
 
 /* ---- normalization / positional / activation ---- */

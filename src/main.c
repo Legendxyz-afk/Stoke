@@ -54,6 +54,7 @@ static const char* gguf_type_name(u32 t) {
 static const char* ggml_type_name(u32 t) {
     switch (t) {
         case GGUF_GGML_TYPE_F32: return "F32";
+        case GGUF_GGML_TYPE_Q8_0: return "Q8_0";
         case GGUF_GGML_TYPE_Q4_K: return "Q4_K";
         case GGUF_GGML_TYPE_Q6_K: return "Q6_K";
         default:
