@@ -68,19 +68,22 @@ MEMORY.md, tag if the milestone says so, move on.
 (op-by-op spec §5–6, config contract §3 with TRAP #1 head_dim=128-not-80 /
 TRAP #2 tied-LM-head / TRAP #3 NEOX-pairing, `stoke run` CLI §7, gate +
 waiver protocol §8, L0–L3 parity-debug ladder + numpy `ref_forward.py` §9,
-dispatch probe pack P1–P5 §10, workers W1–W4 §11). Position 2026-07-20:
-entry chores + P2/P3 probes done (`6f9109b`); parity corpus committed
-(`f5d99ee` + eol pin `af18af8`); W2 scalar kernels + L0 committed
-(`7fbdd2b`); W1 tooling delivered + manager-adjudicated (untracked under
-`tests/tooling/`, adjudication in the ledger); the manager's Q8_0
-gguf-support fix sits UNCOMMITTED in the working tree. Remaining, in
-order: (1) verify + commit that fix, (2) commit W1's tree + run the
-stoke-side P1/P5 legs, (3) the oracle f16-KV attribution experiment
-(ledger 2026-07-20 — settles §8's oracle invocation AND §9's ref trust
-order), (4) W3 model.c, (5) W4 gate harness + recorded run, (6) gate
-checklist + stamp. The ledger NEXT-SESSION block has the exact steps;
-the playbook §2–§5 carries the full Session A/B/C orchestration incl.
-the f16-KV attribution experiment's E1–E4 decision tree.
+dispatch probe pack P1–P5 §10, workers W1–W4 §11). Position 2026-07-20 (Session A executed):
+entry chores + P2/P3 probes (`6f9109b`); parity corpus (`f5d99ee` +
+`af18af8`); W2 kernels + L0 (`7fbdd2b`); Q8_0 gguf support verified +
+committed incl. the `stoke info` type-name completion (`5f97583`); W1
+tooling committed with its oracle/ref validation captures (`21d3842`);
+P1/P5 stoke-side legs closed. §8's oracle question SETTLED by
+experiment: f16-KV hypothesis refuted, **invocation stays default**; the
+one ref-vs-oracle divergence is a characterized 3-way near-tie (both
+sides' evidence in the ledger) whose gate-run policy is Kabir's call —
+memo `superpowers/memos/2026-07-20-m2-oracle-near-tie-policy.md`
+[BLOCKING: the recorded gate run only]. Remaining, in order: (1) W3
+model.c (DISPATCHED; brief `.superpowers/sdd/m2-w3-brief.md`), (2) W4
+gate harness + dev-mode divergence-class count appended to the memo,
+(3) Kabir's policy call → the recorded gate run, (4) gate checklist +
+stamp + tag `m2`. The ledger NEXT-SESSION block has the exact resume
+point; the playbook §4–§5 carries W3/W4 orchestration.
 
 **M3 — SIMD + pool.** Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
 attn_v/ffn_down/token_embd as Q6_K); integer cores on BOTH scalar+SIMD

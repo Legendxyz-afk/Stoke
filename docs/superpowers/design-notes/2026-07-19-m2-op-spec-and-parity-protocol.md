@@ -235,11 +235,22 @@ expected shape above wherever they differ):**
 - Determinism + no-chat-template on `/completion`: CONFIRMED (two
   identical greedy runs token-identical; `tokens_evaluated` equals the
   independently known prompt token count).
-- PENDING (attribution experiment recorded in the ledger, 2026-07-20):
-  whether this gate's server invocation gains `-ctk f32 -ctv f32` —
-  ref-vs-oracle validation hit a non-waivable divergence consistent with
-  the oracle's default f16 KV cache rather than a ref bug. Resolve (memo
-  to Kabir if the invocation changes) BEFORE the W4 brief is written.
+- RESOLVED 2026-07-20 (experiment; ledger has the full record): the
+  f16-KV hypothesis is REFUTED — rerunning the oracle with `-ctk f32
+  -ctv f32` produced byte-identical token streams to the default-KV
+  captures on all three validation prompts (deterministic, v1 run
+  twice). **The gate invocation stays DEFAULT — no `-ctk/-ctv` flags.**
+  The v1 divergence (pos 32) is a genuine 3-way near-tie that the
+  oracle's activation-quantization path and pure-f32 math rank
+  differently (same top-5 SET both sides; gaps 0.0264 / 0.0702 nats —
+  non-waivable under this §'s conditions). Policy for the recorded gate
+  run is Kabir's call:
+  `docs/superpowers/memos/2026-07-20-m2-oracle-near-tie-policy.md`
+  [BLOCKING: the recorded run; W4 harness construction + dev-mode
+  measurement proceed]. Ref trust order: validated token-exact on
+  v2 + v3 + p04 (replacement third prompt; capture
+  `oracle_p04_prose.json`), with v1 recorded as the characterized
+  near-tie, not a validation failure.
 
 **Corpus: 50 prompts, committed** under `tests/data/parity/` (one file each,
 UTF-8, ≤512 tokens): ~15 English prose/instruction, ~10 code (C/Python/JSON),
