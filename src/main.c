@@ -7,6 +7,8 @@
 #include "common.h"
 
 #include "gguf.h"
+#include "kv.h"
+#include "model.h"
 #include "tok.h"
 
 #include <errno.h>
@@ -373,6 +375,174 @@ static void cmd_tokenize_roundtrip(const char* model_path,
     tok_free(t);
 }
 
+/* ===========================================================================
+ * `stoke run` -- M2 op-spec design note section 7 CLI contract:
+ *   stoke run <model.gguf> [--raw] [-n N] [-p "text" | -f file]
+ *             [--dump dir] [--probe-pos N]
+ * `--raw`: tokenize with add_special=false, parse-special OFF, no chat
+ * template (the parity gate's mode). Without `--raw`: wraps the input as a
+ * single ChatML user message via tok_apply_chatml (smoke-tested only, not
+ * gated -- M1 already oracle-proved the template itself). `--dump dir`
+ * writes the per-layer post-block hidden state of the LAST INPUT position
+ * (model.c's model_generate/model_forward_position do the actual writing).
+ * `--probe-pos N` (M2 W3 brief addition, for the W4 near-tie waiver
+ * protocol): after generation, prints the top-5 (id, logit) at generated
+ * position N to stderr, 5 lines, `probe pos=N: id=<u32> logit=<%.6f>`.
+ * ===========================================================================
+ */
+
+static void cmd_run(int argc, char** argv) {
+    if (argc < 3) {
+        fatal("usage: stoke run <model.gguf> [--raw] [-n N] "
+              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N]");
+    }
+    const char* model_path = argv[2];
+    bool        raw = false;
+    long long   n_long = 64;
+    const char* prompt_text = NULL;
+    const char* prompt_file = NULL;
+    const char* dump_dir = NULL;
+    long long   probe_pos_long = -1;
+
+    /* strtoll (not strtol): on this project's Windows toolchain (MSYS2
+     * ucrt64, LLP64 data model) `long` is only 32 bits, so `(long)
+     * UINT32_MAX` silently overflows a signed 32-bit long (implementation-
+     * defined, observed wrapping to -1 here) -- which broke `-n 1` outright
+     * (n_long > (long)UINT32_MAX read as `1 > -1`, always true). `long
+     * long` is guaranteed >= 64 bits on both toolchains, so every cast
+     * below is exact. */
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--raw") == 0) {
+            raw = true;
+        } else if (strcmp(argv[i], "-n") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: -n needs an argument");
+            n_long = strtoll(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-p") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: -p needs an argument");
+            prompt_text = argv[++i];
+        } else if (strcmp(argv[i], "-f") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: -f needs an argument");
+            prompt_file = argv[++i];
+        } else if (strcmp(argv[i], "--dump") == 0) {
+            if (i + 1 >= argc) {
+                fatal("stoke run: --dump needs a directory argument");
+            }
+            dump_dir = argv[++i];
+        } else if (strcmp(argv[i], "--probe-pos") == 0) {
+            if (i + 1 >= argc) {
+                fatal("stoke run: --probe-pos needs an argument");
+            }
+            probe_pos_long = strtoll(argv[++i], NULL, 10);
+        } else {
+            fatal("stoke run: unknown argument '%s'", argv[i]);
+        }
+    }
+    if (prompt_text != NULL && prompt_file != NULL) {
+        fatal("stoke run: specify only one of -p/-f, not both");
+    }
+    if (prompt_text == NULL && prompt_file == NULL) {
+        fatal("stoke run: one of -p \"text\" or -f file is required");
+    }
+    if (n_long <= 0 || n_long > (long long)UINT32_MAX) {
+        fatal("stoke run: -n %lld must be a positive integer", n_long);
+    }
+    if (probe_pos_long < -1 || probe_pos_long > (long long)INT32_MAX) {
+        fatal("stoke run: --probe-pos %lld out of range", probe_pos_long);
+    }
+    u32 n = (u32)n_long;
+    i32 probe_pos = (i32)probe_pos_long;
+
+    char*       file_buf = NULL;
+    const char* text;
+    u64         text_len;
+    if (prompt_file != NULL) {
+        file_buf = read_whole_file(prompt_file, "stoke run", &text_len);
+        text = file_buf;
+    } else {
+        text = prompt_text;
+        text_len = (u64)strlen(prompt_text);
+    }
+    if (text_len > (u64)UINT32_MAX / 3) {
+        fatal("stoke run: prompt is %llu bytes -- too large for this CLI",
+              (unsigned long long)text_len);
+    }
+
+    GgufFile* gf = gguf_open(model_path);
+    Tok*      tok = tok_from_gguf(gf);
+    gguf_close(gf); /* Tok is self-contained after construction (src/tok.h) */
+
+    /* cap sizing: tok_encode/tok_encode_special need cap >= 3*len (raw,
+     * add_special=false); tok_apply_chatml needs cap >= 8 + 3*(role_len +
+     * content_len) + 31 for one message (role_len=4 here) -- both
+     * comfortably covered by 3*len + 64. */
+    u32  cap = (u32)(text_len * 3) + 64;
+    u32* prompt_ids = (u32*)xcalloc(cap, sizeof(u32));
+    u32  n_prompt;
+    if (raw) {
+        n_prompt = tok_encode(tok, text, text_len, prompt_ids, cap,
+                               /*add_special=*/false);
+    } else {
+        StokeMsg msg;
+        msg.role = "user";
+        msg.role_len = 4;
+        msg.content = text;
+        msg.content_len = text_len;
+        n_prompt = tok_apply_chatml(tok, &msg, 1, prompt_ids, cap);
+    }
+    if (n_prompt == 0) {
+        fatal("stoke run: prompt tokenized to zero ids");
+    }
+
+    Model* model = model_open(model_path);
+    Kv*    kv = kv_open(model_n_layer(model), model_max_ctx(model),
+                         model_n_head_kv(model), model_head_dim(model));
+
+    u32*            out_ids = (u32*)xcalloc(n, sizeof(u32));
+    ModelProbeEntry probe[5];
+    for (int i = 0; i < 5; i++) {
+        probe[i].id = 0;
+        probe[i].logit = 0.0f;
+    }
+
+    i64 eos_id = (i64)tok_eos(tok);
+    u32 count = model_generate(model, kv, prompt_ids, n_prompt, n, eos_id,
+                                out_ids, dump_dir, probe_pos, probe);
+
+    for (u32 i = 0; i < count; i++) {
+        printf("%u\n", out_ids[i]);
+    }
+    printf("---\n");
+
+    u32   decode_cap = count * 256u + 16u;
+    char* decoded = (char*)xcalloc(decode_cap, 1);
+    u32   w = 0;
+    for (u32 i = 0; i < count; i++) {
+        w += tok_decode(tok, out_ids[i], decoded + w, decode_cap - w);
+    }
+    fwrite(decoded, 1, w, stdout);
+    printf("\n");
+    free(decoded);
+
+    if (probe_pos >= 0) {
+        if ((u32)probe_pos >= count) {
+            fatal("stoke run: --probe-pos %d requested but only %u ids "
+                  "were generated (generation stopped early)",
+                  probe_pos, count);
+        }
+        for (int i = 0; i < 5; i++) {
+            fprintf(stderr, "probe pos=%d: id=%u logit=%.6f\n", probe_pos,
+                    probe[i].id, (double)probe[i].logit);
+        }
+    }
+
+    free(out_ids);
+    free(prompt_ids);
+    kv_close(kv);
+    model_close(model);
+    tok_free(tok);
+    free(file_buf);
+}
+
 /* Checked stdout finalization before a successful exit. Every subcommand
  * writes exclusively via stdio's own buffered printf; without this, `stoke
  * info > out.txt` on a full disk (or any other deferred-write failure)
@@ -403,7 +573,9 @@ int main(int argc, char** argv) {
 
     if (argc < 2) {
         fatal("usage: stoke <command> [args] (commands: info <path.gguf>, "
-              "tokenize [--special | --roundtrip] <path.gguf> <text-file>)");
+              "tokenize [--special | --roundtrip] <path.gguf> <text-file>, "
+              "run <path.gguf> [--raw] [-n N] [-p \"text\" | -f file] "
+              "[--dump dir] [--probe-pos N])");
     }
     if (strcmp(argv[1], "info") == 0) {
         if (argc < 3) {
@@ -437,6 +609,11 @@ int main(int argc, char** argv) {
         finish_stdout_or_fatal();
         return 0;
     }
-    fatal("unknown command '%s' (commands: info, tokenize)", argv[1]);
+    if (strcmp(argv[1], "run") == 0) {
+        cmd_run(argc, argv);
+        finish_stdout_or_fatal();
+        return 0;
+    }
+    fatal("unknown command '%s' (commands: info, tokenize, run)", argv[1]);
     return 1; /* unreachable */
 }
