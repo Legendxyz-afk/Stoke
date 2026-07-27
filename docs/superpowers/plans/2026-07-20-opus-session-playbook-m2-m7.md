@@ -359,7 +359,16 @@ memo if one was sent (the memo says BLOCKING: W4 — honor it).
   ground truth = top-level `tokens`. Stoke side:
   `stoke run <Q8_0> --raw -f <prompt> -n 64` → ids. Compare FULL
   sequences (eos included if generated; lengths must agree).
-  Process-parallel across prompts (~6 workers; single-thread each side).
+  Process-parallel across prompts — **`--jobs 4`, and 4 is a RAM ceiling,
+  not a core count** (amended 2026-07-27 by measurement, supersedes this
+  line's original "~6 workers"): each `stoke.exe` holds **1,181 MB
+  PRIVATE** (the `[36][4096][8][128]` f32 K+V is allocated eagerly at
+  `model_open`, prompt length irrelevant), so 6 jobs + the 4.3 GB shared
+  model pages + the server + the OS ≈ 14.9 GB and thrashes a 16 GB box;
+  4 jobs ≈ 12.5 GB. Oracle calls stay SERIALIZED (`--parallel 1`);
+  `--jobs` parallelizes the stoke side only. Scaling is near-linear until
+  RAM stops it — scalar stoke streams ~811 MB/s of weights against
+  DDR5's tens of GB/s, so it is compute-bound, not bandwidth-bound.
   Dev mode caches per-prompt results; `--clean` ignores the cache — THE
   gate run is `--clean`.
 - Waiver automation (§8 protocol, mechanical): on first divergence at p,
@@ -372,6 +381,15 @@ memo if one was sent (the memo says BLOCKING: W4 — honor it).
   next unused reserve (r00…r09 in order), record everything, budget ≤2.
   Anything else = GATE FAIL → stop, report, §9 ladder time.
 - Recovery clause as W3's.
+
+**Sizing the run (measured 2026-07-27, Q8_0 scalar, warm page cache —
+supersedes the earlier "~8 s/token ⇒ 6–7 h", which counted only decodes):**
+~**5.3 s per forward pass**, and the corpus is mean 77.8 / max 490 prompt
+tokens, so a 50×64 run is **7,038 forwards ≈ 9–11.5 h SERIAL**, prefill
+being 55% of it. At `--jobs 4` expect ~3–4 h wall. **Order the prompts
+longest-first** — p40–p44 are ~553 forwards ≈ 49 min each and in corpus
+order they strand the tail. Detached + resumable + single log writer (the
+ops lesson); a session boundary must not cost the run.
 
 **The recorded gate run (manager-driven):** quiesce the box (no bench
 fairness needed — parity is not timing — but don't fight RAM: close

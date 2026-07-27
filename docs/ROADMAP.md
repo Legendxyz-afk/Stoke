@@ -23,16 +23,18 @@ benchmark report.
 
 ## Governance (Kabir, 2026-07-19)
 
-- **Every session is Opus 4.8** — sessions, probes, briefs, worker
-  dispatch, task-reviews, and GATE STAMPS, M2 through M7. The stamps are
-  mechanical checklists; a gate passes on recorded evidence, never on
-  judgment. **Model check is the first action of every session** — as of
-  2026-07-20 the user-settings default model is Fable 5, so a fresh
-  session opens on the WRONG model: if the session is not Opus 4.8, run
-  `/model claude-opus-4-8` (this also re-saves the default) before any
-  stoke work. A Fable session is valid only on Kabir's explicit
-  in-session override, and its job is manager-tier state work, not
-  milestone execution.
+- **Every session is Opus (currently Opus 5)** — sessions, probes,
+  briefs, worker dispatch, task-reviews, and GATE STAMPS, M2 through M7.
+  The stamps are mechanical checklists; a gate passes on recorded
+  evidence, never on judgment. **Model check is the first action of every
+  session** — as of 2026-07-27 Kabir set the user-settings default to
+  Opus 5 (max effort), superseding the 07-19 Opus 4.8 owner line, so a
+  fresh session should open on the owner model; if it did not, run
+  `/model claude-opus-5` before any stoke work. Owner is a FLOOR, not a
+  pin: a newer Opus is a valid owner, anything below Opus is not. A
+  non-Opus session is valid only on Kabir's explicit in-session
+  override, and its job is manager-tier state work, not milestone
+  execution.
 - **Escalation** = STOP + half-page memo to Kabir (what failed, evidence,
   2–3 options, one recommendation) on: a gate failing twice for the same
   cause; >1 day stuck on one divergence; results contradicting the spec's
@@ -68,7 +70,7 @@ MEMORY.md, tag if the milestone says so, move on.
 (op-by-op spec §5–6, config contract §3 with TRAP #1 head_dim=128-not-80 /
 TRAP #2 tied-LM-head / TRAP #3 NEOX-pairing, `stoke run` CLI §7, gate +
 waiver protocol §8, L0–L3 parity-debug ladder + numpy `ref_forward.py` §9,
-dispatch probe pack P1–P5 §10, workers W1–W4 §11). Position 2026-07-20 (Session A executed):
+dispatch probe pack P1–P5 §10, workers W1–W4 §11). Position 2026-07-27 (W3 landed, W4 in flight):
 entry chores + P2/P3 probes (`6f9109b`); parity corpus (`f5d99ee` +
 `af18af8`); W2 kernels + L0 (`7fbdd2b`); Q8_0 gguf support verified +
 committed incl. the `stoke info` type-name completion (`5f97583`); W1
@@ -78,12 +80,16 @@ experiment: f16-KV hypothesis refuted, **invocation stays default**; the
 one ref-vs-oracle divergence is a characterized 3-way near-tie (both
 sides' evidence in the ledger) whose gate-run policy is Kabir's call —
 memo `superpowers/memos/2026-07-20-m2-oracle-near-tie-policy.md`
-[BLOCKING: the recorded gate run only]. Remaining, in order: (1) W3
-model.c (DISPATCHED; brief `.superpowers/sdd/m2-w3-brief.md`), (2) W4
-gate harness + dev-mode divergence-class count appended to the memo,
-(3) Kabir's policy call → the recorded gate run, (4) gate checklist +
-stamp + tag `m2`. The ledger NEXT-SESSION block has the exact resume
-point; the playbook §4–§5 carries W3/W4 orchestration.
+[BLOCKING: the recorded gate run only]. W3 model.c LANDED `79a4b29`
+(forward pass + kv + `stoke run`, L2 36-layer <1e-3, greedy 64/64 on
+v1–v3, both platforms green, Opus-reviewed). Remaining, in order: (1) W4
+gate harness (re-dispatched 2026-07-27 after the first worker died at a
+session boundary; brief `.superpowers/sdd/m2-w4-brief.md`), (2)
+manager-driven live smoke + the detached dev-mode divergence run over
+all 50 prompts → divergence-class count appended to the memo, (3)
+Kabir's policy call → the recorded `--clean` gate run, (4) gate
+checklist + stamp + tag `m2`. The ledger NEXT-SESSION block has the
+exact resume point; the playbook §5 carries W4 orchestration.
 
 **M3 — SIMD + pool.** Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
 attn_v/ffn_down/token_embd as Q6_K); integer cores on BOTH scalar+SIMD
@@ -142,11 +148,11 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 
 ## Session protocol (every session, unchanged M2→M7)
 
-1. Model gate: session model must be **Opus 4.8** (memory
-   `engine-project.md` owner line). Opened on anything else (the saved
-   default has drifted to Fable before)? STOP — run
-   `/model claude-opus-4-8`, then start over from step 2. No stoke work
-   on a mismatched model without Kabir's explicit in-session override.
+1. Model gate: session model must be **Opus, at or above the owner line**
+   in memory `engine-project.md` (currently Opus 5). Opened below it (the
+   saved default has drifted to Fable before)? STOP — run
+   `/model claude-opus-5`, then start over from step 2. No stoke work on
+   a mismatched model without Kabir's explicit in-session override.
 2. Read: this file's map → ledger NEXT-SESSION block
    (`.superpowers/sdd/progress.md`) → the current milestone's design note
    → the session playbook
