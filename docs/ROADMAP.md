@@ -82,14 +82,24 @@ sides' evidence in the ledger) whose gate-run policy is Kabir's call —
 memo `superpowers/memos/2026-07-20-m2-oracle-near-tie-policy.md`
 [BLOCKING: the recorded gate run only]. W3 model.c LANDED `79a4b29`
 (forward pass + kv + `stoke run`, L2 36-layer <1e-3, greedy 64/64 on
-v1–v3, both platforms green, Opus-reviewed). Remaining, in order: (1) W4
-gate harness (re-dispatched 2026-07-27 after the first worker died at a
-session boundary; brief `.superpowers/sdd/m2-w4-brief.md`), (2)
-manager-driven live smoke + the detached dev-mode divergence run over
-all 50 prompts → divergence-class count appended to the memo, (3)
-Kabir's policy call → the recorded `--clean` gate run, (4) gate
-checklist + stamp + tag `m2`. The ledger NEXT-SESSION block has the
-exact resume point; the playbook §5 carries W4 orchestration.
+v1–v3, both platforms green, Opus-reviewed). W4 gate harness LANDED
+`6f54801` (`tests/tooling/parity_gate.py` + runbook; selftest/dry-run/
+matrix all green, Opus-reviewed, one manager fix: a cp437-unmappable `§`
+in a normal print path aborted runs under a Windows console codepage
+while `--selftest` passed under all of them). Oracle context CAPPED at
+`-c 2048` — Kabir-approved `a03748a` on a byte-identical proof (v1/v2/v3
+64/64 ids unchanged; 11,038 MB → 501 MB private, health 69 s → 8 s),
+memo `superpowers/memos/2026-07-27-m2-oracle-context-cap.md`; without it
+the survey needed ~20 GB on a 16 GB box. Remaining, in order: (1) the
+detached `--survey` divergence census over all 50 prompts (RUNNING as
+scheduled task `stoke-m2-survey`; resume with `Start-ScheduledTask`,
+it reuses the per-prompt cache), (2) count appended to the near-tie memo
+→ **Kabir's near-tie policy call** (its decision rule is pre-committed:
+0 ⇒ strict, 1–2 ⇒ bounded recognition, ≥3 ⇒ re-scope to C-vs-ref and
+defer oracle parity to M3 — but note the p48 smoke divergence fails
+option 2's 0.1-nat bar, see the ledger), (3) the recorded `--clean` gate
+run, (4) gate checklist + stamp + tag `m2`. The ledger NEXT-SESSION
+block has the exact resume point; the playbook §5 carries the checklist.
 
 **M3 — SIMD + pool.** Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
 attn_v/ffn_down/token_embd as Q6_K); integer cores on BOTH scalar+SIMD
