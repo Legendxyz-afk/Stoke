@@ -13,3 +13,9 @@ bench/results/*
 __pycache__/
 *.pyc
 tests/tooling/validation/dump_*/
+
+# W4 parity-gate dev cache + dev reports (regenerable; the RECORDED gate run
+# is --clean and its report is committed under docs/superpowers/gate-reports/)
+tests/tooling/.gate_cache/
+tests/tooling/parity_gate_dev_report.md
+tests/tooling/parity_survey_dev_report.md
