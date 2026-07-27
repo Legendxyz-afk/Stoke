@@ -359,16 +359,24 @@ memo if one was sent (the memo says BLOCKING: W4 — honor it).
   ground truth = top-level `tokens`. Stoke side:
   `stoke run <Q8_0> --raw -f <prompt> -n 64` → ids. Compare FULL
   sequences (eos included if generated; lengths must agree).
-  Process-parallel across prompts — **`--jobs 4`, and 4 is a RAM ceiling,
-  not a core count** (amended 2026-07-27 by measurement, supersedes this
-  line's original "~6 workers"): each `stoke.exe` holds **1,181 MB
-  PRIVATE** (the `[36][4096][8][128]` f32 K+V is allocated eagerly at
-  `model_open`, prompt length irrelevant), so 6 jobs + the 4.3 GB shared
-  model pages + the server + the OS ≈ 14.9 GB and thrashes a 16 GB box;
-  4 jobs ≈ 12.5 GB. Oracle calls stay SERIALIZED (`--parallel 1`);
-  `--jobs` parallelizes the stoke side only. Scaling is near-linear until
-  RAM stops it — scalar stoke streams ~811 MB/s of weights against
-  DDR5's tens of GB/s, so it is compute-bound, not bandwidth-bound.
+  Process-parallel across prompts — **RAM-bound, not core-bound, and the
+  ORACLE dominates** (amended 2026-07-27 by live measurement; supersedes
+  BOTH this line's original "~6 workers" AND the same day's first
+  amendment claiming `--jobs 4` ≈ 12.5 GB, which under-counted the
+  server): **`llama-server` alone holds ~11.0 GB PRIVATE** — it sizes KV
+  from the model's default context, not from the ~554 positions this
+  gate needs — and each `stoke.exe` adds **1,181 MB PRIVATE** (eager
+  `[36][4096][8][128]` f32 K+V at `model_open`). Budget = 11.0 +
+  jobs×1.18 + ~4.3 shared ⇒ **≈20 GB at 4 jobs, ≈16.5 GB even at 1 job,
+  on a 16 GB box.** Lowering `--jobs` does not rescue this; **capping the
+  oracle's context (`-c`) does** — but that is a change to the SETTLED
+  invocation, hence gate-affecting and KABIR'S CALL (pending), and if
+  adopted must first be proven to leave the oracle's greedy ids
+  byte-identical to the committed v1/v2/v3 captures. Oracle calls stay
+  SERIALIZED (`--parallel 1`); `--jobs` parallelizes the stoke side only.
+  Stoke itself is compute-bound, not bandwidth-bound (scalar streams only
+  ~811 MB/s of weights against DDR5's tens of GB/s), so jobs would scale
+  near-linearly if RAM allowed.
   Dev mode caches per-prompt results; `--clean` ignores the cache — THE
   gate run is `--clean`.
 - Waiver automation (§8 protocol, mechanical): on first divergence at p,

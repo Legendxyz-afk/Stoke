@@ -121,14 +121,25 @@ re-driven multi-hour run per divergence found:
 
 ## Operational constants (measured live by the manager, 2026-07-27 -- read before a full run)
 
-- **`--jobs` is a RAM ceiling, not a core count.** Each `stoke.exe`
-  holds ~1,181 MB PRIVATE (the `[36][4096][8][128]` f32 K+V cache is
-  allocated eagerly at `model_open`, regardless of the prompt's actual
-  length). At `--jobs 6`: 6 × 1,181 MB (~7.1 GB) + the 4.3 GB shared
-  model mmap + the oracle server + the OS is ≈ 14.9 GB, which thrashes a
-  16 GB box. **Use `--jobs 4` (the default) on a 16 GB machine** --
-  raising it because CPU cores are idle will cost you swapping, not
-  speed.
+- **RAM, not cores, is the binding constraint -- and the ORACLE is the
+  biggest consumer, not the stoke jobs.** Measured 2026-07-27 on a live
+  run: **`llama-server` alone holds ~11.0 GB PRIVATE**, because it sizes
+  its KV cache from the model's default context rather than from what
+  this gate needs (~554 positions: the 490-token longest prompt + 64
+  generated). Each `stoke.exe` adds ~1,181 MB PRIVATE (its
+  `[36][4096][8][128]` f32 K+V is likewise allocated eagerly at
+  `model_open`, prompt length irrelevant). So the real budget is
+  11.0 + jobs×1.18 + ~4.3 (shared model page cache), i.e. **≈20 GB at
+  `--jobs 4` and still ≈16.5 GB at `--jobs 1` on a 16 GB box.** A full
+  run in this configuration THRASHES; lowering `--jobs` does not save
+  it.
+  **The fix is to cap the oracle's context (`-c`), not to lower
+  `--jobs`** -- but that changes the SETTLED oracle invocation (A5
+  outcome E3), which is gate-affecting and is Kabir's call, pending as
+  of 2026-07-27. Do NOT add `-c` to `oracle_argv()` on your own
+  initiative; if it is adopted, first prove on 2-3 prompts that the
+  oracle's greedy ids stay byte-identical to the existing
+  `tests/tooling/validation/oracle_v1/v2/v3` captures.
 - **Run-cost math.** Measured ~5.3s per forward pass; corpus mean 77.8 /
   max 490 prompt tokens. A 50-prompt × 64-token run is ≈7,038 forward
   passes ≈ 9-11.5h serial, ≈3-4h wall at `--jobs 4`. Budget accordingly
