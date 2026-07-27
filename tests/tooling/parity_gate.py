@@ -923,9 +923,30 @@ def invocation_signature(args) -> str:
     must not bust the cache) and the actual prompt path (parameterized
     out as a placeholder, since the prompt's own file hash is a separate,
     already-named cache-key component)."""
+    # DERIVED from the real oracle_argv(), never a hand-written literal:
+    # the whole purpose of this signature is to bust the cache when the
+    # oracle invocation changes, and a literal cannot do that -- it silently
+    # keeps saying "same invocation" while the actual flags move underneath
+    # it. (Caught 2026-07-27, when -c 2048 was added and the literal did not
+    # move.) --port is dropped as a pure networking detail that must not bust
+    # the cache; the model path is collapsed to a placeholder since the model
+    # is separately pinned by MODEL_SIZE_EXPECTED at every server start.
+    argv = oracle_argv(port=0)
+    flags = []
+    skip_next = False
+    for i, tok in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "--port":
+            skip_next = True
+            continue
+        if i == 0:
+            continue                      # exe path -- covered by its sha256
+        flags.append("<model>" if tok == str(MODEL_PATH) else tok)
     parts = [
         f"oracle_exe_sha256={_sha256_file(ORACLE_EXE)}",
-        "oracle_flags=-m <model> -t 1 --parallel 1 (DEFAULT KV, no -ctk/-ctv)",
+        f"oracle_flags={' '.join(flags)}",
         f"stoke_argv_template={_display_argv(stoke_generate_argv(Path('<prompt>'), args.n_predict))}",
     ]
     return "|".join(parts)
