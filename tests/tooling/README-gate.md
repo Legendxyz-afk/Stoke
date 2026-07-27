@@ -121,25 +121,27 @@ re-driven multi-hour run per divergence found:
 
 ## Operational constants (measured live by the manager, 2026-07-27 -- read before a full run)
 
-- **RAM, not cores, is the binding constraint -- and the ORACLE is the
-  biggest consumer, not the stoke jobs.** Measured 2026-07-27 on a live
-  run: **`llama-server` alone holds ~11.0 GB PRIVATE**, because it sizes
-  its KV cache from the model's default context rather than from what
-  this gate needs (~554 positions: the 490-token longest prompt + 64
-  generated). Each `stoke.exe` adds ~1,181 MB PRIVATE (its
-  `[36][4096][8][128]` f32 K+V is likewise allocated eagerly at
-  `model_open`, prompt length irrelevant). So the real budget is
-  11.0 + jobs×1.18 + ~4.3 (shared model page cache), i.e. **≈20 GB at
-  `--jobs 4` and still ≈16.5 GB at `--jobs 1` on a 16 GB box.** A full
-  run in this configuration THRASHES; lowering `--jobs` does not save
-  it.
-  **The fix is to cap the oracle's context (`-c`), not to lower
-  `--jobs`** -- but that changes the SETTLED oracle invocation (A5
-  outcome E3), which is gate-affecting and is Kabir's call, pending as
-  of 2026-07-27. Do NOT add `-c` to `oracle_argv()` on your own
-  initiative; if it is adopted, first prove on 2-3 prompts that the
-  oracle's greedy ids stay byte-identical to the existing
-  `tests/tooling/validation/oracle_v1/v2/v3` captures.
+- **The oracle runs with `-c 2048` (RESOLVED 2026-07-27).** Left
+  uncapped, `llama-server` sizes its KV from the model's advertised
+  default context and holds **11,038 MB PRIVATE**, which put a `--jobs 4`
+  survey at ≈20 GB — and ≈16.5 GB even at `--jobs 1` — on a 16 GB box.
+  The oracle, not the parallelism, was the consumer, so lowering `--jobs`
+  could not fix it. With `-c 2048` it holds **501 MB** and reaches
+  `/health` in **8s instead of 69s**. Approved by Kabir (memo
+  `docs/superpowers/memos/2026-07-27-m2-oracle-context-cap.md`) on a
+  byte-identical proof, not on the assumption that a context bound
+  "shouldn't" matter: the three committed captures (`oracle_v1_english`,
+  `oracle_v2_code`, `oracle_v3_multilingual`) re-issued under the pinned
+  body with the cap returned **64/64 identical greedy ids each**. 2048 is
+  ~3.7× the gate's true maximum need of 554 positions. It is recorded in
+  every report's identity block; **do not change `ORACLE_CTX` without
+  redoing that proof.**
+- **Each `stoke.exe` holds ~1,181 MB PRIVATE** (its `[36][4096][8][128]`
+  f32 K+V is allocated eagerly at `model_open`, prompt length
+  irrelevant). Post-cap budget = 0.5 (oracle) + jobs×1.18 + ~4.3 (shared
+  model page cache): **≈9.5 GB at `--jobs 4`** (the default, comfortable
+  on 16 GB), ≈11.9 GB at `--jobs 6` if wall clock matters more than
+  margin. RAM is still what bounds `--jobs`, not cores.
 - **Run-cost math.** Measured ~5.3s per forward pass; corpus mean 77.8 /
   max 490 prompt tokens. A 50-prompt × 64-token run is ≈7,038 forward
   passes ≈ 9-11.5h serial, ≈3-4h wall at `--jobs 4`. Budget accordingly

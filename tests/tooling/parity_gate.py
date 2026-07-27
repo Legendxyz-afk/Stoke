@@ -665,12 +665,33 @@ def capture_build_identity(exe: Path = ORACLE_EXE, timeout_s: float = 30.0) -> d
 
 
 # ============================================================================
-# Oracle server lifecycle (§8 SETTLED invocation -- default KV, no -ctk/-ctv)
+# Oracle server lifecycle (§8 SETTLED invocation -- default KV, no -ctk/-ctv,
+# plus the -c context cap approved by Kabir 2026-07-27; see ORACLE_CTX below)
 # ============================================================================
+
+# Context cap on the ORACLE only. APPROVED BY KABIR 2026-07-27 (option (a) of
+# docs/superpowers/memos/2026-07-27-m2-oracle-context-cap.md) on the strength
+# of a byte-identical proof, NOT on an assumption that a context bound "should
+# not" matter:
+#   - Without it, llama-server sizes KV from the model's advertised default
+#     context and holds 11,038 MB PRIVATE, making the survey ~20 GB at
+#     --jobs 4 and ~16.5 GB even at --jobs 1 on a 16 GB box -- unrunnable,
+#     and NOT fixable by lowering --jobs, since the oracle is the consumer.
+#   - With -c 2048: 501 MB private (22x less) and /health in 8s instead of 69s.
+#   - PROOF the gate's ground truth is unchanged: the three committed captures
+#     (oracle_v1_english / oracle_v2_code / oracle_v3_multilingual) were
+#     re-issued under the pinned request body with -c 2048 and returned 64/64
+#     BYTE-IDENTICAL greedy ids each.
+# 2048 is ~3.7x the gate's true maximum need of 554 positions (the 490-token
+# longest corpus prompt + 64 generated), so no gate prompt can approach it.
+# This value is part of the recorded gate's provenance -- it is written into
+# every report's identity block. Do not change it without redoing the proof.
+ORACLE_CTX = 2048
+
 
 def oracle_argv(port: int) -> List[str]:
     return [str(ORACLE_EXE), "-m", str(MODEL_PATH), "-t", "1",
-            "--parallel", "1", "--port", str(port)]
+            "--parallel", "1", "--port", str(port), "-c", str(ORACLE_CTX)]
 
 
 class OracleServer:
@@ -792,6 +813,16 @@ class OracleServer:
             "oracle_exe_path": str(ORACLE_EXE.resolve()),
             "oracle_exe_sha256": _sha256_file(ORACLE_EXE),
             "kv_setting": "DEFAULT (no -ctk/-ctv) -- settled A5 outcome E3, M2 note §8 resolved block",
+            "context_cap": (
+                f"-c {ORACLE_CTX} (oracle only; gate's true max need is 554 positions "
+                f"= 490-token longest prompt + 64 generated). Approved by Kabir "
+                f"2026-07-27, memo docs/superpowers/memos/2026-07-27-m2-oracle-context-cap.md, "
+                f"on a byte-identical proof: the committed oracle_v1_english / "
+                f"oracle_v2_code / oracle_v3_multilingual captures re-issued under the "
+                f"pinned body with this cap returned 64/64 identical greedy ids each. "
+                f"Without it llama-server holds 11,038 MB private (default-context KV) "
+                f"vs 501 MB with it."
+            ),
             "build": build,
             "props_live_fields": live_fields,
             "props_full": props,
@@ -1000,6 +1031,7 @@ def write_report(path: Path, identity: dict, args, slot_status: Dict[str, dict],
     lines.append(f"- exe path: `{identity['oracle_exe_path']}`")
     lines.append(f"- exe sha256: `{identity['oracle_exe_sha256']}`")
     lines.append(f"- KV setting: {identity['kv_setting']}")
+    lines.append(f"- context cap: {identity['context_cap']}")
     lines.append(f"- build (from `--version`): {identity['build']['raw_stderr']!r}")
     lines.append(f"  - parsed: build_number={identity['build']['build_number']} "
                   f"commit={identity['build']['commit']}")
@@ -1080,6 +1112,7 @@ def write_survey_report(path: Path, identity: dict, args, per_prompt: List[dict]
     lines.append(f"- argv: `{_display_argv(identity['argv'])}`")
     lines.append(f"- build (from `--version`): {identity['build']['raw_stderr']!r}")
     lines.append(f"- KV setting: {identity['kv_setting']}")
+    lines.append(f"- context cap: {identity['context_cap']}")
     lines.append("")
     lines.append("## Census")
     n = len(per_prompt)
