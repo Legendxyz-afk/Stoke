@@ -1338,11 +1338,15 @@ def run_survey(args) -> int:
 
         oracle_results: Dict[str, dict] = {}
         oracle_errors: Dict[str, str] = {}
-        for pid in ordered:
+        print(f"MODE: SURVEY -- DIAGNOSTIC ONLY, NOT A GATE RESULT "
+              f"({len(ordered)} prompts, jobs={args.jobs}, n_predict={args.n_predict})")
+        for i, pid in enumerate(ordered, 1):
             try:
                 oracle_results[pid] = fetch_oracle_result(server, pid, args)
+                print(f"[oracle {i}/{len(ordered)}] {pid} ok")
             except GateError as e:
                 oracle_errors[pid] = str(e)
+                print(f"[oracle {i}/{len(ordered)}] {pid} ERROR: {e}")
 
         def _safe_fetch_stoke(pid: str):
             try:
@@ -1352,6 +1356,15 @@ def run_survey(args) -> int:
 
         stoke_results: Dict[str, List[int]] = {}
         stoke_errors: Dict[str, str] = {}
+        # Progress is printed per completed prompt, with a wall clock and a
+        # running count. This is NOT cosmetic: the stoke phase is hours long
+        # (~5.3s per forward pass), and without it the operator cannot tell a
+        # working run from a hung one, or see where a killed run stopped.
+        # Pair with `python -u` (see run_survey_detached.cmd) -- buffered
+        # stdout redirected to a file would defeat this entirely.
+        t0 = time.monotonic()
+        done = 0
+        total = len(ordered)
         with ThreadPoolExecutor(max_workers=args.jobs) as ex:
             futs = {ex.submit(_safe_fetch_stoke, pid): pid for pid in ordered}
             for fut in as_completed(futs):
@@ -1361,6 +1374,12 @@ def run_survey(args) -> int:
                     stoke_results[pid] = payload
                 else:
                     stoke_errors[pid] = payload
+                done += 1
+                el = time.monotonic() - t0
+                rate = el / done
+                print(f"[stoke {done}/{total}] {pid} {status} -- "
+                      f"elapsed {el/60:.1f} min, ~{rate/60:.1f} min/prompt, "
+                      f"eta ~{(rate * (total - done))/60:.0f} min")
 
         census = {"exact": [], "diverged": [], "error": []}
         per_prompt: List[dict] = []
