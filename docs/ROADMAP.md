@@ -52,8 +52,8 @@ benchmark report.
 |---|---|---|---|
 | M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
-| **M2** | **Scalar forward pass** | **← NOW** | Greedy 64-id parity vs llama-server, 50 prompts, ε=1e-3-nat waiver ≤2 |
-| M3 | AVX2+VNNI kernels + pool | queued | Scalar↔SIMD exact-diff; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
+| **M2** | **Scalar forward pass** | **← NOW** | **RE-SCOPED 07-28 (Kabir, memo option 3): greedy 64-id C-vs-ref parity on a stratified subset + the 36-layer L2 ladder.** Oracle token-parity DEFERRED to M3 |
+| M3 | AVX2+VNNI kernels + pool | queued | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
 | M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
@@ -103,18 +103,46 @@ corpus prompt clears ≥2× its measured cost and that the old constant would
 have failed. Same commit made the top-5 probe cached + pooled (it is a full
 re-generation, ran serially, and a kill discarded it entirely). Nothing
 gate-affecting: ε, waiver budget, oracle invocation and the compared ids
-are untouched. Remaining, in order: (1) the
-detached `--survey` divergence census over all 50 prompts (RELAUNCHED
-2026-07-28 as scheduled task `stoke-m2-survey`, budget ~4 h; resume with
-`Start-ScheduledTask`, it reuses the per-prompt cache), (2) count appended to the near-tie memo
-→ **Kabir's near-tie policy call** (its decision rule is pre-committed:
-0 ⇒ strict, 1–2 ⇒ bounded recognition, ≥3 ⇒ re-scope to C-vs-ref and
-defer oracle parity to M3 — but note the p48 smoke divergence fails
-option 2's 0.1-nat bar, see the ledger), (3) the recorded `--clean` gate
-run, (4) gate checklist + stamp + tag `m2`. The ledger NEXT-SESSION
-block has the exact resume point; the playbook §5 carries the checklist.
+are untouched. **THE SURVEY COMPLETED 2026-07-28 AND THE GATE WAS RE-SCOPED.** Generate
+phase 50/50, zero tooling errors (the derived-ceiling fix held). Census:
+**19 of 50 prompts diverge from the oracle**, 31 exact, 74.9% of ids match
+before first divergence, and **18 of 18 classifiable divergences are a
+clean top-2 swap** (stoke picks exactly the oracle's rank-2 candidate and
+vice versa) at oracle gaps of 0.001–0.204 nats, only one under ε. The 19th
+(p28) is a coalesced-entry read-out limit, not a stoke result — a coalesced
+`completion_probabilities` entry carries only its LAST swallowed step's
+distribution, verified across all 2,867 entries. Divergence appears in
+EVERY tier, so it is not an adversarial-tier artifact. Cause: the oracle
+quantizes activations to Q8 blocks for integer dot products, M2's stoke is
+pure f32 — two arithmetic classes ranking near-ties differently, not a bug
+on either side (L2 puts all 36 layers within 1e-3 of the f32 reference).
+**KABIR TOOK MEMO OPTION 3:** M2's token gate is now **C-vs-ref on a
+stratified subset + the 36-layer L2 ladder**, and oracle token-parity is
+**deferred to M3** (see the M3 entry — it inherits the gate AND the
+mandatory aligner fix). Remaining, in order: (1) the substitute gate's
+DEFINITION — exact subset + pass criterion, fixed BEFORE the run, referred
+to **Fable** under the new escalation routing; (2) the recorded C-vs-ref
+run via `tests/tooling/ref_gate.py` (built + selftest green; RAM-bound at
+~3 concurrent ref processes, one measured at 2,292 MB); (3) gate report;
+(4) checklist + stamp + tag `m2` — playbook §5's box 1 is superseded by
+Fable's criterion, the rest stand. The ledger NEXT-SESSION block has the
+exact resume point.
 
-**M3 — SIMD + pool.** Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
+**M3 — SIMD + pool. NOW ALSO CARRIES M2'S DEFERRED ORACLE GATE.** Inherited
+from the 07-28 option-3 decision, and M3 does not close without them:
+(1) the **50-prompt greedy oracle parity gate** under the §8 waiver
+protocol, run AFTER the integer-core switch — which is the point, since
+LOCKED decision #2 puts stoke in llama.cpp's own numeric class (Q8_0
+activations, i32 core) and the M2-era census (19/50 diverging, 18/18 a
+clean top-2 swap at 0.001–0.204 nats) is the baseline it is compared
+against; (2) **the aligner fix is a PREREQUISITE, not an option** — on 4 of
+50 prompts (p26, p27, p31, p34) `align_tokens_to_entries` currently fatals
+because a ground-truth id never resurfaces as a `top_logprobs` candidate,
+so byte lengths must instead be resolved from the GGUF vocab via
+`tests/tooling/gguf_reader.py`; without it the gate can hard-fail on
+tooling rather than return a verdict. Both are recorded in the near-tie
+memo's DECISION section.
+Forward note §M3: Q6_K is REQUIRED (Q4_K_M stores
 attn_v/ffn_down/token_embd as Q6_K); integer cores on BOTH scalar+SIMD
 paths (exact-diff gate depends on it; re-run parity after the activation
 switch); AVX-VNNI VEX intrinsic (`_mm256_dpbusd_avx_epi32`, NOT the
