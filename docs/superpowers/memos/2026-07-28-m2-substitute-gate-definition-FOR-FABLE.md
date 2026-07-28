@@ -1,4 +1,4 @@
-# FOR FABLE — 2026-07-28 — define M2's substitute gate    [BLOCKING: adjudication of the C-vs-ref run. NOT blocking: the measurement run itself, which is already executing]
+# FOR FABLE — 2026-07-28 — define M2's substitute gate    [ANSWERED 2026-07-28: Fable ruled — see `2026-07-28-m2-substitute-gate-RULING-FABLE.md`, which is the authority; this file remains as the question of record]
 
 **How to use this file:** Kabir opens a Fable session and points it here.
 Fable delivers the five items in §3. Opus implements them. Opus does **not**

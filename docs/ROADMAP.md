@@ -1,6 +1,6 @@
 # stoke — Phase 1 roadmap (the operational map)
 
-*Updated 2026-07-20, mid-M2. This is the FIRST document a working
+*Updated 2026-07-28, late-M2. This is the FIRST document a working
 session reads. It is a map, not the territory: every milestone's binding
 detail lives in the linked spec/plan/design-note sections, and on any
 conflict the linked document wins. Master record + history:
@@ -35,11 +35,20 @@ benchmark report.
   non-Opus session is valid only on Kabir's explicit in-session
   override, and its job is manager-tier state work, not milestone
   execution.
-- **Escalation** = STOP + half-page memo to Kabir (what failed, evidence,
-  2–3 options, one recommendation) on: a gate failing twice for the same
-  cause; >1 day stuck on one divergence; results contradicting the spec's
-  physics; ANY temptation to loosen a gate (ε, waiver budget, bars,
-  corpus trims). Kabir may summon Fable ad hoc; nothing depends on it.
+- **Escalation (ROUTING CHANGED, Kabir 2026-07-28): major/design decisions
+  go to FABLE, not a memo to Kabir.** The manager STOPS at the decision
+  point, writes the decision brief (problem, PROBED constants, real
+  trade-offs, a recommendation Fable may overrule, what is already Kabir's
+  and not revisitable), parks it in the repo/ledger — and **Kabir launches
+  the Fable session himself; NEVER self-dispatch** (a `model:"fable"` Agent
+  override was silently ignored once and produced Sonnet rulings under
+  Fable's name; verify from transcripts whenever it matters). Triggers
+  unchanged: a gate failing twice for the same cause; >1 day stuck on one
+  divergence; results contradicting the spec's physics; ANY temptation to
+  loosen a gate (ε, waiver budget, bars, corpus trims) — and a bar fixed
+  AFTER seeing results counts, so gate definitions are referred BEFORE the
+  run. Kabir still owns: push policy, the model/owner line, and anything he
+  asks for directly.
 - **Workers**: sonnet, surgical briefs, constants PROBED at dispatch
   (never recalled — applies to the design notes themselves), a mechanical
   verification step in every brief, Opus task-review per task. Background
@@ -52,7 +61,7 @@ benchmark report.
 |---|---|---|---|
 | M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
-| **M2** | **Scalar forward pass** | **← NOW** | **RE-SCOPED 07-28 (Kabir, memo option 3): greedy 64-id C-vs-ref parity on a stratified subset + the 36-layer L2 ladder.** Oracle token-parity DEFERRED to M3 |
+| **M2** | **Scalar forward pass** | **← NOW (⏸ paused)** | **RE-SCOPED 07-28 (Kabir, memo option 3): greedy 64-id C-vs-ref parity on a stratified subset + the 36-layer L2 ladder.** Oracle token-parity DEFERRED to M3. **Definition FIXED by Fable ruling 07-28** (`superpowers/memos/2026-07-28-m2-substitute-gate-RULING-FABLE.md`) |
 | M3 | AVX2+VNNI kernels + pool | queued | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
 | M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak |
@@ -119,14 +128,27 @@ on either side (L2 puts all 36 layers within 1e-3 of the f32 reference).
 **KABIR TOOK MEMO OPTION 3:** M2's token gate is now **C-vs-ref on a
 stratified subset + the 36-layer L2 ladder**, and oracle token-parity is
 **deferred to M3** (see the M3 entry — it inherits the gate AND the
-mandatory aligner fix). Remaining, in order: (1) the substitute gate's
-DEFINITION — exact subset + pass criterion, fixed BEFORE the run, referred
-to **Fable** under the new escalation routing; (2) the recorded C-vs-ref
-run via `tests/tooling/ref_gate.py` (built + selftest green; RAM-bound at
-~3 concurrent ref processes, one measured at 2,292 MB); (3) gate report;
-(4) checklist + stamp + tag `m2` — playbook §5's box 1 is superseded by
-Fable's criterion, the rest stand. The ledger NEXT-SESSION block has the
-exact resume point.
+mandatory aligner fix). **THE GATE DEFINITION IS FIXED — Fable ruled
+2026-07-28** (Kabir-launched session, per the routing):
+`superpowers/memos/2026-07-28-m2-substitute-gate-RULING-FABLE.md` is the
+binding authority. Short form: subset = the 24 as launched (all 19
+oracle-diverging + one oracle-exact control per short tier; p04 excluded by
+recorded transitivity and cited in the report; no long-context control on
+makespan grounds); pass = token-exact incl. stop index on every prompt with
+≤2 waivers under the four as-built `ref_waiver_decision` conditions
+(evaluated at the FIRST divergence only; ordered reserve replacement,
+replacements non-waivable) AND the L2 ladder re-run ≤1e-3/no-STEP AND zero
+unresolved tooling errors; a FAIL is immutable in-session and escalates to
+Fable. **⏸ EVERYTHING IS PAUSED (Kabir 2026-07-28 ~15:45) — nothing
+restarts without his word.** Remaining, in order, all post-resume: (1) the
+recorded run — `Start-ScheduledTask -TaskName 'stoke-m2-ref-gate'`
+(~4.5 h, subset already baked in, banked ZERO before the pause so it starts
+over); (2) L2 ladder re-run after it; (3) adjudication per the ruling §3;
+(4) gate report `superpowers/gate-reports/2026-07-28-m2-ref-parity.md`;
+(5) checklist + stamp + tag `m2` — playbook §5's box 1 is superseded by the
+ruling, the rest stand. FREEZES until the report is stamped: no `stoke.exe`
+rebuild, no `ref_forward.py` edit (both hash-pinned into the evidence
+chain). The ledger NEXT-SESSION block has the exact resume point.
 
 **M3 — SIMD + pool. NOW ALSO CARRIES M2'S DEFERRED ORACLE GATE.** Inherited
 from the 07-28 option-3 decision, and M3 does not close without them:
@@ -227,7 +249,10 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 4. Milestone gate: run the checklist, record evidence in ledger +
    MEMORY.md build log, tag if specified, update the memory owner line,
    enter the next milestone's note.
-5. Local git only — NO remote, no push (Kabir 2026-07-16, still binding).
+5. Commit LOCAL-only. A remote now exists (`github.com/Legendxyz-afk/Stoke`,
+   pushed by Kabir himself ~07-26, superseding the 07-16 no-remote rule) but
+   pushing is HIS call — the manager never pushes. `.superpowers/` stays
+   untracked.
 
 ## Beyond Phase 1 (context, not tasks)
 

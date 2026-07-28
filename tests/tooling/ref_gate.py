@@ -367,11 +367,18 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
 
 
 # ============================================================================
-# WAIVER PROTOCOL -- Fable's 2026-07-28 ruling, transcribed, not invented.
+# WAIVER PROTOCOL -- RATIFIED AS BUILT by the actual Fable session,
+# 2026-07-28: docs/superpowers/memos/2026-07-28-m2-substitute-gate-RULING-
+# FABLE.md is the authority (it also fixes what this block alone does not:
+# stop-index equality, first-divergence-only adjudication, no-chaining for
+# reserve replacements, the calibration rationale). Provenance, corrected:
+# this block was transcribed from the 07-28 draft that a silent model-
+# override bug had produced under Sonnet, not Fable; the ruling ratified the
+# four conditions unchanged, so the code needed no change -- only this header.
 #
 # Built BEFORE the measurement run produced any result, deliberately: fixing
 # adjudication logic after seeing which prompt flipped is gate-loosening by
-# another name. Nothing below may be relaxed without a fresh ruling.
+# another name. Nothing below may be relaxed without a fresh Fable ruling.
 #
 # A divergence is waivable iff ALL FOUR hold at the first-divergence position p:
 #   1. p is identified. Trivial on this pair -- both sides emit one id per
