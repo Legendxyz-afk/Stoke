@@ -224,3 +224,34 @@ readable divergence is a top-2 swap of the same candidate pair, and the
 L2 ladder puts all 36 layers within 1e-3 of the f32 reference. What the
 oracle gate is currently measuring is the distance between two arithmetic
 classes, and M3 closes that distance by construction.
+
+---
+
+## DECISION — KABIR, 2026-07-28. **OPTION 3, STRATIFIED SUBSET + L2 LADDER.**
+
+Taken on the census above, per this memo's own pre-committed rule (≥3 →
+option 3). Two parts, both his:
+
+1. **Option 3.** M2's token gate is re-scoped to **C-vs-ref** (stoke's C
+   against `ref_forward.py`, both pure f32). **Oracle token-parity is
+   DEFERRED TO M3**, where LOCKED decision #2's Q8_0 activation
+   quantization + i32 integer core put stoke in the oracle's own numeric
+   class, and where the forward note already mandates re-running this
+   exact 50-prompt oracle gate under the §8 waiver protocol.
+2. **Shape: stratified subset + the existing 36-layer L2 ladder**, not
+   all 50 prompts — on the measured cost above (13.8 s/position ⇒ ~27 h
+   serial for a full 50×64 run).
+
+**CARRIED FORWARD TO M3, so it is not lost:** (a) the deferred oracle
+parity gate itself; (b) the aligner fix — resolve token byte lengths from
+the GGUF vocab via `gguf_reader.py` rather than from the response's own
+`top_logprobs` candidates — **required before any future oracle gate run**,
+since 4 of 50 prompts currently make the aligner fatal; (c) this census as
+the M2-era baseline the M3 re-pass is compared against.
+
+**ESCALATION ROUTING CHANGED (Kabir, same session):** major decisions now
+go to **Fable**, not to Kabir. This memo's own question was the last one he
+took personally. Accordingly the *definition* of the substitute gate —
+exact subset composition and the pass criterion, both fixed BEFORE the run
+so that no bar is written after seeing results — was referred to Fable, not
+chosen by the executing Opus session. Its ruling is recorded below.
