@@ -366,7 +366,155 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
     return 0 if (not diverged and not errors) else 1
 
 
-_MANIFEST_ROW = re.compile(r"^\|\s*(p\d\d)\s*\|[^|]*\|\s*(\d+)\s*\|")
+# ============================================================================
+# WAIVER PROTOCOL -- Fable's 2026-07-28 ruling, transcribed, not invented.
+#
+# Built BEFORE the measurement run produced any result, deliberately: fixing
+# adjudication logic after seeing which prompt flipped is gate-loosening by
+# another name. Nothing below may be relaxed without a fresh ruling.
+#
+# A divergence is waivable iff ALL FOUR hold at the first-divergence position p:
+#   1. p is identified. Trivial on this pair -- both sides emit one id per
+#      line, so none of the oracle's coalesced-entry alignment ambiguity
+#      exists here.
+#   2. Both sides' top-2 are the SAME PAIR, SWAPPED.
+#   3. BOTH sides' gap(top1,top2) < EPSILON = 1e-3 nats. This is §8's
+#      already-approved constant reused verbatim, not a new number. A raw
+#      logit difference IS the nats gap -- the softmax normalizer cancels in
+#      the subtraction, identically on both sides.
+#   4. Both sides' top-5 have IDENTICAL IDS IN IDENTICAL RANK ORDER at ranks
+#      3, 4 and 5 (0-indexed 2,3,4). Ranks 1-2 may differ in order (that is
+#      condition 2's business) but not in membership.
+#      Rationale, recorded: a last-ulp coincidence at the argmax boundary has
+#      no mechanism to also permute the ordering three ranks deep into a
+#      151,936-way distribution; a real formula or accumulation bug generically
+#      would. Fable's original condition 4 (re-feed the prefix and diff hidden
+#      state) was withdrawn because `stoke run` accepts no token-id input --
+#      only -p/-f text -- so it could not be done without either rebuilding
+#      stoke.exe (forking the hash the whole evidentiary chain is pinned to)
+#      or detokenizing, which can silently change the prefix.
+#
+# If EITHER side's probe cannot be taken (early EOS before p, so the position
+# does not exist), the divergence is NOT waivable: absence of evidence
+# defaults to FAIL, never to a free pass.
+# ============================================================================
+
+EPSILON = 1e-3        # §8 nats. NEVER loosen.
+WAIVER_BUDGET = 2     # §8. NEVER exceed.
+RESERVE_IDS = [f"r{i:02d}" for i in range(10)]
+
+_PROBE_RE = re.compile(r"^probe pos=(\d+): id=(\d+) logit=(-?\d+\.\d+)\s*$")
+
+
+def parse_probe(text: str, pos: int) -> List[Tuple[int, float]]:
+    """Parse the 5 stderr probe lines. ONE parser for both sides -- stoke's
+    src/main.c and ref_forward.py emit byte-identical
+    `probe pos=N: id=U logit=F`. Fails loud on any other shape."""
+    rows = []
+    for line in text.splitlines():
+        m = _PROBE_RE.match(line.strip())
+        if m:
+            if int(m.group(1)) != pos:
+                fatal(f"probe line reports pos={m.group(1)}, expected {pos}")
+            rows.append((int(m.group(2)), float(m.group(3))))
+    if len(rows) != 5:
+        fatal(f"expected exactly 5 probe lines at pos {pos}, parsed "
+              f"{len(rows)} -- refusing to adjudicate on partial evidence.\n"
+              f"raw stderr:\n{text.strip()[:800]}")
+    for i in range(4):
+        if rows[i][1] < rows[i + 1][1]:
+            fatal(f"probe lines are not rank-ordered at {i}: {rows}")
+    return rows
+
+
+def stoke_probe(prompt_path: Path, pos: int, n_predict: int) -> List[Tuple[int, float]]:
+    argv = [str(STOKE_EXE), "run", str(MODEL_PATH), "--raw",
+            "-f", str(prompt_path), "-n", str(n_predict), "--probe-pos", str(pos)]
+    r = subprocess.run(argv, capture_output=True, text=True,
+                       timeout=timeout_for(200, n_predict))
+    if r.returncode != 0:
+        fatal(f"stoke probe failed on {prompt_path.name} at pos {pos} "
+              f"(rc={r.returncode}): {r.stderr.strip()[:400]}")
+    return parse_probe(r.stderr, pos)
+
+
+def ref_probe(ids: List[int], pos: int, n_predict: int) -> List[Tuple[int, float]]:
+    argv = [sys.executable, "-u", str(REF), str(MODEL_PATH),
+            "--ids", ",".join(str(i) for i in ids), "-n", str(n_predict),
+            "--probe-pos", str(pos)]
+    r = subprocess.run(argv, capture_output=True, text=True, cwd=str(HERE),
+                       timeout=timeout_for(len(ids), n_predict))
+    if r.returncode != 0:
+        fatal(f"ref probe failed at pos {pos} (rc={r.returncode}): "
+              f"{r.stderr.strip()[:400]}")
+    return parse_probe(r.stderr, pos)
+
+
+def ref_waiver_decision(stoke_top5, ref_top5) -> dict:
+    """Pure. Fable's four conditions; no I/O, no budget -- see WaiverLedger."""
+    if len(stoke_top5) != 5 or len(ref_top5) != 5:
+        fatal("waiver: both sides need exactly 5 probe entries")
+    s_gap = stoke_top5[0][1] - stoke_top5[1][1]
+    r_gap = ref_top5[0][1] - ref_top5[1][1]
+    s_pair = (stoke_top5[0][0], stoke_top5[1][0])
+    r_pair = (ref_top5[0][0], ref_top5[1][0])
+
+    c2 = (s_pair[0] == r_pair[1] and s_pair[1] == r_pair[0])
+    c3 = (s_gap < EPSILON) and (r_gap < EPSILON)
+    s_tail = [i for i, _ in stoke_top5[2:5]]
+    r_tail = [i for i, _ in ref_top5[2:5]]
+    c4 = (s_tail == r_tail)
+
+    if c2 and c3 and c4:
+        eligible, why = True, "genuine near-tie: top-2 pair swapped, both gaps < eps, ranks 3-5 identical"
+    elif not c2:
+        eligible, why = False, f"top-2 not a clean swap: stoke{s_pair} vs ref{r_pair}"
+    elif not c3:
+        eligible, why = False, f"gap >= eps ({EPSILON}): stoke_gap={s_gap:.6g}, ref_gap={r_gap:.6g}"
+    else:
+        eligible, why = False, f"ranks 3-5 differ: stoke{s_tail} vs ref{r_tail}"
+
+    return {"eligible": eligible, "reason": why, "stoke_gap": s_gap,
+            "ref_gap": r_gap, "stoke_pair": s_pair, "ref_pair": r_pair,
+            "stoke_tail": s_tail, "ref_tail": r_tail,
+            "cond2_pair_swapped": c2, "cond3_both_gaps_under_eps": c3,
+            "cond4_ranks_3_5_identical": c4}
+
+
+class WaiverLedger:
+    """Budget is a hard global ceiling across the whole gate run, and each
+    waived prompt consumes the next reserve prompt in order."""
+
+    def __init__(self, budget: int = WAIVER_BUDGET, reserve=None):
+        self.budget = budget
+        self._reserve = iter(reserve if reserve is not None else RESERVE_IDS)
+        self.records: List[dict] = []
+
+    def used(self) -> int:
+        return sum(1 for r in self.records if r["waived"])
+
+    def try_waive(self, prompt_id: str, pos: int, decision: dict) -> dict:
+        rec = {"prompt_id": prompt_id, "position": pos, "waived": False,
+               "replacement": None, **decision}
+        if not decision["eligible"]:
+            rec["outcome"] = f"NOT WAIVABLE -- {decision['reason']}"
+        elif self.used() >= self.budget:
+            rec["outcome"] = (f"eligible but BUDGET EXHAUSTED "
+                              f"({self.used()}/{self.budget} already used)")
+        else:
+            try:
+                rec["replacement"] = next(self._reserve)
+            except StopIteration:
+                fatal("reserve pool exhausted -- unreachable with budget 2 "
+                      "and 10 reserve prompts; something is very wrong")
+            rec["waived"] = True
+            rec["outcome"] = (f"WAIVED -- replaced by {rec['replacement']}, "
+                              f"which must itself pass")
+        self.records.append(rec)
+        return rec
+
+
+_MANIFEST_ROW = re.compile(r"^\|\s*([pr]\d\d)\s*\|[^|]*\|\s*(\d+)\s*\|")
 
 
 def manifest_token_counts() -> Dict[str, int]:
@@ -409,8 +557,14 @@ def run_selftest() -> int:
     # bytes/token guess -- the whole derived-ceiling lesson was that sizing
     # must come from the work the input actually implies.
     counts = manifest_token_counts()
-    check(f"MANIFEST parsed 50 real token counts (got {len(counts)})",
-          len(counts) == 50)
+    n_corpus = sum(1 for k in counts if k.startswith("p"))
+    n_reserve = sum(1 for k in counts if k.startswith("r"))
+    # Both classes matter: the corpus is what the gate runs, the reserve is
+    # what a waiver replacement is drawn from. The row regex covers [pr]\d\d
+    # precisely so a reserve replacement can be sized like any other prompt.
+    check(f"MANIFEST parsed 50 corpus + 10 reserve token counts "
+          f"(got {n_corpus} + {n_reserve})",
+          n_corpus == 50 and n_reserve == 10)
     flat_would_fail = [pid for pid, n in counts.items()
                        if (n + N_PREDICT) * SEC_PER_POSITION > 1800.0]
     check(f"a flat 1800s ceiling WOULD have failed {len(flat_would_fail)} "
