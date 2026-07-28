@@ -90,10 +90,23 @@ while `--selftest` passed under all of them). Oracle context CAPPED at
 `-c 2048` — Kabir-approved `a03748a` on a byte-identical proof (v1/v2/v3
 64/64 ids unchanged; 11,038 MB → 501 MB private, health 69 s → 8 s),
 memo `superpowers/memos/2026-07-27-m2-oracle-context-cap.md`; without it
-the survey needed ~20 GB on a 16 GB box. Remaining, in order: (1) the
-detached `--survey` divergence census over all 50 prompts (RUNNING as
-scheduled task `stoke-m2-survey`; resume with `Start-ScheduledTask`,
-it reuses the per-prompt cache), (2) count appended to the near-tie memo
+the survey needed ~20 GB on a 16 GB box. The 07-27 survey then died with
+`p40-p43` recorded as tooling ERRORs — **not a stoke fault**: the harness's
+flat `STOKE_TIMEOUT_S = 1800 s` sat below the long-context tier's own
+documented ~49 min cost, so it killed exactly the four longest prompts at
+the ceiling (the run's separate death was a hand shutdown, per the event
+log). Fixed `5e0d484`: the ceiling is now DERIVED per prompt
+(`max(1800 s, (bytes/2.5 + n_predict) × 12 s)`) off a fresh measurement —
+**5.20 s/forward at `--jobs 1`, 6.07 s at `--jobs 4`** (contention only
+1.17×), so p40 legitimately needs 56 min; `--selftest` §5 now asserts every
+corpus prompt clears ≥2× its measured cost and that the old constant would
+have failed. Same commit made the top-5 probe cached + pooled (it is a full
+re-generation, ran serially, and a kill discarded it entirely). Nothing
+gate-affecting: ε, waiver budget, oracle invocation and the compared ids
+are untouched. Remaining, in order: (1) the
+detached `--survey` divergence census over all 50 prompts (RELAUNCHED
+2026-07-28 as scheduled task `stoke-m2-survey`, budget ~4 h; resume with
+`Start-ScheduledTask`, it reuses the per-prompt cache), (2) count appended to the near-tie memo
 → **Kabir's near-tie policy call** (its decision rule is pre-committed:
 0 ⇒ strict, 1–2 ⇒ bounded recognition, ≥3 ⇒ re-scope to C-vs-ref and
 defer oracle parity to M3 — but note the p48 smoke divergence fails
