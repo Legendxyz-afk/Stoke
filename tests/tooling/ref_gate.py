@@ -226,11 +226,17 @@ def load_stoke_ids(prompt_id: str, stoke_hash: str) -> List[int]:
             continue
         if Path(d.get("prompt_path", "")).stem != prompt_id:
             continue
-        if d.get("key", {}).get("stoke_hash") != stoke_hash:
+        key = d.get("key", {})
+        if key.get("stoke_hash") != stoke_hash:
             fatal(f"{prompt_id}: cached stoke ids were produced by "
-                  f"stoke.exe {d['key'].get('stoke_hash','?')[:12]}… but the "
+                  f"stoke.exe {key.get('stoke_hash','?')[:12]}… but the "
                   f"current binary is {stoke_hash[:12]}… -- refusing to "
                   f"compare against a stale generation")
+        # The cache is keyed on n_predict too; an entry generated at a
+        # different length would silently supply a shorter/longer id stream.
+        if key.get("n_predict") != N_PREDICT:
+            fatal(f"{prompt_id}: cached stoke ids were generated at "
+                  f"n_predict={key.get('n_predict')}, not {N_PREDICT}")
         ids = d.get("data", {}).get("stoke_ids")
         if not ids:
             fatal(f"{prompt_id}: cache entry has no stoke_ids")
@@ -299,9 +305,10 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
 
     # Longest first: the makespan is set by the long-context prompts, so
     # submitting them last would strand the tail (same lesson as the survey).
-    def n_tokens(pid: str) -> int:
-        return (CORPUS / f"{pid}.txt").stat().st_size
-    ordered = sorted(prompt_ids, key=n_tokens, reverse=True)
+    # Ordered on MANIFEST's real token counts, the same source the ceiling
+    # uses -- bytes would misrank multibyte scripts against ASCII.
+    counts = manifest_token_counts()
+    ordered = sorted(prompt_ids, key=lambda p: counts.get(p, 0), reverse=True)
 
     results: Dict[str, dict] = {}
     t0 = time.time()

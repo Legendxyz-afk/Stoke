@@ -107,6 +107,19 @@ def softmax(x):
     return f32(e / np.sum(e, dtype=np.float32))
 
 
+def top5_from_logits(logits):
+    """Top-5 (id, logit), rank-0 highest first, ties broken by the LOWER id
+    -- byte-for-byte the rule in src/model.c's record_top5(), whose
+    insertion test is `lv > out[i].logit || (lv == out[i].logit && v <
+    out[i].id)`. np.lexsort's LAST key is primary, so this sorts by
+    -logit ascending (= logit descending) with the index ascending as the
+    tiebreak, which is exactly that rule. Read-only exposure of logits the
+    generate loop already computes -- it adds no arithmetic and cannot
+    change a generated id."""
+    order = np.lexsort((np.arange(logits.size), -logits))[:5]
+    return [(int(i), float(logits[i])) for i in order]
+
+
 def silu(z):
     z = f32(z)
     return f32(z / (np.float32(1.0) + np.exp(-z)))
@@ -259,7 +272,7 @@ class Qwen3Ref:
                 x.tofile(os.path.join(dump_dir, f"L{L:02d}.f32"))
         return x
 
-    def generate(self, ids, n, dump_dir=None):
+    def generate(self, ids, n, dump_dir=None, probe_pos=None):
         total_cap = len(ids) + n
         if total_cap > self.max_ctx:
             fatal(f"prompt+generation length {total_cap} exceeds max_ctx {self.max_ctx}")
@@ -275,9 +288,13 @@ class Qwen3Ref:
             x = self.forward_position(t, self.embed(tok), kv_k, kv_v,
                                        dump_dir=(dump_dir if last_prefill else None))
 
+        probe_out = None
         pos = len(ids) - 1
         h = rmsnorm(x, self.gf.tensor_dequant_full(self.output_norm_t), self.eps)
-        next_id = int(np.argmax(self.logits(h)))
+        lg = self.logits(h)
+        if probe_pos == 0:
+            probe_out = top5_from_logits(lg)
+        next_id = int(np.argmax(lg))
         out_ids = [next_id]
         pos += 1
         while len(out_ids) < n:
@@ -285,10 +302,21 @@ class Qwen3Ref:
                 break
             x = self.forward_position(pos, self.embed(next_id), kv_k, kv_v)
             h = rmsnorm(x, self.gf.tensor_dequant_full(self.output_norm_t), self.eps)
-            next_id = int(np.argmax(self.logits(h)))
+            lg = self.logits(h)
+            # len(out_ids) BEFORE the append is the index this new token will
+            # occupy -- the same quantity src/model.c calls `count`, so
+            # probe_pos means the identical generated position on both sides.
+            if probe_pos is not None and probe_pos == len(out_ids):
+                probe_out = top5_from_logits(lg)
+            next_id = int(np.argmax(lg))
             out_ids.append(next_id)
             pos += 1
-        return out_ids
+        if probe_pos is not None and probe_out is None:
+            fatal(f"--probe-pos {probe_pos} was never reached: generation "
+                  f"produced only {len(out_ids)} ids (EOS stops early). "
+                  f"Refusing to report a probe for a position that does "
+                  f"not exist.")
+        return out_ids, probe_out
 
 
 # ============================================================================
@@ -301,6 +329,10 @@ def main() -> int:
     p.add_argument("--ids", help="comma-separated input token ids")
     p.add_argument("-n", type=int, default=64)
     p.add_argument("--dump-layers", metavar="DIR")
+    p.add_argument("--probe-pos", type=int, default=None, metavar="N",
+                   help="print the top-5 (id, logit) at generated position N "
+                        "to stderr, in stoke's exact `probe pos=N: id=U "
+                        "logit=F` format (src/main.c)")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args()
 
@@ -321,16 +353,27 @@ def main() -> int:
     if args.n <= 0:
         print(f"fatal: -n {args.n} must be positive", file=sys.stderr)
         return 1
+    if args.probe_pos is not None and not (0 <= args.probe_pos < args.n):
+        print(f"fatal: --probe-pos {args.probe_pos} outside the generated "
+              f"range [0,{args.n})", file=sys.stderr)
+        return 1
 
     try:
         model = Qwen3Ref(args.gguf)
-        out = model.generate(ids, args.n, dump_dir=args.dump_layers)
+        out, probe = model.generate(ids, args.n, dump_dir=args.dump_layers,
+                                     probe_pos=args.probe_pos)
     except GgufError as e:
         print(f"fatal: {e}", file=sys.stderr)
         return 1
 
     for tid in out:
         print(tid)
+    if probe is not None:
+        # Byte-identical to src/main.c: `probe pos=%d: id=%u logit=%.6f`,
+        # 5 lines on stderr, rank-0 first -- so one comparator parses both.
+        for tid, lg in probe:
+            print(f"probe pos={args.probe_pos}: id={tid} logit={lg:.6f}",
+                  file=sys.stderr)
     return 0
 
 
@@ -370,6 +413,20 @@ def run_selftest() -> int:
     # argmax tie rule: first/lowest index wins
     tied = np.array([1.0, 3.0, 3.0, 2.0], dtype=np.float32)
     check("argmax tie -> first/lowest index", int(np.argmax(tied)) == 1)
+
+    # top5_from_logits must reproduce src/model.c record_top5() exactly:
+    # descending logit, ties broken by the LOWER id.
+    lg = np.array([5.0, 9.0, 9.0, 1.0, 7.0, 9.0, 0.0], dtype=np.float32)
+    t5 = top5_from_logits(lg)
+    check("top5 ranks by descending logit with lower-id tiebreak",
+          [i for i, _ in t5] == [1, 2, 5, 4, 0])
+    check("top5 returns exactly 5 (id, logit) pairs",
+          len(t5) == 5 and all(len(p) == 2 for p in t5))
+    check("top5 logits are the values at those ids",
+          [v for _, v in t5] == [9.0, 9.0, 9.0, 7.0, 5.0])
+    # rank-0 must agree with argmax, or a probe would contradict the id
+    # the same run generated.
+    check("top5 rank-0 == argmax", t5[0][0] == int(np.argmax(lg)))
 
     print(f"\n{'ALL PASS' if failures == 0 else f'{failures} FAILURE(S)'}")
     return 1 if failures else 0
