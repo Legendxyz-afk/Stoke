@@ -434,27 +434,57 @@ def parse_probe(text: str, pos: int) -> List[Tuple[int, float]]:
     return rows
 
 
-def stoke_probe(prompt_path: Path, pos: int, n_predict: int) -> List[Tuple[int, float]]:
+def probe_lines(text: str) -> List[str]:
+    """The `probe pos=...` lines exactly as the process printed them. The
+    gate report records THESE, not a re-rendering of the parsed numbers --
+    ruling §3.2 requires both 5-line blocks verbatim, and a re-render of a
+    float would not be verbatim."""
+    return [ln.rstrip("\r\n") for ln in text.splitlines()
+            if _PROBE_RE.match(ln.strip())]
+
+
+def stoke_probe(prompt_path: Path, pos: int, n_predict: int,
+                n_tok: int) -> Tuple[List[Tuple[int, float]], List[str]]:
+    """`--probe-pos N` indexes the GENERATED ids on both sides -- the same
+    space as compare_ids' first_diff_pos (src/main.c:527 bounds it against
+    the generated count; ref_forward.py:356 against --n). Verified by
+    reading both, not assumed: probing the wrong space would adjudicate a
+    different position than the one that diverged.
+
+    The ceiling is DERIVED from this prompt's real MANIFEST token count --
+    a probe re-generates the whole prompt, so the cost is the generation
+    cost, and a flat guess here would repeat the 07-27 timeout lesson in
+    miniature. SEC_PER_POSITION is ref's rate (13.8s), ~2.7x stoke's
+    measured 5.2s, so the stoke side is bounded generously on purpose."""
     argv = [str(STOKE_EXE), "run", str(MODEL_PATH), "--raw",
             "-f", str(prompt_path), "-n", str(n_predict), "--probe-pos", str(pos)]
-    r = subprocess.run(argv, capture_output=True, text=True,
-                       timeout=timeout_for(200, n_predict))
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           timeout=timeout_for(n_tok, n_predict))
+    except subprocess.TimeoutExpired:
+        fatal(f"stoke probe on {prompt_path.name} at pos {pos} exceeded its "
+              f"derived ceiling ({timeout_for(n_tok, n_predict):.0f}s)")
     if r.returncode != 0:
         fatal(f"stoke probe failed on {prompt_path.name} at pos {pos} "
               f"(rc={r.returncode}): {r.stderr.strip()[:400]}")
-    return parse_probe(r.stderr, pos)
+    return parse_probe(r.stderr, pos), probe_lines(r.stderr)
 
 
-def ref_probe(ids: List[int], pos: int, n_predict: int) -> List[Tuple[int, float]]:
+def ref_probe(ids: List[int], pos: int,
+              n_predict: int) -> Tuple[List[Tuple[int, float]], List[str]]:
     argv = [sys.executable, "-u", str(REF), str(MODEL_PATH),
             "--ids", ",".join(str(i) for i in ids), "-n", str(n_predict),
             "--probe-pos", str(pos)]
-    r = subprocess.run(argv, capture_output=True, text=True, cwd=str(HERE),
-                       timeout=timeout_for(len(ids), n_predict))
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, cwd=str(HERE),
+                           timeout=timeout_for(len(ids), n_predict))
+    except subprocess.TimeoutExpired:
+        fatal(f"ref probe at pos {pos} exceeded its derived ceiling "
+              f"({timeout_for(len(ids), n_predict):.0f}s)")
     if r.returncode != 0:
         fatal(f"ref probe failed at pos {pos} (rc={r.returncode}): "
               f"{r.stderr.strip()[:400]}")
-    return parse_probe(r.stderr, pos)
+    return parse_probe(r.stderr, pos), probe_lines(r.stderr)
 
 
 def ref_waiver_decision(stoke_top5, ref_top5) -> dict:
@@ -519,6 +549,272 @@ class WaiverLedger:
                               f"which must itself pass")
         self.records.append(rec)
         return rec
+
+
+# ============================================================================
+# ADJUDICATION -- ruling §3 and §4.1.
+#
+# The measurement run records comparisons and NOTHING else, deliberately
+# (§3.1). This is the separate step that turns them into a verdict, and its
+# one hard rule is that it never re-derives the bar: every divergence goes
+# through the committed ref_waiver_decision / WaiverLedger above, and this
+# code only sequences them and reports what they returned.
+#
+# What it enforces, straight off ruling §2 -- PASS requires ALL of:
+#   1. zero unresolved tooling errors (§2.1),
+#   2. token-exact incl. stop index on all 24, <=2 waivers, each waived
+#      prompt replaced by the next reserve IN ORDER, replacements
+#      token-exact with NO waiver eligibility (§2.2, no chaining),
+#   3. the L2 ladder re-run at gate HEAD (§2.3) -- a SEPARATE leg run by
+#      l2_diff.py, which this tool deliberately does not fold in: it never
+#      reports "GATE PASS", only "TOKEN LEG PASS", so the report cannot be
+#      stamped off this exit code alone.
+#
+# Stop-index equality needs no code here: compare_ids already reports a
+# length mismatch as a divergence AT the shorter sequence's length, so an
+# early EOS on one side arrives as an ordinary first-divergence position --
+# and the probe at that position is then unobtainable on the short side,
+# which §2 says must FAIL rather than be waived. That path is exercised by
+# the probe-unobtainable branch below.
+#
+# TIE-BREAK, recorded because the ruling does not pin it: when more than one
+# prompt diverges, they are adjudicated in ascending prompt-id order, so the
+# reserve draw (r00, then r01) is deterministic and reproducible. This is a
+# sequencing choice, not a criterion -- no outcome depends on it, since
+# every divergence must be individually eligible regardless of draw order.
+# ============================================================================
+
+# Ruling §1, verbatim -- and identical to what the launched task carries
+# (run_ref_gate_detached.cmd line 56). Adjudicating a run whose prompt set
+# is not exactly this is refused: a partial or edited subset is not the
+# gate, whatever its results say.
+RULING_SUBSET = ["p01", "p02", "p05", "p08", "p09", "p11", "p12", "p16",
+                 "p20", "p24", "p25", "p26", "p28", "p29", "p37", "p39",
+                 "p41", "p43", "p44", "p45", "p46", "p47", "p48", "p49"]
+
+
+def adjudicate_report(report: dict, probe_both, subset=None) -> dict:
+    """Pure sequencing over an already-recorded report. `probe_both` is
+    injected so the whole verdict path is testable without live processes:
+    probe_both(prompt_id, pos) -> {"stoke_top5", "ref_top5", "stoke_lines",
+    "ref_lines"} or {"error": str}.
+
+    Returns a verdict dict; never raises on a gate outcome (only on a
+    malformed report), because "FAIL" is a result to record, not an
+    exception to escape with."""
+    subset = list(subset if subset is not None else RULING_SUBSET)
+    results = report.get("results")
+    if not isinstance(results, dict) or not results:
+        fatal("report has no results block")
+
+    out = {"subset": subset, "verdict": None, "fail_reasons": [],
+           "pending": [], "divergences": [], "waivers": [],
+           "n_exact": 0, "blocked_by": None}
+
+    errors = sorted(p for p, r in results.items() if "error" in r)
+    if errors:
+        out["verdict"] = "FAIL"
+        out["blocked_by"] = "tooling"
+        out["fail_reasons"].append(
+            f"unresolved tooling error(s) on {','.join(errors)} -- ruling "
+            f"§2.1: fix the tooling and re-run those prompts; the gate can "
+            f"never pass around an unresolved error, and adjudicating one "
+            f"would spend hours of probes on an invalid run")
+        return out
+
+    missing = [p for p in subset if p not in results]
+    if missing:
+        out["verdict"] = "INCOMPLETE"
+        out["blocked_by"] = "coverage"
+        out["fail_reasons"].append(
+            f"{len(missing)} subset prompt(s) absent from the report: "
+            f"{','.join(missing)}")
+        return out
+
+    diverged = sorted(p for p in subset if not results[p].get("identical"))
+    out["n_exact"] = len(subset) - len(diverged)
+
+    ledger = WaiverLedger()
+    for pid in diverged:
+        r = results[pid]
+        pos = r.get("first_diff_pos")
+        rec = {"prompt_id": pid, "position": pos,
+               "ref_id_at_diff": r.get("ref_id_at_diff"),
+               "stoke_id_at_diff": r.get("stoke_id_at_diff"),
+               "n_ref": r.get("n_ref"), "n_stoke": r.get("n_stoke")}
+        if pos is None:
+            out["fail_reasons"].append(
+                f"{pid}: diverged but the report carries no first_diff_pos")
+            rec["outcome"] = "NOT WAIVABLE -- no divergence position recorded"
+            out["divergences"].append(rec)
+            continue
+
+        pr = probe_both(pid, pos)
+        if "error" in pr:
+            # §2: "any probe unobtainable on either side at p (fatal or
+            # position never generated) -- absence of evidence defaults to
+            # FAIL, never a free pass." This is also where a stop-index
+            # divergence lands: the short side cannot be probed at p.
+            rec["probe_error"] = pr["error"]
+            rec["outcome"] = "NOT WAIVABLE -- probe unobtainable"
+            out["fail_reasons"].append(
+                f"{pid} at position {pos}: probe unobtainable -- {pr['error'][:200]}")
+            out["divergences"].append(rec)
+            continue
+
+        rec["stoke_probe_lines"] = pr["stoke_lines"]
+        rec["ref_probe_lines"] = pr["ref_lines"]
+        decision = ref_waiver_decision(pr["stoke_top5"], pr["ref_top5"])
+        waiver = ledger.try_waive(pid, pos, decision)
+        rec["decision"] = decision
+        rec["outcome"] = waiver["outcome"]
+        rec["waived"] = waiver["waived"]
+        rec["replacement"] = waiver["replacement"]
+        out["divergences"].append(rec)
+        out["waivers"].append(waiver)
+        if not waiver["waived"]:
+            out["fail_reasons"].append(f"{pid} at position {pos}: {waiver['outcome']}")
+
+    # Replacements: token-exact, and NOT waiver-eligible (§2.2, no chaining).
+    for w in out["waivers"]:
+        if not w["waived"]:
+            continue
+        rep = w["replacement"]
+        if rep not in results:
+            out["pending"].append(rep)
+            continue
+        rr = results[rep]
+        if "error" in rr:
+            out["fail_reasons"].append(f"replacement {rep}: tooling error -- {rr['error'][:200]}")
+        elif not rr.get("identical"):
+            out["fail_reasons"].append(
+                f"replacement {rep} diverged at position {rr.get('first_diff_pos')} "
+                f"-- replacements carry NO waiver eligibility (ruling §2.2, "
+                f"no chaining), so this fails the gate outright")
+
+    if out["fail_reasons"]:
+        out["verdict"] = "FAIL"
+    elif out["pending"]:
+        out["verdict"] = "INCOMPLETE"
+        out["blocked_by"] = "replacement"
+    else:
+        out["verdict"] = "PASS"
+    return out
+
+
+def probe_cache_key(prompt_id: str, pos: int, stoke_hash: str,
+                    ref_hash: str, n_predict: int) -> dict:
+    return {"prompt_id": prompt_id, "probe_pos": pos,
+            "stoke_sha256": stoke_hash, "ref_sha256": ref_hash,
+            "model": MODEL_PATH.name, "n_predict": n_predict,
+            "tool": "ref_gate/probe/1"}
+
+
+def run_adjudication(n_predict: int) -> int:
+    if not STOKE_EXE.exists():
+        fatal(f"missing {STOKE_EXE}")
+    report_path = CACHE / "ref_gate_report.json"
+    if not report_path.exists():
+        fatal(f"no report at {report_path} -- adjudication runs on a "
+              f"completed measurement run, not instead of one")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    stoke_hash = sha256_file(STOKE_EXE)
+    ref_hash = sha256_file(REF)
+    # The evidentiary pin (ruling §4.3). If either hash moved, the report
+    # describes a different pair of binaries than the probes would exercise.
+    if report.get("stoke_sha256") != stoke_hash:
+        fatal(f"stoke.exe is {stoke_hash[:12]}… but the report was produced "
+              f"by {str(report.get('stoke_sha256'))[:12]}… -- the freeze was "
+              f"broken; probes would not describe the recorded run")
+    if report.get("ref_sha256") != ref_hash:
+        fatal(f"ref_forward.py is {ref_hash[:12]}… but the report was "
+              f"produced by {str(report.get('ref_sha256'))[:12]}… -- frozen "
+              f"until the gate report is stamped")
+    if report.get("n_predict") != n_predict:
+        fatal(f"report n_predict={report.get('n_predict')}, adjudicating at "
+              f"{n_predict}")
+    ran = [p for p in report.get("prompts", []) if p.startswith("p")]
+    if sorted(ran) != sorted(RULING_SUBSET):
+        fatal(f"the report's corpus prompts are not the ruling's subset "
+              f"(§1). ran={','.join(sorted(ran))}")
+
+    counts = manifest_token_counts()
+
+    def probe_both(prompt_id: str, pos: int) -> dict:
+        key = probe_cache_key(prompt_id, pos, stoke_hash, ref_hash, n_predict)
+        hit = cache_load(key)
+        if hit is not None:
+            print(f"  probes {prompt_id}@{pos}: cached")
+            sys.stdout.flush()
+            return hit
+        path = CORPUS / f"{prompt_id}.txt"
+        n_tok = counts.get(prompt_id)
+        if n_tok is None:
+            return {"error": f"{prompt_id} has no MANIFEST token count"}
+        try:
+            print(f"  probing {prompt_id}@{pos} (stoke ~{(n_tok+n_predict)*5.2/60:.0f} min, "
+                  f"ref ~{(n_tok+pos)*SEC_PER_POSITION/60:.0f} min) …")
+            sys.stdout.flush()
+            ids = tokenize(path)
+            s_rows, s_lines = stoke_probe(path, pos, n_predict, n_tok)
+            r_rows, r_lines = ref_probe(ids, pos, n_predict)
+        except GateError as e:
+            # Errors are NEVER cached (survey lesson): a cached failure would
+            # make a fixable probe permanently unobtainable.
+            return {"error": str(e)}
+        data = {"stoke_top5": s_rows, "ref_top5": r_rows,
+                "stoke_lines": s_lines, "ref_lines": r_lines}
+        cache_store(key, prompt_id, data)
+        return data
+
+    print("REF GATE ADJUDICATION -- ruling "
+          "docs/superpowers/memos/2026-07-28-m2-substitute-gate-RULING-FABLE.md")
+    print(f"  stoke.exe  : {stoke_hash[:16]}…")
+    print(f"  ref_forward: {ref_hash[:16]}…")
+    print(f"  subset     : {len(RULING_SUBSET)} prompts (ruling §1)")
+    print(f"  probes run SERIALLY -- a ref probe is a full 2.3 GB process "
+          f"(ruling §3.2)\n")
+    sys.stdout.flush()
+
+    v = adjudicate_report(report, probe_both)
+
+    print(f"\nexact: {v['n_exact']}/{len(v['subset'])}   "
+          f"divergences: {len(v['divergences'])}")
+    for rec in v["divergences"]:
+        print(f"\n--- {rec['prompt_id']} @ position {rec['position']} "
+              f"(ref={rec.get('ref_id_at_diff')} stoke={rec.get('stoke_id_at_diff')})")
+        for label, lines in (("stoke", rec.get("stoke_probe_lines")),
+                             ("ref  ", rec.get("ref_probe_lines"))):
+            if lines:
+                print(f"  {label} probe (verbatim):")
+                for ln in lines:
+                    print(f"    {ln}")
+        if "decision" in rec:
+            print(f"  decision: {json.dumps(rec['decision'], sort_keys=True)}")
+        print(f"  OUTCOME: {rec['outcome']}")
+
+    adj = CACHE / "ref_gate_adjudication.json"
+    adj.write_text(json.dumps(v, indent=1), encoding="utf-8")
+    print(f"\nadjudication: {adj}")
+
+    print(f"\nTOKEN LEG: {v['verdict']}")
+    for r in v["fail_reasons"]:
+        print(f"  - {r}")
+    for p in v["pending"]:
+        print(f"  - replacement {p} not yet run. Bank its stoke ids through "
+              f"the hash-guarded path (ruling §4.2), then re-run this gate "
+              f"and re-adjudicate:\n"
+              f"      python tests/tooling/parity_gate.py --only {p} …\n"
+              f"      python tests/tooling/ref_gate.py --subset "
+              f"{','.join(RULING_SUBSET)},{p} --jobs 3\n"
+              f"      python tests/tooling/ref_gate.py --adjudicate")
+    if v["verdict"] == "PASS":
+        print("\nThis is the TOKEN leg only. GATE PASS additionally requires "
+              "the L2 ladder re-run at this HEAD (ruling §2.3): ids "
+              "[785,6722,315,9625,374], 36/36 layers <=1e-3, no STEP, via "
+              "l2_diff.py. Do not stamp the gate report off this line alone.")
+    return 0 if v["verdict"] == "PASS" else 1
 
 
 _MANIFEST_ROW = re.compile(r"^\|\s*([pr]\d\d)\s*\|[^|]*\|\s*(\d+)\s*\|")
@@ -587,6 +883,119 @@ def run_selftest() -> int:
           f"of {worst_ceiling/3600:.2f} h, > the 4.1 h its 554 positions imply "
           f"at 2x", worst_ceiling >= 4.1 * 3600)
 
+    # ---- adjudication (ruling §3/§4.1). Every check below can fail: the
+    # verdict paths are exercised against synthetic reports with an injected
+    # probe function, so no live process is needed and no outcome is assumed.
+    check(f"RULING_SUBSET is the 24 of ruling §1 (got {len(RULING_SUBSET)})",
+          len(RULING_SUBSET) == 24 and len(set(RULING_SUBSET)) == 24)
+    cmd = HERE / "run_ref_gate_detached.cmd"
+    m = re.search(r"--subset\s+([pr\d,]+)", cmd.read_text(encoding="utf-8")) if cmd.exists() else None
+    check("the launched task's --subset is exactly RULING_SUBSET "
+          "(so adjudication cannot describe a different run than the one "
+          "the scheduled task performs)",
+          m is not None and m.group(1).split(",") == RULING_SUBSET)
+    check("every subset prompt has a corpus file",
+          all((CORPUS / f"{p}.txt").exists() for p in RULING_SUBSET))
+
+    probe_block = ("probe pos=7: id=11 logit=1.000000\n"
+                   "probe pos=7: id=22 logit=0.999500\n"
+                   "probe pos=7: id=33 logit=0.500000\n"
+                   "probe pos=7: id=44 logit=0.400000\n"
+                   "probe pos=7: id=55 logit=0.300000\n")
+    check("parse_probe reads a well-formed block",
+          parse_probe(probe_block, 7)[0] == (11, 1.0))
+    check("probe_lines keeps the 5 lines verbatim",
+          probe_lines("loading…\n" + probe_block) == probe_block.strip().splitlines())
+    for label, bad, pos in (("4 lines", "\n".join(probe_block.splitlines()[:4]), 7),
+                            ("wrong pos", probe_block, 8),
+                            ("unordered", probe_block.replace("1.000000", "0.100000"), 7)):
+        try:
+            parse_probe(bad, pos)
+            check(f"parse_probe rejects {label}", False)
+        except GateError:
+            check(f"parse_probe rejects {label}", True)
+
+    def _top5(pair, gap, tail=(33, 44, 55)):
+        return ([(pair[0], 1.0), (pair[1], 1.0 - gap)]
+                + [(t, 0.5 - i * 0.01) for i, t in enumerate(tail)])
+
+    swap_ok = {"stoke_top5": _top5((11, 22), 5e-4), "ref_top5": _top5((22, 11), 6e-4),
+               "stoke_lines": ["s"], "ref_lines": ["r"]}
+    check("ref_waiver_decision: clean sub-eps swap is eligible",
+          ref_waiver_decision(swap_ok["stoke_top5"], swap_ok["ref_top5"])["eligible"])
+    check("ref_waiver_decision: gap >= eps is NOT eligible",
+          not ref_waiver_decision(_top5((11, 22), 5e-4), _top5((22, 11), 2e-3))["eligible"])
+    check("ref_waiver_decision: top-2 not swapped is NOT eligible",
+          not ref_waiver_decision(_top5((11, 22), 5e-4), _top5((11, 22), 5e-4))["eligible"])
+    check("ref_waiver_decision: ranks 3-5 differing is NOT eligible",
+          not ref_waiver_decision(_top5((11, 22), 5e-4),
+                                  _top5((22, 11), 5e-4, tail=(33, 55, 44)))["eligible"])
+
+    def _report(overrides, prompts=None):
+        res = {p: {"identical": True} for p in (prompts or RULING_SUBSET)}
+        res.update(overrides)
+        return {"n_predict": N_PREDICT, "results": res}
+
+    def _diverged(pos=7):
+        return {"identical": False, "first_diff_pos": pos,
+                "ref_id_at_diff": 22, "stoke_id_at_diff": 11}
+
+    def _probe(kind):
+        return lambda pid, pos: (dict(swap_ok) if kind == "ok"
+                                 else {"error": "probe pos never reached"} if kind == "err"
+                                 else {"stoke_top5": _top5((11, 22), 5e-4),
+                                       "ref_top5": _top5((22, 11), 2e-3),
+                                       "stoke_lines": ["s"], "ref_lines": ["r"]})
+
+    v = adjudicate_report(_report({}), _probe("ok"))
+    check("adjudicate: all exact => PASS", v["verdict"] == "PASS" and v["n_exact"] == 24)
+
+    v = adjudicate_report(_report({"p05": {"error": "timed out"}}), _probe("ok"))
+    check("adjudicate: a tooling error => FAIL without probing (ruling §2.1)",
+          v["verdict"] == "FAIL" and v["blocked_by"] == "tooling")
+
+    v = adjudicate_report(_report({}, prompts=RULING_SUBSET[:-1]), _probe("ok"))
+    check("adjudicate: a prompt missing from the report => INCOMPLETE",
+          v["verdict"] == "INCOMPLETE" and v["blocked_by"] == "coverage")
+
+    v = adjudicate_report(_report({"p02": _diverged()}), _probe("ok"))
+    check("adjudicate: waivable flip draws r00 and blocks on the replacement",
+          v["verdict"] == "INCOMPLETE" and v["blocked_by"] == "replacement"
+          and v["pending"] == ["r00"] and v["waivers"][0]["waived"])
+    check("adjudicate: the verbatim probe blocks reach the record",
+          v["divergences"][0]["stoke_probe_lines"] == ["s"]
+          and v["divergences"][0]["ref_probe_lines"] == ["r"])
+
+    v = adjudicate_report(_report({"p02": _diverged(), "r00": {"identical": True}}),
+                          _probe("ok"))
+    check("adjudicate: waived + exact replacement => PASS", v["verdict"] == "PASS")
+
+    v = adjudicate_report(_report({"p02": _diverged(),
+                                   "r00": {"identical": False, "first_diff_pos": 3}}),
+                          _probe("ok"))
+    check("adjudicate: a diverging replacement FAILS outright (no chaining)",
+          v["verdict"] == "FAIL"
+          and any("no chaining" in r for r in v["fail_reasons"]))
+
+    v = adjudicate_report(_report({"p02": _diverged(), "p46": _diverged()}), _probe("ok"))
+    check("adjudicate: two waivers draw r00,r01 in ascending prompt order",
+          [w["replacement"] for w in v["waivers"]] == ["r00", "r01"])
+
+    v = adjudicate_report(_report({"p02": _diverged(), "p46": _diverged(),
+                                   "p48": _diverged()}), _probe("ok"))
+    check("adjudicate: a 3rd flip exhausts the budget => FAIL",
+          v["verdict"] == "FAIL"
+          and any("BUDGET EXHAUSTED" in r for r in v["fail_reasons"]))
+
+    v = adjudicate_report(_report({"p02": _diverged()}), _probe("wide"))
+    check("adjudicate: an ineligible flip => FAIL",
+          v["verdict"] == "FAIL" and not v["waivers"][0]["waived"])
+
+    v = adjudicate_report(_report({"p02": _diverged()}), _probe("err"))
+    check("adjudicate: an unobtainable probe => FAIL, never a free pass",
+          v["verdict"] == "FAIL"
+          and any("probe unobtainable" in r for r in v["fail_reasons"]))
+
     check("stoke.exe present", STOKE_EXE.exists())
     check("model present", MODEL_PATH.exists())
     check("ref_forward present", REF.exists())
@@ -605,10 +1014,21 @@ def main(argv=None) -> int:
     ap.add_argument("--n-predict", type=int, default=N_PREDICT)
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--adjudicate", action="store_true",
+                    help="turn a COMPLETED run's report into a verdict: probe "
+                         "both sides at each first divergence and route it "
+                         "through the committed ref_waiver_decision (ruling "
+                         "§4.1). Serial, and it re-runs nothing that passed.")
     a = ap.parse_args(argv)
 
     if a.selftest:
         return run_selftest()
+    if a.adjudicate:
+        try:
+            return run_adjudication(a.n_predict)
+        except GateError as e:
+            print(f"fatal: {e}", file=sys.stderr)
+            return 1
     if not a.subset:
         print("fatal: --subset is required (the subset is a decided gate "
               "parameter, not a default this tool may invent)", file=sys.stderr)
