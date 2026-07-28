@@ -131,12 +131,58 @@ N_PREDICT_DEFAULT = 64
 DEFAULT_PORT = 8090
 DEFAULT_JOBS = 4
 
-# Generous ceilings, not CLI-tunable (the brief's CLI contract does not
-# include timeout flags; §1 sets the expectation "seconds per token" for
-# scalar M2 code, and the 400-512 token long-context prompts (p40-p44,
-# r07) need one-position-at-a-time prefill on top of the 64 generated --
-# these are ceilings against a truly wedged process, not a tuning knob).
-STOKE_TIMEOUT_S = 1800.0
+# Ceilings against a truly WEDGED process, not a tuning knob and not
+# CLI-tunable (the brief's CLI contract does not include timeout flags).
+#
+# THE 1800s FLAT CONSTANT THAT USED TO LIVE HERE WAS A BUG, and it cost a
+# survey run: it was a guess ("generous"), and it sat BELOW the legitimate
+# cost of the corpus's own long-context tier. The 2026-07-27 detached
+# survey duly killed p40/p41/p42/p43 -- precisely the four longest prompts
+# -- at exactly 30.0 min each and recorded them as tooling ERRORs, while
+# this file's own _order_longest_first() docstring and the session playbook
+# both already sized that tier at ~49 min. A ceiling must be derived from
+# the work the prompt actually implies; a flat one cannot be.
+#
+# MANAGER-MEASURED 2026-07-28 on the reference box (i5-13450HX, 10 cores /
+# 16 threads, 15.6 GB), Q8_0, through this harness, banked in .gate_cache:
+#   --jobs 1: p49 (18 prompt tok + 64 gen = 82 forwards) in 7.1 min
+#             => 5.20 s per forward  (confirms the 5.3 s figure in the playbook)
+#   --jobs 4: p45/p04/p46/p26 (78/82/86/83 forwards) all four in 8.7 min
+#             => 6.07 s per forward per process, i.e. a 4-way contention
+#                penalty of only 1.17x (3.43x effective throughput)
+# Worst legitimate prompt, p40 (490 prompt tok + 64 = 554 forwards), at
+# --jobs 4: 554 * 6.07 = 3363 s = 56 min. The old ceiling was 1800 s.
+#
+# The derivation below over-estimates deliberately, at BOTH factors:
+#   - tokens are bounded from the prompt's FILE SIZE (this harness never
+#     tokenizes -- same rationale as _order_longest_first). 2.5 bytes/token
+#     is a true lower bound over the corpus: measured across all 60 corpus
+#     files against MANIFEST's real token counts, the minimum ratio among
+#     prompts big enough for the term to matter is p32's 2.731 (Devanagari).
+#     The only two files below 2.5 are r08 (3 B) and p48 (4 B), where the
+#     byte term is ~1 forward and the floor governs entirely.
+#   - 12.0 s/forward is ~2x the measured 6.07 s under --jobs 4 contention,
+#     so an unexpectedly loaded box cannot manufacture a false timeout.
+# Net effect: every corpus prompt gets a ceiling >= 2x its measured cost
+# (p40 4.1x, p22 2.2x, p48 4.5x) -- asserted mechanically in --selftest.
+# A loose backstop delays detecting a genuine wedge; a tight one destroys
+# multi-hour measurements of healthy runs. We just paid for the latter.
+STOKE_TIMEOUT_FLOOR_S = 1800.0          # governs short prompts
+STOKE_SEC_PER_FORWARD_CEIL = 12.0       # ~2x measured 6.07 s at --jobs 4
+CORPUS_MIN_BYTES_PER_TOKEN = 2.5        # measured lower bound, see above
+
+# Empirical input to --selftest section 5 ONLY (never to a ceiling or a gate
+# decision): the 2026-07-28 measured per-forward wall time under --jobs 4
+# contention, used to assert each prompt's ceiling clears its real cost.
+STOKE_MEASURED_SEC_PER_FORWARD_JOBS4 = 6.07
+
+
+def stoke_timeout_for(prompt_path: Path, n_predict: int) -> float:
+    """Per-prompt wedge ceiling in seconds, derived from the prompt's file
+    size (M2 prefills one position at a time, so cost is linear in prompt
+    tokens + generated tokens). Never a tuning knob: see the block above."""
+    est_forwards = prompt_path.stat().st_size / CORPUS_MIN_BYTES_PER_TOKEN + n_predict
+    return max(STOKE_TIMEOUT_FLOOR_S, est_forwards * STOKE_SEC_PER_FORWARD_CEIL)
 # MANAGER-MEASURED 2026-07-27 (live server, settled invocation, 4.3GB Q8_0,
 # -t 1): cold start reported healthy after 69s. 300s is a >4x margin over
 # that measurement, per the manager's explicit "at least 300 s" floor --
@@ -556,12 +602,18 @@ _PROBE_LINE_RE = re.compile(r"^probe pos=(-?\d+): id=(\d+) logit=(-?\d+\.\d{6})$
 
 
 def run_stoke_generate(prompt_path: Path, n_predict: int,
-                        timeout_s: float = STOKE_TIMEOUT_S) -> List[int]:
+                        timeout_s: Optional[float] = None) -> List[int]:
     """`stoke run <model> --raw -f <prompt> -n <n_predict>` -> the
     generated ids, one per source line, BEFORE the literal '---' line
     (src/main.c: printf("%u\\n") per id, then printf("---\\n")). A
     non-zero exit means stoke's own fatal() already wrote 'fatal: ...' to
-    stderr -- never attempt to parse stdout in that case."""
+    stderr -- never attempt to parse stdout in that case.
+
+    timeout_s defaults to the per-prompt wedge ceiling (stoke_timeout_for);
+    a flat default here is what killed the four long-context prompts of the
+    2026-07-27 survey."""
+    if timeout_s is None:
+        timeout_s = stoke_timeout_for(prompt_path, n_predict)
     argv = stoke_generate_argv(prompt_path, n_predict)
     try:
         proc = subprocess.run(argv, capture_output=True, timeout=timeout_s)
@@ -583,14 +635,19 @@ def run_stoke_generate(prompt_path: Path, n_predict: int,
 
 
 def run_stoke_probe(prompt_path: Path, n_predict: int, pos: int,
-                     timeout_s: float = STOKE_TIMEOUT_S) -> List[Tuple[int, float]]:
+                     timeout_s: Optional[float] = None) -> List[Tuple[int, float]]:
     """`--probe-pos <pos>` re-run -> the 5 (id, logit) stderr lines for
     generated position `pos`. If stoke's OWN generation stopped before
     reaching `pos` (e.g. an early EOS), main.c fatals with a nonzero exit
     instead of emitting probe lines -- that is treated as a hard failure
     here (a divergence at a position stoke never reached has no stoke-
     side top-5 evidence, so it cannot be waived by construction; see
-    m2-w4-report.md's flag on length-mismatch divergences)."""
+    m2-w4-report.md's flag on length-mismatch divergences).
+
+    A probe re-runs generation from scratch up to `pos`, so it is the same
+    cost class as a full generate and takes the same per-prompt ceiling."""
+    if timeout_s is None:
+        timeout_s = stoke_timeout_for(prompt_path, n_predict)
     argv = stoke_probe_argv(prompt_path, n_predict, pos)
     try:
         proc = subprocess.run(argv, capture_output=True, timeout=timeout_s)
@@ -1031,6 +1088,30 @@ def fetch_stoke_result(prompt_id: str, args) -> List[int]:
     return data["stoke_ids"]
 
 
+def fetch_stoke_probe(prompt_id: str, pos: int, args) -> List[Tuple[int, float]]:
+    """Cached counterpart of fetch_stoke_result for the top-5 probe.
+
+    A probe costs a FULL re-generation (`-n 64 --probe-pos <pos>` still
+    generates all 64), so on a corpus where divergences are common the
+    probe phase rivals the generate phase in wall time -- and until this
+    existed it was the one phase of a survey that a kill threw away
+    entirely, since the report is written only at the very end. The
+    2026-07-27 run was lost to a shutdown; that must cost in-flight work
+    only, per the same reasoning that made generation resumable.
+
+    Keyed by position so a re-probe at a DIFFERENT position (a changed
+    stoke.exe moves the divergence) can never collide -- and stoke_hash is
+    already part of the cache key, so a rebuilt exe invalidates it anyway.
+    Tuples become JSON lists on the round trip; normalize on read."""
+    prompt_path = corpus_path(prompt_id)
+    data = _load_cache_data(prompt_path, args)
+    key = f"stoke_top5_pos{pos}"
+    if key not in data:
+        data[key] = run_stoke_probe(prompt_path, args.n_predict, pos)
+        _store_cache_data(prompt_path, args, data)
+    return [(int(i), float(l)) for i, l in data[key]]
+
+
 # ============================================================================
 # Report
 # ============================================================================
@@ -1044,6 +1125,10 @@ def write_report(path: Path, identity: dict, args, slot_status: Dict[str, dict],
     lines.append("## Run configuration")
     lines.append(f"- n_predict: {args.n_predict}")
     lines.append(f"- jobs (stoke parallelism): {args.jobs}")
+    lines.append(f"- stoke wedge ceiling: per-prompt, "
+                  f"max({STOKE_TIMEOUT_FLOOR_S:.0f}s, "
+                  f"(bytes/{CORPUS_MIN_BYTES_PER_TOKEN} + n_predict) * "
+                  f"{STOKE_SEC_PER_FORWARD_CEIL:.0f}s per forward)")
     lines.append(f"- clean: {args.clean}")
     lines.append(f"- waiver epsilon: {EPSILON} nats, budget: {WAIVER_BUDGET}")
     lines.append("")
@@ -1125,6 +1210,10 @@ def write_survey_report(path: Path, identity: dict, args, per_prompt: List[dict]
     lines.append("## Run configuration")
     lines.append(f"- n_predict: {args.n_predict}")
     lines.append(f"- jobs (stoke parallelism): {args.jobs}")
+    lines.append(f"- stoke wedge ceiling: per-prompt, "
+                  f"max({STOKE_TIMEOUT_FLOOR_S:.0f}s, "
+                  f"(bytes/{CORPUS_MIN_BYTES_PER_TOKEN} + n_predict) * "
+                  f"{STOKE_SEC_PER_FORWARD_CEIL:.0f}s per forward)")
     lines.append(f"- clean: {args.clean}")
     lines.append("- prompt scheduling: longest-first by corpus file byte size "
                   "(see _order_longest_first() -- makespan note)")
@@ -1383,14 +1472,18 @@ def run_survey(args) -> int:
 
         census = {"exact": [], "diverged": [], "error": []}
         per_prompt: List[dict] = []
+
+        # Pass 1: classify from data already in hand (no subprocesses).
+        rows: Dict[str, dict] = {}
+        to_probe: List[Tuple[str, int]] = []
         for pid in ordered:
             if pid in oracle_errors or pid in stoke_errors:
                 census["error"].append(pid)
-                per_prompt.append({
+                rows[pid] = {
                     "prompt_id": pid, "status": "ERROR",
                     "oracle_error": oracle_errors.get(pid),
                     "stoke_error": stoke_errors.get(pid),
-                })
+                }
                 continue
 
             oracle_data = oracle_results[pid]
@@ -1398,21 +1491,66 @@ def run_survey(args) -> int:
             cmp = compare_ids(oracle_data["tokens"], stoke_ids)
             if cmp.identical:
                 census["exact"].append(pid)
-                per_prompt.append({"prompt_id": pid, "status": "EXACT",
-                                    "oracle_len": cmp.oracle_len, "stoke_len": cmp.stoke_len})
+                rows[pid] = {"prompt_id": pid, "status": "EXACT",
+                             "oracle_len": cmp.oracle_len, "stoke_len": cmp.stoke_len}
                 continue
 
             pos = cmp.first_diff_pos
-            row = {
+            census["diverged"].append(pid)
+            rows[pid] = {
                 "prompt_id": pid, "status": "DIVERGED", "position": pos,
                 "oracle_ids_len": cmp.oracle_len, "stoke_ids_len": cmp.stoke_len,
                 "oracle_id_at_pos": oracle_data["tokens"][pos] if pos < len(oracle_data["tokens"]) else None,
                 "stoke_id_at_pos": stoke_ids[pos] if pos < len(stoke_ids) else None,
             }
+            to_probe.append((pid, pos))
+
+        # Pass 2: top-5 probes, through the SAME bounded pool as generation.
+        # Each probe is a full re-generation, so a serial phase here costs
+        # about as much as the entire generate phase whenever divergences are
+        # common -- which on this corpus they are. Probes are independent per
+        # prompt and cached, exactly like generation.
+        probe_results: Dict[str, List[Tuple[int, float]]] = {}
+        probe_errors: Dict[str, str] = {}
+        if to_probe:
+            def _safe_probe(pid: str, pos: int):
+                try:
+                    return "ok", fetch_stoke_probe(pid, pos, args)
+                except GateError as e:
+                    return "err", str(e)
+
+            t1 = time.monotonic()
+            pdone = 0
+            print(f"PROBE PHASE: {len(to_probe)} diverged prompt(s) need a top-5 "
+                  f"probe (each is a full re-generation), jobs={args.jobs}")
+            with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+                pfuts = {ex.submit(_safe_probe, pid, pos): pid for pid, pos in to_probe}
+                for fut in as_completed(pfuts):
+                    pid = pfuts[fut]
+                    status, payload = fut.result()
+                    if status == "ok":
+                        probe_results[pid] = payload
+                    else:
+                        probe_errors[pid] = payload
+                    pdone += 1
+                    el = time.monotonic() - t1
+                    print(f"[probe {pdone}/{len(to_probe)}] {pid} {status} -- "
+                          f"elapsed {el/60:.1f} min, "
+                          f"eta ~{(el / pdone * (len(to_probe) - pdone))/60:.0f} min")
+
+        # Pass 3: adjudicate, preserving `ordered`.
+        for pid, pos in to_probe:
+            row = rows[pid]
+            if pid in probe_errors:
+                row["would_waive"] = False
+                row["verdict_class"] = "evidence_unavailable"
+                row["reason"] = probe_errors[pid]
+                continue
             try:
+                oracle_data = oracle_results[pid]
                 oracle_top5 = top5_for_position(oracle_data["tokens"],
                                                  oracle_data["completion_probabilities"], pos)
-                stoke_top5 = run_stoke_probe(corpus_path(pid), args.n_predict, pos)
+                stoke_top5 = probe_results[pid]
                 decision = waiver_decision(oracle_top5, stoke_top5)
                 row["oracle_top5"] = oracle_top5
                 row["stoke_top5"] = stoke_top5
@@ -1423,8 +1561,8 @@ def run_survey(args) -> int:
                 row["would_waive"] = False
                 row["verdict_class"] = "evidence_unavailable"
                 row["reason"] = str(e)
-            census["diverged"].append(pid)
-            per_prompt.append(row)
+
+        per_prompt = [rows[pid] for pid in ordered]
 
         write_survey_report(report_path, identity, args, per_prompt, census)
         print("MODE: SURVEY -- DIAGNOSTIC ONLY, NOT A GATE RESULT")
@@ -1643,6 +1781,53 @@ def run_selftest() -> int:
         caught = True
     check("parse_version_output raises GateError on unparseable input "
           "(not a dead check -- proves the fatal path is real)", caught)
+
+    # ---- 5. Per-prompt wedge ceiling covers every corpus prompt ---------
+    # THE REGRESSION TEST FOR THE 2026-07-27 SURVEY FAILURE. The old flat
+    # 1800 s ceiling killed p40/p41/p42/p43 mid-survey; this asserts that
+    # every prompt in the committed corpus gets a ceiling of at least 2x its
+    # MEASURED cost, using MANIFEST's real token counts as ground truth (the
+    # ceiling itself may only look at file size -- the harness never
+    # tokenizes). A check that cannot fail is worthless, so it ends by
+    # confirming the old constant WOULD have failed here.
+    print("\n--- 5. Per-prompt wedge ceiling vs measured cost (all 60 corpus prompts) ---")
+    manifest = CORPUS_DIR / "MANIFEST.md"
+    tok_counts: Dict[str, int] = {}
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^\|\s*([pr]\d\d)\s*\|[^|]*\|\s*(\d+)\s*\|", line)
+            if m:
+                tok_counts[m.group(1)] = int(m.group(2))
+    except OSError as e:
+        print(f"  error reading {manifest}: {e}")
+    check(f"MANIFEST.md yields token counts for 60 prompts (got {len(tok_counts)})",
+          len(tok_counts) == 60)
+
+    worst_ratio, worst_pid, missing = None, None, []
+    for pid, tokens in sorted(tok_counts.items()):
+        p = corpus_path(pid)
+        if not p.exists():
+            missing.append(pid)
+            continue
+        measured_s = (tokens + N_PREDICT_DEFAULT) * STOKE_MEASURED_SEC_PER_FORWARD_JOBS4
+        ratio = stoke_timeout_for(p, N_PREDICT_DEFAULT) / measured_s
+        if worst_ratio is None or ratio < worst_ratio:
+            worst_ratio, worst_pid = ratio, pid
+    check(f"every corpus prompt file present (missing: {missing})", not missing)
+    check(f"tightest ceiling margin is >= 2.0x measured cost "
+          f"({worst_pid} at {worst_ratio:.2f}x)" if worst_ratio is not None
+          else "tightest ceiling margin computed",
+          worst_ratio is not None and worst_ratio >= 2.0)
+
+    p40 = corpus_path("p40")
+    if p40.exists():
+        p40_measured = (tok_counts.get("p40", 490) + N_PREDICT_DEFAULT) \
+            * STOKE_MEASURED_SEC_PER_FORWARD_JOBS4
+        check(f"p40 measured cost ({p40_measured:.0f}s) EXCEEDS the old flat 1800s "
+              f"constant -- i.e. this check would have caught the survey failure",
+              p40_measured > 1800.0)
+        check(f"p40's derived ceiling ({stoke_timeout_for(p40, N_PREDICT_DEFAULT):.0f}s) "
+              f"covers it", stoke_timeout_for(p40, N_PREDICT_DEFAULT) > p40_measured)
 
     print()
     if failures == 0:
