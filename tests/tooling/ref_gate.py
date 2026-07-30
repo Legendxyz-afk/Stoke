@@ -116,6 +116,45 @@ N_PREDICT = 64
 # the concurrency it will actually run at, or do not run at that concurrency.
 SEC_PER_POSITION_BY_JOBS = {1: 20.4}   # LOADED rate, measured 2026-07-30
 STARTUP_S = 100.0                      # cold-first-read premium, not the norm
+#
+# CONTEXT -- the third thing this model got wrong, and the BIGGEST of the
+# three. A single s/position is context-blind, but ref attends over the whole
+# context at every position, so per-position cost grows with context length.
+# A rate probed on a 2-token prompt therefore under-models a 477-token one.
+# Measured 2026-07-30 from COMPLETED prompts only (durable lesson 1: a
+# timeout can never update a cost constant):
+#
+#     p48    66 positions, mean context  34  ->  20.22 s/position
+#     p41   541 positions, mean context 509  ->  40.03 s/position  (EXACT,
+#                                                 360.9 min, banked)
+#
+# p41 came in at 1.96x its flat prediction, and it had ALREADY exceeded
+# 32.6 s/position before a game was started -- so CONTEXT, not box load, is
+# the dominant error. (Box load is worth ~1.23x on top; the 07-30 15:37-16:45
+# window measured the worker trimmed to 202 MB resident and 30% of one core
+# in user mode with a 6.25 GB game up.)
+#
+# Two points give a line in the MEAN context a prompt attends over,
+# c = n_prompt + n_predict/2, anchored at the context the flat rate above was
+# actually measured at:
+#
+#     rate(c) = SEC_PER_POSITION_BY_JOBS[jobs] + CONTEXT_S_PER_TOKEN
+#                                              * (c - CALIB_MEAN_CONTEXT)
+#
+# Anchoring rather than re-deriving an intercept keeps the flat constant
+# meaning exactly what it measured, and keeps rate_for_jobs -- and with it
+# the 07-29 unprobed-concurrency REFUSAL -- untouched.
+#
+# BOTH calibration points are LOADED, and p41's includes a game for its last
+# third, so the slope absorbs some load penalty and long-prompt ceilings come
+# out generous. That is the intended direction, for the reason TIMEOUT_SAFETY
+# already states: an over-generous ceiling costs time only on a genuinely
+# wedged process, never once observed here, while a tight one costs the
+# ENTIRE prompt. Replace the slope only from another COMPLETED long prompt --
+# ideally one run start-to-finish on a quiet box, which would separate
+# context from load for the first time.
+CONTEXT_S_PER_TOKEN = 0.0417   # (40.03 - 20.22) / (509 - 34), 2026-07-30
+CALIB_MEAN_CONTEXT = 34.0      # p48: 2 prompt tokens + 64/2 generated
 # 2.5x on top of a rate that is already the pessimistic one. The safety factor
 # is here for the box getting BUSIER than it was when the rate was probed --
 # a game will evict the GGUF page cache entirely and take cores with it. A
@@ -152,11 +191,24 @@ def rate_for_jobs(jobs: int) -> float:
     return r
 
 
+def rate_for(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
+    """s/position at THIS concurrency and THIS context length. The flat rate
+    was probed on a 2-token prompt; p41 (477 tokens) cost 1.96x what that
+    predicted, so a context term is not a refinement, it is the difference
+    between banking a 6 h prompt and erroring on it. Floored at 1.0 s so a
+    hypothetical negative slope can never produce a nonsense ceiling."""
+    mean_context = n_prompt + n_predict / 2.0
+    rate = (rate_for_jobs(jobs)
+            + CONTEXT_S_PER_TOKEN * (mean_context - CALIB_MEAN_CONTEXT))
+    return max(1.0, rate)
+
+
 def expected_cost_s(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
     """Best ESTIMATE of one prompt's wall cost -- the honest quote, with no
     safety factor folded in. Kept separate from timeout_for so that making
     the ceiling safer can never silently inflate the promised schedule."""
-    return STARTUP_S + (n_prompt + n_predict) * rate_for_jobs(jobs)
+    return STARTUP_S + (n_prompt + n_predict) * rate_for(n_prompt, n_predict,
+                                                         jobs)
 
 
 def timeout_for(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
@@ -366,8 +418,11 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
     print(f"  prompts    : {len(prompt_ids)} -- {','.join(prompt_ids)}")
     print(f"  jobs       : {jobs}   n_predict: {n_predict}")
     print(f"  ceiling    : max({TIMEOUT_FLOOR_S:.0f}s, ({STARTUP_S:.0f}s + "
-          f"positions x {rate}s at --jobs {jobs}) x {TIMEOUT_SAFETY}) "
-          f"-- DERIVED per prompt")
+          f"positions x rate) x {TIMEOUT_SAFETY}) -- DERIVED per prompt")
+    print(f"  rate model : {rate}s/pos at --jobs {jobs}, "
+          f"+{CONTEXT_S_PER_TOKEN}s per context token past "
+          f"{CALIB_MEAN_CONTEXT:.0f} -- CONTEXT-AWARE (p41 cost 1.96x what "
+          f"the flat rate predicted)")
     sys.stdout.flush()
 
     # Longest first: the makespan is set by the long-context prompts, so
@@ -967,20 +1022,44 @@ def run_selftest() -> int:
     worst_ceiling = timeout_for(counts[worst_pid], N_PREDICT,
                                 run_jobs if run_jobs in SEC_PER_POSITION_BY_JOBS
                                 else 1)
+    worst_est = expected_cost_s(counts[worst_pid], N_PREDICT,
+                                run_jobs if run_jobs in SEC_PER_POSITION_BY_JOBS
+                                else 1)
     check(f"worst prompt {worst_pid} ({counts[worst_pid]} tok) gets a ceiling "
-          f"of {worst_ceiling/3600:.2f} h, > the 6.3 h that twice its measured "
-          f"cost implies (554 positions x 20.4s loaded = 3.17 h)",
-          worst_ceiling >= 6.3 * 3600)
-    # A quote is a commitment: if either probed constant drifts, the promised
-    # schedule changes and this check forces it to be restated. 20.5 h is the
-    # SIZING wall, priced at the loaded rate; a box left alone runs it in
-    # ~12-13 h (p48 measured 12.32 s/position quiet vs 20.22 s/position in
-    # use). Both numbers are real; this one is the one ceilings rest on.
+          f"of {worst_ceiling/3600:.2f} h, >= twice the {worst_est/3600:.2f} h "
+          f"its CONTEXT-AWARE cost implies (the old flat model sized this same "
+          f"prompt at 3.17 h and p41 then took 6.02 h)",
+          worst_ceiling >= 2.0 * worst_est)
+    # The calibration itself, as a tripwire: the model must still reproduce
+    # the two COMPLETED prompts it was fitted to. Any drift in the flat rate,
+    # the slope, or the anchor breaks this -- which is the point, because a
+    # cost model that no longer matches its own evidence is a guess again.
+    for meas_pid, meas_rate in (("p48", 20.22), ("p41", 40.03)):
+        modelled = rate_for(counts[meas_pid], N_PREDICT, 1)
+        check(f"the cost model reproduces measured {meas_pid} "
+              f"({meas_rate}s/pos at {counts[meas_pid]} prompt tokens): "
+              f"model says {modelled:.2f}s/pos",
+              abs(modelled - meas_rate) / meas_rate < 0.05)
+    # And it must not have collapsed back to a flat rate: the whole finding is
+    # that context dominates. p41's context is worth ~2x p48's per-position.
+    short_r = rate_for(counts["p48"], N_PREDICT, 1)
+    long_r = rate_for(counts["p41"], N_PREDICT, 1)
+    check(f"the rate is CONTEXT-AWARE, not flat: p41 {long_r:.1f}s/pos vs p48 "
+          f"{short_r:.1f}s/pos = {long_r/short_r:.2f}x",
+          long_r / short_r >= 1.5)
+    # A quote is a commitment: if any probed constant drifts, the promised
+    # schedule changes and this check forces it to be restated. 29.7 h is the
+    # SIZING wall under the CONTEXT-AWARE model, priced at the loaded rate; a
+    # box left alone runs it in ~18 h (p48 measured 12.32 s/position quiet vs
+    # 20.22 in use, a 0.61x factor). The flat model quoted 20.5 h for this
+    # same subset and was wrong the way it was wrong about p41: it charged
+    # 3.09 h for a prompt that cost 6.02 h. 29.7 h is the honest number, and
+    # 9.2 h of the increase is the three long-context prompts alone.
     subset_wall = sum(expected_cost_s(counts[p], N_PREDICT)
                       for p in RULING_SUBSET) / 3600.0
     check(f"the ruling subset's sizing wall is {subset_wall:.1f} h, within 10% "
-          f"of the 20.5 h probed 2026-07-30 (3,503 positions x 20.4s + 24 "
-          f"startups x 100s)", 18.5 <= subset_wall <= 22.6)
+          f"of the 29.7 h the context-aware model implies (was 20.5 h flat, "
+          f"which under-charged p41 by 2x)", 26.7 <= subset_wall <= 32.7)
 
     # ---- adjudication (ruling §3/§4.1). Every check below can fail: the
     # verdict paths are exercised against synthetic reports with an injected
@@ -1162,7 +1241,9 @@ def main(argv=None) -> int:
         # job count is the 07-29 mistake and would under-quote by >=2.6x.
         wall = max(total / a.jobs, longest)   # cannot beat the longest prompt
         print(f"\ncost model: {STARTUP_S:.0f}s startup + positions x "
-              f"{rate_for_jobs(a.jobs)}s/position, probed at --jobs {a.jobs}")
+              f"({rate_for_jobs(a.jobs)}s + {CONTEXT_S_PER_TOKEN}s per context "
+              f"token past {CALIB_MEAN_CONTEXT:.0f}), probed at --jobs {a.jobs} "
+              f"-- CONTEXT-AWARE, fitted to COMPLETED p48 and p41")
         print(f"estimated total work: {total/3600:.1f} h; "
               f"at --jobs {a.jobs}: ~{wall/3600:.1f} h wall "
               f"(makespan floor = longest single prompt, {longest/60:.0f} min)")
