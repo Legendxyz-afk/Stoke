@@ -79,13 +79,50 @@ ORACLE_CACHE = HERE / ".gate_cache"        # parity_gate's, read-only here
 CACHE = HERE / ".ref_gate_cache"           # this tool's own
 N_PREDICT = 64
 
-# Cost model. 13.8 s/position is W1's own end-to-end benchmark
-# (.superpowers/sdd/m2-w1-notes.md: "--ids 1,2,3 -n 2, 5 total positions:
-# 69s wall clock =~ 13.8s/position"). NOTE ref_forward.py's own comment
-# says "~10-11s" -- that figure is only the per-layer dequant portion and
-# understates the end-to-end cost; do not use it for sizing.
-SEC_PER_POSITION = 13.8
-TIMEOUT_SAFETY = 2.0     # >=2x measured cost, per the derived-ceiling lesson
+# Cost model. TWO failures are welded into this block; do not collapse it
+# back into one flat constant.
+#
+# SHAPE -- the rate is not a property of the code, it is a property of the
+# BOX STATE, and that dominates everything else here. The same prompt p48 (66
+# positions) was measured twice at --jobs 1 on the same binaries:
+#     2026-07-28, quiet box            812.9 s = 12.32 s/position
+#     2026-07-30, Chrome+Discord+VSCode 1335 s = 20.22 s/position
+# 1.64x, from nothing but competition for RAM and cores. ref re-streams the
+# whole 4.3 GB GGUF every position (it re-dequantizes every weight per
+# matvec by design), so when free RAM drops below ~5 GB the file stops
+# staying in page cache and every position pays for it. A third point,
+# 12 positions in 232.9 s (19.4 s/position), fits the loaded rate with no
+# measurable per-prompt startup term -- the ~1.6 GB f32 token_embd dequant
+# is real but is only worth ~1 position. STARTUP_S below is kept small and
+# nonzero for the cold-first-read case (a 5-position cold run took 247.3 s).
+# W1's "13.8 s/position" was 69 s / 5 positions on ONE tiny run on a quiet
+# box, which is why it under-sized everything that followed.
+# SIZE CEILINGS OFF THE LOADED RATE. Kabir uses this machine.
+#
+# CONCURRENCY -- that same 13.8 was probed SINGLE-JOB and then used to size
+# ceilings for a --jobs 3 run on 2026-07-29. All six prompts that got to run
+# died on their ceiling, and every one of them reported "27.6 s/position".
+# That number is not a measurement: it is ceiling/positions = 13.8 x 2.0 by
+# construction, so a timed-out prompt can only ever print exactly 2.00x the
+# model. The contended rate was never observed at all; it is known only as a
+# lower bound, >= 2.6x single-job (p20's 128 positions were still unfinished
+# at 3533 s). The cause is footprint, not cores: one ref process is ~2.3 GB
+# private plus the 4.3 GB GGUF it re-streams every position (it
+# re-dequantizes every weight per matvec by design), so three of them page a
+# 15.6 GB box and buy ~1.15x aggregate throughput for 3x the RAM.
+#
+# THEREFORE a rate is stored PER JOB COUNT, and a job count with no probed
+# rate is REFUSED rather than extrapolated. Probe the per-worker rate under
+# the concurrency it will actually run at, or do not run at that concurrency.
+SEC_PER_POSITION_BY_JOBS = {1: 20.4}   # LOADED rate, measured 2026-07-30
+STARTUP_S = 100.0                      # cold-first-read premium, not the norm
+# 2.5x on top of a rate that is already the pessimistic one. The safety factor
+# is here for the box getting BUSIER than it was when the rate was probed --
+# a game will evict the GGUF page cache entirely and take cores with it. A
+# timeout costs the ENTIRE prompt (errors are never cached, and there is no
+# intra-prompt checkpointing), while an over-generous ceiling only costs time
+# on a genuinely wedged process, which has never once been observed here.
+TIMEOUT_SAFETY = 2.5
 TIMEOUT_FLOOR_S = 1800.0
 
 
@@ -101,12 +138,34 @@ def sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
-def timeout_for(n_prompt: int, n_predict: int) -> float:
-    """DERIVED ceiling, never a flat guess. Positions = prompt + generated;
-    each costs SEC_PER_POSITION; multiply by a safety factor so a loaded
-    box cannot manufacture a false timeout."""
+def rate_for_jobs(jobs: int) -> float:
+    """s/position at THIS concurrency, or a refusal. Dividing a single-job
+    rate by the job count is what killed the 07-29 run: per-worker cost rose
+    >=2.6x at --jobs 3, so ceilings sized off the 1-job rate were unreachable
+    and all six prompts errored instead of banking."""
+    r = SEC_PER_POSITION_BY_JOBS.get(jobs)
+    if r is None:
+        fatal(f"--jobs {jobs} has no PROBED s/position rate (probed: "
+              f"{sorted(SEC_PER_POSITION_BY_JOBS)}). Measure the per-worker "
+              f"rate with {jobs} concurrent ref processes and add it to "
+              f"SEC_PER_POSITION_BY_JOBS -- do not reuse the 1-job rate.")
+    return r
+
+
+def expected_cost_s(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
+    """Best ESTIMATE of one prompt's wall cost -- the honest quote, with no
+    safety factor folded in. Kept separate from timeout_for so that making
+    the ceiling safer can never silently inflate the promised schedule."""
+    return STARTUP_S + (n_prompt + n_predict) * rate_for_jobs(jobs)
+
+
+def timeout_for(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
+    """DERIVED ceiling, never a flat guess: the estimate above times a safety
+    factor, so a slow-but-working prompt banks instead of erroring. jobs
+    defaults to 1 because probes and the selftest are serial by
+    construction; the gate run passes its real concurrency."""
     return max(TIMEOUT_FLOOR_S,
-               (n_prompt + n_predict) * SEC_PER_POSITION * TIMEOUT_SAFETY)
+               expected_cost_s(n_prompt, n_predict, jobs) * TIMEOUT_SAFETY)
 
 
 # ---------------------------------------------------------------- tokenize
@@ -154,10 +213,13 @@ def run_ref(ids: List[int], n_predict: int, timeout_s: float) -> List[int]:
                            timeout=timeout_s, cwd=str(HERE))
     except subprocess.TimeoutExpired:
         fatal(f"ref_forward timed out after {timeout_s:.0f}s "
-              f"({len(ids)}+{n_predict} positions) -- the DERIVED ceiling "
-              f"was exceeded, which means the cost model "
-              f"({SEC_PER_POSITION}s/position) is wrong, not that the "
-              f"process is necessarily wedged. Re-measure before raising it.")
+              f"({len(ids)}+{n_predict} positions) -- the DERIVED ceiling was "
+              f"exceeded, which means the cost model is wrong, not that the "
+              f"process is necessarily wedged. Do NOT infer a rate from this "
+              f"number: {timeout_s:.0f}s / positions is just the ceiling "
+              f"formula read backwards, and every timed-out prompt prints "
+              f"exactly the safety factor. RE-MEASURE a completed prompt at "
+              f"the concurrency in use, then set SEC_PER_POSITION_BY_JOBS.")
     if r.returncode != 0:
         fatal(f"ref_forward failed (rc={r.returncode}): "
               f"{r.stderr.strip()[:600]}")
@@ -248,7 +310,7 @@ def load_stoke_ids(prompt_id: str, stoke_hash: str) -> List[int]:
 # -------------------------------------------------------------------- work
 
 def one_prompt(prompt_id: str, stoke_hash: str, ref_hash: str,
-               n_predict: int) -> dict:
+               n_predict: int, jobs: int = 1) -> dict:
     path = CORPUS / f"{prompt_id}.txt"
     if not path.exists():
         fatal(f"missing corpus file {path}")
@@ -260,7 +322,8 @@ def one_prompt(prompt_id: str, stoke_hash: str, ref_hash: str,
 
     t0 = time.time()
     prompt_ids = tokenize(path)
-    ref_ids = run_ref(prompt_ids, n_predict, timeout_for(len(prompt_ids), n_predict))
+    ref_ids = run_ref(prompt_ids, n_predict,
+                      timeout_for(len(prompt_ids), n_predict, jobs))
     stoke_ids = load_stoke_ids(prompt_id, stoke_hash)
 
     c = compare_ids(ref_ids, stoke_ids)
@@ -292,6 +355,9 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
         fatal(f"missing {MODEL_PATH}")
     stoke_hash = sha256_file(STOKE_EXE)
     ref_hash = sha256_file(REF)
+    # Fail here, before any work, if this concurrency has no probed rate --
+    # the 07-29 run spent 5 h discovering that at the ceiling instead.
+    rate = rate_for_jobs(jobs)
 
     print(f"REF GATE -- stoke C vs ref_forward.py, both pure f32")
     print(f"  model      : {MODEL_PATH.name}")
@@ -299,8 +365,9 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
     print(f"  ref_forward: {ref_hash[:16]}…")
     print(f"  prompts    : {len(prompt_ids)} -- {','.join(prompt_ids)}")
     print(f"  jobs       : {jobs}   n_predict: {n_predict}")
-    print(f"  ceiling    : max({TIMEOUT_FLOOR_S:.0f}s, positions x "
-          f"{SEC_PER_POSITION}s x {TIMEOUT_SAFETY}) -- DERIVED per prompt")
+    print(f"  ceiling    : max({TIMEOUT_FLOOR_S:.0f}s, ({STARTUP_S:.0f}s + "
+          f"positions x {rate}s at --jobs {jobs}) x {TIMEOUT_SAFETY}) "
+          f"-- DERIVED per prompt")
     sys.stdout.flush()
 
     # Longest first: the makespan is set by the long-context prompts, so
@@ -314,8 +381,8 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
     t0 = time.time()
     done = 0
     with ThreadPoolExecutor(max_workers=jobs) as ex:
-        futs = {ex.submit(one_prompt, p, stoke_hash, ref_hash, n_predict): p
-                for p in ordered}
+        futs = {ex.submit(one_prompt, p, stoke_hash, ref_hash, n_predict,
+                          jobs): p for p in ordered}
         # AS COMPLETED, not submission order: submission is longest-first, so
         # draining in submission order would hold every progress line hostage
         # to the slowest prompt and make a working run look hung.
@@ -359,7 +426,10 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
         "model": MODEL_PATH.name, "stoke_sha256": stoke_hash,
         "ref_sha256": ref_hash, "n_predict": n_predict,
         "jobs": jobs, "prompts": prompt_ids,
-        "sec_per_position_model": SEC_PER_POSITION,
+        # The cost model that sized this run's ceilings, banked so the gate
+        # report never has to re-derive why a prompt did or did not time out.
+        "cost_model": {"startup_s": STARTUP_S, "sec_per_position": rate,
+                       "jobs": jobs, "timeout_safety": TIMEOUT_SAFETY},
         "results": results,
     }, indent=1), encoding="utf-8")
     print(f"\nreport: {report}")
@@ -454,8 +524,9 @@ def stoke_probe(prompt_path: Path, pos: int, n_predict: int,
     The ceiling is DERIVED from this prompt's real MANIFEST token count --
     a probe re-generates the whole prompt, so the cost is the generation
     cost, and a flat guess here would repeat the 07-27 timeout lesson in
-    miniature. SEC_PER_POSITION is ref's rate (13.8s), ~2.7x stoke's
-    measured 5.2s, so the stoke side is bounded generously on purpose."""
+    miniature. The ceiling uses ref's rate (20.4 s/position at --jobs 1 on a
+    box in use), ~4x stoke's measured 5.2s, so the stoke side is bounded
+    generously on purpose. Probes are serial: the 1-job rate is correct."""
     argv = [str(STOKE_EXE), "run", str(MODEL_PATH), "--raw",
             "-f", str(prompt_path), "-n", str(n_predict), "--probe-pos", str(pos)]
     try:
@@ -754,7 +825,7 @@ def run_adjudication(n_predict: int) -> int:
             return {"error": f"{prompt_id} has no MANIFEST token count"}
         try:
             print(f"  probing {prompt_id}@{pos} (stoke ~{(n_tok+n_predict)*5.2/60:.0f} min, "
-                  f"ref ~{(n_tok+pos)*SEC_PER_POSITION/60:.0f} min) …")
+                  f"ref ~{expected_cost_s(n_tok, pos)/60:.0f} min) …")
             sys.stdout.flush()
             ids = tokenize(path)
             s_rows, s_lines = stoke_probe(path, pos, n_predict, n_tok)
@@ -869,19 +940,47 @@ def run_selftest() -> int:
           f"(got {n_corpus} + {n_reserve})",
           n_corpus == 50 and n_reserve == 10)
     flat_would_fail = [pid for pid, n in counts.items()
-                       if (n + N_PREDICT) * SEC_PER_POSITION > 1800.0]
+                       if expected_cost_s(n, N_PREDICT) > 1800.0]
     check(f"a flat 1800s ceiling WOULD have failed {len(flat_would_fail)} "
           f"prompts ({','.join(sorted(flat_would_fail)[:6])}) -- so the "
           f"derived formula is not equivalent to a constant",
           len(flat_would_fail) > 0)
-    # The real assertion: the ceiling for the WORST prompt must exceed an
+    # The 07-29 failure, encoded: an unprobed concurrency must be REFUSED,
+    # never extrapolated from the 1-job rate.
+    try:
+        rate_for_jobs(max(SEC_PER_POSITION_BY_JOBS) + 1)
+        check("an unprobed --jobs is refused", False)
+    except GateError:
+        check("an unprobed --jobs is refused, never extrapolated from the "
+              "1-job rate", True)
+    cmd_p = HERE / "run_ref_gate_detached.cmd"
+    cmd_txt = cmd_p.read_text(encoding="utf-8") if cmd_p.exists() else ""
+    mj = re.search(r"--jobs\s+(\d+)", cmd_txt)
+    run_jobs = int(mj.group(1)) if mj else 0
+    check(f"the launcher runs at a PROBED concurrency (--jobs {run_jobs}) -- "
+          f"so the scheduled task cannot ask for a rate nobody measured",
+          run_jobs in SEC_PER_POSITION_BY_JOBS)
+    # The real assertion: the worst prompt's ceiling must clear an
     # independently-stated figure, so this check can actually fail if the
-    # cost model or safety factor is ever weakened.
+    # cost model or the safety factor is ever weakened.
     worst_pid = max(counts, key=lambda p: counts[p])
-    worst_ceiling = timeout_for(counts[worst_pid], N_PREDICT)
+    worst_ceiling = timeout_for(counts[worst_pid], N_PREDICT,
+                                run_jobs if run_jobs in SEC_PER_POSITION_BY_JOBS
+                                else 1)
     check(f"worst prompt {worst_pid} ({counts[worst_pid]} tok) gets a ceiling "
-          f"of {worst_ceiling/3600:.2f} h, > the 4.1 h its 554 positions imply "
-          f"at 2x", worst_ceiling >= 4.1 * 3600)
+          f"of {worst_ceiling/3600:.2f} h, > the 6.3 h that twice its measured "
+          f"cost implies (554 positions x 20.4s loaded = 3.17 h)",
+          worst_ceiling >= 6.3 * 3600)
+    # A quote is a commitment: if either probed constant drifts, the promised
+    # schedule changes and this check forces it to be restated. 20.5 h is the
+    # SIZING wall, priced at the loaded rate; a box left alone runs it in
+    # ~12-13 h (p48 measured 12.32 s/position quiet vs 20.22 s/position in
+    # use). Both numbers are real; this one is the one ceilings rest on.
+    subset_wall = sum(expected_cost_s(counts[p], N_PREDICT)
+                      for p in RULING_SUBSET) / 3600.0
+    check(f"the ruling subset's sizing wall is {subset_wall:.1f} h, within 10% "
+          f"of the 20.5 h probed 2026-07-30 (3,503 positions x 20.4s + 24 "
+          f"startups x 100s)", 18.5 <= subset_wall <= 22.6)
 
     # ---- adjudication (ruling §3/§4.1). Every check below can fail: the
     # verdict paths are exercised against synthetic reports with an injected
@@ -1009,8 +1108,12 @@ def run_selftest() -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--subset", help="comma-separated prompt ids, e.g. p48,p20")
-    ap.add_argument("--jobs", type=int, default=3,
-                    help="concurrent ref processes (RAM-bound; ~3 on a 16GB box)")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="concurrent ref processes. Must be a job count with "
+                         "a PROBED per-worker rate in SEC_PER_POSITION_BY_JOBS "
+                         "-- 1 on this box. --jobs 3 was tried on 2026-07-29 "
+                         "and paged a 15.6GB box: every prompt hit its ceiling "
+                         "and nothing banked.")
     ap.add_argument("--n-predict", type=int, default=N_PREDICT)
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -1049,13 +1152,18 @@ def main(argv=None) -> int:
             if n_tok is None:
                 print(f"fatal: {pid} has no MANIFEST token count", file=sys.stderr)
                 return 2
-            cost = (n_tok + a.n_predict) * SEC_PER_POSITION
+            cost = expected_cost_s(n_tok, a.n_predict, a.jobs)
             total += cost
             longest = max(longest, cost)
             print(f"{pid:8} {n_tok:>7} {cost/60:>8.1f} "
-                  f"{timeout_for(n_tok, a.n_predict):>10.0f}")
+                  f"{timeout_for(n_tok, a.n_predict, a.jobs):>10.0f}")
+        # total/jobs is only honest because `total` is already priced at the
+        # PER-WORKER rate for this job count. Dividing a 1-job total by the
+        # job count is the 07-29 mistake and would under-quote by >=2.6x.
         wall = max(total / a.jobs, longest)   # cannot beat the longest prompt
-        print(f"\nestimated serial cost: {total/3600:.1f} h; "
+        print(f"\ncost model: {STARTUP_S:.0f}s startup + positions x "
+              f"{rate_for_jobs(a.jobs)}s/position, probed at --jobs {a.jobs}")
+        print(f"estimated total work: {total/3600:.1f} h; "
               f"at --jobs {a.jobs}: ~{wall/3600:.1f} h wall "
               f"(makespan floor = longest single prompt, {longest/60:.0f} min)")
         print(f"stoke.exe {stoke_hash[:16]}…")
