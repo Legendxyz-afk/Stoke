@@ -161,8 +161,55 @@ CALIB_MEAN_CONTEXT = 34.0      # p48: 2 prompt tokens + 64/2 generated
 # timeout costs the ENTIRE prompt (errors are never cached, and there is no
 # intra-prompt checkpointing), while an over-generous ceiling only costs time
 # on a genuinely wedged process, which has never once been observed here.
-TIMEOUT_SAFETY = 2.5
+# RAISED 2.5 -> 3.0 on 2026-08-01. 2.5 was not chosen against evidence of
+# what a game costs; this file's own note already conceded it was "sized for
+# ONE of {long-prompt attention inflation, memory-pressure eviction}" while a
+# 500+-position prompt on a loaded box hits BOTH. And the one prompt that has
+# actually died here, p45, did not merely approach its 2.50x tolerance -- it
+# EXCEEDED it. So 2.5x is a slowdown this box has been observed to beat, and
+# leaving a 5.6 h prompt (p44) with exactly 2.50x of headroom was betting the
+# whole prompt on a factor already known to be reachable. At 3.0 the crossover
+# with the absolute floor below moves to 1.5 h of estimate, which still leaves
+# the floor binding on every short prompt and the proportional term on the
+# long ones. Cost of the change is bounded and has never been paid: a wedged
+# p44 now burns 16.7 h instead of 13.9 h before erroring.
+TIMEOUT_SAFETY = 3.0
 TIMEOUT_FLOOR_S = 1800.0
+# ABSOLUTE SLACK FLOOR -- added 2026-08-01, and it is the fix for the only
+# way a game has ever killed this run.
+#
+# A game does not crash the gate. It makes it SLOWER, by a roughly constant
+# FACTOR: the box has 16 GB, ref wants ~2.3 GB private plus the 4.3 GB GGUF
+# resident, and a game taking 6+ GB forces Windows to trim the worker, which
+# then re-faults weights off disk instead of computing (measured 2026-07-30:
+# CPU efficiency 98.5% -> 63.3% of one core as free RAM fell to 494 MB).
+#
+# TIMEOUT_SAFETY alone cannot absorb that, because it is PROPORTIONAL: every
+# prompt gets the same RATIO of slack but wildly different ABSOLUTE slack.
+# p44 gets 8.3 h; a short prompt gets ~43 min. So the same 2.5x slowdown that
+# a long prompt shrugs off is fatal to a short one -- which is not a
+# hypothetical: p45 ran >=2.46x its predicted rate at 443 MB free on
+# 2026-07-31 and was 5 minutes from its ceiling, against an estimate of
+# 0.48 h and a ceiling of 1.20 h. It needed 1.18 h. It failed by a minute.
+#
+# A constant-factor degradation needs a floor on absolute slack, so:
+#
+#     ceiling = max(TIMEOUT_FLOOR_S,
+#                   est * TIMEOUT_SAFETY,        <- binds on long prompts
+#                   est + TIMEOUT_MIN_SLACK_S)   <- binds on short ones
+#
+# The two terms cross at est = TIMEOUT_MIN_SLACK_S / (TIMEOUT_SAFETY - 1)
+# = 2.0 h, so this changes ONLY the 20 short prompts (est 0.48-0.99 h) and
+# leaves p41/p43/p44's already-generous proportional ceilings untouched.
+# Every short prompt now survives at least a 4x slowdown; the worst ever
+# measured here is 2.46x. Asserted both ways in --selftest.
+#
+# The cost of being wrong in this direction is bounded and has never been
+# paid: an over-generous ceiling costs wall time only on a genuinely wedged
+# process, never once observed in this project, while a tight one costs the
+# ENTIRE prompt -- errors are never cached and there is no intra-prompt
+# checkpointing.
+TIMEOUT_MIN_SLACK_S = 10800.0
 # Tier boundary for run_gate's ordering (see the comment at the sort). The
 # subset is not a continuum: its 24 prompts are 2-82 tokens or 447-477
 # tokens, nothing between, so any threshold in that 5.5x gap picks out the
@@ -220,11 +267,15 @@ def expected_cost_s(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
 
 def timeout_for(n_prompt: int, n_predict: int, jobs: int = 1) -> float:
     """DERIVED ceiling, never a flat guess: the estimate above times a safety
-    factor, so a slow-but-working prompt banks instead of erroring. jobs
+    factor, floored by an absolute slack allowance so that a constant-factor
+    slowdown (a game evicting the weights) cannot be fatal to short prompts
+    while being survivable by long ones -- see TIMEOUT_MIN_SLACK_S. jobs
     defaults to 1 because probes and the selftest are serial by
     construction; the gate run passes its real concurrency."""
+    est = expected_cost_s(n_prompt, n_predict, jobs)
     return max(TIMEOUT_FLOOR_S,
-               expected_cost_s(n_prompt, n_predict, jobs) * TIMEOUT_SAFETY)
+               est * TIMEOUT_SAFETY,
+               est + TIMEOUT_MIN_SLACK_S)
 
 
 # ---------------------------------------------------------------- tokenize
@@ -424,8 +475,10 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
     print(f"  ref_forward: {ref_hash[:16]}…")
     print(f"  prompts    : {len(prompt_ids)} -- {','.join(prompt_ids)}")
     print(f"  jobs       : {jobs}   n_predict: {n_predict}")
-    print(f"  ceiling    : max({TIMEOUT_FLOOR_S:.0f}s, ({STARTUP_S:.0f}s + "
-          f"positions x rate) x {TIMEOUT_SAFETY}) -- DERIVED per prompt")
+    print(f"  ceiling    : max({TIMEOUT_FLOOR_S:.0f}s, est x {TIMEOUT_SAFETY}, "
+          f"est + {TIMEOUT_MIN_SLACK_S:.0f}s) where est = {STARTUP_S:.0f}s + "
+          f"positions x rate -- DERIVED per prompt, with an ABSOLUTE slack "
+          f"floor so a game cannot time out the short prompts")
     print(f"  rate model : {rate}s/pos at --jobs {jobs}, "
           f"+{CONTEXT_S_PER_TOKEN}s per context token past "
           f"{CALIB_MEAN_CONTEXT:.0f} -- CONTEXT-AWARE (p41 cost 1.96x what "
@@ -1121,6 +1174,58 @@ def run_selftest() -> int:
     check(f"the ruling subset's sizing wall is {subset_wall:.1f} h, within 10% "
           f"of the 29.7 h the context-aware model implies (was 20.5 h flat, "
           f"which under-charged p41 by 2x)", 26.7 <= subset_wall <= 32.7)
+
+    # ---- SURVIVING A GAME. The failure mode is never a crash: a game evicts
+    # the weights, the worker re-faults instead of computing, and a prompt
+    # that runs long enough hits its ceiling and forfeits entirely. These
+    # assert the guarantee in the units the failure actually happens in -- a
+    # SLOWDOWN FACTOR -- rather than in seconds, which is what let the
+    # proportional-only ceiling look adequate for two weeks.
+    # p45's slowdown on 2026-07-31 is a LOWER BOUND, not a measurement: it
+    # ran >=51.5 s/pos against 20.9 predicted AND was still unfinished 5 min
+    # from a ceiling that allowed 2.50x, so the true factor EXCEEDED 2.50x
+    # and is unknown above that. Anything sized at 2.5x is therefore sized at
+    # a slowdown this box has already been observed to beat.
+    OBSERVED_SLOWDOWN_EXCEEDED = 2.50
+    _tolerated = {p: timeout_for(counts[p], N_PREDICT, 1)
+                     / expected_cost_s(counts[p], N_PREDICT, 1)
+                  for p in RULING_SUBSET}
+    _weakest = min(_tolerated, key=_tolerated.get)
+    check(f"EVERY prompt now tolerates MORE than the {OBSERVED_SLOWDOWN_EXCEEDED}x "
+          f"that p45 was observed to exceed (weakest is {_weakest} at "
+          f"{_tolerated[_weakest]:.2f}x)",
+          _tolerated[_weakest] > OBSERVED_SLOWDOWN_EXCEEDED)
+    # Short prompts get a strictly stronger guarantee than long ones, because
+    # the absolute floor binds on them. This is the asymmetry the whole fix
+    # exists to create -- assert it, so a future edit cannot quietly flatten
+    # it back to a single proportional factor.
+    _short_tol = {p: t for p, t in _tolerated.items()
+                  if p not in ("p41", "p43", "p44")}
+    _weakest_short = min(_short_tol, key=_short_tol.get)
+    check(f"every SHORT prompt tolerates >=4x (weakest {_weakest_short} at "
+          f"{_short_tol[_weakest_short]:.2f}x) -- the tier that has actually "
+          f"died, and the tier the absolute floor exists for",
+          _short_tol[_weakest_short] >= 4.0)
+    # p45 as a named regression: the exact prompt, the exact old formula.
+    _p45_est = expected_cost_s(counts["p45"], N_PREDICT, 1)
+    _p45_old = max(TIMEOUT_FLOOR_S, _p45_est * 2.5)   # the 07-31 formula
+    _p45_new = timeout_for(counts["p45"], N_PREDICT, 1)
+    check(f"p45 regression: the ceiling it died under gave "
+          f"{_p45_old/3600:.2f} h ({_p45_old/_p45_est:.2f}x, exceeded); it now "
+          f"gets {_p45_new/3600:.2f} h ({_p45_new/_p45_est:.2f}x)",
+          _p45_new >= 2.0 * _p45_old)
+    # The floor must bind ONLY where the proportional factor is inadequate.
+    # If it ever started raising the long prompts' ceilings it would be
+    # masking a cost-model error rather than absorbing box state.
+    _floor_binds = [p for p in RULING_SUBSET
+                    if expected_cost_s(counts[p], N_PREDICT, 1)
+                    + TIMEOUT_MIN_SLACK_S
+                    > expected_cost_s(counts[p], N_PREDICT, 1) * TIMEOUT_SAFETY]
+    check(f"the slack floor binds on the {len(_floor_binds)} short prompts "
+          f"only, never on p41/p43/p44 (crossover at "
+          f"{TIMEOUT_MIN_SLACK_S/(TIMEOUT_SAFETY-1)/3600:.1f} h of estimate)",
+          len(_floor_binds) == 21
+          and not ({"p41", "p43", "p44"} & set(_floor_binds)))
 
     # ---- ORDERING (heavy tier first, then shortest first). The sort has no
     # effect on makespan at --jobs 1, so nothing downstream would notice it
