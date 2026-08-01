@@ -38,8 +38,28 @@ rem WHAT ELSE IS RUNNING: p48 (66 positions) took 812.9s on a quiet box
 rem (12.32 s/position) and 1335s with Chrome+Discord+VSCode open (20.22
 rem s/position) -- same binaries, same --jobs 1, 1.64x apart, because ref
 rem re-streams the 4.3 GB GGUF every position and needs it in page cache.
-rem So over the 24 (3,503 positions): ~12-13h if the box is left alone,
-rem ~20.5h if it is in use. Ceilings are sized off the LOADED rate, which is
+rem SUPERSEDED 2026-07-30 by the CONTEXT-AWARE model (8c128d6): the numbers
+rem that used to sit here (~12-13h quiet / ~20.5h in use over 3,503
+rem positions) came from a FLAT rate that has since been proven wrong by a
+rem factor of ~2 on long prompts -- p41 was charged 3.09h and cost 6.02h.
+rem The flat rate had no term for context length, but ref attends over the
+rem whole context at every position. Fitted on the only two COMPLETED
+rem prompts (p48 mean-context 34 -> 20.22 s/pos; p41 mean-context 509 ->
+rem 40.03 s/pos): rate(c) = SEC_PER_POSITION_BY_JOBS[jobs] + 0.0417*(c-34),
+rem c = n_prompt + n_predict/2. HONEST QUOTE FOR THE FULL 24: 29.7h. With
+rem p41, p43 and p48 banked (all EXACT), the remaining 21 are ~17.2h at the
+rem fitted (loaded) rate -- p44 alone is ~5.6h, the other 20 ~11.7h total.
+rem ref_gate.py --dry-run is the authority here, not this comment; the
+rem launcher passes no rate of its own.
+rem
+rem ORDER, set 2026-08-01: heavy tier first (p41,p43,p44 -- the first two
+rem return instantly from cache), then everything else shortest first. The
+rem sort cannot change makespan at --jobs 1; it is chosen so the one
+rem remaining load-tolerant prompt runs while the box is busy, and the 20
+rem short prompts -- which have only ~43 min of absolute ceiling slack each
+rem and are the ones that actually time out under memory pressure -- land in
+rem the tail. See the rationale at the sort in ref_gate.py.
+rem Ceilings are sized off the LOADED rate, which is
 rem why the run cannot spuriously error just because someone is gaming.
 rem The old quote (~4.5h at --jobs 3) was arithmetic on a rate that had never
 rem been measured under concurrency; see ref_gate.py's cost-model comment for

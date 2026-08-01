@@ -163,6 +163,13 @@ CALIB_MEAN_CONTEXT = 34.0      # p48: 2 prompt tokens + 64/2 generated
 # on a genuinely wedged process, which has never once been observed here.
 TIMEOUT_SAFETY = 2.5
 TIMEOUT_FLOOR_S = 1800.0
+# Tier boundary for run_gate's ordering (see the comment at the sort). The
+# subset is not a continuum: its 24 prompts are 2-82 tokens or 447-477
+# tokens, nothing between, so any threshold in that 5.5x gap picks out the
+# same three prompts. 200 sits in the middle of the gap rather than on
+# either edge, so a corpus edit would have to move a prompt a long way to
+# reclassify it. Asserted against the real MANIFEST counts in --selftest.
+LONG_CTX_TOKENS = 200
 
 
 def fatal(msg: str):
@@ -425,12 +432,54 @@ def run_gate(prompt_ids: List[str], jobs: int, n_predict: int) -> int:
           f"the flat rate predicted)")
     sys.stdout.flush()
 
-    # Longest first: the makespan is set by the long-context prompts, so
-    # submitting them last would strand the tail (same lesson as the survey).
+    # HEAVIEST TIER FIRST, THEN SHORTEST FIRST -- set 2026-08-01 (Kabir:
+    # "most ram intensive and shortest tasks first"). Both halves of that
+    # are honoured, and they do not conflict, because the subset has exactly
+    # two tiers with a 5.5x gap between them (p28 = 82 tokens, p44 = 447).
+    #
+    # Makespan is ORDER-INVARIANT at --jobs 1 -- one worker's wall time is
+    # the sum of the prompts in any permutation -- so the sort is chosen for
+    # the two things it DOES change: starvation risk and interruption
+    # exposure.
+    #
+    # RAM is NOT the discriminator people assume. Measured off
+    # ref_forward.py:282-283, the only per-prompt allocation is kv_k+kv_v =
+    # 2 * n_layer * n_head_kv * head_dim * 4 B = 288 KiB per position, i.e.
+    # 18.6 MB (p48) to 152.2 MB (p41) across the whole subset. That 133 MB
+    # swing sits on a ~2.3 GB private floor plus the 4.3 GB GGUF re-streamed
+    # every position -- about 2% of the footprint. Long prompts are the
+    # RAM-heavy ones, but only just.
+    #
+    # What actually differs is CEILING HEADROOM UNDER LOAD. TIMEOUT_SAFETY
+    # is a proportional 2.5x, so every prompt gets the same RATIO but wildly
+    # different ABSOLUTE slack: p44 has 8.3 h, a short prompt has ~43 min.
+    # And the two tiers are not equally protected, for a reason written into
+    # the cost model above: the CONTEXT_S_PER_TOKEN slope was fitted on
+    # LOADED long prompts (p41's last third included a running game), so the
+    # long tier's ceiling already carries a load penalty, while the short
+    # tier is anchored on p48's rate measured under only moderate load. The
+    # observed outcomes match -- p43 absorbed a gaming session at +18% and
+    # used 47% of its ceiling, while p45 ran >=2.46x its predicted rate at
+    # 443 MB free and was 5 min from timing out when it was paused. (Those
+    # two ran under different conditions, so treat the pair as consistent
+    # with the model's asymmetry, not as a controlled measurement of it.)
+    #
+    # Hence: run the ONE remaining load-tolerant prompt while the box is
+    # busy, and leave the fragile 78-146-position prompts -- which bank in
+    # ~35 min increments and cap interruption loss at ~35 min -- for the
+    # tail, where a quiet box or an interruption both cost little. p41 and
+    # p43 are already banked, so the heavy tier returns instantly from cache
+    # and p44 leads the real work.
+    #
+    # Safe to change at any time: the cache key (cache_key, above) covers
+    # the prompt, stoke.exe, ref_forward.py, the model and n_predict -- NOT
+    # this file -- so reordering cannot invalidate a banked result.
+    #
     # Ordered on MANIFEST's real token counts, the same source the ceiling
-    # uses -- bytes would misrank multibyte scripts against ASCII.
+    # and the KV sizing use -- bytes would misrank multibyte scripts
+    # against ASCII.
     counts = manifest_token_counts()
-    ordered = sorted(prompt_ids, key=lambda p: counts.get(p, 0), reverse=True)
+    ordered = order_prompts(prompt_ids, counts)
 
     results: Dict[str, dict] = {}
     t0 = time.time()
@@ -946,6 +995,18 @@ def run_adjudication(n_predict: int) -> int:
 _MANIFEST_ROW = re.compile(r"^\|\s*([pr]\d\d)\s*\|[^|]*\|\s*(\d+)\s*\|")
 
 
+def order_prompts(prompt_ids: List[str], counts: Dict[str, int]) -> List[str]:
+    """Execution order: the heavy tier first (largest KV first), then
+    everything else shortest first. See the long rationale at the call site
+    in run_gate. Module-level so --selftest asserts the SAME code the run
+    uses, rather than a copy of it that can drift."""
+    def key(p: str):
+        n = counts.get(p, 0)
+        # tier 0 = heavy, largest KV first; tier 1 = the rest, shortest first
+        return (0, -n) if n >= LONG_CTX_TOKENS else (1, n)
+    return sorted(prompt_ids, key=key)
+
+
 def manifest_token_counts() -> Dict[str, int]:
     """Real tokenizer counts from tests/data/parity/MANIFEST.md, whose table
     records the actual `stoke tokenize` output (verified in the corpus
@@ -1060,6 +1121,47 @@ def run_selftest() -> int:
     check(f"the ruling subset's sizing wall is {subset_wall:.1f} h, within 10% "
           f"of the 29.7 h the context-aware model implies (was 20.5 h flat, "
           f"which under-charged p41 by 2x)", 26.7 <= subset_wall <= 32.7)
+
+    # ---- ORDERING (heavy tier first, then shortest first). The sort has no
+    # effect on makespan at --jobs 1, so nothing downstream would notice it
+    # silently degrading -- these are the only thing standing between the
+    # intended order and a typo.
+    _subset_counts = [counts[p] for p in RULING_SUBSET]
+    # default= rather than a bare max()/min(): a threshold outside the corpus
+    # range empties one tier, and a selftest that RAISES there would abort
+    # every check after it instead of reporting the one that broke. An empty
+    # tier is a FAIL, and the checks below are written to say so.
+    _gap_lo = max((n for n in _subset_counts if n < LONG_CTX_TOKENS), default=0)
+    _gap_hi = min((n for n in _subset_counts if n >= LONG_CTX_TOKENS),
+                  default=0)
+    # The threshold is only meaningful if it sits in genuine empty space. If a
+    # corpus edit ever puts a prompt near it, the two tiers stop being obvious
+    # and the ordering rationale (load-tolerant vs fragile) needs re-deciding
+    # rather than silently re-partitioning.
+    check(f"LONG_CTX_TOKENS={LONG_CTX_TOKENS} sits in a real gap in the subset "
+          f"({_gap_lo} .. {_gap_hi} tokens, {_gap_hi/max(_gap_lo,1):.1f}x wide) "
+          f"with >=2x clearance on both sides, and both tiers are non-empty",
+          _gap_lo > 0 and _gap_hi > 0
+          and _gap_lo * 2 <= LONG_CTX_TOKENS <= _gap_hi / 2)
+    _heavy = [p for p in RULING_SUBSET if counts[p] >= LONG_CTX_TOKENS]
+    check(f"the heavy tier is the 3 long-context prompts "
+          f"({','.join(sorted(_heavy))})",
+          sorted(_heavy) == ["p41", "p43", "p44"])
+    # The REAL ordering function run_gate calls, not a re-derivation of it.
+    _ordered = order_prompts(RULING_SUBSET, counts)
+    _n = [counts[p] for p in _ordered]
+    _split = len(_heavy)
+    check(f"heavy tier runs FIRST and largest-KV first "
+          f"({'>'.join(str(x) for x in _n[:_split])} tokens)",
+          _n[:_split] == sorted(_n[:_split], reverse=True)
+          and all(x >= LONG_CTX_TOKENS for x in _n[:_split]))
+    check(f"the remaining {len(_n) - _split} run SHORTEST first "
+          f"({_n[_split]} .. {_n[-1]} tokens)" if _split < len(_n)
+          else f"the remaining 0 run SHORTEST first -- EMPTY, every prompt "
+               f"landed in the heavy tier",
+          _split < len(_n) and _n[_split:] == sorted(_n[_split:]))
+    check("ordering is a permutation -- no prompt dropped or duplicated",
+          sorted(_ordered) == sorted(RULING_SUBSET))
 
     # ---- adjudication (ruling §3/§4.1). Every check below can fail: the
     # verdict paths are exercised against synthetic reports with an injected
