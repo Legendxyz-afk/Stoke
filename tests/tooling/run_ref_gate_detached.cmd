@@ -87,6 +87,14 @@ rem `python -u` is REQUIRED, not cosmetic: with stdout redirected Python
 rem block-buffers it, so a multi-hour run shows a 0-byte log throughout and a
 rem crash flushes nothing -- you lose progress AND the evidence.
 cd /d "%~dp0..\.."
+rem Re-arm the watchdog. A PAUSE disables it (see .claude\stoke-gate-pauser.ps1:
+rem a pause the watchdog undoes within 15 min is not a pause), but the gate task
+rem is left ENABLED so its AtLogOn trigger can resume the run by itself after a
+rem restart. Without this line that auto-resumed run would come back UNGUARDED,
+rem and the person who paused it is not present to notice. The watchdog is
+rem meaningful exactly while the gate is running, so tie its lifecycle to this
+rem script rather than to anyone's memory. Harmless when already enabled.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Enable-ScheduledTask -TaskName 'stoke-gate-watchdog' -ErrorAction SilentlyContinue | Out-Null" 2>nul
 echo. >> "tests\tooling\.ref_gate_cache\ref-gate-console.log"
 echo ===== REF GATE RUN %DATE% %TIME% ===== >> "tests\tooling\.ref_gate_cache\ref-gate-console.log"
 python -u tests\tooling\ref_gate.py --subset p01,p02,p05,p08,p09,p11,p12,p16,p20,p24,p25,p26,p28,p29,p37,p39,p41,p43,p44,p45,p46,p47,p48,p49 --jobs 1 >> "tests\tooling\.ref_gate_cache\ref-gate-console.log" 2>&1
