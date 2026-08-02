@@ -1,6 +1,6 @@
 # stoke — Phase 1 roadmap (the operational map)
 
-*Updated 2026-07-28, late-M2. This is the FIRST document a working
+*Updated 2026-08-02, M2 CLOSED (tag `m2`) — M3 is now. This is the FIRST document a working
 session reads. It is a map, not the territory: every milestone's binding
 detail lives in the linked spec/plan/design-note sections, and on any
 conflict the linked document wins. Master record + history:
@@ -61,8 +61,8 @@ benchmark report.
 |---|---|---|---|
 | M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
-| **M2** | **Scalar forward pass** | **← NOW (⏸ paused)** | **RE-SCOPED 07-28 (Kabir, memo option 3): greedy 64-id C-vs-ref parity on a stratified subset + the 36-layer L2 ladder.** Oracle token-parity DEFERRED to M3. **Definition FIXED by Fable ruling 07-28** (`superpowers/memos/2026-07-28-m2-substitute-gate-RULING-FABLE.md`) |
-| M3 | AVX2+VNNI kernels + pool | queued | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
+| M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
+| **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
 | M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
@@ -74,7 +74,8 @@ MEMORY.md, tag if the milestone says so, move on.
 
 ## Per-milestone: where the truth lives
 
-**M2 — scalar forward pass (NOW).** Operative doc:
+**M2 — scalar forward pass (✅ CLOSED 2026-08-02, tag `m2`).** Gate report:
+`superpowers/gate-reports/2026-08-02-m2-parity.md`. Operative doc:
 `superpowers/design-notes/2026-07-19-m2-op-spec-and-parity-protocol.md`
 (op-by-op spec §5–6, config contract §3 with TRAP #1 head_dim=128-not-80 /
 TRAP #2 tied-LM-head / TRAP #3 NEOX-pairing, `stoke run` CLI §7, gate +

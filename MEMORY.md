@@ -454,6 +454,53 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   in the note (supersedes the plan's §Model allocation): **Opus 4.8 owns
   M2→M7 end-to-end — sessions, briefs, reviews, gate stamps.**
 
+- **2026-08-02 — M2 COMPLETE (tag `m2`) — the scalar forward pass is
+  correct, and it is proven against an independent implementation.** Gate
+  report: `docs/superpowers/gate-reports/2026-08-02-m2-parity.md` (`b225737`).
+  **Both legs PASS. Token leg 24/24 exact: 1,536 consecutive token-exact
+  greedy decisions over 3,503 forward positions, 0 diverged, 0 of the 2
+  available waivers drawn, 0 tooling errors** — adjudicated by
+  `ref_gate.py --adjudicate` (`2372e98`), which sequences the ruling's
+  committed decision functions under a hash guard and returned `verdict:
+  PASS` with every reason array empty. **L2 leg 36/36 layers ≤1e-3, worst
+  L34 6.104e-04, no STEP**, both sides emitting token 12095 — re-run at the
+  gate HEAD rather than cited, and it reproduces the W3-landed figure
+  exactly. Build chain: `stoke.exe d2b17c53…` + `ref_forward.py 4e293e4b…`,
+  frozen throughout and re-verified unmoved; corpus `f5d99ee` proven an
+  ANCESTOR of the forward pass `79a4b29`; no `tests/data/*.golden` changed
+  since `m1`. Matrices green at close-out: Windows `win-check.cmd` and WSL
+  `wsl-check.sh` plain+asan+tsan, 140 tests + 4 golden gates on every leg,
+  all with `STOKE_REQUIRE_GOLDEN=1` so a moved model hard-fails instead of
+  silently skipping. A3 tokenizer-table identity closed in-house (`stoke
+  tokenize` over both ggufs → byte-identical 51-id list, both exit 0); L1
+  spot-check re-run (`dump_tensor.py` dequantizes a real Q8_0 row, exit 0,
+  2,560 values).
+  **THE SCOPE CHANGE, and why it is not a loosened bar.** The original gate
+  was 50/50 token-exact vs `llama-server`. The 07-28 survey measured **19 of
+  50 prompts diverging from the oracle, with 18 of 18 classifiable hits a
+  clean top-2 swap** at 0.00095–0.2039 nat gaps — because the oracle
+  quantizes activations to Q8 for integer dot products while M2's stoke is
+  pure f32. Different arithmetic classes rank near-ties differently; that is
+  not a defect stoke can fix while it remains f32. **Kabir took memo option
+  3:** re-scope M2's token gate to C-vs-ref (both pure f32) on a stratified
+  subset + the L2 ladder, and **defer oracle token-parity to M3**, where the
+  integer core puts stoke in the oracle's own numeric class. Crucially the
+  substitute gate's **subset and pass criterion were fixed BEFORE the run**
+  by Fable's binding ruling (`8e1e618`), so no bar could be written after
+  seeing a result. **19 of the 24 subset prompts are ones that diverged from
+  the oracle, and every one is token-exact against the f32 reference** —
+  which is the evidence for the thesis, not merely consistent with it.
+  **Carried to M3:** the deferred oracle gate, the required aligner fix
+  (byte lengths from the GGUF vocab via `gguf_reader.py`), and the 07-28
+  census as the M2-era baseline.
+  **What M2 cost, honestly:** the forward pass itself landed in days; the
+  gate took two weeks, almost entirely on measurement infrastructure —
+  a cost model rebuilt twice (flat → context-aware → absolute-slack floor),
+  timeout ceilings that killed six prompts before being derived properly,
+  and an ops layer (Task Scheduler + watchdog + pauser) built so a 12-hour
+  run survives sessions, reboots and gaming. The final run banked 16 prompts
+  in 731.8 min unattended with **zero restarts**.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
