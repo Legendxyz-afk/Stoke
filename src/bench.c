@@ -96,12 +96,9 @@
  * the read is genuinely a memory-bus measurement and not an L3 hit rate. */
 #define BENCH_REF_BYTES (256u * 1024u * 1024u)
 
-/* Per-op timed budget. Long enough to swamp timer granularity and scheduler
- * jitter, short enough that a full table is not a coffee break. */
-#define BENCH_TARGET_MS 250.0
-
-#define BENCH_MIN_REPS 3u
-#define BENCH_MAX_REPS 20000u
+/* BENCH_TARGET_MS / BENCH_MIN_REPS / BENCH_MAX_REPS live in bench.h: they are
+ * the contract of bench_reps_for(), not private tuning, and the sample-count
+ * floor carries the reasoning for why it is 11 and not 3. */
 
 /* Sink for reads whose results are otherwise unused. volatile so the
  * compiler must perform them -- see Decision 1. */
@@ -135,6 +132,23 @@ double bench_gbs(u64 bytes, double ms) {
     return ((double)bytes / 1e9) / (ms / 1000.0);
 }
 
+u32 bench_reps_for(double pilot_ms) {
+    /* Negated comparison, not `pilot_ms <= 0.0`: this way a NaN pilot takes
+     * the max-reps branch instead of falling through to a chain in which
+     * every comparison against NaN is false. */
+    if (!(pilot_ms > 0.0)) {
+        return BENCH_MAX_REPS;
+    }
+    double want = BENCH_TARGET_MS / pilot_ms;
+    if (want < (double)BENCH_MIN_REPS) {
+        return BENCH_MIN_REPS;
+    }
+    if (want > (double)BENCH_MAX_REPS) {
+        return BENCH_MAX_REPS;
+    }
+    return (u32)want;
+}
+
 /* Runs fn(ctx) enough times to fill BENCH_TARGET_MS (or exactly
  * `reps_override` times), returning the spread. One untimed warm-up call
  * happens first: it faults in this op's own working set and lets any
@@ -147,21 +161,7 @@ static Timing time_op(void (*fn)(void*), void* ctx, u32 reps_override) {
     fn(ctx);
     double pilot_ms = now_ms() - t0;
 
-    u32 reps;
-    if (reps_override != 0) {
-        reps = reps_override;
-    } else if (pilot_ms <= 0.0) {
-        reps = BENCH_MAX_REPS;
-    } else {
-        double want = BENCH_TARGET_MS / pilot_ms;
-        if (want < (double)BENCH_MIN_REPS) {
-            reps = BENCH_MIN_REPS;
-        } else if (want > (double)BENCH_MAX_REPS) {
-            reps = BENCH_MAX_REPS;
-        } else {
-            reps = (u32)want;
-        }
-    }
+    u32 reps = (reps_override != 0) ? reps_override : bench_reps_for(pilot_ms);
 
     double* samples = (double*)xmalloc((size_t)reps * sizeof(double));
     for (u32 i = 0; i < reps; i++) {

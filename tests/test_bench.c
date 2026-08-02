@@ -129,3 +129,62 @@ TEST(gbs_ratio_is_invariant_under_uniform_slowdown) {
 
     ASSERT_TRUE(close_enough(fast, slow));
 }
+
+/* ---- bench_reps_for: the adaptive sample count ----
+ *
+ * These pin a lesson, not just an arithmetic contract. The rep floor was 3,
+ * and 3 silently produced a 2.6x-wrong headline number (see bench.h's
+ * BENCH_MIN_REPS comment). The sizer is pure arithmetic over one double, so
+ * it is driven directly here rather than inferred from a printed table.
+ */
+
+/* THE REGRESSION TEST FOR THE 2026-08-02 DEFECT. A ~180 ms op asks for
+ * 250/180 = 1.4 reps and lands on the floor. With the old floor of 3, the
+ * median moved as soon as TWO samples were bad -- which is exactly what
+ * happened: LOGITS read 193.8 / 463.8 / 176.8 ms across three runs while
+ * max/med stayed at 1.33, so the table called a 2.6x-wrong run healthy. */
+TEST(reps_for_slow_op_takes_a_floor_that_tolerates_more_than_one_outlier) {
+    ASSERT_EQ_U32(bench_reps_for(180.0), BENCH_MIN_REPS);
+    /* 3 was the bug: with 3 samples, 2 bad ones decide the median. */
+    ASSERT_TRUE(BENCH_MIN_REPS >= 11u);
+    /* An odd floor keeps the median a real observation, per bench_spread. */
+    ASSERT_TRUE((BENCH_MIN_REPS % 2u) == 1u);
+}
+
+/* Between the clamps the count is just the budget divided by the cost. */
+TEST(reps_for_scales_inversely_with_pilot_cost) {
+    ASSERT_EQ_U32(bench_reps_for(10.0), 25u);   /* 250/10 */
+    ASSERT_EQ_U32(bench_reps_for(5.0), 50u);    /* 250/5  */
+}
+
+/* A sub-microsecond op would otherwise ask for millions of reps. */
+TEST(reps_for_fast_op_is_capped_at_max) {
+    ASSERT_EQ_U32(bench_reps_for(0.001), BENCH_MAX_REPS);
+}
+
+/* Non-positive pilot = the timer never resolved a single call. */
+TEST(reps_for_unresolved_timer_takes_max) {
+    ASSERT_EQ_U32(bench_reps_for(0.0), BENCH_MAX_REPS);
+    ASSERT_EQ_U32(bench_reps_for(-1.0), BENCH_MAX_REPS);
+}
+
+/* The case a plain `pilot <= 0.0` guard gets WRONG: every comparison against
+ * NaN is false, so a NaN pilot would fall past both clamps and return a cast
+ * of a NaN. Built at runtime through volatile so it cannot be constant-folded
+ * into a compile-time diagnostic, and no libm dependency is added. */
+TEST(reps_for_nan_pilot_takes_max_not_a_false_comparison_chain) {
+    volatile double z = 0.0;
+    double          nan_pilot = z / z;
+    ASSERT_TRUE(nan_pilot != nan_pilot);   /* it really is a NaN */
+    ASSERT_EQ_U32(bench_reps_for(nan_pilot), BENCH_MAX_REPS);
+}
+
+/* A cheaper op must never get FEWER samples than a costlier one. A sizer that
+ * is not monotone would make two ops' spreads incomparable, which is the
+ * whole basis of reading one row against another. */
+TEST(reps_for_is_monotone_non_increasing_in_pilot_cost) {
+    double pilots[7] = { 0.001, 0.1, 1.0, 10.0, 50.0, 180.0, 5000.0 };
+    for (int i = 1; i < 7; i++) {
+        ASSERT_TRUE(bench_reps_for(pilots[i]) <= bench_reps_for(pilots[i - 1]));
+    }
+}
