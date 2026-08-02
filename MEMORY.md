@@ -204,9 +204,21 @@ The stack Kabir is actually building, top to bottom:
 
 1. **Phase 1 — the concurrent serving core**, on Kabir's own hardware. Useful,
    standalone, the day it beats Ollama at concurrency. ← *spec this first.*
-2. **Phase 2 — heterogeneous + NPU execution.** Schedule across CPU/GPU/NPU;
-   light up the idle 40-TOPS silicon. The bleeding-edge moat, once the core
-   exists (and once the hardware is on hand).
+2. **Phase 2 — RE-ORDERED 2026-08-02** (Fable strategic review, Kabir-approved;
+   binding form + rationale in `docs/ROADMAP.md` "Beyond Phase 1"). Phase 2 is
+   now **the bridge layer — the Ollama half of the gap**: model alias registry
+   + `stoke pull`, idle load/unload under an LRU residency budget, per-model
+   chat templates, `/metrics` (M5's bench driver already computes the numbers),
+   and memory-elastic serving on M4's runtime-variable block pool. Reasoning:
+   Ollama's moat was never its engine, it is `ollama run <name>`; and the
+   desktop-pressure behaviour M2's ops history measured live (Chrome returns,
+   Windows trims the working set, throughput falls ~3×) is something neither
+   vLLM nor llama.cpp handles, so graceful degradation is a differentiator the
+   paged-KV machinery already almost pays for.
+   **Heterogeneous + NPU execution moves BEHIND it** — schedule across
+   CPU/GPU/NPU, light up the idle 40-TOPS silicon; still the bleeding-edge
+   moat, but hardware-gated (see "Open questions": no NPU on this box), so it
+   waits on silicon rather than blocking the product story.
 3. **Phase 3 — the runtime.** Fold in the router (cloud-spill fallback) + AySen
    (`local` client, contracts). Now it is not just serving — it is a *reliable,
    local-first* runtime.
@@ -219,8 +231,9 @@ The stack Kabir is actually building, top to bottom:
 
 - **First hardware target** → Kabir's box: i5-13450HX (6P+4E, AVX2+AVX-VNNI,
   no AVX-512), 16GB DDR5-4800 (~77 GB/s theor.), RTX 3050 Laptop 6GB (168 GB/s,
-  CC 8.6) reserved for Phase 1.5. **No NPU on hand** (HX predates them) —
-  Phase 2 needs future hardware. CPU-first, CUDA second.
+  CC 8.6) reserved for Phase 1.5. **No NPU on hand** (HX predates them) — the
+  NPU work needs future hardware, which is exactly why the 2026-08-02 re-order
+  moved it behind the Phase-2 bridge layer. CPU-first, CUDA second.
 - **Model / weight format** → GGUF. Qwen3-4B-Instruct-2507 primary (Apache,
   ungated), Llama-3.2-3B-Instruct secondary (family generality).
 - **Engine language** → **C11, from scratch** (no ggml — own kernels, own
@@ -303,7 +316,8 @@ horizon = long.
   Validated gap, accessible on Kabir's own hardware, pure systems craft,
   OSS-distributable.
 - **NPU / next-gen silicon** — highest moat + learning, but hardware access +
-  immature vendor toolchains → **Phase 2**, not the start.
+  immature vendor toolchains → post-Phase-1, and since the 2026-08-02 re-order
+  it sits BEHIND the Phase-2 bridge layer, not at the front of Phase 2.
 - **Agent-reliability runtime** — uses AySen/router more directly and ships
   sooner, but more contested (BAML / DSPy / Instructor). Becomes the Phase-3
   layer, via AySen.
