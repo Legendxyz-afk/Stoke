@@ -335,7 +335,140 @@ def harvest_token_bytes(entries: List[dict]) -> Dict[int, bytes]:
     return id_bytes
 
 
-def align_tokens_to_entries(tokens: List[int], entries: List[dict]) -> List[int]:
+def build_byte_unicode_maps() -> Tuple[Dict[int, int], Dict[int, int]]:
+    """The GPT-2 byte-level remap, both directions.
+
+    GENERATED from the published algorithm rather than transcribed, exactly as
+    src/tok.c's build_byte_unicode_maps() does, so the two are auditable
+    against the same source instead of against each other:
+        bs = ['!'..'~'] + ['\\xa1'..'\\xac'] + ['\\xae'..'\\xff']
+        cs = bs[:]; n = 0
+        for b in range(256):
+            if b not in bs: bs.append(b); cs.append(256+n); n += 1
+    The Python original walks b=0..255 in order and only appends a byte the
+    first time it is seen not-yet-nice, so `n` increments in strictly
+    increasing byte order -- which the two-pass form below reproduces.
+    """
+    nice = [False] * 256
+    for b in range(0x21, 0x7E + 1):
+        nice[b] = True
+    for b in range(0xA1, 0xAC + 1):
+        nice[b] = True
+    for b in range(0xAE, 0xFF + 1):
+        nice[b] = True
+
+    byte_to_cpt: Dict[int, int] = {b: b for b in range(256) if nice[b]}
+    n = 0
+    for b in range(256):
+        if not nice[b]:
+            byte_to_cpt[b] = 256 + n
+            n += 1
+    cpt_to_byte = {cpt: b for b, cpt in byte_to_cpt.items()}
+    return byte_to_cpt, cpt_to_byte
+
+
+def vocab_token_bytes(gguf_path: str) -> List[bytes]:
+    """id -> the bytes that token contributes to the GENERATED TEXT.
+
+    ▶ EMITTED bytes, not the vocab string's bytes, and the difference is not
+    cosmetic. A CONTROL token's vocab string is stored literally -- id 151643
+    really is the 13 characters `<|endoftext|>` -- but a control token emits
+    NOTHING into the output stream, and the oracle reports exactly that
+    (bytes=[]). Charging its 13 literal bytes against a zero-byte span would
+    desynchronise the aligner's cumulative walk from the first control token
+    onward, which in practice means every EOS-terminated sequence.
+
+    This was caught, not reasoned about. A first version returned the literal
+    vocab decode for every id and made p46 newly fatal -- the cross-check in
+    align_tokens_to_entries() fired on `vocab says b'<|endoftext|>', oracle
+    says b''` -- and the rule was then established by measurement over all 50
+    survey prompts:
+
+        token_type      agree  disagree
+        NORMAL           8815         0
+        CONTROL             0         2   (both oracle-side b'')
+
+    So NORMAL decodes are exactly right and CONTROL contributes nothing.
+    USER_DEFINED never appeared in the corpus, so it is deliberately NOT
+    special-cased: it keeps its vocab decode, and the cross-check stays armed
+    so an unproven case fails loudly instead of silently mis-aligning.
+
+    WHY THIS EXISTS. harvest_token_bytes() below can only resolve ids that
+    happen to appear as a top_logprobs CANDIDATE somewhere in the same
+    response, and there is no guarantee a ground-truth id ever does. On the
+    50-prompt survey corpus it failed for real on 4 prompts (p26, p27, p31,
+    p34), where align_tokens_to_entries() then fatally refused to guess --
+    correct behaviour, but it means the oracle gate can hard-fail on TOOLING
+    rather than return a verdict, which is why the M2->M3 handover made this
+    a prerequisite rather than a cleanup.
+
+    The vocab is the authoritative source: every id has exactly one encoding,
+    independent of what any particular response happened to sample.
+
+    This mirrors src/tok.c's tok_decode() semantics precisely -- each vocab
+    string is UTF-8, and every one of its codepoints maps back to exactly ONE
+    byte, so a token's byte LENGTH is simply its codepoint count. That holds
+    for CONTROL/USER_DEFINED specials too: their strings are stored literally
+    rather than remapped, but their characters ('<', '|', ASCII letters) all
+    lie in the map's identity range 0x21-0x7E and so map to themselves.
+
+    Fatal on any codepoint outside the map, matching tok_decode rather than
+    silently substituting -- a vocab string this cannot represent is a
+    tokenizer-level surprise, not something to paper over.
+    """
+    import gguf_reader
+
+    TOK_TYPE_CONTROL = 3   # llama_token_type, same enum src/tok.c reads
+
+    _, cpt_to_byte = build_byte_unicode_maps()
+    with gguf_reader.GGUFFile(gguf_path) as g:
+        arr = g.kv.get("tokenizer.ggml.tokens")
+        if arr is None:
+            fatal(f"vocab_token_bytes: {gguf_path} has no "
+                  f"tokenizer.ggml.tokens")
+        tt = g.kv.get("tokenizer.ggml.token_type")
+        if tt is None:
+            fatal(f"vocab_token_bytes: {gguf_path} has no "
+                  f"tokenizer.ggml.token_type -- required to tell CONTROL "
+                  f"tokens (which emit nothing) from NORMAL ones")
+        if len(tt.values) != len(arr.values):
+            fatal(f"vocab_token_bytes: token_type has {len(tt.values)} "
+                  f"entries but tokens has {len(arr.values)}")
+        out: List[bytes] = []
+        for tid, s in enumerate(arr.values):
+            if tt.values[tid] == TOK_TYPE_CONTROL:
+                out.append(b"")
+                continue
+            buf = bytearray()
+            for ch in s:
+                cp = ord(ch)
+                b = cpt_to_byte.get(cp)
+                if b is None:
+                    fatal(f"vocab_token_bytes: vocab id {tid} ({s!r}) "
+                          f"contains codepoint U+{cp:04X}, which is not a "
+                          f"GPT-2 byte-remap codepoint -- same condition "
+                          f"tok_decode() fatals on. Refusing to guess.")
+                buf.append(b)
+            out.append(bytes(buf))
+    return out
+
+
+_VOCAB_BYTES_CACHE: Dict[str, List[bytes]] = {}
+
+
+def vocab_bytes_cached(gguf_path: str = None) -> List[bytes]:
+    """Memoised vocab_token_bytes(). The vocab is 151,936 strings, so this is
+    parsed once per process rather than once per divergence."""
+    path = str(MODEL_PATH if gguf_path is None else gguf_path)
+    v = _VOCAB_BYTES_CACHE.get(path)
+    if v is None:
+        v = vocab_token_bytes(path)
+        _VOCAB_BYTES_CACHE[path] = v
+    return v
+
+
+def align_tokens_to_entries(tokens: List[int], entries: List[dict],
+                             vocab_bytes: Optional[List[bytes]] = None) -> List[int]:
     """Returns, for each of the len(tokens) generated-token positions, the
     index into `entries` whose byte-span covers that position (multiple
     consecutive positions map to the SAME entry index whenever that
@@ -352,13 +485,21 @@ def align_tokens_to_entries(tokens: List[int], entries: List[dict]) -> List[int]
     single advancing entry-pointer so each token's [start,end) byte span
     lands inside some entry's [start,end) span.
 
-    FATAL (no silent fallback) if: a token id's bytes can't be resolved
-    from this response's own top_logprobs candidates at all (see the
-    m2-w4-report.md flag on this -- there is no proven guarantee every
-    ground-truth id always resurfaces as a candidate somewhere in its own
-    response, only an empirical confirmation on the v3 fixture); the
-    total byte counts disagree; the walk runs off the end of `entries`;
-    or the resulting mapping is not monotonic.
+    `vocab_bytes` (from vocab_token_bytes()) is the AUTHORITATIVE id->bytes
+    source and should be passed whenever the GGUF is available. Without it
+    this falls back to harvesting from the response's own top_logprobs, which
+    can only see ids that happened to appear as a candidate -- adequate for
+    the v3 fixture, and a hard failure on 4 of the 50 survey prompts.
+
+    When both are available the vocab wins, but they are CROSS-CHECKED first:
+    a disagreement means the harness's understanding of the tokenizer differs
+    from the oracle's, which is a much deeper problem than an alignment bug
+    and must not be silently resolved in either direction.
+
+    FATAL (no silent fallback) if: a token id's bytes cannot be resolved at
+    all; vocab and harvested bytes disagree for an id; the total byte counts
+    disagree; the walk runs off the end of `entries`; or the resulting
+    mapping is not monotonic.
     """
     if not tokens:
         fatal("align_tokens_to_entries: tokens is empty")
@@ -366,15 +507,33 @@ def align_tokens_to_entries(tokens: List[int], entries: List[dict]) -> List[int]
         fatal("align_tokens_to_entries: entries is empty")
 
     id_bytes = harvest_token_bytes(entries)
+
+    # The oracle's own reported bytes are the check on our vocab decode: any
+    # id visible in both must agree. This is cheap and it is the only thing
+    # standing between a transcription error in the byte-remap and a silently
+    # wrong alignment.
+    if vocab_bytes is not None:
+        for cid, cbytes in id_bytes.items():
+            if 0 <= cid < len(vocab_bytes) and vocab_bytes[cid] != cbytes:
+                fatal(f"align_tokens_to_entries: vocab and oracle disagree on "
+                      f"the bytes of token id {cid}: vocab says "
+                      f"{vocab_bytes[cid]!r}, oracle's top_logprobs says "
+                      f"{cbytes!r} -- refusing to align on a tokenizer "
+                      f"mismatch")
+
     tok_lens: List[int] = []
     for pos, tid in enumerate(tokens):
-        b = id_bytes.get(tid)
+        b = None
+        if vocab_bytes is not None and 0 <= tid < len(vocab_bytes):
+            b = vocab_bytes[tid]
+        if b is None:
+            b = id_bytes.get(tid)
         if b is None:
             fatal(f"align_tokens_to_entries: token id {tid} at position {pos} "
                   f"never appears as a top_logprobs candidate anywhere in "
-                  f"this response -- cannot independently determine its "
-                  f"byte length (no stoke.exe decode path is wired up; see "
-                  f"m2-w4-report.md aligner flag). Refusing to guess.")
+                  f"this response and no vocab byte table was supplied -- "
+                  f"cannot determine its byte length. Pass vocab_bytes from "
+                  f"vocab_token_bytes(<gguf>). Refusing to guess.")
         tok_lens.append(len(b))
 
     entry_lens = []
@@ -420,7 +579,8 @@ def align_tokens_to_entries(tokens: List[int], entries: List[dict]) -> List[int]
     return mapping
 
 
-def top5_for_position(tokens: List[int], entries: List[dict], pos: int) -> List[Tuple[int, float]]:
+def top5_for_position(tokens: List[int], entries: List[dict], pos: int,
+                       vocab_bytes: Optional[List[bytes]] = None) -> List[Tuple[int, float]]:
     """The oracle's (id, logprob) top-5 for the entry covering token
     position `pos`, rank-0 (highest logprob) first, exactly as
     top_logprobs reported it. Per §8: "For a divergence at token position
@@ -429,7 +589,7 @@ def top5_for_position(tokens: List[int], entries: List[dict], pos: int) -> List[
     the same top-5), which is the only data the oracle's response format
     makes available; there is no finer-grained per-swallowed-step
     distribution to recover."""
-    mapping = align_tokens_to_entries(tokens, entries)
+    mapping = align_tokens_to_entries(tokens, entries, vocab_bytes)
     if not (0 <= pos < len(mapping)):
         fatal(f"top5_for_position: position {pos} out of range [0,{len(mapping)})")
     entry = entries[mapping[pos]]
@@ -1343,7 +1503,8 @@ def run_gate(args) -> int:
 
                 pos = cmp.first_diff_pos
                 oracle_top5 = top5_for_position(oracle_data["tokens"],
-                                                 oracle_data["completion_probabilities"], pos)
+                                                 oracle_data["completion_probabilities"], pos,
+                                                 vocab_bytes_cached())
                 stoke_top5 = run_stoke_probe(corpus_path(pid), args.n_predict, pos)
                 waived, decision = ledger.try_waive(pid, pos, oracle_top5, stoke_top5)
                 if waived:
@@ -1549,7 +1710,8 @@ def run_survey(args) -> int:
             try:
                 oracle_data = oracle_results[pid]
                 oracle_top5 = top5_for_position(oracle_data["tokens"],
-                                                 oracle_data["completion_probabilities"], pos)
+                                                 oracle_data["completion_probabilities"], pos,
+                                                 vocab_bytes_cached())
                 stoke_top5 = probe_results[pid]
                 decision = waiver_decision(oracle_top5, stoke_top5)
                 row["oracle_top5"] = oracle_top5
@@ -1781,6 +1943,64 @@ def run_selftest() -> int:
         caught = True
     check("parse_version_output raises GateError on unparseable input "
           "(not a dead check -- proves the fatal path is real)", caught)
+
+    # ---- 4b. The GGUF-vocab byte resolver (the M3 aligner prerequisite) --
+    print("\n--- 4b. vocab_token_bytes / build_byte_unicode_maps ---")
+
+    b2c, c2b = build_byte_unicode_maps()
+    check("byte->cpt covers all 256 bytes", len(b2c) == 256)
+    check("the map is a bijection (256 distinct codepoints)", len(c2b) == 256)
+    # The three "nice" ranges map to themselves; everything else is pushed to
+    # 256+n. Both halves asserted -- an identity-only check would pass on a
+    # map that forgot the second pass entirely.
+    check("nice bytes are identity (0x21,0x7E,0xA1,0xAC,0xAE,0xFF)",
+          all(b2c[b] == b for b in (0x21, 0x7E, 0xA1, 0xAC, 0xAE, 0xFF)))
+    check("non-nice bytes are remapped above 255 (0x00,0x20,0x7F,0xA0,0xAD)",
+          all(b2c[b] >= 256 for b in (0x00, 0x20, 0x7F, 0xA0, 0xAD)))
+    # 256 - 188 nice = 68 remapped, so the largest codepoint is 256+67 = 323.
+    # src/tok.c sizes its table from this exact arithmetic (TOK_CPT_TABLE_SIZE
+    # 512 with the reasoning written out), so a disagreement here means one of
+    # the two implementations has drifted from the published algorithm.
+    check("max codepoint is 323, matching src/tok.c's stated derivation",
+          max(c2b) == 323)
+    check("round-trip byte->cpt->byte is identity for all 256",
+          all(c2b[b2c[b]] == b for b in range(256)))
+
+    if MODEL_PATH.exists():
+        vb = vocab_bytes_cached()
+        check(f"vocab resolved for all {len(vb)} ids", len(vb) == 151936)
+        # A NORMAL token decodes to its literal text...
+        check("id 0 decodes to b'!'", vb[0] == b"!")
+        # ...while CONTROL tokens emit NOTHING. This is the check that would
+        # have caught the first version of this resolver, which returned the
+        # literal 13-byte b'<|endoftext|>' and desynchronised the aligner on
+        # every EOS-terminated sequence (p46 went green->fatal).
+        check("CONTROL id 151643 (<|endoftext|>) emits zero bytes",
+              vb[151643] == b"")
+        check("CONTROL id 151645 (<|im_end|>) emits zero bytes",
+              vb[151645] == b"")
+        check("a CONTROL token is NOT merely absent -- it is present and empty",
+              151643 < len(vb) and vb[151643] == b"")
+
+        # THE CROSS-CHECK THAT MATTERS: the oracle's own reported bytes are an
+        # independent witness to our decode. Over the survey corpus this was
+        # 8815 agreements / 0 disagreements on NORMAL tokens.
+        fixture_ok = True
+        try:
+            with open(VALIDATION_FIXTURE, "r", encoding="utf-8") as f:
+                fx = json.load(f)
+            harvested = harvest_token_bytes(fx["completion_probabilities"])
+            mismatches = [(cid, vb[cid], cb) for cid, cb in harvested.items()
+                          if 0 <= cid < len(vb) and vb[cid] != cb]
+            check(f"vocab decode agrees with the oracle on all "
+                  f"{len(harvested)} v3-fixture candidate ids "
+                  f"(mismatches: {mismatches[:2]})", not mismatches)
+        except OSError:
+            fixture_ok = False
+        if not fixture_ok:
+            check("v3 fixture readable for the vocab cross-check", False)
+    else:
+        print(f"  [skip] model absent at {MODEL_PATH}")
 
     # ---- 5. Per-prompt wedge ceiling covers every corpus prompt ---------
     # THE REGRESSION TEST FOR THE 2026-07-27 SURVEY FAILURE. The old flat
