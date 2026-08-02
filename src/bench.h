@@ -62,8 +62,28 @@ BenchTiming bench_spread(double* samples, u32 n);
 double bench_gbs(u64 bytes, double ms);
 
 /* Per-op timed budget. Long enough to swamp timer granularity and scheduler
- * jitter, short enough that a full table is not a coffee break. */
-#define BENCH_TARGET_MS 250.0
+ * jitter, short enough that a full table is not a coffee break.
+ *
+ * Raised 250 -> 1000 on 2026-08-02 against measurement, not taste. At 250 ms
+ * the mid-size projections got 20-26 reps and their medians moved 20-27%
+ * between runs on an otherwise quiet box -- enough to swamp any optimization
+ * M3 is likely to produce, which would make the history file useless for the
+ * regression-diffing it exists for.
+ *
+ * The cause was established two-directionally rather than assumed. Ops with
+ * many reps were already stable (attn_k, 248 reps, 1.8% run-to-run); ops with
+ * few were not (ffn_up, 20 reps, 26.5%). Pinning every op to 100 reps then
+ * moved BOTH in the predicted direction: ffn_up 26.5 -> 9.6%, ffn_down
+ * 10.1 -> 2.3%, attn_q 20.7 -> 6.8%, while attn_k -- which LOST reps, 248 ->
+ * 100 -- degraded 1.8 -> 78.3%. Run-to-run spread is dominated by how well
+ * the median is determined, i.e. by sampling, not by box state.
+ *
+ * 1000 ms costs ~12 s per run and leaves every projection above ~95 reps.
+ * matvec LOGITS is the one op this cannot help: at ~176 ms it stays on
+ * BENCH_MIN_REPS, and pinning it to 100 reps did NOT reduce its ~10% spread
+ * (11.2% at 100 reps vs 10.0% at 11), so that residual is genuine box drift
+ * over a multi-second op and is irreducible by sampling. */
+#define BENCH_TARGET_MS 1000.0
 
 /* Sample-count floor for ops too slow to fit BENCH_TARGET_MS.
  *

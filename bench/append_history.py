@@ -11,15 +11,22 @@ mechanically -- a format a human retypes by hand drifts within a week.
 TWO DESIGN DECISIONS, both forced by what M2 and K1 measured rather than by
 taste. They are the whole reason this is a tool and not an echo command.
 
-1. THE ROW STORES ITS OWN REFERENCE STREAM, AND %ref IS THE PRIMARY SERIES.
-   Absolute GB/s on this box is not reproducible: measured 2026-08-02, the
-   same binary on the same quiesced box produced reference-stream readings of
-   6.57 / 6.74 / 7.58 GB/s, and `matvec LOGITS` swung 2.6x before its rep
-   floor was fixed. An absolute number alone therefore cannot answer "did this
-   commit make it slower" -- the box moves more than most optimizations will.
-   Storing the run's reference stream beside every absolute figure means any
-   two rows can be RE-NORMALIZED against each other later, which is the only
-   way a history spanning weeks of box states stays comparable.
+1. THE ROW STORES ITS OWN REFERENCE STREAM -- BUT THE STABILITY GUARD JUDGES
+   ABSOLUTES, AND THAT ORDERING IS THE OPPOSITE OF WHAT WAS FIRST ASSUMED.
+   Storing the reference stream beside every absolute figure is what lets two
+   rows taken weeks apart be RE-NORMALIZED against each other, and %ref really
+   is the right lens for comparing a LOADED run to a QUIESCED one, where the
+   whole box is uniformly slower and numerator and denominator move together.
+
+   It is NOT a run-to-run noise reducer, and measurement on 2026-08-02 said so
+   plainly: over five runs, %ref was LESS stable than the absolute median on
+   8 of 9 measurable ops (ffn_gate 33.3% vs 22.8%, attn_q 27.2% vs 20.7%).
+   The reason is structural -- the reference stream is measured ONCE, at the
+   start of the run, while each op is measured later, so the ratio only
+   cancels box state that persists across the entire run. Against run-to-run
+   jitter the denominator is simply a second noisy measurement, and dividing
+   by it ADDS its variance to every op instead of removing it. So the guard
+   below is applied to absolute medians on purpose.
 
 2. A ROW IS A MEDIAN ACROSS RUNS, NOT WITHIN ONE RUN, AND STABILITY IS
    ENFORCED RATHER THAN HOPED FOR. A single bench run cannot self-diagnose

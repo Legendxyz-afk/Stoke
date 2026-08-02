@@ -151,10 +151,23 @@ TEST(reps_for_slow_op_takes_a_floor_that_tolerates_more_than_one_outlier) {
     ASSERT_TRUE((BENCH_MIN_REPS % 2u) == 1u);
 }
 
-/* Between the clamps the count is just the budget divided by the cost. */
+/* Between the clamps the count is just the budget divided by the cost.
+ *
+ * Expressed against BENCH_TARGET_MS rather than against hardcoded rep counts:
+ * an earlier version asserted 25 and 50, which were only true while the budget
+ * was 250 ms, so raising it to 1000 failed these tests for no reason beyond
+ * the arithmetic having been transcribed instead of stated. A test that pins
+ * a TUNABLE's current value obstructs tuning; the invariant worth protecting
+ * is the inverse relationship, which no budget change should ever break. */
 TEST(reps_for_scales_inversely_with_pilot_cost) {
-    ASSERT_EQ_U32(bench_reps_for(10.0), 25u);   /* 250/10 */
-    ASSERT_EQ_U32(bench_reps_for(5.0), 50u);    /* 250/5  */
+    ASSERT_EQ_U32(bench_reps_for(10.0), (u32)(BENCH_TARGET_MS / 10.0));
+    ASSERT_EQ_U32(bench_reps_for(5.0), (u32)(BENCH_TARGET_MS / 5.0));
+    /* Halving the per-call cost doubles the sample count. */
+    ASSERT_EQ_U32(bench_reps_for(5.0), 2u * bench_reps_for(10.0));
+    /* Both must land strictly inside the clamps or the above proves nothing
+     * about scaling -- it would just be comparing two clamped values. */
+    ASSERT_TRUE(bench_reps_for(10.0) > BENCH_MIN_REPS);
+    ASSERT_TRUE(bench_reps_for(5.0) < BENCH_MAX_REPS);
 }
 
 /* A sub-microsecond op would otherwise ask for millions of reps. */
