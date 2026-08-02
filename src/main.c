@@ -6,6 +6,7 @@
  */
 #include "common.h"
 
+#include "bench.h"
 #include "gguf.h"
 #include "kv.h"
 #include "model.h"
@@ -575,7 +576,33 @@ int main(int argc, char** argv) {
         fatal("usage: stoke <command> [args] (commands: info <path.gguf>, "
               "tokenize [--special | --roundtrip] <path.gguf> <text-file>, "
               "run <path.gguf> [--raw] [-n N] [-p \"text\" | -f file] "
-              "[--dump dir] [--probe-pos N])");
+              "[--dump dir] [--probe-pos N], "
+              "bench --ops <path.gguf> [--reps N])");
+    }
+    if (strcmp(argv[1], "bench") == 0) {
+        /* The `--ops` spelling is mandated by the M3 forward note; it is a
+         * required mode rather than a default so that later bench modes
+         * (end-to-end tok/s, scenario replay) can be added without ever
+         * silently changing what a bare `stoke bench` measures. */
+        if (argc < 4 || strcmp(argv[2], "--ops") != 0) {
+            fatal("usage: stoke bench --ops <path.gguf> [--reps N]");
+        }
+        u32 reps = 0;   /* 0 = adaptive, see bench.c Decision 3 */
+        for (int i = 4; i < argc; i++) {
+            if (strcmp(argv[i], "--reps") == 0 && i + 1 < argc) {
+                long v = strtol(argv[++i], NULL, 10);
+                if (v <= 0) {
+                    fatal("stoke bench: --reps must be positive, got '%s'",
+                          argv[i]);
+                }
+                reps = (u32)v;
+            } else {
+                fatal("stoke bench: unexpected argument '%s'", argv[i]);
+            }
+        }
+        bench_ops(argv[3], reps);
+        finish_stdout_or_fatal();
+        return 0;
     }
     if (strcmp(argv[1], "info") == 0) {
         if (argc < 3) {
