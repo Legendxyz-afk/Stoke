@@ -577,7 +577,7 @@ int main(int argc, char** argv) {
               "tokenize [--special | --roundtrip] <path.gguf> <text-file>, "
               "run <path.gguf> [--raw] [-n N] [-p \"text\" | -f file] "
               "[--dump dir] [--probe-pos N], "
-              "bench --ops <path.gguf> [--reps N])");
+              "bench --ops <path.gguf> [--reps N] [--jsonl])");
     }
     if (strcmp(argv[1], "bench") == 0) {
         /* The `--ops` spelling is mandated by the M3 forward note; it is a
@@ -585,9 +585,10 @@ int main(int argc, char** argv) {
          * (end-to-end tok/s, scenario replay) can be added without ever
          * silently changing what a bare `stoke bench` measures. */
         if (argc < 4 || strcmp(argv[2], "--ops") != 0) {
-            fatal("usage: stoke bench --ops <path.gguf> [--reps N]");
+            fatal("usage: stoke bench --ops <path.gguf> [--reps N] [--jsonl]");
         }
-        u32 reps = 0;   /* 0 = adaptive, see bench.c Decision 3 */
+        u32 reps  = 0;   /* 0 = adaptive, see bench.c Decision 3 */
+        int jsonl = 0;
         for (int i = 4; i < argc; i++) {
             if (strcmp(argv[i], "--reps") == 0 && i + 1 < argc) {
                 long v = strtol(argv[++i], NULL, 10);
@@ -596,11 +597,13 @@ int main(int argc, char** argv) {
                           argv[i]);
                 }
                 reps = (u32)v;
+            } else if (strcmp(argv[i], "--jsonl") == 0) {
+                jsonl = 1;
             } else {
                 fatal("stoke bench: unexpected argument '%s'", argv[i]);
             }
         }
-        bench_ops(argv[3], reps);
+        bench_ops(argv[3], reps, jsonl);
         finish_stdout_or_fatal();
         return 0;
     }

@@ -23,8 +23,15 @@
  * prints the table to stdout. `reps_override` == 0 selects the adaptive
  * rep count (see bench.c); nonzero pins it, which exists so a run can be
  * made cheap-and-noisy on purpose when you only want the table's shape.
- * Fatal on any file/shape problem -- never returns a partial table. */
-void bench_ops(const char* model_path, u32 reps_override);
+ * Fatal on any file/shape problem -- never returns a partial table.
+ *
+ * `jsonl` nonzero additionally emits one machine-readable JSON object as the
+ * FINAL line, for bench/append_history.py. It is purely additive: the human
+ * table is byte-identical either way, so a consumer takes the last line and a
+ * reader sees no difference. Measurements only -- provenance is the caller's
+ * job, because this process cannot know its own git commit and a benchmark
+ * that guesses provenance corrupts the history it is meant to inform. */
+void bench_ops(const char* model_path, u32 reps_override, int jsonl);
 
 /* ---- pure helpers, EXPOSED FOR TESTS ----
  *

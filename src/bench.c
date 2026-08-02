@@ -285,12 +285,78 @@ static void run_argmax(void* p) {
 
 static double g_ref_gbs;   /* same-run reference stream, set before any row */
 
+/* ---- machine-readable capture (--jsonl) ----
+ *
+ * ADDITIVE BY DESIGN: --jsonl changes not one character of the human table.
+ * It captures each row as it is printed and emits a single JSON object as the
+ * LAST line, so a consumer takes the final line and a human still reads the
+ * same output they always did. The alternative -- guarding twenty printf
+ * sites behind a mode flag -- would have churned every line of a freshly
+ * verified reporting path to add a feature that needs none of them changed.
+ *
+ * This exists because `bench/history.jsonl` is a STANDING requirement (spec
+ * "Perf regression tracking"; forward note "history.jsonl discipline"): every
+ * green commit touching a hot path appends a row, and regressions are caught
+ * by diffing history rather than by remembering. A format that a human must
+ * retype into JSON would not survive that cadence. */
+typedef struct {
+    const char* op;
+    char        shape[32];
+    u64         bytes;
+    Timing      t;
+} CapturedRow;
+
+#define BENCH_MAX_CAPTURED 32u
+
+static int         g_jsonl;
+static CapturedRow g_captured[BENCH_MAX_CAPTURED];
+static u32         g_captured_n;
+
 static void row(const char* op, const char* shape, u64 bytes, Timing t) {
     double g   = bench_gbs(bytes, t.med_ms);
     double pct = (g_ref_gbs > 0.0) ? (100.0 * g / g_ref_gbs) : 0.0;
     printf("  %-22s %-18s %10.1f %9.1f %9.1f %8.2f %7.1f%%  %6u\n",
            op, shape, t.med_ms * 1000.0, t.min_ms * 1000.0, t.max_ms * 1000.0,
            g, pct, t.reps);
+
+    if (g_jsonl) {
+        if (g_captured_n >= BENCH_MAX_CAPTURED) {
+            /* Silently dropping rows would make history.jsonl quietly
+             * incomplete, which is worse than not writing it at all. */
+            fatal("bench: --jsonl capture overflow (%u rows, cap %u) -- raise "
+                  "BENCH_MAX_CAPTURED",
+                  g_captured_n + 1u, BENCH_MAX_CAPTURED);
+        }
+        CapturedRow* c = &g_captured[g_captured_n++];
+        c->op    = op;
+        c->bytes = bytes;
+        c->t     = t;
+        snprintf(c->shape, sizeof(c->shape), "%s", shape);
+    }
+}
+
+/* One JSON object on one line: the raw MEASUREMENTS only. Provenance (commit,
+ * binary hash, box state, cross-run medians) is deliberately NOT here -- this
+ * process cannot know its own git commit, and a benchmark that guesses its
+ * provenance writes confident falsehoods into a file whose entire purpose is
+ * historical comparison. bench/append_history.py supplies that layer. */
+static void emit_jsonl(const char* model_path, double ref_gbs, Timing rt) {
+    printf("{\"kind\":\"ops\",\"model\":\"%s\",\"ref_gbs\":%.4f,"
+           "\"ref_med_ms\":%.4f,\"ref_min_ms\":%.4f,\"ref_max_ms\":%.4f,"
+           "\"ref_reps\":%u,\"ops\":[",
+           model_path, ref_gbs, rt.med_ms, rt.min_ms, rt.max_ms, rt.reps);
+    for (u32 i = 0; i < g_captured_n; i++) {
+        const CapturedRow* c   = &g_captured[i];
+        double             g   = bench_gbs(c->bytes, c->t.med_ms);
+        double             pct = (ref_gbs > 0.0) ? (100.0 * g / ref_gbs) : 0.0;
+        printf("%s{\"op\":\"%s\",\"shape\":\"%s\",\"bytes\":%llu,"
+               "\"med_us\":%.3f,\"min_us\":%.3f,\"max_us\":%.3f,"
+               "\"gbs\":%.4f,\"pct_ref\":%.3f,\"reps\":%u}",
+               i ? "," : "", c->op, c->shape, (unsigned long long)c->bytes,
+               c->t.med_ms * 1000.0, c->t.min_ms * 1000.0,
+               c->t.max_ms * 1000.0, g, pct, c->t.reps);
+    }
+    printf("]}\n");
 }
 
 static void header(void) {
@@ -361,7 +427,10 @@ static void bench_proj(const GgufFile* f, const char* tensor_name,
     row(label, shape, w->nbytes + (n_in + n_out) * sizeof(f32), t);
 }
 
-void bench_ops(const char* model_path, u32 reps_override) {
+void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
+    g_jsonl      = jsonl;
+    g_captured_n = 0;
+
     GgufFile* f = gguf_open(model_path);
 
     /* Shapes come from the file, never from a constant: the whole point is
@@ -513,6 +582,10 @@ void bench_ops(const char* model_path, u32 reps_override) {
     printf("    * matvec LOGITS is culprit #1 -- largest single op per token.\n");
     printf("    * max >> med     -> interference during the run, not a slow\n");
     printf("                        kernel. Re-run on a quiesced box.\n");
+
+    if (g_jsonl) {
+        emit_jsonl(model_path, g_ref_gbs, rt);
+    }
 
     free(x);
     free(x2);
