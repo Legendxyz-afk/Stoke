@@ -884,3 +884,39 @@ TEST(quantize_row_q8_0_matches_the_python_reference_byte_for_byte) {
     }
     ASSERT_TRUE(bad < 0);
 }
+
+/* ▶ THE GAP THE ROUND-TRIP TEST LEFT OPEN, and it is not a small one.
+ *
+ * f16_roundtrip_is_identity_for_all_65536_bit_patterns proves widen-then-
+ * narrow is identity -- but every input it feeds f32_to_f16 came FROM an f16,
+ * so it is exactly representable and no rounding ever happens. It therefore
+ * exercises none of the rounding logic, which is the only part that can be
+ * wrong. An exhaustive test can still be a shallow one.
+ *
+ * These are arbitrary f32 values that must genuinely round, with expectations
+ * from numpy (np.float16), which is IEEE round-to-nearest-even. The first
+ * entry is the case that actually broke: a Q8_0 block scale of 0.48/127, the
+ * value the bench's activation pool produces. */
+TEST(f32_to_f16_narrows_arbitrary_values_matching_numpy) {
+    static const struct { f32 in; u16 want; const char* note; } cases[] = {
+        { 0.48f / 127.0f, 0x1BBEu, "a real Q8_0 activation scale" },
+        { 0.125976562f,   0x3008u, "the p00 activation scale" },
+        { 1.0f,           0x3C00u, "exact" },
+        { 0.5f,           0x3800u, "exact" },
+        { 2.0f,           0x4000u, "exact" },
+        { 0.75f,          0x3A00u, "exact" },
+        { 0.01f,          0x211Fu, "rounds" },
+        { 0.001f,         0x1419u, "rounds, small" },
+        { 3.14159f,       0x4248u, "rounds" },
+    };
+    int bad = 0;
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        u16 got = f32_to_f16(cases[i].in);
+        if (got != cases[i].want) {
+            printf("  f32_to_f16(%.9g) = 0x%04X, want 0x%04X  (%s)\n",
+                   (double)cases[i].in, got, cases[i].want, cases[i].note);
+            bad++;
+        }
+    }
+    ASSERT_EQ_U32((u32)bad, 0u);
+}

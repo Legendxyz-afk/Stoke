@@ -493,9 +493,40 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     f32* x     = (f32*)xmalloc((size_t)x_len * sizeof(f32));
     f32* x2    = (f32*)xmalloc((size_t)x_len * sizeof(f32));
     f32* y     = (f32*)xmalloc((size_t)y_len * sizeof(f32));
+    /* ▶ THE CASTS TO i64 ARE LOAD-BEARING, and their absence was a real bug
+     * that shipped in K1 and survived until M3's integer core caught it.
+     *
+     * `i` is u64, so `(i % 97) - 48` is UNSIGNED arithmetic: whenever
+     * i % 97 < 48 it wraps to ~1.8e19 instead of going negative, and the
+     * pool filled with values around 1.8e17 rather than the intended
+     * [-0.48, 0.48].
+     *
+     * M2's f32 matvec never noticed -- a benchmark times its kernel, it does
+     * not check the numbers, and large-but-normal floats cost exactly what
+     * small ones do. The integer core is what made it visible: quantizing an
+     * activation block whose absmax is 1.8e17 gives a scale of 1.5e15, and
+     * narrowing THAT to f16 saturates to inf, which the dot kernel refuses.
+     *
+     * Worth stating plainly: a harness that only measures time can carry a
+     * value bug indefinitely, because nothing it reports depends on the
+     * values being right. It took a kernel that cares about magnitude to
+     * surface it. */
     for (u64 i = 0; i < x_len; i++) {
-        x[i]  = 0.01f * (f32)((i % 97) - 48);
-        x2[i] = 0.01f * (f32)((i % 89) - 44);
+        x[i]  = 0.01f * (f32)((i64)(i % 97) - 48);
+        x2[i] = 0.01f * (f32)((i64)(i % 89) - 44);
+    }
+    /* Cheap tripwire for exactly the class of mistake above: if a future
+     * edit reintroduces unsigned wraparound, or any other way of filling
+     * this pool with nonsense, fail here naming the value rather than deep
+     * inside a kernel that can only report a symptom. */
+    for (u64 i = 0; i < x_len; i++) {
+        if (!(x[i] >= -1.0f && x[i] <= 1.0f) ||
+            !(x2[i] >= -1.0f && x2[i] <= 1.0f)) {
+            fatal("bench: activation pool value out of range at i=%llu "
+                  "(x=%g, x2=%g) -- expected [-1,1]; check for unsigned "
+                  "wraparound in the fill expression",
+                  (unsigned long long)i, (double)x[i], (double)x2[i]);
+        }
     }
     for (u64 i = 0; i < y_len; i++) {
         y[i] = 0.0f;
