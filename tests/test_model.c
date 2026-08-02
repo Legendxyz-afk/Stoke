@@ -437,6 +437,20 @@ static int model_test_child_main(int argc, char** argv) {
         f32    xout[FIX_N_EMBD];
         (void)model_forward_position(m, kv, 9999u /* out of vocab (5) */, 0,
                                       NULL, xout);
+    } else if (strcmp(s, "forward_kv_max_ctx_too_large") == 0) {
+        /* The oversized-cache case: legal for the Kv, past what the model's
+         * s_scores can hold. Every OTHER dim must match the model exactly, or
+         * the shape check above fatals first and this scenario would prove
+         * nothing about the max_ctx clause. */
+        write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+        Model* m  = model_open(MODEL_FIXTURE_PATH);
+        Kv*    kv = kv_open(model_n_layer(m), model_max_ctx(m) + 1u,
+                             model_n_head_kv(m), model_head_dim(m));
+        f32    xout[FIX_N_EMBD];
+        /* pos == the model's cap: inside the CACHE (so the pos guard passes)
+         * and exactly one past the end of s_scores. This is the index that
+         * would have written into the next scratch buffer. */
+        (void)model_forward_position(m, kv, 0u, model_max_ctx(m), NULL, xout);
     } else if (strcmp(s, "kv_view_layer_oob") == 0) {
         Kv* kv = kv_open(2, 8, 1, 4);
         (void)kv_view(kv, 2 /* n_layer is 2 */, 0, 0);
@@ -616,6 +630,17 @@ TEST(model_generate_exceeding_kv_capacity_fatals) {
 }
 TEST(model_forward_position_token_id_out_of_range_fatals) {
     assert_scenario_fatals("forward_token_id_oob", "out of vocab range");
+    remove(MODEL_FIXTURE_PATH);
+}
+/* The too-LARGE cache direction. test_model already covered too-small
+ * (model_generate_exceeding_kv_capacity_fatals, caught by total_cap), and
+ * too-small is the SAFE direction -- nobody had tested the unsafe one, which
+ * is how a buffer overrun sat latent behind a shape check that looked
+ * complete. With this scenario in the suite, ASan now guards the path
+ * permanently on every WSL run. */
+TEST(model_forward_position_kv_max_ctx_larger_than_model_fatals) {
+    assert_scenario_fatals("forward_kv_max_ctx_too_large",
+                           "exceeds model max_ctx");
     remove(MODEL_FIXTURE_PATH);
 }
 TEST(kv_view_layer_out_of_range_fatals) {

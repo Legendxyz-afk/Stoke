@@ -469,6 +469,34 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
               kv_n_layer(kv), kv_n_head_kv(kv), kv_head_dim(kv), m->n_layer,
               m->n_head_kv, m->head_dim);
     }
+    /* max_ctx is checked apart from the other three dims, and only in the
+     * too-LARGE direction, because the two directions are not symmetric.
+     *
+     * `pos` is bounded against the CACHE's capacity just above, but
+     * `s_scores` -- the per-head softmax row the attention loop below writes
+     * at [0..pos] -- is sized from the MODEL's max_ctx at model_open. So a Kv
+     * opened WIDER than the model admits a `pos` that clears the cache check
+     * and still runs off the end of s_scores, into the scratch buffers
+     * xmalloc'd after it (s_proj/s_f/s_gate). That is silent wrong tokens,
+     * not a crash, which is the worst available failure mode.
+     *
+     * A NARROWER Kv stays legal on purpose: it only limits how far generation
+     * can go, and model_generate already reports that against its own
+     * total_cap guard (whose test depends on this remaining allowed).
+     *
+     * Unreachable from today's callers -- every one passes model_max_ctx() --
+     * so this is latent rather than live. It is guarded now because M4
+     * replaces kv.c's body with a paged block table, and "the cache's
+     * capacity equals the model's" is precisely the convention that stops
+     * holding then. Sanitizers cannot find it first: ASan only instruments
+     * paths a test executes, and no test built an oversized cache until the
+     * one that accompanies this check. */
+    if (kv_max_ctx(kv) > m->max_ctx) {
+        fatal("model: forward_position -- kv max_ctx %u exceeds model max_ctx "
+              "%u (s_scores is sized from the model, so a wider cache would "
+              "overrun it)",
+              kv_max_ctx(kv), m->max_ctx);
+    }
 
     if (dump_dir != NULL) {
         ensure_dir(dump_dir);
