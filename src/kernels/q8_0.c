@@ -62,6 +62,96 @@ void dequant_row_q8_0(const void* row, u64 n, f32* out) {
     }
 }
 
+/* Little-endian u16 write, mirroring read_u16_le above. */
+static void write_u16_le(u8* p, u16 v) {
+    p[0] = (u8)(v & 0xFFu);
+    p[1] = (u8)(v >> 8);
+}
+
+void quantize_row_q8_0(const f32* x, u64 n, void* out) {
+    if (n % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
+        fatal("kernels: quantize_row_q8_0 -- n=%llu is not a multiple of %u",
+              (unsigned long long)n, KERNELS_Q8_0_BLOCK_ELEMS);
+    }
+    u8* base = (u8*)out;
+    u64 num_blocks = n / KERNELS_Q8_0_BLOCK_ELEMS;
+
+    for (u64 b = 0; b < num_blocks; b++) {
+        const f32* xb = x + b * KERNELS_Q8_0_BLOCK_ELEMS;
+        u8*        blk = base + b * KERNELS_Q8_0_BLOCK_BYTES;
+
+        f32 amax = 0.0f;
+        for (u64 i = 0; i < KERNELS_Q8_0_BLOCK_ELEMS; i++) {
+            f32 a = fabsf(xb[i]);
+            if (a > amax) {
+                amax = a;
+            }
+        }
+
+        /* Transcribed from the probed ggml quantize_row_q8_0_ref
+         * (m3-probe-notes.md P-A). Three details are load-bearing and each
+         * is a silent wrongness if changed:
+         *   - `id` is computed from the f32 `d`, BEFORE d is narrowed to
+         *     f16. Quantizing with the narrowed value instead shifts quants
+         *     by +-1 near block boundaries.
+         *   - the zero guard is `d ? 1/d : 0`, so an all-zero block yields
+         *     all-zero quants rather than 0/0 = NaN.
+         *   - rounding is roundf (half away from zero), NOT rint/nearbyint
+         *     (half to even). This differs from f32_to_f16's tie rule on
+         *     purpose: that one mirrors F16C hardware, this one mirrors
+         *     ggml's quantizer, and they are separate contracts. */
+        const f32 d = amax / 127.0f;
+        const f32 id = (d != 0.0f) ? (1.0f / d) : 0.0f;
+
+        write_u16_le(blk, f32_to_f16(d));
+        u8* qs = blk + 2;
+        for (u64 i = 0; i < KERNELS_Q8_0_BLOCK_ELEMS; i++) {
+            f32 v = xb[i] * id;
+            qs[i] = (u8)(i8)roundf(v);
+        }
+    }
+}
+
+f32 vec_dot_q8_0_q8_0(const void* wrow, const void* arow, u64 n) {
+    if (n % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q8_0_q8_0 -- n=%llu is not a multiple of %u",
+              (unsigned long long)n, KERNELS_Q8_0_BLOCK_ELEMS);
+    }
+    const u8* wbase = (const u8*)wrow;
+    const u8* abase = (const u8*)arow;
+    u64 num_blocks = n / KERNELS_Q8_0_BLOCK_ELEMS;
+    f32 sum = 0.0f;
+
+    for (u64 b = 0; b < num_blocks; b++) {
+        const u8* wblk = wbase + b * KERNELS_Q8_0_BLOCK_BYTES;
+        const u8* ablk = abase + b * KERNELS_Q8_0_BLOCK_BYTES;
+        f32 dw = block_scale_or_fatal(wblk, b, "vec_dot_q8_0_q8_0 (weight)");
+        f32 da = block_scale_or_fatal(ablk, b, "vec_dot_q8_0_q8_0 (activation)");
+        const u8* wq = wblk + 2;
+        const u8* aq = ablk + 2;
+
+        /* THE INTEGER CORE. Products accumulate in i32 with NO rounding
+         * whatsoever: each |q| <= 127, so a product fits in 15 bits and 32
+         * of them cannot exceed 32*127*127 = 516,128 -- three orders of
+         * magnitude inside i32. This exactness is what the K3 gate depends
+         * on: a SIMD twin computing the same integer sum must agree with
+         * this bit for bit, which no f32 accumulation could promise.
+         *
+         * The f32 grouping then matches ggml's scalar reference exactly:
+         *   sumf += sumi * (d_w * d_a)
+         * The two scales multiply EACH OTHER first, and only then multiply
+         * the integer sum. Folding them in any other order (e.g.
+         * (sumi*d_w)*d_a) is a different f32 rounding and would put stoke
+         * back outside the oracle's numeric class for no gain. */
+        i32 sumi = 0;
+        for (u64 i = 0; i < KERNELS_Q8_0_BLOCK_ELEMS; i++) {
+            sumi += (i32)(i8)wq[i] * (i32)(i8)aq[i];
+        }
+        sum += (f32)sumi * (dw * da);
+    }
+    return sum;
+}
+
 f32 vec_dot_q8_0_f32(const void* row, const f32* x, u64 n) {
     if (n % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q8_0_f32 -- n=%llu is not a multiple of "

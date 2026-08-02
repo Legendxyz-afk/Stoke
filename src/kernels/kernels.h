@@ -55,6 +55,22 @@
  * the first place. */
 f32 f16_to_f32(u16 h);
 
+/* f32 -> f16, round-to-nearest-EVEN, with subnormal/overflow/NaN handling.
+ *
+ * The inverse direction genuinely rounds (23 mantissa bits -> 10), so unlike
+ * f16_to_f32 this is lossy by construction. Ties break to even to match IEEE
+ * 754's default and hardware F16C (`_mm256_cvtps_ph` with
+ * _MM_FROUND_TO_NEAREST_INT), which K3 will substitute for this function --
+ * a different tie rule here would make the scalar and SIMD paths disagree on
+ * precisely the values that land on a tie.
+ *
+ * Overflow saturates to +-inf and underflow to a signed zero rather than
+ * fataling: this is a bare bit-level converter, exactly as f16_to_f32 is,
+ * and the "a sane GGUF cannot contain inf/nan" policy is layered in at the
+ * kernels that read stored scales. A NaN never degrades into an inf -- a
+ * payload that would truncate to zero is forced to 1. */
+u16 f32_to_f16(f32 f);
+
 /* ---- Q8_0 ----
  * Block layout (probed b10037 ggml-common.h, m2-probe-notes.md P3.1):
  * 34 bytes = { f16 d; i8 qs[32] }, value_i = f16_to_f32(d) * qs[i]. A row
@@ -81,6 +97,41 @@ void dequant_row_q8_0(const void* row, u64 n, f32* out);
  * inf/nan. */
 f32 vec_dot_q8_0_f32(const void* row, const f32* x, u64 n);
 
+/* ---- M3 integer core ----
+ *
+ * LOCKED decision #2 of the M3-M7 forward note: when weights are quantized,
+ * activations are quantized to Q8_0 blocks FIRST and both the scalar and
+ * SIMD kernels run the same i32 integer core. Two things follow, and both
+ * are the reason this exists rather than being a micro-optimization:
+ *
+ *   - Scalar<->SIMD becomes EXACTLY comparable. The K3 gate demands a
+ *     bit-identical diff over 1e4 random tensors per kernel, which an f32
+ *     accumulation can never promise across two different summation orders,
+ *     and an integer accumulation gives for free.
+ *   - stoke moves INTO llama.cpp's numeric class. M2's oracle survey found
+ *     19 of 50 prompts diverging, 18 of 18 classifiable ones a clean top-2
+ *     swap at 0.001-0.204 nat gaps -- the diagnosis being that the oracle
+ *     quantizes activations to Q8 for integer dots while M2's stoke was pure
+ *     f32. The deferred oracle parity gate re-runs on THIS path, and if the
+ *     diagnosis is right that divergence count should collapse.
+ */
+
+/* Quantizes a dense f32 vector into n/32 consecutive Q8_0 blocks written to
+ * `out` (caller-owned, n/32 * KERNELS_Q8_0_BLOCK_BYTES bytes). Transcribed
+ * from the probed ggml quantize_row_q8_0_ref: per block, d = absmax/127
+ * stored as f16, quants = roundf(x * (1/d)) with 1/d taken from the f32 d
+ * BEFORE narrowing, and an all-zero block yielding all-zero quants rather
+ * than NaN. Fatal if n is not a multiple of 32. */
+void quantize_row_q8_0(const f32* x, u64 n, void* out);
+
+/* Dot product of a Q8_0 weight row against a Q8_0-quantized activation row.
+ * Per block the i8 x i8 products accumulate in i32 with no rounding at all
+ * (32 * 127 * 127 = 516,128, far inside i32), then the block contributes
+ * `(f32)sumi * (d_w * d_a)` -- the two scales multiplying each other FIRST,
+ * matching ggml's scalar reference grouping exactly. Fatal if n is not a
+ * multiple of 32, or if either side's block scale is inf/nan. */
+f32 vec_dot_q8_0_q8_0(const void* wrow, const void* arow, u64 n);
+
 /* ---- dense f32 ---- */
 
 /* a . b = sum(a[i]*b[i]), f32 accumulate, sequential, fixed left-to-right
@@ -99,8 +150,22 @@ f32 vec_dot_f32(const f32* a, const f32* b, u64 n);
  * w->type is the ONLY dispatch point on quant type at M2 (§5): F32 rows
  * go through vec_dot_f32, Q8_0 rows through vec_dot_q8_0_f32; any other
  * type is a fatal naming the tensor (both ids from gguf.h's probed
- * GGUF_GGML_TYPE_* enum). */
-void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out);
+ * GGUF_GGML_TYPE_* enum).
+ *
+ * `aq_scratch` (M3) is a caller-owned buffer of
+ * (n_in/KERNELS_Q8_0_BLOCK_ELEMS)*KERNELS_Q8_0_BLOCK_BYTES bytes, used to
+ * hold the Q8_0-quantized activation. It is REQUIRED for a Q8_0 weight and
+ * ignored (may be NULL) for an F32 one. A Q8_0 weight with a NULL scratch is
+ * FATAL rather than a fallback to the f32-activation path: those are two
+ * different arithmetic classes, and silently reverting to M2 numerics on
+ * some call sites would be undetectable in the output and would invalidate
+ * the very parity measurement M3 exists to make.
+ *
+ * The activation is quantized ONCE per call, not once per row -- x is
+ * constant across rows, and re-quantizing per row would repeat the work
+ * 151,936 times on the logits matvec alone. */
+void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
+            void* aq_scratch);
 
 /* ---- normalization / positional / activation ---- */
 

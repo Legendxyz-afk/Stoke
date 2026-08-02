@@ -76,6 +76,13 @@ struct Model {
     f32* s_h;        /* [n_embd]              post-output_norm          */
     f32* s_xout;     /* [n_embd]              generate()'s x carry      */
     f32* s_logits;   /* [n_vocab]                                       */
+
+    /* M3 integer core: the Q8_0-quantized activation handed to matvec.
+     * Sized once at open for the LARGEST contraction length any projection
+     * uses (n_ff dominates, via ffn_down), so no matvec can outgrow it and
+     * the token loop still allocates nothing. */
+    u8* s_aq;
+    u64 s_aq_bytes;
 };
 
 /* ===========================================================================
@@ -315,6 +322,20 @@ Model* model_open(const char* path) {
     m->s_v = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
     m->s_attn_out = (f32*)xmalloc((size_t)n_head * head_dim * sizeof(f32));
     m->s_scores = (f32*)xmalloc((size_t)max_ctx * sizeof(f32));
+    /* Largest contraction length over every matvec in the forward pass:
+     * n_embd (Q/K/V, ffn_gate/up, logits), n_head*head_dim (attn_output),
+     * and n_ff (ffn_down). Taking the max rather than assuming which one
+     * wins keeps this correct for any config, including ones where n_ff is
+     * not the largest. */
+    {
+        u64 max_n_in = n_embd;
+        u64 attn_out_in = (u64)n_head * head_dim;
+        if (attn_out_in > max_n_in) max_n_in = attn_out_in;
+        if ((u64)n_ff > max_n_in) max_n_in = n_ff;
+        m->s_aq_bytes = (max_n_in / KERNELS_Q8_0_BLOCK_ELEMS)
+                        * KERNELS_Q8_0_BLOCK_BYTES;
+        m->s_aq = (u8*)xmalloc((size_t)m->s_aq_bytes);
+    }
     m->s_proj = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
     m->s_f = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
     m->s_gate = (f32*)xmalloc((size_t)n_ff * sizeof(f32));
@@ -336,6 +357,7 @@ void model_close(Model* m) {
     free(m->s_v);
     free(m->s_attn_out);
     free(m->s_scores);
+    free(m->s_aq);
     free(m->s_proj);
     free(m->s_f);
     free(m->s_gate);
@@ -514,11 +536,11 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
         rmsnorm(x, (const f32*)ly->attn_norm->data, m->n_embd, m->eps,
                 m->s_a);
         matvec(ly->attn_q, m->s_a, m->n_embd, m->s_q,
-               (u64)m->n_head * m->head_dim);
+               (u64)m->n_head * m->head_dim, m->s_aq);
         matvec(ly->attn_k, m->s_a, m->n_embd, m->s_k,
-               (u64)m->n_head_kv * m->head_dim);
+               (u64)m->n_head_kv * m->head_dim, m->s_aq);
         matvec(ly->attn_v, m->s_a, m->n_embd, m->s_v,
-               (u64)m->n_head_kv * m->head_dim);
+               (u64)m->n_head_kv * m->head_dim, m->s_aq);
 
         /* per head: rmsnorm(q_norm/k_norm) THEN rope_neox (P3.4: QK-norm
            BEFORE rope) */
@@ -568,16 +590,16 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
 
         /* attn_output matvec -> residual add */
         matvec(ly->attn_output, m->s_attn_out, (u64)m->n_head * m->head_dim,
-               m->s_proj, m->n_embd);
+               m->s_proj, m->n_embd, m->s_aq);
         for (u32 i = 0; i < m->n_embd; i++) x[i] += m->s_proj[i];
 
         /* rmsnorm(ffn_norm) -> SwiGLU -> ffn_down -> residual add */
         rmsnorm(x, (const f32*)ly->ffn_norm->data, m->n_embd, m->eps, m->s_f);
-        matvec(ly->ffn_gate, m->s_f, m->n_embd, m->s_gate, m->n_ff);
-        matvec(ly->ffn_up, m->s_f, m->n_embd, m->s_up, m->n_ff);
+        matvec(ly->ffn_gate, m->s_f, m->n_embd, m->s_gate, m->n_ff, m->s_aq);
+        matvec(ly->ffn_up, m->s_f, m->n_embd, m->s_up, m->n_ff, m->s_aq);
         swiglu(m->s_gate, m->s_up, m->n_ff, m->s_gate); /* in place: safe
             aliasing per kernels.h's swiglu contract */
-        matvec(ly->ffn_down, m->s_gate, m->n_ff, m->s_proj, m->n_embd);
+        matvec(ly->ffn_down, m->s_gate, m->n_ff, m->s_proj, m->n_embd, m->s_aq);
         for (u32 i = 0; i < m->n_embd; i++) x[i] += m->s_proj[i];
 
         if (dump_dir != NULL) {
@@ -596,7 +618,7 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
 void model_compute_logits(Model* m, const f32* x, f32* logits_out) {
     rmsnorm(x, (const f32*)m->output_norm->data, m->n_embd, m->eps, m->s_h);
     const GgufTensor* w = (m->output != NULL) ? m->output : m->tok_embd;
-    matvec(w, m->s_h, m->n_embd, logits_out, m->n_vocab);
+    matvec(w, m->s_h, m->n_embd, logits_out, m->n_vocab, m->s_aq);
 }
 
 /* ===========================================================================

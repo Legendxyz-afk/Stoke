@@ -198,11 +198,12 @@ typedef struct {
     f32*              y;
     u64               n_in;
     u64               n_out;
+    void*             aq;   /* M3 activation-quant scratch, owned by caller */
 } MatvecCtx;
 
 static void run_matvec(void* p) {
     MatvecCtx* c = (MatvecCtx*)p;
-    matvec(c->w, c->x, c->n_in, c->y, c->n_out);
+    matvec(c->w, c->x, c->n_in, c->y, c->n_out, c->aq);
 }
 
 typedef struct {
@@ -416,7 +417,14 @@ static void bench_proj(const GgufFile* f, const char* tensor_name,
     u64 n_in  = w->dims[0];
     u64 n_out = w->dims[1];
 
-    MatvecCtx c = { w, x_pool, y_pool, n_in, n_out };
+    /* The integer core quantizes the activation inside every matvec call, so
+     * that cost is measured here rather than hidden -- it is genuinely part
+     * of what a token pays. Allocated per projection because n_in varies and
+     * this is setup code, not a timed region. */
+    u64   aq_bytes = (n_in / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
+    void* aq = xmalloc((size_t)aq_bytes);
+
+    MatvecCtx c = { w, x_pool, y_pool, n_in, n_out, aq };
     Timing    t = time_op(run_matvec, &c, reps_override);
 
     char shape[32];
@@ -425,6 +433,7 @@ static void bench_proj(const GgufFile* f, const char* tensor_name,
     /* Weight bytes dominate; the f32 operands are counted for honesty but
      * are three orders of magnitude smaller. */
     row(label, shape, w->nbytes + (n_in + n_out) * sizeof(f32), t);
+    free(aq);
 }
 
 void bench_ops(const char* model_path, u32 reps_override, int jsonl) {

@@ -67,7 +67,7 @@ static int kernels_test_child_main(int argc, char** argv) {
 
         f32 x[4] = {1.0f, 1.0f, 1.0f, 1.0f};
         f32 y[1];
-        matvec(&w, x, 4, y, 1);
+        matvec(&w, x, 4, y, 1, NULL);
     } else if (strcmp(s, "matvec_n_in_mismatch") == 0) {
         /* dims[0]=3 but the caller (wrongly) claims n_in=4 -- matvec must
          * fatal on the shape mismatch rather than trust the caller and
@@ -86,7 +86,29 @@ static int kernels_test_child_main(int argc, char** argv) {
 
         f32 x[4] = {1.0f, 1.0f, 1.0f, 1.0f};
         f32 y[2];
-        matvec(&w, x, 4, y, 2);
+        matvec(&w, x, 4, y, 2, NULL);
+    } else if (strcmp(s, "matvec_q8_0_null_scratch") == 0) {
+        /* A valid Q8_0 tensor in every respect EXCEPT that the caller passes
+         * no activation scratch. Must fatal rather than fall back. */
+        u8 blocks[34] = {0};
+        blocks[0] = 0x00u;
+        blocks[1] = 0x3Cu; /* d = 1.0 */
+        GgufTensor w;
+        memset(&w, 0, sizeof w);
+        w.name    = "fake.q8_0.weight";
+        w.type    = GGUF_GGML_TYPE_Q8_0;
+        w.n_dims  = 2;
+        w.dims[0] = 32;
+        w.dims[1] = 1;
+        w.data    = blocks;
+        w.nbytes  = sizeof blocks;
+
+        f32 x[32];
+        for (int i = 0; i < 32; i++) {
+            x[i] = 1.0f;
+        }
+        f32 y[1];
+        matvec(&w, x, 32, y, 1, NULL);
     } else if (strcmp(s, "dequant_row_q8_0_bad_n") == 0) {
         u8 block[34] = {0};
         f32 out[32];
@@ -331,7 +353,7 @@ TEST(matvec_f32_dispatch) {
 
     f32 x[3] = {1.0f, 2.0f, 3.0f};
     f32 y[2] = {0.0f, 0.0f};
-    matvec(&w, x, 3, y, 2);
+    matvec(&w, x, 3, y, 2, NULL);
 
     ASSERT_TRUE(y[0] == 14.0f); /* 1*1+2*2+3*3 */
     ASSERT_TRUE(y[1] == 32.0f); /* 4*1+5*2+6*3 */
@@ -355,10 +377,38 @@ TEST(matvec_q8_0_dispatch_two_rows) {
     f32 x[32];
     fill_x32(x);
     f32 y[2];
-    matvec(&w, x, 32, y, 2);
+    u8  aq[KERNELS_Q8_0_BLOCK_BYTES];
+    matvec(&w, x, 32, y, 2, aq);
 
-    ASSERT_TRUE(y[0] == -92.625f); /* same block+x as the standalone Q8_0 test */
-    ASSERT_TRUE(y[1] == 1056.0f);  /* d=2, qs=2 everywhere: 4*sum(x) = 4*264 */
+    /* ▶ THESE GOLDENS CHANGED AT M3, AND THE CHANGE IS THE POINT. Under M2
+     * this read -92.625 and 1056.0, computed with a DENSE f32 activation.
+     * The integer core quantizes x to Q8_0 first, so the arithmetic is now
+     * (i32 sum of i8 products) * (d_w * d_a) -- a different, deliberately
+     * lossy path that puts stoke in llama.cpp's numeric class.
+     *
+     * Independently derived, not read off this implementation: the same
+     * python transcription of ggml's quantizer that produced the golden in
+     * quantize_row_q8_0_matches_the_python_reference_byte_for_byte gives
+     * d_a = 0.1259765625 (f16 0x3008), and integer sums of -988 and +4192.
+     * Asserted EXACTLY -- the whole chain is integer accumulation followed
+     * by two f32 multiplies, so a step-matched transcript reproduces it bit
+     * for bit, exactly as this file's header requires for pure chains.
+     *
+     * The drift from M2 is small (-92.625 -> -93.349, 1056.0 -> 1056.1875),
+     * which is the expected size of activation-quantization error and is
+     * itself worth pinning: a LARGE drift here would mean a layout or
+     * scale-ordering bug rather than quantization. */
+    ASSERT_TRUE(y[0] == -93.3486328f);
+    ASSERT_TRUE(y[1] == 1056.1875f);
+}
+
+/* The no-silent-fallback contract. A Q8_0 weight with no activation scratch
+ * must FATAL, not quietly take the M2 f32 path -- two different arithmetic
+ * classes reachable from the same call would make the oracle-parity
+ * measurement meaningless and would be invisible in any output. */
+TEST(matvec_q8_0_without_activation_scratch_fatals) {
+    assert_scenario_fatals("matvec_q8_0_null_scratch",
+                           "no activation scratch");
 }
 
 TEST(matvec_unsupported_type_fatals) {
@@ -557,4 +607,280 @@ TEST(argmax_tie_first_index_wins) {
 TEST(argmax_single_element) {
     f32 logits[1] = {-3.5f};
     ASSERT_EQ_U32(argmax(logits, 1), 0u);
+}
+
+/* ===========================================================================
+ * M3 integer core: f32_to_f16, quantize_row_q8_0, vec_dot_q8_0_q8_0
+ * ===========================================================================
+ */
+
+/* EXHAUSTIVE, not sampled. f16 has only 65,536 bit patterns, so "widen then
+ * narrow returns the original" can be PROVEN over the entire type rather than
+ * spot-checked -- and it is the strongest available statement about
+ * f32_to_f16 on the values this project actually stores, since every scale it
+ * narrows was an f16 in a GGUF at some point.
+ *
+ * NaNs are excluded from the identity claim: their payload bits need not
+ * survive a round trip, only their NaN-ness, asserted separately below. */
+TEST(f16_roundtrip_is_identity_for_all_65536_bit_patterns) {
+    u32 checked = 0, mismatches = 0, first_bad = 0;
+    for (u32 h = 0; h < 65536u; h++) {
+        u32 exp = (h >> 10) & 0x1Fu;
+        u32 mant = h & 0x3FFu;
+        if (exp == 0x1Fu && mant != 0u) {
+            continue; /* NaN: checked separately */
+        }
+        f32 wide = f16_to_f32((u16)h);
+        u16 back = f32_to_f16(wide);
+        checked++;
+        if (back != (u16)h) {
+            if (mismatches == 0) {
+                first_bad = h;
+            }
+            mismatches++;
+        }
+    }
+    /* 65536 total - 2046 NaN patterns = 63490. NaN is exponent==0x1F with a
+     * NONZERO mantissa, so it is 1023 mantissa values (1..1023, not 1024 --
+     * mantissa 0 is infinity) times 2 signs. Deriving it here rather than
+     * pasting a number is the point: the first version of this assertion
+     * said 64512 from a miscount, and it failed on the COUNT while the
+     * round-trip itself had zero mismatches. */
+    ASSERT_EQ_U32(checked, 65536u - 2u * 1023u);
+    if (mismatches != 0) {
+        printf("  first mismatch at h=0x%04X\n", first_bad);
+    }
+    ASSERT_EQ_U32(mismatches, 0u);
+}
+
+TEST(f32_to_f16_nan_stays_nan_and_never_becomes_inf) {
+    /* A payload living entirely in the low 13 bits truncates to zero, which
+     * would turn a NaN into an INF -- the one silent corruption this
+     * conversion can produce. The implementation forces such a payload to 1. */
+    u32 bits = 0x7F800001u; /* NaN with the smallest possible payload */
+    f32 nan_val;
+    memcpy(&nan_val, &bits, sizeof nan_val);
+    u16 h = f32_to_f16(nan_val);
+    ASSERT_TRUE(((h >> 10) & 0x1Fu) == 0x1Fu); /* exponent all ones */
+    ASSERT_TRUE((h & 0x3FFu) != 0u);           /* mantissa nonzero => NaN */
+}
+
+TEST(f32_to_f16_overflow_and_underflow_saturate) {
+    ASSERT_EQ_U32((u32)f32_to_f16(1.0e30f), 0x7C00u);   /* +inf */
+    ASSERT_EQ_U32((u32)f32_to_f16(-1.0e30f), 0xFC00u);  /* -inf */
+    ASSERT_EQ_U32((u32)f32_to_f16(1.0e-30f), 0x0000u);  /* +0 */
+    ASSERT_EQ_U32((u32)f32_to_f16(-1.0e-30f), 0x8000u); /* -0, sign kept */
+    /* 65504 is the largest finite f16; 65520 is the tie that rounds UP to
+     * inf under round-to-nearest-even -- correct IEEE behaviour, and the
+     * boundary a naive clamp-to-max would get wrong. */
+    ASSERT_EQ_U32((u32)f32_to_f16(65504.0f), 0x7BFFu);
+    ASSERT_EQ_U32((u32)f32_to_f16(65520.0f), 0x7C00u);
+}
+
+TEST(f32_to_f16_ties_go_to_even_not_away_from_zero) {
+    /* At f16 exponent 2^11 the representable step is 2. 2049 sits exactly
+     * halfway between 2048 and 2050: round-half-even picks 2048 (even
+     * mantissa), round-half-away would pick 2050. 2051 is halfway between
+     * 2050 and 2052 and rounds to 2052, also even. */
+    ASSERT_TRUE(f16_to_f32(f32_to_f16(2050.0f)) == 2050.0f);
+    ASSERT_TRUE(f16_to_f32(f32_to_f16(2049.0f)) == 2048.0f);
+    ASSERT_TRUE(f16_to_f32(f32_to_f16(2051.0f)) == 2052.0f);
+}
+
+TEST(f32_to_f16_subnormal_range_is_representable) {
+    /* 2^-24 is the smallest positive f16 subnormal (bit pattern 0x0001), and
+     * 2^-25 is exactly half of it -- a tie that rounds to even, i.e. to
+     * ZERO. Both boundaries matter: the first proves the subnormal path
+     * exists at all, the second proves it rounds rather than truncates. */
+    ASSERT_EQ_U32((u32)f32_to_f16(5.9604645e-8f), 0x0001u);  /* 2^-24 */
+    ASSERT_EQ_U32((u32)f32_to_f16(2.9802322e-8f), 0x0000u);  /* 2^-25, tie */
+    ASSERT_EQ_U32((u32)f32_to_f16(6.1035156e-5f), 0x0400u);  /* smallest normal */
+}
+
+/* Quantize then dequantize must reproduce the block's largest-magnitude
+ * element closely: that element maps to +-127, the extreme the scale is
+ * defined by. */
+TEST(quantize_row_q8_0_preserves_the_block_absmax) {
+    f32 x[32];
+    for (int i = 0; i < 32; i++) {
+        x[i] = (f32)(i - 16) * 0.25f;
+    }
+    x[7] = -8.0f; /* the absmax */
+    u8 blk[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(x, 32, blk);
+
+    f32 out[32];
+    dequant_row_q8_0(blk, 32, out);
+    ASSERT_TRUE(fabsf(out[7] - (-8.0f)) < 0.05f);
+    /* its quant is exactly -127, which is the definition of the scale */
+    ASSERT_TRUE((i8)blk[2 + 7] == -127);
+}
+
+TEST(quantize_row_q8_0_all_zero_block_is_zero_not_nan) {
+    /* The `d ? 1/d : 0` guard. Without it every quant is 0/0 = NaN, and an
+     * all-zero activation block is entirely ordinary in a real forward pass. */
+    f32 x[32];
+    for (int i = 0; i < 32; i++) {
+        x[i] = 0.0f;
+    }
+    u8 blk[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(x, 32, blk);
+    ASSERT_EQ_U32((u32)blk[0], 0u);
+    ASSERT_EQ_U32((u32)blk[1], 0u);
+    for (int i = 0; i < 32; i++) {
+        ASSERT_TRUE((i8)blk[2 + i] == 0);
+    }
+    f32 out[32];
+    dequant_row_q8_0(blk, 32, out);
+    for (int i = 0; i < 32; i++) {
+        ASSERT_TRUE(out[i] == 0.0f);
+    }
+}
+
+TEST(quantize_row_q8_0_rounds_half_away_from_zero_not_to_even) {
+    /* ggml uses roundf, so a value landing exactly on .5 goes AWAY from zero.
+     * An absmax of 127 fixes d = 1.0 exactly, making the intended quants
+     * readable directly. This deliberately DIFFERS from f32_to_f16's tie
+     * rule -- two separate contracts, one mirroring ggml's quantizer and one
+     * mirroring F16C hardware. */
+    f32 x[32];
+    for (int i = 0; i < 32; i++) {
+        x[i] = 0.0f;
+    }
+    x[0] = 127.0f; /* fixes d = 1.0 */
+    x[1] = 0.5f;
+    x[2] = 1.5f;
+    x[3] = -0.5f;
+    u8 blk[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(x, 32, blk);
+    ASSERT_TRUE((i8)blk[2 + 0] == 127);
+    ASSERT_TRUE((i8)blk[2 + 1] == 1);  /* half AWAY from zero, not to even */
+    ASSERT_TRUE((i8)blk[2 + 2] == 2);
+    ASSERT_TRUE((i8)blk[2 + 3] == -1); /* and away on the negative side */
+}
+
+/* The integer core against the f32 kernel it replaces. They are NOT expected
+ * to agree bit for bit -- quantizing the activation loses information, which
+ * is the entire point -- but on well-conditioned data they must agree
+ * closely. A gross disagreement is a layout or sign error, not quant noise. */
+TEST(vec_dot_q8_0_q8_0_tracks_the_f32_kernel_within_quant_error) {
+    enum { N = 256 };
+    f32 w[N], a[N];
+    for (int i = 0; i < N; i++) {
+        w[i] = sinf((f32)i * 0.37f) * 2.0f;
+        a[i] = cosf((f32)i * 0.11f) * 1.5f;
+    }
+    u8 wq[(N / 32) * KERNELS_Q8_0_BLOCK_BYTES];
+    u8 aq[(N / 32) * KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(w, N, wq);
+    quantize_row_q8_0(a, N, aq);
+
+    f32 ref = vec_dot_q8_0_f32(wq, a, N); /* quantized W, dense activation */
+    f32 got = vec_dot_q8_0_q8_0(wq, aq, N);
+    f32 denom = fabsf(ref) > 1.0f ? fabsf(ref) : 1.0f;
+    ASSERT_TRUE(fabsf(got - ref) / denom < 0.02f);
+}
+
+TEST(vec_dot_q8_0_q8_0_is_exact_on_a_hand_computable_case) {
+    /* Both sides quantize to a scale of exactly 1.0 (absmax 127), so every
+     * quant is its own integer and the dot is computable by hand:
+     * 127*127 + 1*2 = 16131, scaled by 1.0*1.0. Any layout, sign, or
+     * scale-ordering error moves this. */
+    f32 w[32], a[32];
+    for (int i = 0; i < 32; i++) {
+        w[i] = 0.0f;
+        a[i] = 0.0f;
+    }
+    w[0] = 127.0f; a[0] = 127.0f;
+    w[1] = 1.0f;   a[1] = 2.0f;
+    u8 wq[KERNELS_Q8_0_BLOCK_BYTES], aq[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(w, 32, wq);
+    quantize_row_q8_0(a, 32, aq);
+    ASSERT_TRUE(fabsf(vec_dot_q8_0_q8_0(wq, aq, 32) - 16131.0f) < 0.5f);
+}
+
+TEST(vec_dot_q8_0_q8_0_negative_products_accumulate_with_sign) {
+    /* An unsigned-vs-signed byte confusion -- the exact bug dpbusd's sign
+     * trick exists to avoid at K3 -- shows up here as a wrong sign or a wild
+     * magnitude: -127*127 = -16129, not +16129 and not 129*127. */
+    f32 w[32], a[32];
+    for (int i = 0; i < 32; i++) {
+        w[i] = 0.0f;
+        a[i] = 0.0f;
+    }
+    w[0] = -127.0f; a[0] = 127.0f;
+    u8 wq[KERNELS_Q8_0_BLOCK_BYTES], aq[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(w, 32, wq);
+    quantize_row_q8_0(a, 32, aq);
+    ASSERT_TRUE(fabsf(vec_dot_q8_0_q8_0(wq, aq, 32) - (-16129.0f)) < 0.5f);
+}
+
+/* The i32 accumulator cannot overflow BY CONSTRUCTION, and this pins the
+ * bound the kernel's comment claims: 32 elements at the extreme +-127 on
+ * both sides is 32*127*127 = 516,128, three orders of magnitude inside i32.
+ * A future widening of the block size would trip this before it trips a
+ * silent wraparound in production. */
+TEST(vec_dot_q8_0_q8_0_saturated_block_stays_far_inside_i32) {
+    f32 w[32], a[32];
+    for (int i = 0; i < 32; i++) {
+        w[i] = 127.0f;
+        a[i] = 127.0f;
+    }
+    u8 wq[KERNELS_Q8_0_BLOCK_BYTES], aq[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(w, 32, wq);
+    quantize_row_q8_0(a, 32, aq);
+    f32 got = vec_dot_q8_0_q8_0(wq, aq, 32);
+    ASSERT_TRUE(fabsf(got - 516128.0f) < 2.0f);
+    ASSERT_TRUE(516128.0 < 2147483647.0 / 1000.0);
+}
+
+/* ▶ THE CROSS-IMPLEMENTATION CHECK, and the reason quant work in this project
+ * is python-first (M3 forward note, K4: "python dequant == C scalar dequant,
+ * byte-exact, on real rows, BEFORE the SIMD twin exists").
+ *
+ * The expected bytes below were produced by an INDEPENDENT python
+ * transcription of ggml's quantize_row_q8_0_ref, written from the probed
+ * source rather than from q8_0.c. That python reference was itself validated
+ * against llama.cpp's own output: dequantizing a real Q8_0 row from the
+ * Qwen3 GGUF and re-quantizing it reproduced the original bytes EXACTLY on
+ * 12 of 12 rows across blk.0.attn_q, blk.0.ffn_down, blk.17.attn_v and
+ * blk.35.ffn_up. So this golden traces back to llama.cpp's quantizer, not to
+ * our own reasoning about it.
+ *
+ * The input is (i-16)/8.0, every value exactly representable in binary, so
+ * C and python agree bit-for-bit on the input itself and any disagreement in
+ * the output is genuinely the quantizer.
+ *
+ * absmax is 2.0 (from i=0), so d = 2/127 and the reciprocal is exactly 63.5 --
+ * which puts x=+-1.0 precisely on +-63.5, a rounding boundary. */
+TEST(quantize_row_q8_0_matches_the_python_reference_byte_for_byte) {
+    f32 x[32];
+    for (int i = 0; i < 32; i++) {
+        x[i] = (f32)(i - 16) / 8.0f;
+    }
+    u8 blk[KERNELS_Q8_0_BLOCK_BYTES];
+    quantize_row_q8_0(x, 32, blk);
+
+    /* f16 scale, little-endian: 0x2408 == 2.0/127 narrowed */
+    ASSERT_EQ_U32((u32)blk[0], 0x08u);
+    ASSERT_EQ_U32((u32)blk[1], 0x24u);
+
+    static const i8 want[32] = {
+        -127, -119, -111, -103, -95, -87, -79, -71,
+        -64,  -56,  -48,  -40,  -32, -24, -16,  -8,
+          0,    8,   16,   24,    32,  40,  48,  56,
+         64,   71,   79,   87,    95, 103, 111, 119
+    };
+    int bad = -1;
+    for (int i = 0; i < 32; i++) {
+        if ((i8)blk[2 + i] != want[i]) {
+            bad = i;
+            break;
+        }
+    }
+    if (bad >= 0) {
+        printf("  first mismatch at quant %d: got %d want %d\n", bad,
+               (int)(i8)blk[2 + bad], (int)want[bad]);
+    }
+    ASSERT_TRUE(bad < 0);
 }

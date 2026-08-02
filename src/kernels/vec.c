@@ -14,7 +14,8 @@ f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
     return sum;
 }
 
-void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out) {
+void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
+            void* aq_scratch) {
     if (w->n_dims != 2) {
         fatal("kernels: matvec -- tensor '%s' has n_dims=%u, want 2 -- "
               "matvec only supports 2D weight matrices",
@@ -47,16 +48,35 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out) {
             y[r] = vec_dot_f32(row, x, n_in);
         }
     } else if (w->type == GGUF_GGML_TYPE_Q8_0) {
-        /* n_in%KERNELS_Q8_0_BLOCK_ELEMS is NOT re-checked here:
-         * vec_dot_q8_0_f32 enforces it on the very first row before any
-         * row-stride arithmetic (below) is ever used to address memory,
-         * so duplicating the check here would only be able to fire after
-         * that one already did. */
+        /* n_in%KERNELS_Q8_0_BLOCK_ELEMS is NOT re-checked here: the dot
+         * kernels enforce it on the very first row before any row-stride
+         * arithmetic (below) is ever used to address memory, so duplicating
+         * the check here could only fire after that one already did. */
         u64 row_bytes =
             (n_in / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
+
+        if (aq_scratch == NULL) {
+            /* NO SILENT FALLBACK TO THE f32 PATH. The two paths are
+             * different arithmetic classes -- that difference is precisely
+             * what M3 exists to change and what the deferred oracle gate
+             * measures -- so a missing scratch buffer must be a loud
+             * programming error, never a quiet reversion to M2 numerics on
+             * some call sites and not others. */
+            fatal("kernels: matvec -- tensor '%s' is Q8_0 but no activation "
+                  "scratch was supplied; the M3 integer core requires a "
+                  "caller-owned buffer of (n_in/%u)*%u = %llu bytes",
+                  w->name, KERNELS_Q8_0_BLOCK_ELEMS, KERNELS_Q8_0_BLOCK_BYTES,
+                  (unsigned long long)row_bytes);
+        }
+
+        /* Quantize the activation ONCE for the whole matrix, not once per
+         * row: x does not change across rows, and re-quantizing it n_out
+         * times would cost 151,936 redundant passes on the logits matvec
+         * alone. */
+        quantize_row_q8_0(x, n_in, aq_scratch);
         for (u64 r = 0; r < n_out; r++) {
             const void* row = base + r * row_bytes;
-            y[r] = vec_dot_q8_0_f32(row, x, n_in);
+            y[r] = vec_dot_q8_0_q8_0(row, aq_scratch, n_in);
         }
     } else {
         fatal("kernels: matvec -- tensor '%s' has unsupported ggml type "
