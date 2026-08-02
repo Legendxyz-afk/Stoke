@@ -14,6 +14,10 @@ engine whose architecture is concurrent-first — paged KV + continuous
 batching + a real scheduler for the bandwidth-bound consumer hardware
 vLLM abandons and llama.cpp/Ollama serve single-user. Library-first:
 `libstoke.a` + `stoke.h`; the OpenAI-compatible server is a thin frontend.
+The concurrency is FOR agents (Fable 08-02): on a consumer box N=8/16 is
+one user's swarms, tool chains, and fan-outs (AySen `local()` at
+Phase 3), not eight humans — so shared prefixes, bursty arrivals, and
+cheap cancellation are architecture, not server QoL.
 
 **Phase 1 is done when** (spec "Phase-1 goal", measured on the reference
 box): tokenizer + greedy parity proven against llama.cpp; S2 aggregate
@@ -66,7 +70,7 @@ benchmark report.
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
 | **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan; model.c kv-cap guard (Fable 08-02) |
 | M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
-| M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak |
+| M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02) |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
 | M7 | Harden + launch-ready | queued | Llama-3.2 parity incl. long-ctx; unsloth-file run; 24h soak; reproducible report; Kabir sign-offs |
 
@@ -214,6 +218,15 @@ at any batch size; this is what keeps M5 debuggable); full-reservation
 admission until preemption exists; the 11 sim invariants asserted after
 EVERY op; Q8-KV is property-tested + divergence-counted, never
 token-parity-gated (default ON/OFF is Kabir's call at M5).
+**Fable 2026-08-02 design constraints (Kabir-approved; bind the M4
+design note when it is written):** (1) the block table keeps the pool
+size **runtime-variable capable** — no static-pool assumption baked into
+invariants or allocation — so Phase-2 memory-elastic serving (shrink and
+give blocks BACK under desktop RAM pressure, the 3× failure mode M2's
+ops history measured live) stays a feature, not a rewrite; (2)
+**sequence teardown at any lifecycle point is a first-class op the sim
+exercises** (all blocks freed, refcounts consistent) — it is the
+foundation M5's cancellation invariant stands on.
 
 **M5 — continuous batching (THE product gate).** Forward note §M5: the
 locked scheduler (WAITING→PREFILLING→RUNNING→FINISHED; ≤1 active prefill;
@@ -227,6 +240,17 @@ the scheduler was never the problem). Soak uses the detached-runner ops
 lesson. If llamacpp-tuned parity is cleared but the 16.8@16
 inversion-derived bar is not: that is a results-vs-physics memo to Kabir,
 not a grind.
+**Fable 2026-08-02 additions (Kabir-approved; tightenings):** the trace
+catalogue gains an **AGENTIC trace** — bursty arrivals, a shared
+1–2k-token system prefix, short decodes, 10–20% mid-generation aborts —
+because on a consumer box N=8/16 is agent swarms, not humans; and a
+**CANCELLATION-SAFETY invariant** joins the asserted set — abort in ANY
+scheduler state frees every block, refcounts stay consistent, and the
+remaining schedule does not stall (M6 needs this exact path for client
+disconnects — find its bugs here in the sim, not there). Also RECORD,
+measured not gated: **p95 request-completion latency** under the mixed
+trace — the agent-shaped number the human-shaped ITL bar does not
+capture.
 
 **M6 — freeze + server.** Forward note §M6: error-handling mechanism is
 DECIDED (load-time trap via thread-local jmp_buf in the `fatal()` choke
@@ -299,8 +323,14 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 ## Beyond Phase 1 (context, not tasks)
 
 Phase 1.5: CUDA (`.cu` behind `extern "C"`, onto the proven scheduler) +
-ARM NEON — planning doc is an M7 deliverable. Phase 2: NPU /
-heterogeneous execution (needs future hardware). Phase 3: the runtime —
+ARM NEON — planning doc is an M7 deliverable. Phase 2 (RE-ORDERED,
+Fable 08-02 Kabir-approved — supersedes the NPU-first line here and in
+`../MEMORY.md`'s rationale): **the BRIDGE LAYER, the Ollama half of the
+gap** — model alias registry + `stoke pull`, idle load/unload under an
+LRU residency budget, per-model chat templates, `/metrics` (M5's driver
+already computes the numbers), memory-elastic serving on M4's
+variable-capable pool; NPU / heterogeneous execution moves BEHIND it
+(hardware-gated anyway). Phase 3: the runtime —
 router fold-in + AySen `local()` client in-process. Phase 4 (dream):
 AS-core control plane; open-core company. Full rationale: `../MEMORY.md`.
 
