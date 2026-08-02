@@ -1,6 +1,8 @@
 # stoke — Phase 1 roadmap (the operational map)
 
-*Updated 2026-08-02, M2 CLOSED (tag `m2`) — M3 is now. This is the FIRST document a working
+*Updated 2026-08-02, M2 CLOSED (tag `m2`) — M3 is now. Amended same day
+by a Kabir-launched Fable strategic review (additions marked "Fable
+2026-08-02"; all tightenings, no gate loosened). This is the FIRST document a working
 session reads. It is a map, not the territory: every milestone's binding
 detail lives in the linked spec/plan/design-note sections, and on any
 conflict the linked document wins. Master record + history:
@@ -62,7 +64,7 @@ benchmark report.
 | M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
-| **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan |
+| **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan; model.c kv-cap guard (Fable 08-02) |
 | M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
@@ -174,6 +176,37 @@ K-quant layouts python-verified before C; work-stealing 64-row chunks
 (P/E-proof); miss-the-bar attribution ladder runs on the mandated
 `stoke bench --ops` microbench.
 
+**Fable 2026-08-02 — three M3 amendments (strategic review; all
+tightenings):**
+(1) **Entry chore, and M3 does not close without it: the `model.c`
+kv-cap guard.** Found by inspection 2026-07-31: `model_forward_position`
+(`src/model.c:464` as of tag `m2`) validates the Kv against the model on
+`n_layer`/`n_head_kv`/`head_dim` but NOT `max_ctx`, while `pos` is
+bounded by the CACHE's cap and `s_scores` is sized from the MODEL's — a
+Kv opened larger than the model's cap lets the attention loop write past
+`s_scores` into adjacent scratch: silent wrong tokens, not a crash. Not
+reachable today (every call site passes `model_max_ctx()`), but M4's
+paged KV dismantles exactly that convention, and ASan cannot catch it
+until a test exercises it. Fix = add the `max_ctx` clause to the shape
+check + a regression test that opens an oversized Kv and forwards past
+the model cap (ASan then guards it permanently). Unblocked since tag
+`m2` lifted the binary freeze; land it before K2 changes `model.c`.
+(2) **K0 probe findings amend the forward note's §M3 traps (2026-08-02
+probes, ledger):** the wrong-spelling `_mm256_dpbusd_epi32` COMPILES AND
+RUNS on Windows gcc 15.2 — the promised compile error does not exist, so
+K3 guards by ggml-style `#if defined(__AVXVNNI__)` discipline + a review
+grep, not by trusting rejection; WSL is gcc 13.3 and its leg is
+UNPROBED — run the P-B WSL probe before any intrinsic is written.
+AVX-VNNI-INT8 = 0 on this box, so the dpbusd sign trick is mandatory
+(measured; do not re-ask in K3).
+(3) **Sequencing pin:** the aligner fix lands BEFORE the K2 oracle run
+(4/50 prompts fatal the aligner — the fix is what makes the run
+readable), and K2's 50-prompt gate runs on the single-threaded integer
+core, before the pool (K5) exists, so the arithmetic-class question is
+answered in isolation; K6 re-passes both files with the pool on.
+Playbook §6's K2 text predates the 07-28 inheritance and omits the
+aligner; where they differ, this section + the ledger govern.
+
 **M4 — paged KV + static batch.** Forward note §M4: block=16; `kv_view`
 body swap only (M2 froze the accessor); **batch-composition independence
 by construction** (seqs-inner/weights-outer — same seq ⇒ token-identical
@@ -212,6 +245,11 @@ second pre-tokenizer regex entry, oracle-gated like M1; header-format
 template #2); unsloth-file `stoke info` diff then parity; 24h detached
 soak with RSS slope watch; re-run ALL baselines at current dated versions
 before the README table; name-collision memo to Kabir BEFORE README work.
+Also at long-ctx parity (Fable 08-02): stoke's `rope_neox` accumulates
+`theta *= theta_scale` (llama.cpp-matching) while `ref_forward.py`
+computes per-k powers directly — same math, ~1e-9 rounding difference
+that GROWS WITH POSITION (logged 2026-07-31); if long-context parity
+wobbles, check this first.
 
 **Cross-cutting (every milestone):** forward note's closing section —
 16GB RAM ceilings (concurrency benching stays on Q4_K_M), every gate
@@ -223,10 +261,13 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 ## Session protocol (every session, unchanged M2→M7)
 
 1. Model gate: session model must be **Opus, at or above the owner line**
-   in memory `engine-project.md` (currently Opus 5). Opened below it (the
-   saved default has drifted to Fable before)? STOP — run
-   `/model claude-opus-5`, then start over from step 2. No stoke work on
-   a mismatched model without Kabir's explicit in-session override.
+   in memory `engine-project.md` (currently Opus 5). Opened on anything
+   else — below the line, OR on Fable because the saved default drifted
+   there (it did on 2026-08-02, when Kabir summoned Fable and the CLI
+   saved it as the new default)? STOP unless Kabir deliberately opened
+   this model: run `/model claude-opus-5`, then start over from step 2.
+   A deliberate Fable session does manager-tier state work and rulings,
+   not milestone execution.
 2. Read: this file's map → ledger NEXT-SESSION block
    (`.superpowers/sdd/progress.md`) → the current milestone's design note
    → the session playbook
@@ -262,3 +303,13 @@ ARM NEON — planning doc is an M7 deliverable. Phase 2: NPU /
 heterogeneous execution (needs future hardware). Phase 3: the runtime —
 router fold-in + AySen `local()` client in-process. Phase 4 (dream):
 AS-core control plane; open-core company. Full rationale: `../MEMORY.md`.
+
+Candidates parked by the Fable 2026-08-02 review for the M7 planning doc
+(none touches a Phase-1 gate; listed so they are weighed then, not
+forgotten): **speculative decoding** — trades the spare compute this box
+has for the bandwidth it lacks, the same physics M0 measured, and the M5
+replay-not-resample rule composes with a verify step; **cross-request
+prefix reuse** — agent workloads resend system prompts every call, and
+it falls out of M4's refcounted dedup if blocks outlive requests;
+**grammar/JSON-constrained sampling** — sampler-layer, the AySen
+`local()` runtime will want it at Phase 3.
