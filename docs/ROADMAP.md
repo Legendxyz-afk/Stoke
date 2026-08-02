@@ -199,10 +199,15 @@ the model cap (ASan then guards it permanently). Unblocked since tag
 probes, ledger):** the wrong-spelling `_mm256_dpbusd_epi32` COMPILES AND
 RUNS on Windows gcc 15.2 — the promised compile error does not exist, so
 K3 guards by ggml-style `#if defined(__AVXVNNI__)` discipline + a review
-grep, not by trusting rejection; WSL is gcc 13.3 and its leg is
-UNPROBED — run the P-B WSL probe before any intrinsic is written.
-AVX-VNNI-INT8 = 0 on this box, so the dpbusd sign trick is mandatory
-(measured; do not re-ask in K3).
+grep or an own `#error`, not by trusting rejection. **BOTH LEGS NOW
+PROBED (2026-08-02) AND THEY AGREE COMPLETELY:** WSL gcc 13.3 also
+compiles AND runs the wrong spelling, and both spellings emit the
+identical `{vex} vpdpbusd` on both toolchains, so there is no
+compile-time protection anywhere in the matrix and nothing about the
+intrinsic choice is platform-conditional. `__AVXVNNI__` is defined and
+`__AVX512VNNI__` is not, so ggml's `#elif defined(__AVXVNNI__)` branch
+selects correctly. AVX-VNNI-INT8 = 0 on this box, so the dpbusd sign
+trick is mandatory (measured; do not re-ask in K3).
 (3) **Sequencing pin:** the aligner fix lands BEFORE the K2 oracle run
 (4/50 prompts fatal the aligner — the fix is what makes the run
 readable), and K2's 50-prompt gate runs on the single-threaded integer
