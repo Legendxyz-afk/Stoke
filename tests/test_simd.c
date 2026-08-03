@@ -178,6 +178,127 @@ TEST(simd_vec_dot_q8_0_q8_0_matches_scalar_on_all_zero_quants) {
                               vec_dot_q8_0_q8_0_avx2(w, a, 64)));
 }
 
+TEST(simd_dequant_row_q8_0_is_bit_exact_vs_scalar_over_1e4_rows) {
+    ASSERT_TRUE(kernels_cpu_has_avx_vnni());
+    if (!kernels_cpu_has_avx_vnni()) return;
+
+    static const u64 lens[]  = {32, 64, 96, 128, 2560};
+    const u32        n_lens  = (u32)(sizeof lens / sizeof lens[0]);
+    const u32        iters   = 10000;
+
+    rng_reset();
+    u8*  row  = (u8*)xmalloc((size_t)(2560u / BLK_ELEMS) * BLK_BYTES);
+    f32* want = (f32*)xmalloc(2560u * sizeof(f32));
+    f32* got  = (f32*)xmalloc(2560u * sizeof(f32));
+
+    u32 mismatches = 0;
+    for (u32 it = 0; it < iters; it++) {
+        u64 n = lens[it % n_lens];
+        for (u64 b = 0; b < n / BLK_ELEMS; b++) {
+            fill_block(row + b * BLK_BYTES, random_scale());
+        }
+        dequant_row_q8_0(row, n, want);
+        dequant_row_q8_0_avx2(row, n, got);
+        /* memcmp over the whole row: an epsilon compare would accept a
+         * fused or reassociated product, and there is nothing to reassociate
+         * here -- any difference at all is a defect. */
+        if (memcmp(want, got, (size_t)n * sizeof(f32)) != 0) {
+            if (mismatches < 3u) {
+                for (u64 i = 0; i < n; i++) {
+                    if (!bit_identical(want[i], got[i])) {
+                        fprintf(stderr,
+                                "FAIL %s:%d: iter %u n=%llu idx %llu "
+                                "scalar=%.9g simd=%.9g\n",
+                                __FILE__, __LINE__, it,
+                                (unsigned long long)n, (unsigned long long)i,
+                                (double)want[i], (double)got[i]);
+                        break;
+                    }
+                }
+            }
+            mismatches++;
+        }
+    }
+    if (mismatches != 0u) {
+        fprintf(stderr, "FAIL %s:%d: %u of %u rows differ\n", __FILE__,
+                __LINE__, mismatches, iters);
+        g_test_case_failed = 1;
+    }
+    free(row);
+    free(want);
+    free(got);
+}
+
+TEST(simd_argmax_matches_scalar_over_1e4_vectors) {
+    ASSERT_TRUE(kernels_cpu_has_avx_vnni());
+    if (!kernels_cpu_has_avx_vnni()) return;
+
+    /* Lengths deliberately straddle the vector width: 1 and 7 are shorter
+     * than one 8-lane register, 8 is exactly one, and 9/17/151936 leave a
+     * ragged tail. A twin that mishandles the tail passes on 8 and fails on
+     * 9, so both are here; 151936 is the real vocab. */
+    static const u64 lens[] = {1, 7, 8, 9, 17, 64, 1000, 151936};
+    const u32        n_lens = (u32)(sizeof lens / sizeof lens[0]);
+    const u32        iters  = 10000;
+
+    rng_reset();
+    f32* v = (f32*)xmalloc(151936u * sizeof(f32));
+
+    u32 mismatches = 0;
+    for (u32 it = 0; it < iters; it++) {
+        u64 n = lens[it % n_lens];
+        /* A SMALL VALUE ALPHABET, ON PURPOSE. Uniform random floats almost
+         * never tie, so a uniform sweep would exercise the tie rule -- the
+         * one thing that is genuinely hard here -- essentially never. Values
+         * drawn from a handful of levels make ties the common case instead
+         * of a rarity, which is what the test is for. */
+        for (u64 i = 0; i < n; i++) {
+            u32 r = rng_next() % 6u;
+            v[i] = (f32)((i32)r - 2) * 0.5f;
+        }
+        u32 want = argmax(v, n);
+        u32 got  = argmax_avx2(v, n);
+        if (want != got) {
+            if (mismatches < 3u) {
+                fprintf(stderr,
+                        "FAIL %s:%d: iter %u n=%llu scalar=%u simd=%u "
+                        "(values %.3g vs %.3g)\n",
+                        __FILE__, __LINE__, it, (unsigned long long)n, want,
+                        got, (double)v[want], (double)v[got]);
+            }
+            mismatches++;
+        }
+    }
+    if (mismatches != 0u) {
+        fprintf(stderr, "FAIL %s:%d: %u of %u vectors differ\n", __FILE__,
+                __LINE__, mismatches, iters);
+        g_test_case_failed = 1;
+    }
+    free(v);
+}
+
+/* The tie rule stated as its own assertion rather than left to the sweep:
+ * every element equal means the answer must be 0, and any implementation
+ * that reports "some index holding the maximum" fails here. */
+TEST(simd_argmax_returns_the_first_index_on_an_all_equal_vector) {
+    ASSERT_TRUE(kernels_cpu_has_avx_vnni());
+    if (!kernels_cpu_has_avx_vnni()) return;
+
+    f32 v[64];
+    for (u32 i = 0; i < 64u; i++) v[i] = 1.25f;
+    ASSERT_EQ_U32(argmax_avx2(v, 64), 0u);
+    ASSERT_EQ_U32(argmax_avx2(v, 64), argmax(v, 64));
+
+    /* Maximum duplicated across DIFFERENT vector lanes: the earlier index
+     * must win even though both lie in the same 8-wide register. */
+    f32 w[16];
+    for (u32 i = 0; i < 16u; i++) w[i] = 0.0f;
+    w[3] = 9.0f;
+    w[11] = 9.0f;
+    ASSERT_EQ_U32(argmax_avx2(w, 16), 3u);
+    ASSERT_EQ_U32(argmax_avx2(w, 16), argmax(w, 16));
+}
+
 /* -128 cannot be negated in i8, which is exactly what the sign trick does to
  * the activation side. Driven to saturation on BOTH sides so the worst case
  * is a real input rather than a hypothetical. */

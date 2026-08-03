@@ -71,4 +71,30 @@ bool kernels_cpu_has_avx_vnni(void);
  * replaces, and gate [1] is not negotiable. */
 f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n);
 
+/* AVX2 twin of dequant_row_q8_0. BIT-IDENTICAL to the scalar kernel.
+ *
+ * Trivially so, and worth saying why: dequant is ELEMENTWISE (`out[i] = d *
+ * (f32)q[i]`) with no reduction anywhere, so there is no summation order to
+ * preserve and IEEE754 gives the same correctly-rounded product per lane as
+ * per scalar iteration. Exactness here is a property of the operation, not
+ * of care taken in the implementation. */
+void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out);
+
+/* AVX2 twin of argmax. Returns the IDENTICAL index to the scalar kernel for
+ * every input, including ties.
+ *
+ * THE TIE RULE IS THE WHOLE DIFFICULTY. The scalar kernel uses a strict `>`,
+ * so equal values never displace an earlier index and the answer is the
+ * FIRST occurrence of the maximum. A vector max-reduction loses that
+ * ordering -- it finds the max VALUE across lanes with no notion of which
+ * lane came first -- so the index has to be recovered in a second pass that
+ * re-imposes "lowest index wins". A twin that returns any valid maximum
+ * would pass a careless test and silently change generated tokens on the
+ * first tie, which on a 151,936-wide logits vector is not a rare event.
+ *
+ * NaN: the scalar kernel's `>` is false against NaN, so a NaN never becomes
+ * best and a leading NaN keeps index 0 unless a later real value exceeds it.
+ * The twin reproduces that rather than the hardware's own NaN preference. */
+u32 argmax_avx2(const f32* logits, u64 n);
+
 #endif /* STOKE_KERNELS_SIMD_H */

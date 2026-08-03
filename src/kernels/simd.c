@@ -167,9 +167,111 @@ f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n) {
     return sum;
 }
 
+void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out) {
+    if (n % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
+        fatal("kernels: dequant_row_q8_0_avx2 -- n=%llu is not a multiple of "
+              "%u",
+              (unsigned long long)n, KERNELS_Q8_0_BLOCK_ELEMS);
+    }
+    const u8* base = (const u8*)row;
+    u64       num_blocks = n / KERNELS_Q8_0_BLOCK_ELEMS;
+
+    for (u64 b = 0; b < num_blocks; b++) {
+        const u8* blk = base + b * KERNELS_Q8_0_BLOCK_BYTES;
+        f32       d   = simd_block_scale_or_fatal(blk, b, "dequant_row_q8_0");
+        const u8* qs  = blk + 2;
+        f32*      o   = out + b * KERNELS_Q8_0_BLOCK_ELEMS;
+        __m256    vd  = _mm256_set1_ps(d);
+
+        /* Eight at a time: cvtepi8_epi32 widens i8 -> i32 exactly (the whole
+         * i8 range is representable), cvtepi32_ps then converts exactly (all
+         * of [-128,127] is representable in f32), and mul_ps is correctly
+         * rounded. So each lane computes precisely the scalar's `d * (f32)q`
+         * with no reduction anywhere to reorder. */
+        for (u32 g = 0; g < KERNELS_Q8_0_BLOCK_ELEMS; g += 8u) {
+            __m128i q8  = _mm_loadl_epi64((const __m128i*)(const void*)(qs + g));
+            __m256i q32 = _mm256_cvtepi8_epi32(q8);
+            _mm256_storeu_ps(o + g,
+                             _mm256_mul_ps(vd, _mm256_cvtepi32_ps(q32)));
+        }
+    }
+}
+
+u32 argmax_avx2(const f32* logits, u64 n) {
+    if (n == 0u) return 0u;
+
+    /* THE SCALAR'S NaN SEMANTICS, REPRODUCED RATHER THAN APPROXIMATED. Its
+     * test is a strict `>`, which is false in both directions against NaN.
+     * So if logits[0] is NaN nothing can ever displace it and the answer is
+     * 0 no matter what follows -- a fact no max-reduction would arrive at by
+     * itself. */
+    if (isnan(logits[0])) return 0u;
+
+    u64    i    = 0;
+    __m256 vmax = _mm256_set1_ps(logits[0]);
+    for (; i + 8u <= n; i += 8u) {
+        vmax = _mm256_max_ps(vmax, _mm256_loadu_ps(logits + i));
+    }
+    __m128 m = _mm_max_ps(_mm256_castps256_ps128(vmax),
+                          _mm256_extractf128_ps(vmax, 1));
+    m = _mm_max_ps(m, _mm_shuffle_ps(m, m, _MM_SHUFFLE(1, 0, 3, 2)));
+    m = _mm_max_ps(m, _mm_shuffle_ps(m, m, _MM_SHUFFLE(2, 3, 0, 1)));
+    f32 best = _mm_cvtss_f32(m);
+    for (; i < n; i++) {
+        if (logits[i] > best) best = logits[i];
+    }
+
+    /* MAXPS returns its SECOND operand when either is NaN, so a NaN anywhere
+     * past index 0 can land in `best`. Rather than reason about which lane
+     * won, hand those inputs to the reference implementation: it is the
+     * definition of the answer, and this cannot happen on logits a working
+     * forward pass produced. */
+    if (isnan(best)) return argmax(logits, n);
+
+    /* SECOND PASS, AND IT IS WHAT MAKES THE TIE RULE COME OUT RIGHT. The
+     * reduction above found the maximum VALUE; it has no idea which lane held
+     * it, and lanes carry no ordering. Scanning forward for the FIRST element
+     * equal to that maximum re-imposes "lowest index wins" exactly as the
+     * scalar `>` does. Vectorized too, so the pass is cheap: movemask plus a
+     * count-trailing-zeros finds the first matching lane directly. */
+    __m256 vb = _mm256_set1_ps(best);
+    u64    j  = 0;
+    for (; j + 8u <= n; j += 8u) {
+        __m256 eq = _mm256_cmp_ps(_mm256_loadu_ps(logits + j), vb,
+                                  _CMP_EQ_OQ);
+        int    mask = _mm256_movemask_ps(eq);
+        if (mask != 0) {
+            return (u32)(j + (u64)__builtin_ctz((unsigned)mask));
+        }
+    }
+    for (; j < n; j++) {
+        if (logits[j] == best) return (u32)j;
+    }
+
+    /* `best` was taken FROM the array, so some element equals it. */
+    fatal("kernels: argmax_avx2 -- internal: maximum %.9g not found on the "
+          "second pass over %llu elements",
+          (double)best, (unsigned long long)n);
+    return 0u;
+}
+
 #else /* !x86-64 */
 
 bool kernels_cpu_has_avx_vnni(void) { return false; }
+
+void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out) {
+    (void)row;
+    (void)n;
+    (void)out;
+    fatal("kernels: dequant_row_q8_0_avx2 on a non-x86-64 build");
+}
+
+u32 argmax_avx2(const f32* logits, u64 n) {
+    (void)logits;
+    (void)n;
+    fatal("kernels: argmax_avx2 on a non-x86-64 build");
+    return 0u;
+}
 
 f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n) {
     (void)wrow;

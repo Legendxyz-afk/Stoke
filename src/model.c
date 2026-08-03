@@ -9,6 +9,7 @@
 #include "model.h"
 
 #include "kernels/kernels.h"
+#include "kernels/simd.h"
 
 #include <errno.h>
 #include <math.h>
@@ -420,7 +421,13 @@ static void embed_row(const Model* m, u32 token_id, f32* out) {
            time, so this branch is exhaustive. */
         u64 row_bytes =
             (n_embd / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
-        dequant_row_q8_0(base + (u64)token_id * row_bytes, n_embd, out);
+        /* K3: bit-identical twin, so the embedding row is unchanged. */
+        if (kernels_cpu_has_avx_vnni()) {
+            dequant_row_q8_0_avx2(base + (u64)token_id * row_bytes, n_embd,
+                                   out);
+        } else {
+            dequant_row_q8_0(base + (u64)token_id * row_bytes, n_embd, out);
+        }
     }
 }
 
@@ -652,6 +659,16 @@ static void record_top5(const f32* logits, u32 n, ModelProbeEntry out[5]) {
  * ===========================================================================
  */
 
+/* K3 dispatch for the one op whose result IS the generated token. The twin
+ * reproduces the scalar's strict-`>` tie rule exactly (tests/test_simd.c
+ * proves it over 10,000 tie-dense vectors), so this changes speed and
+ * nothing else -- a twin returning any other valid maximum would rewrite
+ * token streams on the first tie in a 151,936-wide vector. */
+static u32 model_argmax(const f32* logits, u64 n) {
+    return kernels_cpu_has_avx_vnni() ? argmax_avx2(logits, n)
+                                      : argmax(logits, n);
+}
+
 u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
                     i32 probe_pos, ModelProbeEntry probe_out[5],
@@ -687,7 +704,7 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
     if (probe_pos == 0) {
         record_top5(m->s_logits, m->n_vocab, probe_out);
     }
-    u32 next_id = argmax(m->s_logits, m->n_vocab);
+    u32 next_id = model_argmax(m->s_logits, m->n_vocab);
     out_ids[0] = next_id;
     u32 count = 1;
 
@@ -703,7 +720,7 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
         if (probe_pos >= 0 && (u32)probe_pos == count) {
             record_top5(m->s_logits, m->n_vocab, probe_out);
         }
-        next_id = argmax(m->s_logits, m->n_vocab);
+        next_id = model_argmax(m->s_logits, m->n_vocab);
         out_ids[count] = next_id;
         count++;
     }
