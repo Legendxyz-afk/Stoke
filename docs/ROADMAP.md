@@ -242,20 +242,28 @@ recorded. history.jsonl → **schema 2** with compile flags embedded in
 the binary; the two `-O1` rows stay untouched (`schema:1` IS the -O1-era
 marker); the pre-SIMD baseline row is re-taken at `-O3` before K3's
 first C.
-(3) **K3's headroom claim was re-based by measurement.** Vendored llama
-b10037 VNNI at `-t 1 -C 0x1 --cpu-strict 1 --prio 2 -mmp 0`: **1.24–1.26
-tok/s = ~5.4 GB/s ≈ 34% of ceiling — below stoke's scalar `-O3` matvec
-6.9 GB/s**, so the "~2.3× for SIMD to collect" single-thread is dead;
-per-core decode on this box binds on latency/MLP, not scalar arithmetic.
-At `-t 6 -C 0x555`: **6.86 tok/s ≈ 29 GB/s aggregate ≥ the ~19.5 the
-≥7.8 bar needs on Q4_K_M — the bar is won in K5**, K3 is the per-core
-multiplier (redeem K2's integer core; K-quant dequant compute; fewer
-cores to saturate DRAM → frees prefill co-run cores for M5's ITL bar;
-batched intensity). K3-exit single-thread expectation: llama-1T-class
-(~1.0–1.3× over scalar `-O3`), NOT the stream ceiling. The attribution
-ladder gains those two pinned llama referent rows; **unpinned
-single-thread numbers are non-comparable on this 6P+4E part** (same
-binary read 0.99±0.14 unpinned vs 1.26±0.01 pinned).
+(3) **⚠ REOPENED SAME DAY — DO NOT ACT ON THIS ITEM. The ruling's
+single-thread llama measurement was taken in a depressed box state and
+BOTH conclusions it carried invert.** Brief parked at
+`superpowers/memos/2026-08-03-k3-simd-headroom-REOPENED-FOR-FABLE.md`;
+Kabir launches Fable, per the routing. What the ruling said: llama VNNI
+1T = 1.24–1.26 tok/s ≈ 34% of ceiling, *below* stoke's scalar `-O3`
+6.9 GB/s ⇒ no single-thread SIMD headroom; and 6.86 tok/s at 6 P-cores
+÷ 1.26 = 5.5×/6 cores ≈ near-linear ⇒ **the bar is won in K5**. What
+re-measurement shows, interleaved A,B,A,B and pinned, with the `-r`
+flag explicitly ruled out as the cause (`-r 3` now 2.46±0.04, `-r 1`
+2.39, same command that gave 1.26±0.01 earlier): **llama 1T = 2.46
+tok/s ≈ 68% of ceiling vs stoke scalar 1.12 ≈ 32% ⇒ the single-thread
+SIMD lever is ~2.2×, restoring the brief's original ~2.3×**; and
+1T→6T = 2.49×, 1T→10T = 3.24× ⇒ **scaling is SUBLINEAR (bandwidth
+saturating ~26–34 GB/s), so K5 is a SMALLER lever than the ruling
+assumed, not a larger one.** The two re-measurements corroborate each
+other: 1T nearly doubled while 6T barely moved (6.86 → 6.13), which is
+what a DRAM-saturating workload does. **Pinning remains mandatory for
+every single-thread number** (0.99±0.14 unpinned vs 1.26±0.01 pinned on
+the same binary) — and so does re-measuring the referent in the same
+session as the figure it is compared against, which is the error that
+produced this entry.
 (4) **K3-entry chores:** quiesced re-measure of stoke `-O3` e2e pinned
 (measured 0.749 tok/s vs 1.644 matvec-implied; the ~0.73 s/token residue
 is either mmap paging under 5 GB free RAM — file-backed pages evict

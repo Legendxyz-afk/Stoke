@@ -75,15 +75,21 @@
  *
  * ▶ AND %ref STILL DOES NOT MEAN "FRACTION OF WHAT THIS OP COULD ACHIEVE".
  * A read-bandwidth ceiling is an upper bound on the machine, not a target a
- * real kernel can reach. Measured 2026-08-03: llama.cpp's own production
- * AVX2+VNNI decode, single thread pinned to a P-core with the model
- * resident, runs at ~34% of this denominator -- BELOW stoke's scalar matvec
- * rate at -O3. So an op at 40% of reference is not necessarily leaving 2.5x
- * on the table, and "SIMD will collect the difference" does not follow from
- * this column alone. The attribution ladder compares against the two llama
- * referent rows (per-core and 6-core aggregate, see the M3 ruling) for
- * "what should this achieve"; %ref answers only "how much of the machine's
- * read bandwidth is this op moving".
+ * real kernel can reach. Measured 2026-08-03, interleaved and pinned:
+ * llama.cpp's own production AVX2+VNNI decode reaches ~68% of this
+ * denominator at one thread (2.46 tok/s), against ~32% for stoke's scalar
+ * -O3 (1.12 tok/s). So a real kernel tops out well under 100%, and %ref
+ * answers only "how much of the machine's read bandwidth is this op
+ * moving" -- never "how much is left on the table".
+ *
+ * ▶ AND THE REFERENT ITSELF MUST BE RE-MEASURED, NOT CITED. The same llama
+ * command read 1.26 tok/s earlier the same day and 2.46 a few hours later,
+ * with the flag difference explicitly ruled out (`-r 3` gives 2.46 now,
+ * `-r 1` gives 2.39). A referent taken from another session is not a
+ * referent, it is a number. Compare against llama measured in the SAME
+ * session as the stoke figure, and interleave the two if the ratio matters.
+ * The strategic reading of these figures is REOPENED -- see
+ * docs/superpowers/memos/2026-08-03-k3-simd-headroom-REOPENED-FOR-FABLE.md.
  *
  * The hardcoded ~60 GB/s from the forward note is still printed, but as
  * context only -- it is a spec figure for the platform, not a measurement of
@@ -709,7 +715,10 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     printf("      wrong for this box, which is why the denominator is measured.\n");
     printf("    read the %%ref column, not GB/s, when the box is not quiesced.\n");
     printf("    %%ref is share of READ BANDWIDTH, not of what the op could reach:\n");
-    printf("      llama.cpp's own VNNI decode runs at ~34%% of it, 1 thread pinned.\n");
+    printf("      llama.cpp's own VNNI decode reaches ~68%% of it, 1 thread pinned;\n");
+    printf("      stoke's scalar -O3 ~32%%. Re-measure that referent in THIS\n");
+    printf("      session before citing it -- it read 1.26 and 2.46 tok/s hours\n");
+    printf("      apart on 2026-08-03 under an identical command.\n");
     printf("\n");
 
     /* ---- warm every tensor we are about to time (Decision 1) ---- */
@@ -852,11 +861,12 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     printf("    * %%ref near 100  -> bandwidth-bound; SIMD will not help,\n");
     printf("                        parallelism and layout will.\n");
     printf("    * %%ref far below -> UNEXPLAINED, not automatically headroom.\n");
-    printf("                        A real kernel does not reach a read\n");
-    printf("                        ceiling: llama.cpp's own VNNI decode sits\n");
-    printf("                        at ~34%% (1 thread, pinned, resident). Rank\n");
-    printf("                        an op against the llama referent rows, not\n");
-    printf("                        against 100%%, before calling it headroom.\n");
+    printf("                        A real kernel does not reach a read ceiling:\n");
+    printf("                        llama's VNNI decode sits at ~68%% (1 thread,\n");
+    printf("                        pinned), stoke's scalar -O3 at ~32%%. Rank an\n");
+    printf("                        op against a llama referent measured in THIS\n");
+    printf("                        session, never against 100%% and never against\n");
+    printf("                        a figure quoted from another day.\n");
     printf("    * matvec LOGITS is culprit #1 -- largest single op per token.\n");
     printf("    * max >> med     -> interference during the run, not a slow\n");
     printf("                        kernel. Re-run on a quiesced box.\n");
