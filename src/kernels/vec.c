@@ -88,7 +88,22 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
          * path would have made this a numerics change requiring a parity
          * re-run, and instead it is a pure speed change. */
         if (kernels_cpu_has_avx_vnni()) {
-            for (u64 r = 0; r < n_out; r++) {
+            /* FOUR ROWS PER PASS. Measured 2026-08-03: the single-row twin
+             * closed only 1.07x of the 1.997x gap to llama at one thread,
+             * and the attribution ladder put the remainder outside the
+             * kernel -- one row is one load stream feeding one serial f32
+             * chain, which leaves the core waiting rather than computing.
+             * Rows are independent dot products, so four at a time changes
+             * no arithmetic and gate [1] is untouched. */
+            u64 r = 0;
+            for (; r + 4u <= n_out; r += 4u) {
+                const void* rows[4] = {base + (r + 0u) * row_bytes,
+                                       base + (r + 1u) * row_bytes,
+                                       base + (r + 2u) * row_bytes,
+                                       base + (r + 3u) * row_bytes};
+                vec_dot_q8_0_q8_0_x4_avx2(rows, aq_scratch, n_in, &y[r]);
+            }
+            for (; r < n_out; r++) {
                 y[r] = vec_dot_q8_0_q8_0_avx2(base + r * row_bytes,
                                               aq_scratch, n_in);
             }

@@ -178,6 +178,58 @@ TEST(simd_vec_dot_q8_0_q8_0_matches_scalar_on_all_zero_quants) {
                               vec_dot_q8_0_q8_0_avx2(w, a, 64)));
 }
 
+TEST(simd_vec_dot_q8_0_q8_0_x4_is_bit_exact_vs_scalar_over_1e4_groups) {
+    ASSERT_TRUE(kernels_cpu_has_avx_vnni());
+    if (!kernels_cpu_has_avx_vnni()) return;
+
+    static const u64 lens[] = {32, 64, 96, 2560};
+    const u32        n_lens = (u32)(sizeof lens / sizeof lens[0]);
+    const u32        iters  = 10000;
+    const u64        maxblk = 2560u / BLK_ELEMS;
+
+    rng_reset();
+    u8* w[4];
+    for (u32 k = 0; k < 4u; k++) w[k] = (u8*)xmalloc((size_t)maxblk * BLK_BYTES);
+    u8* a = (u8*)xmalloc((size_t)maxblk * BLK_BYTES);
+
+    u32 mismatches = 0;
+    for (u32 it = 0; it < iters; it++) {
+        u64 n = lens[it % n_lens];
+        for (u64 b = 0; b < n / BLK_ELEMS; b++) {
+            fill_block(a + b * BLK_BYTES, random_scale());
+            for (u32 k = 0; k < 4u; k++) {
+                fill_block(w[k] + b * BLK_BYTES, random_scale());
+            }
+        }
+        const void* rows[4] = {w[0], w[1], w[2], w[3]};
+        f32 got[4];
+        vec_dot_q8_0_q8_0_x4_avx2(rows, a, n, got);
+        /* EACH ROW against the SCALAR kernel, not against the single-row
+         * twin: chaining twin-vs-twin would let a shared defect cancel. */
+        for (u32 k = 0; k < 4u; k++) {
+            f32 want = vec_dot_q8_0_q8_0(w[k], a, n);
+            if (!bit_identical(want, got[k])) {
+                if (mismatches < 3u) {
+                    fprintf(stderr,
+                            "FAIL %s:%d: iter %u n=%llu row %u scalar=%.9g "
+                            "x4=%.9g (bits %08x vs %08x)\n",
+                            __FILE__, __LINE__, it, (unsigned long long)n, k,
+                            (double)want, (double)got[k], f32_bits(want),
+                            f32_bits(got[k]));
+                }
+                mismatches++;
+            }
+        }
+    }
+    if (mismatches != 0u) {
+        fprintf(stderr, "FAIL %s:%d: %u row results differ\n", __FILE__,
+                __LINE__, mismatches);
+        g_test_case_failed = 1;
+    }
+    for (u32 k = 0; k < 4u; k++) free(w[k]);
+    free(a);
+}
+
 TEST(simd_dequant_row_q8_0_is_bit_exact_vs_scalar_over_1e4_rows) {
     ASSERT_TRUE(kernels_cpu_has_avx_vnni());
     if (!kernels_cpu_has_avx_vnni()) return;

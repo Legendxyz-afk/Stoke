@@ -71,6 +71,34 @@ bool kernels_cpu_has_avx_vnni(void);
  * replaces, and gate [1] is not negotiable. */
 f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n);
 
+/* FOUR rows of a Q8_0 matvec against one shared Q8_0-quantized activation.
+ * out[k] is BIT-IDENTICAL to vec_dot_q8_0_q8_0(wrows[k], arow, n).
+ *
+ * WHY THIS EXISTS, measured 2026-08-03. The single-row twin closed only
+ * 1.07x of the 1.997x gap to llama at one thread, and the attribution ladder
+ * put the remainder OUTSIDE the kernel: a ggml-style vec_dot that abandons
+ * bit-exactness entirely still left 1.54x on the table. What one row at a
+ * time cannot express is memory-level parallelism -- a single row is one
+ * load stream feeding one serial f32 accumulation chain, so the core spends
+ * most of its time waiting rather than computing, at 8.3 GB/s against a
+ * ~20 GB/s measured single-thread ceiling.
+ *
+ * ▶▶ AND IT COSTS NO GATE, WHICH IS THE WHOLE POINT. The rows of a matvec
+ * are INDEPENDENT dot products -- nothing reduces across them -- so each
+ * out[k] runs exactly the block loop and exactly the sequential f32
+ * accumulation the single-row kernel runs. Bit-exactness is preserved per
+ * row by construction rather than by tolerance, and gate [1] is untouched.
+ * Four rows was chosen because the activation block is then loaded once
+ * instead of four times while four independent chains are in flight.
+ *
+ * The shared activation is validated ONCE per block rather than once per
+ * row. For valid tensors that is invisible. For a corrupt one, both paths
+ * still fatal on a corrupt block -- but this one can name a different block
+ * than the row-major scalar would reach first, since it walks blocks
+ * outermost. Loud refusal either way; the index in the message may differ. */
+void vec_dot_q8_0_q8_0_x4_avx2(const void* const wrows[4], const void* arow,
+                                u64 n, f32 out[4]);
+
 /* AVX2 twin of dequant_row_q8_0. BIT-IDENTICAL to the scalar kernel.
  *
  * Trivially so, and worth saying why: dequant is ELEMENTWISE (`out[i] = d *

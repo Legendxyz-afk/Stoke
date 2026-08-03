@@ -120,6 +120,48 @@ static f32 simd_block_scale_or_fatal(const u8* blk, u64 b, const char* who) {
     return d;
 }
 
+/* One block's integer dot, as eight partial i32 lanes. Shared by the
+ * single-row and four-row kernels so the idiom has exactly one definition. */
+static inline __m256i block_acc(const u8* wblk, const u8* ablk,
+                                 __m256i bias, __m256i ones) {
+    /* loadu, never load: these point into the GGUF mmap at a 34-byte block
+     * stride + 2, so they are essentially never 32-byte aligned. */
+    __m256i wv = _mm256_loadu_si256((const __m256i*)(const void*)(wblk + 2));
+    __m256i av = _mm256_loadu_si256((const __m256i*)(const void*)(ablk + 2));
+    /* ▶▶ WHY THIS IS *NOT* ggml's SIGN TRICK, which the probe notes told
+     * us to copy. `vpdpbusd` multiplies UNSIGNED bytes by SIGNED bytes,
+     * so one side has to be made unsigned. ggml does it by moving the
+     * weight's sign onto the activation:
+     *     ax = |w| ; sy = sign_epi8(a, w) ; dot = dpbusd(ax, sy)
+     * That is exact for every input ggml can actually produce, because
+     * quantize_row_q8_0 computes roundf(x * 127/absmax) and therefore
+     * emits quants in [-127, 127] -- never -128.
+     *
+     * It is NOT exact at a = -128 with w < 0. PSIGNB negates in two's
+     * complement, and -(-128) wraps back to -128, so the product comes
+     * out with the WRONG SIGN: true w*a = +|w|*128, the trick yields
+     * -|w|*128. Our scalar reference handles that input correctly, so
+     * adopting the trick would put a real scalar<->SIMD divergence into
+     * the milestone whose gate is bit-exact agreement -- reachable by a
+     * corrupt or hostile GGUF, which is a file we do not write.
+     *
+     * The bias decomposition below is exact for the FULL i8 range and
+     * costs one extra dpbusd plus two cheap integer ops per 32 elements:
+     *     w_u = w XOR 0x80          (maps [-128,127] -> [0,255] = w+128)
+     *     p1  = dpbusd(w_u, a)      lanes: sum (w+128)*a
+     *     p2  = dpbusd(ones, a)     lanes: sum a
+     *     sumi = hsum(p1 - 128*p2)  = sum w*a
+     * Both intermediates stay far inside i32 (p1 lane <= 4*255*127 =
+     * 129,540; 128*p2 lane <= 128*4*127 = 65,024).
+     *
+     * The probe notes said "match ggml, then let the exact-diff gate
+     * arbitrate". The gate arbitrated: this is the deviation it bought. */
+    __m256i wu = _mm256_xor_si256(wv, bias);
+    __m256i p1 = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), wu, av);
+    __m256i p2 = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), ones, av);
+    return _mm256_sub_epi32(p1, _mm256_slli_epi32(p2, 7));
+}
+
 f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n) {
     if (n % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q8_0_q8_0_avx2 -- n=%llu is not a multiple "
@@ -143,50 +185,70 @@ f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n) {
         f32       da = simd_block_scale_or_fatal(
             ablk, b, "vec_dot_q8_0_q8_0 (activation)");
 
-        /* loadu, never load: these point into the GGUF mmap at a 34-byte
-         * block stride + 2, so they are essentially never 32-byte aligned
-         * and an aligned load would fault on the first row. */
-        __m256i wv = _mm256_loadu_si256((const __m256i*)(const void*)(wblk + 2));
-        __m256i av = _mm256_loadu_si256((const __m256i*)(const void*)(ablk + 2));
-
-        /* ▶▶ WHY THIS IS *NOT* ggml's SIGN TRICK, which the probe notes told
-         * us to copy. `vpdpbusd` multiplies UNSIGNED bytes by SIGNED bytes,
-         * so one side has to be made unsigned. ggml does it by moving the
-         * weight's sign onto the activation:
-         *     ax = |w| ; sy = sign_epi8(a, w) ; dot = dpbusd(ax, sy)
-         * That is exact for every input ggml can actually produce, because
-         * quantize_row_q8_0 computes roundf(x * 127/absmax) and therefore
-         * emits quants in [-127, 127] -- never -128.
-         *
-         * It is NOT exact at a = -128 with w < 0. PSIGNB negates in two's
-         * complement, and -(-128) wraps back to -128, so the product comes
-         * out with the WRONG SIGN: true w*a = +|w|*128, the trick yields
-         * -|w|*128. Our scalar reference handles that input correctly, so
-         * adopting the trick would put a real scalar<->SIMD divergence into
-         * the milestone whose gate is bit-exact agreement -- reachable by a
-         * corrupt or hostile GGUF, which is a file we do not write.
-         *
-         * The bias decomposition below is exact for the FULL i8 range and
-         * costs one extra dpbusd plus two cheap integer ops per 32 elements:
-         *     w_u = w XOR 0x80          (maps [-128,127] -> [0,255] = w+128)
-         *     p1  = dpbusd(w_u, a)      lanes: sum (w+128)*a
-         *     p2  = dpbusd(ones, a)     lanes: sum a
-         *     sumi = hsum(p1 - 128*p2)  = sum w*a
-         * Both intermediates stay far inside i32 (p1 lane <= 4*255*127 =
-         * 129,540; 128*p2 lane <= 128*4*127 = 65,024).
-         *
-         * The probe notes said "match ggml, then let the exact-diff gate
-         * arbitrate". The gate arbitrated: this is the deviation it bought. */
-        __m256i wu = _mm256_xor_si256(wv, bias);
-        __m256i p1 = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), wu, av);
-        __m256i p2 = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), ones, av);
-        __m256i acc = _mm256_sub_epi32(p1, _mm256_slli_epi32(p2, 7));
+        __m256i acc = block_acc(wblk, ablk, bias, ones);
 
         /* Sequential f32 accumulation in the scalar's exact order, and the
          * two scales multiplying each other FIRST -- see simd.h. */
         sum += (f32)hsum_i32_8(acc) * (dw * da);
     }
     return sum;
+}
+
+void vec_dot_q8_0_q8_0_x4_avx2(const void* const wrows[4], const void* arow,
+                                u64 n, f32 out[4]) {
+    if (n % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q8_0_q8_0_x4_avx2 -- n=%llu is not a multiple "
+              "of %u",
+              (unsigned long long)n, KERNELS_Q8_0_BLOCK_ELEMS);
+    }
+    const u8* w0 = (const u8*)wrows[0];
+    const u8* w1 = (const u8*)wrows[1];
+    const u8* w2 = (const u8*)wrows[2];
+    const u8* w3 = (const u8*)wrows[3];
+    const u8* ab = (const u8*)arow;
+    u64       num_blocks = n / KERNELS_Q8_0_BLOCK_ELEMS;
+
+    const __m256i bias = _mm256_set1_epi8((char)0x80);
+    const __m256i ones = _mm256_set1_epi8(1);
+
+    /* FOUR INDEPENDENT ACCUMULATORS, four independent chains. Each is the
+     * same running f32 sum the single-row kernel keeps, stepped in the same
+     * block order -- the rows never interact, which is exactly why this can
+     * be four times the work without being a numerics change. */
+    f32 s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+
+    for (u64 b = 0; b < num_blocks; b++) {
+        u64 off = b * KERNELS_Q8_0_BLOCK_BYTES;
+        /* Shared by all four rows, so decoded and validated once per block
+         * rather than once per row -- see simd.h on what that means for the
+         * message a corrupt tensor produces. */
+        f32 da = simd_block_scale_or_fatal(ab + off, b,
+                                           "vec_dot_q8_0_q8_0 (activation)");
+        f32 d0 = simd_block_scale_or_fatal(w0 + off, b,
+                                           "vec_dot_q8_0_q8_0 (weight)");
+        f32 d1 = simd_block_scale_or_fatal(w1 + off, b,
+                                           "vec_dot_q8_0_q8_0 (weight)");
+        f32 d2 = simd_block_scale_or_fatal(w2 + off, b,
+                                           "vec_dot_q8_0_q8_0 (weight)");
+        f32 d3 = simd_block_scale_or_fatal(w3 + off, b,
+                                           "vec_dot_q8_0_q8_0 (weight)");
+
+        __m256i a0 = block_acc(w0 + off, ab + off, bias, ones);
+        __m256i a1 = block_acc(w1 + off, ab + off, bias, ones);
+        __m256i a2 = block_acc(w2 + off, ab + off, bias, ones);
+        __m256i a3 = block_acc(w3 + off, ab + off, bias, ones);
+
+        /* Same grouping as the scalar: the two scales multiply each other
+         * first, then the integer sum. */
+        s0 += (f32)hsum_i32_8(a0) * (d0 * da);
+        s1 += (f32)hsum_i32_8(a1) * (d1 * da);
+        s2 += (f32)hsum_i32_8(a2) * (d2 * da);
+        s3 += (f32)hsum_i32_8(a3) * (d3 * da);
+    }
+    out[0] = s0;
+    out[1] = s1;
+    out[2] = s2;
+    out[3] = s3;
 }
 
 void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out) {
@@ -286,6 +348,15 @@ void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out) {
     (void)n;
     (void)out;
     fatal("kernels: dequant_row_q8_0_avx2 on a non-x86-64 build");
+}
+
+void vec_dot_q8_0_q8_0_x4_avx2(const void* const wrows[4], const void* arow,
+                                u64 n, f32 out[4]) {
+    (void)wrows;
+    (void)arow;
+    (void)n;
+    (void)out;
+    fatal("kernels: vec_dot_q8_0_q8_0_x4_avx2 on a non-x86-64 build");
 }
 
 u32 argmax_avx2(const f32* logits, u64 n) {
