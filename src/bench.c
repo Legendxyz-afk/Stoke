@@ -88,8 +88,42 @@
  * `-r 1` gives 2.39). A referent taken from another session is not a
  * referent, it is a number. Compare against llama measured in the SAME
  * session as the stoke figure, and interleave the two if the ratio matters.
- * The strategic reading of these figures is REOPENED -- see
- * docs/superpowers/memos/2026-08-03-k3-simd-headroom-REOPENED-FOR-FABLE.md.
+ *
+ * ▶▶ THE COMPARABILITY RULE (Fable K3 ruling, 2026-08-03, section 4 --
+ * `docs/superpowers/memos/2026-08-03-k3-simd-headroom-RULING-FABLE.md`,
+ * which resolved the reopening and is the binding authority here).
+ *
+ *   Two performance figures may be compared -- ratio, difference, or
+ *   percentage -- only if measured in the same session under the same
+ *   recorded conditions, interleaved whenever both sides are runnable. A
+ *   cross-session comparison is not evidence; it is a hypothesis, and it
+ *   must be re-measured before it may be written into a memo, a ROADMAP
+ *   line, a comment, or a ledger claim.
+ *
+ *   Corollary A. Rep-to-rep stability certifies precision WITHIN a window
+ *   and says nothing about that window's validity. 1.26 +/- 0.01 and
+ *   2.46 +/- 0.04 were both internally excellent.
+ *   Corollary B. Subtraction is comparison. A difference of
+ *   differently-conditioned measurements is a measurement of the conditions.
+ *   Corollary C. A field name is not a basis. `ref_gbs` means the serial
+ *   stream in schema-1 rows and max(split8, xor) in schema-2 rows; a
+ *   percentage must name its denominator's stream AND its window.
+ *
+ * The rule is mechanised in two places, and this file is deliberately NOT
+ * one of them: `bench/append_history.py` brackets each run with a box sample
+ * and grades the row gate/ambient, and `bench/referent_interleave.py` runs
+ * the A,B,A,B against llama and emits a paired record. This bench stays free
+ * of any dependency on the vendor tree -- it is the self-instrument of an
+ * embeddable engine and must run where no llama.cpp exists, and an
+ * instrument that executes its own comparison target conflates measuring
+ * with refereeing. The attribution ladder may cite paired records only.
+ *
+ * WHY THE NUMBERS TWO PARAGRAPHS UP WERE EVER IN DOUBT, recorded because it
+ * is the concrete shape of the abstract rule: a game had been resident since
+ * 09:57 that day, averaging 5.08 cores, spanning every contested measurement
+ * window of two sessions. Nobody had recorded the process table. The box
+ * state was not exotic and not thermal -- it was another program, and the
+ * only reason it took forensics to find is that nothing was writing it down.
  *
  * The hardcoded ~60 GB/s from the forward note is still printed, but as
  * context only -- it is a spec figure for the platform, not a measurement of

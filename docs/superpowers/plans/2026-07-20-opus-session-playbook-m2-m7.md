@@ -28,11 +28,14 @@ design; each unit's brief carries its own recovery clause.
 
 ## 0. Standing session frame (run this at the top of EVERY session)
 
-1. **Model gate.** The saved default model is **Fable 5** (Kabir set it
-   2026-07-20). A fresh session therefore opens WRONG. If this session is
-   not Opus 4.8: run `/model claude-opus-4-8` (this re-saves the default),
-   then restart this frame. A Fable session touches stoke only on Kabir's
-   explicit in-session override, and only for manager-tier state work.
+1. **Model gate.** The stage owner is **Opus 5** (M2→M7), and Kabir set the
+   saved default back to Opus 5 on 2026-08-03. The owner is a FLOOR: a newer
+   Opus is valid; anything below Opus is a HARD STOP. A Fable session touches
+   stoke only on Kabir's explicit in-session override, and only for
+   manager-tier state work or a ruling. *(Superseded 2026-08-03: this item
+   previously said the default was Fable 5 and told the session to run
+   `/model claude-opus-4-8`. Both were stale — repaired per §0.3's trust
+   order rather than left to mislead a fresh session.)*
 2. **Read order:** `docs/ROADMAP.md` (map) → `.superpowers/sdd/progress.md`
    final NEXT-SESSION block (exact position) → the current milestone's
    design-note section → this playbook's section for the current session.
@@ -55,7 +58,40 @@ design; each unit's brief carries its own recovery clause.
    by pipeline exit) → Opus task-review for worker-produced diffs →
    commit (msg style `area: what -- detail`, NO attribution trailers) →
    ledger entry.
-5. **Escalation** = STOP + memo to Kabir on: gate fails twice same cause;
+5. **Measurement discipline — THE COMPARABILITY RULE** (binding: Fable K3
+   ruling 2026-08-03 §4,
+   `docs/superpowers/memos/2026-08-03-k3-simd-headroom-RULING-FABLE.md`).
+   Before quoting any two performance numbers together, in a memo, a
+   commit message, the ROADMAP, a code comment, or the ledger:
+
+   > **Same session, interleaved where both sides are runnable, cycles
+   > cited, sidecar attached — or don't quote them together.**
+
+   - A cross-session comparison is a HYPOTHESIS, not evidence. Re-measure
+     before writing it down.
+   - Rep-to-rep stability (±σ) certifies precision within a window and says
+     NOTHING about that window's validity. `1.26 ± 0.01` and `2.46 ± 0.04`
+     were both internally excellent, and one of them was wrong.
+   - **Subtraction is comparison.** A difference of differently-conditioned
+     measurements measures the conditions.
+   - A field name is not a basis: name the denominator's stream AND window.
+   - Absolutes are quarantined. No absolute tok/s or GB/s is a target,
+     expectation, or comparison operand unless it comes from a
+     quiesced-checklist session or is one side of a same-session
+     interleaved pair. Everything else is labelled decoration.
+   - Tools that mechanise this, and the only admissible sources:
+     `python bench/append_history.py …` grades every row `gate`/`ambient`
+     from a box sample bracketing each run; `python
+     bench/referent_interleave.py --model … --cycles 3` runs the A,B,A,B
+     against vendored llama and emits the paired record. **The attribution
+     ladder may cite paired records only.** An `ambient` row is never a
+     diff base, a referent, or quotable against another row.
+   - Quiesced, mechanically: foreign CPU < 5% of the box AND free RAM >
+     model + 2 GB, for every run in the row, proven by the sidecar rather
+     than asserted. Close games and chat clients FIRST — on 2026-08-03 a
+     resident game averaging 5.08 cores silently spanned two sessions'
+     worth of measurements and inverted two conclusions.
+6. **Escalation** = STOP + memo to Kabir on: gate fails twice same cause;
    >1 day stuck on one divergence; results contradict spec physics; ANY
    gate-loosening temptation (ε, waiver budget, bars, corpus trims).
    Memo file: `docs/superpowers/memos/YYYY-MM-DD-<topic>.md` (create the
@@ -70,13 +106,13 @@ design; each unit's brief carries its own recovery clause.
    RECOMMENDATION: <one of the options, one sentence of why>
    IF DEFERRED: <what happens / what stays blocked>
    ```
-6. **Workers:** sonnet, background, surgical briefs, constants PROBED at
+7. **Workers:** sonnet, background, surgical briefs, constants PROBED at
    dispatch and written INTO the brief, disjoint pinned file-ownership
    lists, a mandatory mechanical-verification section, workers never
    commit. Parallel dispatch only within the independent tier of ONE
    milestone; cross-milestone never. Never dispatch a worker without
    first writing the ledger's recovery clause for it.
-7. **Git:** local only, branch `main`, NO remote/push (Kabir 2026-07-16,
+8. **Git:** local only, branch `main`, NO remote/push (Kabir 2026-07-16,
    binding). Tag at milestone close (`m2`…`m7`). Models and
    `.superpowers/sdd/*` are git-ignored; committed files under
    `src/ tests/ scripts/ Makefile` never cite git-ignored paths.
