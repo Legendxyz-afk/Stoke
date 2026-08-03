@@ -86,6 +86,17 @@ design; each unit's brief carries its own recovery clause.
      against vendored llama and emits the paired record. **The attribution
      ladder may cite paired records only.** An `ambient` row is never a
      diff base, a referent, or quotable against another row.
+   - **Interleaving does NOT rescue a busy box, and 2026-08-03 measured
+     how badly.** It controls for slow drift BETWEEN cycles; it does
+     nothing about high-frequency contention WITHIN one. An A/B of two
+     stoke builds at ~8 foreign cores spread **117%** by wall clock
+     (ratios 0.51–1.12, enough to "show" a 16% regression that did not
+     exist). The identical comparison by **process CPU time** spread
+     **9.9%** and gave a usable answer. So: wall time for anything
+     compared against llama or against the bar; **CPU time when
+     comparing two stoke builds on a box that cannot be quiesced** — it
+     ignores descheduling, which is exactly what contention causes.
+     Still ambient-grade: it decides "no large win", never a 1–2% claim.
    - Quiesced, mechanically: foreign CPU < 5% of the box AND free RAM >
      model + 2 GB, for every run in the row, proven by the sidecar rather
      than asserted. Close games and chat clients FIRST — on 2026-08-03 a
