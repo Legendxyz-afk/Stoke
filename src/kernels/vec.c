@@ -5,6 +5,7 @@
 #include "common.h"
 
 #include "kernels.h"
+#include "simd.h"
 
 f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
     f32 sum = 0.0f;
@@ -74,9 +75,28 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
          * times would cost 151,936 redundant passes on the logits matvec
          * alone. */
         quantize_row_q8_0(x, n_in, aq_scratch);
-        for (u64 r = 0; r < n_out; r++) {
-            const void* row = base + r * row_bytes;
-            y[r] = vec_dot_q8_0_q8_0(row, aq_scratch, n_in);
+
+        /* K3 dispatch. The feature test is hoisted out of the row loop --
+         * it is a cached load, but the logits matvec runs this loop 151,936
+         * times and a branch on a global per row is pure noise in a profile.
+         *
+         * Choosing between them here is SAFE IN THE STRONGEST SENSE
+         * available: the twin is bit-identical to the scalar kernel, proven
+         * over 10,000 random tensors per leg (tests/test_simd.c), so which
+         * branch runs cannot change a single generated token. That is the
+         * whole return on LOCKED decision #2's integer core -- an f32 SIMD
+         * path would have made this a numerics change requiring a parity
+         * re-run, and instead it is a pure speed change. */
+        if (kernels_cpu_has_avx_vnni()) {
+            for (u64 r = 0; r < n_out; r++) {
+                y[r] = vec_dot_q8_0_q8_0_avx2(base + r * row_bytes,
+                                              aq_scratch, n_in);
+            }
+        } else {
+            for (u64 r = 0; r < n_out; r++) {
+                y[r] = vec_dot_q8_0_q8_0(base + r * row_bytes, aq_scratch,
+                                         n_in);
+            }
         }
     } else {
         fatal("kernels: matvec -- tensor '%s' has unsupported ggml type "
