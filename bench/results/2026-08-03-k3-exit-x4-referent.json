@@ -1,0 +1,316 @@
+{
+  "kind": "referent_interleave",
+  "protocol": 2,
+  "ts_utc": "2026-08-03T15:46:38+00:00",
+  "label": "K3 exit: 4-row matvec vs llama 1T",
+  "git": {
+    "commit": "13873d8453b59abe8ec6a0ccfd2edc71f7f6e9c6",
+    "dirty": false,
+    "tag": null
+  },
+  "config": {
+    "model": "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+    "model_size_bytes": 4280405216,
+    "tokens_per_side": 32,
+    "affinity": "0x1",
+    "threads": 1,
+    "stoke_sha256": "854879e36a94efd8c16c580ef372d1876decb73552415c8342b8421a8b73c723",
+    "llama_build": "llama-b10037"
+  },
+  "llama_over_stoke_median": 1.4374,
+  "llama_over_stoke_cycles": [
+    1.4429,
+    1.4319,
+    1.4926,
+    1.419
+  ],
+  "ratio_rel_spread": 0.0519,
+  "box": {
+    "platform": "win32",
+    "logical_cpus": 16,
+    "grade": "gate",
+    "grade_reasons": []
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "stoke": {
+        "tok_s": 2.27,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 4844.8
+        },
+        "error": null,
+        "wall_s": 13.36,
+        "sidecar": {
+          "wall_s": 13.88,
+          "foreign_cpu_cores": 0.398,
+          "blind": null,
+          "top_foreign": {
+            "name": "claude",
+            "cores": 0.149
+          },
+          "busy_procs": [
+            {
+              "name": "claude",
+              "cores": 0.149
+            },
+            {
+              "name": "Code",
+              "cores": 0.14
+            }
+          ],
+          "free_ram_mb_min": 9211,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 3.275476,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            3.27548
+          ]
+        },
+        "error": null,
+        "wall_s": 12.92,
+        "sidecar": {
+          "wall_s": 13.38,
+          "foreign_cpu_cores": 0.343,
+          "blind": null,
+          "top_foreign": {
+            "name": "claude",
+            "cores": 0.126
+          },
+          "busy_procs": [
+            {
+              "name": "claude",
+              "cores": 0.126
+            },
+            {
+              "name": "Code",
+              "cores": 0.112
+            }
+          ],
+          "free_ram_mb_min": 9199,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.4429
+    },
+    {
+      "cycle": 2,
+      "stoke": {
+        "tok_s": 2.386,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 4609.7
+        },
+        "error": null,
+        "wall_s": 9.76,
+        "sidecar": {
+          "wall_s": 10.33,
+          "foreign_cpu_cores": 0.272,
+          "blind": null,
+          "top_foreign": {
+            "name": "Code",
+            "cores": 0.104
+          },
+          "busy_procs": [
+            {
+              "name": "Code",
+              "cores": 0.104
+            },
+            {
+              "name": "claude",
+              "cores": 0.077
+            }
+          ],
+          "free_ram_mb_min": 9246,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 3.416611,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            3.41661
+          ]
+        },
+        "error": null,
+        "wall_s": 11.83,
+        "sidecar": {
+          "wall_s": 12.39,
+          "foreign_cpu_cores": 0.401,
+          "blind": null,
+          "top_foreign": {
+            "name": "Code",
+            "cores": 0.171
+          },
+          "busy_procs": [
+            {
+              "name": "Code",
+              "cores": 0.171
+            },
+            {
+              "name": "claude",
+              "cores": 0.111
+            }
+          ],
+          "free_ram_mb_min": 9233,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.4319
+    },
+    {
+      "cycle": 3,
+      "stoke": {
+        "tok_s": 2.406,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 4571.0
+        },
+        "error": null,
+        "wall_s": 9.62,
+        "sidecar": {
+          "wall_s": 10.15,
+          "foreign_cpu_cores": 0.35,
+          "blind": null,
+          "top_foreign": {
+            "name": "Code",
+            "cores": 0.152
+          },
+          "busy_procs": [
+            {
+              "name": "Code",
+              "cores": 0.152
+            },
+            {
+              "name": "claude",
+              "cores": 0.111
+            }
+          ],
+          "free_ram_mb_min": 9239,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 3.59113,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            3.59113
+          ]
+        },
+        "error": null,
+        "wall_s": 11.35,
+        "sidecar": {
+          "wall_s": 11.86,
+          "foreign_cpu_cores": 0.398,
+          "blind": null,
+          "top_foreign": {
+            "name": "Code",
+            "cores": 0.144
+          },
+          "busy_procs": [
+            {
+              "name": "Code",
+              "cores": 0.144
+            },
+            {
+              "name": "claude",
+              "cores": 0.104
+            }
+          ],
+          "free_ram_mb_min": 9190,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.4926
+    },
+    {
+      "cycle": 4,
+      "stoke": {
+        "tok_s": 2.436,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 4516.0
+        },
+        "error": null,
+        "wall_s": 9.52,
+        "sidecar": {
+          "wall_s": 9.97,
+          "foreign_cpu_cores": 0.36,
+          "blind": null,
+          "top_foreign": {
+            "name": "Code",
+            "cores": 0.15
+          },
+          "busy_procs": [
+            {
+              "name": "Code",
+              "cores": 0.15
+            },
+            {
+              "name": "claude",
+              "cores": 0.102
+            }
+          ],
+          "free_ram_mb_min": 9231,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 3.456703,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            3.4567
+          ]
+        },
+        "error": null,
+        "wall_s": 11.67,
+        "sidecar": {
+          "wall_s": 12.23,
+          "foreign_cpu_cores": 0.36,
+          "blind": null,
+          "top_foreign": {
+            "name": "Code",
+            "cores": 0.169
+          },
+          "busy_procs": [
+            {
+              "name": "Code",
+              "cores": 0.169
+            },
+            {
+              "name": "claude",
+              "cores": 0.098
+            }
+          ],
+          "free_ram_mb_min": 9226,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.419
+    }
+  ]
+}
