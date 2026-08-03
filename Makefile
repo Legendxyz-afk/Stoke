@@ -142,6 +142,27 @@ $(BUILDDIR)/bench.o: src/bench.c $(HEADERS) Makefile | $(BUILDDIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DSTOKE_BUILD_CFLAGS='"$(CFLAGS)"' -c -o $@ $<
 
+# K3: the SIMD twins, and ONLY these, are compiled with the AVX2/FMA/F16C/
+# AVX-VNNI ISA flags. Everything else stays at the baseline x86-64 the rest
+# of the project targets.
+#
+# THE SCOPE IS THE POINT, not a tidiness preference. Putting these in the
+# global CFLAGS would let gcc emit AVX2 anywhere -- including in the SCALAR
+# kernels the twins are defined as agreeing with -- and the binary would then
+# fault on any pre-Haswell CPU despite carrying a runtime probe and a
+# complete scalar fallback. The fallback only means anything if the code
+# reachable without the feature was compiled without it.
+#
+# -mfma is why -ffp-contract=off is pinned globally (see the CFLAGS note): in
+# THIS file a*b+c may legally contract, and a contracted f32 op is a
+# different result from the scalar reference, which would break gate [1]'s
+# f32 leg silently and only on the legs whose toolchain default differs.
+SIMD_CFLAGS := -mavx2 -mfma -mf16c -mavxvnni
+
+$(BUILDDIR)/kernels/simd.o: src/kernels/simd.c $(HEADERS) Makefile | $(BUILDDIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(SIMD_CFLAGS) -c -o $@ $<
+
 $(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
 
