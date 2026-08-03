@@ -216,6 +216,50 @@ answered in isolation; K6 re-passes both files with the pool on.
 Playbook §6's K2 text predates the 07-28 inheritance and omits the
 aligner; where they differ, this section + the ledger govern.
 
+**Fable 2026-08-03 — the -O ruling (binding:
+`superpowers/memos/2026-08-03-m3-optimization-level-RULING-FABLE.md`;
+amends the forward note §M3 where they differ; bar/ε/waivers/corpus
+untouched):**
+(1) **Build default is `-O3`** + `-ffp-contract=off` (free now — baseline
+x86-64 has no FMA — and mandatory before K3's `-mfma`: GCC 14 flipped the
+ISO-mode contract default, so Win gcc 15.2 and WSL gcc 13.3 would
+otherwise disagree inside SIMD files). Sanitizer legs stay `-O1`
+explicitly (more sensitive there, not less; the un-instrumented `-O3`
+plain legs are what verify the shipped artifact).
+(2) **`bench --ops`' reference stream is replaced before any new `%ref`
+row**: serial_f32 measured f32-add latency, ~2.15× under the real
+~15 GB/s ceiling; new `ref_gbs` = max(split8_f32, xor_u64), both
+recorded. history.jsonl → **schema 2** with compile flags embedded in
+the binary; the two `-O1` rows stay untouched (`schema:1` IS the -O1-era
+marker); the pre-SIMD baseline row is re-taken at `-O3` before K3's
+first C.
+(3) **K3's headroom claim was re-based by measurement.** Vendored llama
+b10037 VNNI at `-t 1 -C 0x1 --cpu-strict 1 --prio 2 -mmp 0`: **1.24–1.26
+tok/s = ~5.4 GB/s ≈ 34% of ceiling — below stoke's scalar `-O3` matvec
+6.9 GB/s**, so the "~2.3× for SIMD to collect" single-thread is dead;
+per-core decode on this box binds on latency/MLP, not scalar arithmetic.
+At `-t 6 -C 0x555`: **6.86 tok/s ≈ 29 GB/s aggregate ≥ the ~19.5 the
+≥7.8 bar needs on Q4_K_M — the bar is won in K5**, K3 is the per-core
+multiplier (redeem K2's integer core; K-quant dequant compute; fewer
+cores to saturate DRAM → frees prefill co-run cores for M5's ITL bar;
+batched intensity). K3-exit single-thread expectation: llama-1T-class
+(~1.0–1.3× over scalar `-O3`), NOT the stream ceiling. The attribution
+ladder gains those two pinned llama referent rows; **unpinned
+single-thread numbers are non-comparable on this 6P+4E part** (same
+binary read 0.99±0.14 unpinned vs 1.26±0.01 pinned).
+(4) **K3-entry chores:** quiesced re-measure of stoke `-O3` e2e pinned
+(measured 0.749 tok/s vs 1.644 matvec-implied; the ~0.73 s/token residue
+is either mmap paging under 5 GB free RAM — file-backed pages evict
+first — or a real ops-bench coverage gap; ruling §2.4 names the fork and
+either branch changes downstream scope). K4 entry keeps the mandatory
+K-quant bandwidth-vs-compute measurement.
+(5) **The deferred oracle gate may run at `-O3`** (same verdict ~3×
+cheaper) under a mechanical precondition: rebuild the archived intcore
+source at `-O3`, archive + sha alongside
+`build/stoke-k2-intcore-2ed3d1e8.exe`, byte-identity re-verified on 2–3
+gate-subset prompts first; any byte differs ⇒ run `-O1` and escalate.
+Launch stays Kabir's; the gate is never blocked on the -O work.
+
 **M4 — paged KV + static batch.** Forward note §M4: block=16; `kv_view`
 body swap only (M2 froze the accessor); **batch-composition independence
 by construction** (seqs-inner/weights-outer — same seq ⇒ token-identical
