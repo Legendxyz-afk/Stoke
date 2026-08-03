@@ -242,34 +242,49 @@ recorded. history.jsonl → **schema 2** with compile flags embedded in
 the binary; the two `-O1` rows stay untouched (`schema:1` IS the -O1-era
 marker); the pre-SIMD baseline row is re-taken at `-O3` before K3's
 first C.
-(3) **⚠ REOPENED SAME DAY — DO NOT ACT ON THIS ITEM. The ruling's
-single-thread llama measurement was taken in a depressed box state and
-BOTH conclusions it carried invert.** Brief parked at
-`superpowers/memos/2026-08-03-k3-simd-headroom-REOPENED-FOR-FABLE.md`;
-Kabir launches Fable, per the routing. What the ruling said: llama VNNI
-1T = 1.24–1.26 tok/s ≈ 34% of ceiling, *below* stoke's scalar `-O3`
-6.9 GB/s ⇒ no single-thread SIMD headroom; and 6.86 tok/s at 6 P-cores
-÷ 1.26 = 5.5×/6 cores ≈ near-linear ⇒ **the bar is won in K5**. What
-re-measurement shows, interleaved A,B,A,B and pinned, with the `-r`
-flag explicitly ruled out as the cause (`-r 3` now 2.46±0.04, `-r 1`
-2.39, same command that gave 1.26±0.01 earlier): **llama 1T = 2.46
-tok/s ≈ 68% of ceiling vs stoke scalar 1.12 ≈ 32% ⇒ the single-thread
-SIMD lever is ~2.2×, restoring the brief's original ~2.3×**; and
-1T→6T = 2.49×, 1T→10T = 3.24× ⇒ **scaling is SUBLINEAR (bandwidth
-saturating ~26–34 GB/s), so K5 is a SMALLER lever than the ruling
-assumed, not a larger one.** The two re-measurements corroborate each
-other: 1T nearly doubled while 6T barely moved (6.86 → 6.13), which is
-what a DRAM-saturating workload does. **Pinning remains mandatory for
-every single-thread number** (0.99±0.14 unpinned vs 1.26±0.01 pinned on
-the same binary) — and so does re-measuring the referent in the same
-session as the figure it is compared against, which is the error that
-produced this entry.
-(4) **K3-entry chores:** quiesced re-measure of stoke `-O3` e2e pinned
-(measured 0.749 tok/s vs 1.644 matvec-implied; the ~0.73 s/token residue
-is either mmap paging under 5 GB free RAM — file-backed pages evict
-first — or a real ops-bench coverage gap; ruling §2.4 names the fork and
-either branch changes downstream scope). K4 entry keeps the mandatory
-K-quant bandwidth-vs-compute measurement.
+(3) **✅ RESOLVED — Fable ruled same day (binding:
+`superpowers/memos/2026-08-03-k3-simd-headroom-RULING-FABLE.md`). D3 is
+RETRACTED AND REPLACED, and the box-state mystery has a named suspect.**
+The single-thread SIMD lever is REAL: working band **~1.7–2.5× over
+scalar `-O3`** (interleaved cycles 1.96×/2.52×; plan on ~2×); the
+brief's ~2.3× is restored. **K3 exit expectation = llama-1T PARITY as a
+RATIO (median within-cycle stoke/llama 0.9–1.1, ≥3 interleaved cycles,
+pinned, same session) — never an absolute tok/s; absolutes are
+quarantined project-wide** (only quiesced-checklist sessions or
+interleaved pairs produce comparison-grade numbers). **"The bar is won
+in K5" is withdrawn — and so is the reopening's saturation story:**
+forensics found `FactoryGameSteam` averaging **5.08 cores since
+09:57:55**, spanning EVERY contested window of both sessions (ruling's
+runs ~10:45–11:15, reopening's ~12:10–13:35); the 6T/10T "wall" of
+26–34 GB/s was measured against a running game on hardware that is
+**2× DDR5-4800 dual-channel (76.8 GB/s theoretical)**, with M0's
+quiesced llama already demonstrating ~39 GB/s effective. Attribution is
+now a BUDGET: bar needs ~19.5 GB/s effective aggregate (≥2× slack);
+K3 buys ~2× per-core; K5 needs only ~1.9× from a parity core; K4's
+K-quant compute penalty is the open factor; levers compose as
+min(wall, N×per-core), never a free product. The K3/K5 split is settled
+by the quiesced K3-entry session (item 4) + the K4-entry sweep — until
+then no text may claim which milestone wins the bar. **STANDING
+COMPARABILITY RULE (ruling §4, binds gate [3]'s referent, bench.c, the
+playbook):** two perf figures compare only if same-session, interleaved
+where runnable, cycles cited, sidecar attached; rep-±σ never certifies
+a window; subtraction is comparison; a field name is not a basis.
+Pinning stays mandatory AND pinned numbers carry a co-load sidecar
+(pinning converts SMT-sibling occupancy into a hidden multiplier —
+the unpinned bwprobe read 14.4 GB/s beside pinned llama 1.26 in the
+same game-loaded window).
+(4) **K3-entry chores (re-scoped by the 08-03 K3 ruling §7):** the §2.4
+fork is SETTLED (`d6e02d1`) — neither branch; the "residue" was two box
+states subtracted (paging refuted 2000:1 by `Pages Input/sec`; bench and
+e2e agree to 1.12× within one window, ~89% coverage). Owed, blocking,
+ONE quiesced session: pre-SIMD baseline row + llama 1T referent
+interleaved + llama 6T/10T mini-sweep, sidecar proving quiesced
+(game/Discord closed, all-LP busy <5% for 60 s, free RAM > model+2 GB).
+Also K3-entry: `stoke run` in-binary timing report (differencing retired
+— valid only within one window), bench.c sidecar fields + referent
+driver script per ruling §4–5. K4 entry keeps the mandatory K-quant
+bandwidth-vs-compute measurement **plus a llama Q4_K_M 1T/6T pinned
+interleaved referent sweep**.
 (5) **The deferred oracle gate may run at `-O3`** (same verdict ~3×
 cheaper) under a mechanical precondition: rebuild the archived intcore
 source at `-O3`, archive + sha alongside
@@ -292,7 +307,14 @@ give blocks BACK under desktop RAM pressure, the 3× failure mode M2's
 ops history measured live) stays a feature, not a rewrite; (2)
 **sequence teardown at any lifecycle point is a first-class op the sim
 exercises** (all blocks freed, refcounts consistent) — it is the
-foundation M5's cancellation invariant stands on.
+foundation M5's cancellation invariant stands on; (3) **the design note
+OPENS with a bandwidth budget** (08-03 K3 ruling §6): W measured
+quiesced in-session at M4 entry (floor ~39 GB/s effective from M0;
+theoretical 76.8; the game-window 34 may not be quoted as W); per-step
+traffic model where batching amortizes ONLY the weight term; the
+KV-dominance crossover formula in N and ctx; Q8-KV's halving as the
+input to Kabir's M5 default call; M5's ITL and 16.8@16 bars checked as
+budget lines BEFORE paged KV is scoped.
 
 **M5 — continuous batching (THE product gate).** Forward note §M5: the
 locked scheduler (WAITING→PREFILLING→RUNNING→FINISHED; ≤1 active prefill;
