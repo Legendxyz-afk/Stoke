@@ -153,7 +153,25 @@ u32 bench_reps_for(double pilot_ms) {
  * `reps_override` times), returning the spread. One untimed warm-up call
  * happens first: it faults in this op's own working set and lets any
  * first-call branch prediction settle, so rep 1 is not systematically the
- * slowest sample. */
+ * slowest sample.
+ *
+ * ▶ CONTRACT, AND IT IS A REAL CONSTRAINT ON WHAT YOU MAY BENCH HERE:
+ * nothing is re-initialized between reps, so an IN-PLACE op measures its
+ * own OUTPUT on every rep after the first. Two ops below are in-place --
+ * `softmax` and `rope_neox`, both on the y pool -- and for those two it is
+ * harmless: rope's cost comes from position-derived sin/cos and does not
+ * depend on the data at all, and softmax's real input (an attention row)
+ * and its degenerate one (a probability vector) both land on expf's fast
+ * path. Checked 2026-08-03, and the figures stand.
+ *
+ * It is recorded because it is LATENT, not because it currently bites.
+ * The 2026-08-02 K1 pool bug proved the same point from the other side:
+ * swiglu's baseline figure was 2.9x too slow purely because its operands
+ * were wrong, since expf has a magnitude-dependent slow path. Before
+ * adding any in-place op whose cost can depend on its operand values,
+ * either restore the input between reps outside the timed region or give
+ * the op a scratch destination -- do not assume rep N sees rep 1's
+ * distribution. */
 static Timing time_op(void (*fn)(void*), void* ctx, u32 reps_override) {
     fn(ctx);
 
