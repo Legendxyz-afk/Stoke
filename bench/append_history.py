@@ -39,6 +39,37 @@ taste. They are the whole reason this is a tool and not an echo command.
    REFUSAL to write: a box that cannot measure consistently right now must not
    silently deposit a number that a future regression hunt will trust.
 
+3. THE BOX SIDECAR, AND WHY IT IS SAMPLED HERE RATHER THAN IN bench.c
+   (2026-08-03, Fable K3 ruling S4). Decision 2's guard compares three runs to
+   EACH OTHER, so a SUSTAINED co-load makes all three agree and be equally
+   wrong -- which is exactly what happened: a row taken 2026-08-03 passed the
+   guard at 13.8% spread while its matvecs implied 0.987 tok/s against the same
+   binary's 1.644 the same morning, and it had to be deleted unrecorded. The
+   cause was found only afterwards, by forensics: a game had been resident
+   since 09:57 that day, averaging 5.08 cores, spanning every contested
+   measurement window of two sessions. Nobody had recorded the process table.
+
+   The guard could not have caught it and no amount of re-running would have.
+   What closes it is recording the ONE fact nobody wrote down, mechanically,
+   in the row itself. So each run is BRACKETED by a box sample and the row
+   carries `box.sidecar` plus a mechanical `box.grade`:
+
+     "gate"    -- quiesced by measurement: foreign CPU below 5% of the box AND
+                  free RAM above the model + 2 GB. Comparison-grade.
+     "ambient" -- anything else. A real number about a loaded box; NOT a diff
+                  base, NOT a referent, NOT quotable against another row.
+
+   bench.c deliberately emits no box state (see its emit_jsonl comment: a
+   process that guesses its own provenance writes confident falsehoods). That
+   stands. This layer is not guessing -- it is the PARENT of the bench run and
+   samples the window from outside, which is the one place the co-load during
+   the timed region is observable at all.
+
+   `foreign_cpu_cores` is a FLOOR: it sums per-process CPU-time deltas and
+   silently undercounts processes this user cannot open. A floor is the right
+   direction for a guard -- it can fail to raise an alarm, but it cannot
+   invent one, so "gate" is never granted on an overestimate of quiet.
+
 WHAT THIS TOOL DELIBERATELY DOES NOT DO. It does not derive tok/s. That needs
 the model's layer count and turns a recording tool into one that must also
 know architecture; the arithmetic belongs in the ledger where its assumptions
@@ -53,6 +84,7 @@ import os
 import statistics
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -91,6 +123,18 @@ STABILITY_MIN_US = 100.0
 # Calibrated against real data: the post-fix LOGITS spread was 8%, the
 # pre-fix one 162%. 20% admits the former and refuses the latter.
 STABILITY_MAX_REL = 0.20
+
+# ---- box sidecar thresholds (header decision 3) ----
+# "all-LP busy < 5%" from the ruling's quiesced definition, expressed as cores
+# so it reads the same on any core count: 5% of a 16-LP box is 0.8 cores.
+QUIESCED_MAX_FOREIGN_FRAC = 0.05
+# Headroom above the model so a mmap'd file can stay resident. The 2026-08-03
+# sessions ran a 4.28 GB model with ~5 GB free and spent a day arguing about
+# whether the shortfall was paging; it was not, but the margin is cheap.
+QUIESCED_MIN_FREE_HEADROOM_MB = 2048
+# A process holding at least this many cores is named in the sidecar, so the
+# culprit is in the row rather than in someone's memory of the day.
+SIDECAR_NAME_PROC_CORES = 0.05
 
 
 # ---------------------------------------------------------------- pure logic
@@ -141,6 +185,116 @@ def stability_violations(per_op, min_us=STABILITY_MIN_US,
             out.append((op, s))
     out.sort(key=lambda kv: kv[1], reverse=True)
     return out
+
+
+def sidecar_delta(before, after):
+    """Derive one run's box sidecar from the two samples bracketing it. Pure.
+
+    `before`/`after` are box_sample() dicts. Returns None when either sample
+    is missing -- an absent sidecar is reported as absent, never as quiet,
+    because "no evidence of load" and "evidence of no load" are the exact
+    pair this whole mechanism exists to stop conflating.
+
+    CPU is attributed by PID across the two samples. A process alive in both
+    contributes its delta; one that appears only in `after` started during the
+    window and contributes all of it. The bench child itself is excluded for
+    free: it is spawned and reaped strictly between the samples, so its PID is
+    in neither. A process that EXITS during the window loses its share, which
+    is part of why the total is documented as a floor.
+    """
+    if not before or not after:
+        return None
+    wall_s = (after["t_ms"] - before["t_ms"]) / 1000.0
+    if wall_s <= 0:
+        return None
+
+    prev = {p["pid"]: p["cpu_s"] for p in before["procs"]}
+    per_proc = []
+    for p in after["procs"]:
+        if p["pid"] in prev:
+            used = p["cpu_s"] - prev[p["pid"]]
+        elif p.get("start_ms") is not None and p["start_ms"] >= before["t_ms"]:
+            # Started inside the window, so all of its CPU belongs to the
+            # window. Verified by START TIME rather than by absence from the
+            # first sample: a process can also be absent there because it was
+            # unreadable at that moment, and charging its whole lifetime's CPU
+            # to this window would turn the total into an over-estimate.
+            used = p["cpu_s"]
+        else:
+            continue
+        # Negative means PID reuse across the window -- a different process
+        # wearing a recycled number. Drop it rather than subtract nonsense.
+        if used > 0:
+            per_proc.append((p["name"], used / wall_s))
+
+    per_proc.sort(key=lambda nc: nc[1], reverse=True)
+    total = sum(cores for _, cores in per_proc)
+    named = [{"name": n, "cores": round(c, 3)}
+             for n, c in per_proc if c >= SIDECAR_NAME_PROC_CORES]
+
+    free_before = before.get("free_ram_mb")
+    free_after = after.get("free_ram_mb")
+    frees = [f for f in (free_before, free_after) if f is not None]
+
+    return {
+        "wall_s": round(wall_s, 2),
+        # A FLOOR (header decision 3): inaccessible processes are invisible.
+        "foreign_cpu_cores": round(total, 3),
+        # Non-null means this sampler could not observe the load that matters
+        # here; box_grade refuses "gate" on it. Carried from the sample rather
+        # than re-derived so the reason travels into the row.
+        "blind": after.get("blind") or before.get("blind"),
+        "top_foreign": named[0] if named else None,
+        "busy_procs": named[:5],
+        # The MINIMUM across the window, not an endpoint: the question a
+        # future reader asks is whether the model could stay resident
+        # throughout, and the worst moment is what answers it.
+        "free_ram_mb_min": min(frees) if frees else None,
+    }
+
+
+def box_grade(sidecars, model_size_bytes, n_logical,
+              max_frac=QUIESCED_MAX_FOREIGN_FRAC,
+              min_headroom_mb=QUIESCED_MIN_FREE_HEADROOM_MB):
+    """Mechanical comparison-grade for a row. Pure. Returns (grade, reasons).
+
+    "gate" is granted only on POSITIVE evidence of quiet from every run in the
+    row. Missing sidecars, an unknown core count, or one loaded run out of
+    three all yield "ambient" -- the grade is a claim about the whole row, and
+    a row is only as comparable as its worst run.
+    """
+    reasons = []
+    if not sidecars or any(s is None for s in sidecars):
+        return "ambient", ["no box sidecar -- box state during the run is unrecorded"]
+    if not n_logical:
+        return "ambient", ["logical core count unknown -- cannot judge foreign load"]
+
+    for s in sidecars:
+        if s.get("blind"):
+            reasons.append(f"box sampler is blind: {s['blind']}")
+            break
+
+    max_cores = max_frac * n_logical
+    worst = max(s["foreign_cpu_cores"] for s in sidecars)
+    if worst > max_cores:
+        top = max((s["top_foreign"] for s in sidecars if s["top_foreign"]),
+                  key=lambda t: t["cores"], default=None)
+        who = f" (top: {top['name']} at {top['cores']} cores)" if top else ""
+        reasons.append(
+            f"foreign CPU {worst:.2f} cores exceeds {max_cores:.2f} "
+            f"({max_frac * 100:.0f}% of {n_logical} LPs){who}")
+
+    need_mb = model_size_bytes / (1024.0 * 1024.0) + min_headroom_mb
+    frees = [s["free_ram_mb_min"] for s in sidecars
+             if s["free_ram_mb_min"] is not None]
+    if not frees:
+        reasons.append("free RAM unrecorded")
+    elif min(frees) < need_mb:
+        reasons.append(
+            f"free RAM fell to {min(frees)} MB, under the "
+            f"{need_mb:.0f} MB the model + {min_headroom_mb} MB headroom needs")
+
+    return ("ambient" if reasons else "gate"), reasons
 
 
 # ------------------------------------------------------------- provenance
@@ -201,18 +355,117 @@ def free_ram_mb():
     return None
 
 
+# Cumulative per-process CPU seconds + free RAM + a clock, in one shot. The
+# counters must be CUMULATIVE, not instantaneous: bracketing the run with two
+# cumulative reads gives the average over exactly the timed window, whereas two
+# instantaneous rate samples would only describe the two instants at its edges
+# -- and a co-load that starts after the first sample would read as quiet.
+_WIN_SAMPLE_PS = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$procs = @(Get-Process | Where-Object { $_.CPU -gt 0 } | ForEach-Object {
+    $st = $null
+    if ($_.StartTime) { $st = [DateTimeOffset]::new($_.StartTime).ToUnixTimeMilliseconds() }
+    @{ pid = $_.Id; name = $_.ProcessName; cpu_s = $_.CPU; start_ms = $st }
+})
+$free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
+[pscustomobject]@{
+    t_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    free_ram_mb = [math]::Round($free / 1024.0)
+    procs = $procs
+} | ConvertTo-Json -Compress -Depth 4
+"""
+
+
+def box_sample():
+    """Snapshot of cumulative box counters. None when unavailable.
+
+    Never raises: a box that cannot be sampled produces an ungraded row, which
+    is a worse row but still a true one. Failing the append over telemetry
+    would trade a recorded measurement for no measurement at all.
+    """
+    try:
+        if sys.platform == "win32":
+            out = _run(["powershell", "-NoProfile", "-NonInteractive",
+                        "-Command", _WIN_SAMPLE_PS])
+            if not out:
+                return None
+            d = json.loads(out)
+            procs = d.get("procs") or []
+            # PowerShell's ConvertTo-Json emits a bare object, not an array,
+            # when the pipeline yields exactly one item.
+            if isinstance(procs, dict):
+                procs = [procs]
+            return {
+                "t_ms": int(d["t_ms"]),
+                "free_ram_mb": d.get("free_ram_mb"),
+                "procs": [{"pid": int(p["pid"]), "name": str(p["name"]),
+                           "cpu_s": float(p["cpu_s"]),
+                           "start_ms": (int(p["start_ms"])
+                                        if p.get("start_ms") is not None
+                                        else None)} for p in procs],
+            }
+
+        # Linux: /proc/stat is authoritative and exact, but it is aggregate
+        # only. Per-process attribution would mean walking /proc/*/stat, and
+        # the measurement discipline this serves (the referent interleave, the
+        # K3-entry baseline) is a Windows-box activity. The aggregate is what
+        # decides the grade; naming the culprit is a convenience.
+        #
+        # UNDER WSL THIS SAMPLER IS BLIND TO THE THING IT EXISTS TO CATCH.
+        # /proc/stat inside WSL2 describes the utility VM, not the Windows
+        # host, so a host running two games reads as an idle box -- measured
+        # 2026-08-03: the host at 5.35 foreign cores, WSL's own view 0.01, and
+        # it graded "gate". A sampler that cannot see the load must say so
+        # rather than certify quiet, which is the same failure the grade was
+        # built to prevent, one layer down.
+        blind = None
+        try:
+            with open("/proc/version") as fh:
+                if "microsoft" in fh.read().lower():
+                    blind = ("running under WSL -- /proc/stat sees the VM, "
+                             "not the Windows host, so host load is invisible")
+        except Exception:
+            pass
+
+        with open("/proc/stat") as fh:
+            f = fh.readline().split()
+        vals = [int(v) for v in f[1:11]]
+        idle = vals[3] + vals[4]           # idle + iowait
+        ticks = os.sysconf("SC_CLK_TCK")
+        return {
+            "t_ms": int(time.time() * 1000),
+            "free_ram_mb": free_ram_mb(),
+            "blind": blind,
+            # Synthesized as one pseudo-process so sidecar_delta's PID
+            # arithmetic is identical on both platforms. Busy jiffies are
+            # already the sum across all cores, which is what "cores" means.
+            "procs": [{"pid": -1, "name": "(system busy)",
+                       "cpu_s": (sum(vals) - idle) / float(ticks),
+                       "start_ms": None}],
+        }
+    except Exception:
+        return None
+
+
 # ------------------------------------------------------------------ driving
 
 
 def one_run(exe, model, extra_args):
-    """Run the bench once and return its parsed final JSON line.
+    """Run the bench once; return (parsed final JSON line, box sidecar).
 
     The JSON is the LAST line by construction (bench.c emit_jsonl), so the
     human table above it is ignored rather than parsed -- no coupling to a
     format meant for eyes.
+
+    The run is BRACKETED by box samples (header decision 3). The samples are
+    taken as close to the subprocess as possible so the window they describe
+    is the window that was timed; the sampling cost itself lands outside the
+    bench's own timers either way.
     """
+    before = box_sample()
     cmd = [exe, "bench", "--ops", model, "--jsonl"] + list(extra_args)
     r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    sidecar = sidecar_delta(before, box_sample())
     if r.returncode != 0:
         raise SystemExit(
             f"bench failed (rc={r.returncode}):\n{r.stderr.strip()[:2000]}")
@@ -220,14 +473,14 @@ def one_run(exe, model, extra_args):
     if not lines:
         raise SystemExit("bench produced no output")
     try:
-        return json.loads(lines[-1])
+        return json.loads(lines[-1]), sidecar
     except json.JSONDecodeError as e:
         raise SystemExit(
             f"bench's final line is not JSON ({e}). Was it built with the "
             f"--jsonl support? Line was:\n{lines[-1][:400]}")
 
 
-def build_row(runs, label, milestone, exe, model):
+def build_row(runs, label, milestone, exe, model, sidecars=None):
     per_op = {}
     per_op_meta = {}
     for r in runs:
@@ -269,6 +522,10 @@ def build_row(runs, label, milestone, exe, model):
             "pct_ref": None,
         }
 
+    n_logical = os.cpu_count()
+    grade, grade_reasons = box_grade(sidecars, os.path.getsize(model),
+                                     n_logical)
+
     ref_med = statistics.median(ref_runs)
     for op, o in ops_out.items():
         gbs = (o["bytes"] / 1e9) / (o["med_us"] / 1e6) if o["med_us"] > 0 else 0.0
@@ -294,9 +551,17 @@ def build_row(runs, label, milestone, exe, model):
             "name": os.path.basename(model),
             "size_bytes": os.path.getsize(model),
         },
+        # `grade` is MECHANICAL (header decision 3). It is the field that
+        # decides whether this row may be compared to anything: "gate" rows
+        # are quiesced by measurement, "ambient" rows describe a box that was
+        # doing something else at the time and are not a diff base.
         "box": {
             "platform": sys.platform,
+            "logical_cpus": n_logical,
             "free_ram_mb": free_ram_mb(),
+            "grade": grade,
+            "grade_reasons": grade_reasons,
+            "sidecar": sidecars if sidecars else None,
         },
         "runs": len(runs),
         # THE DENOMINATOR: max(split8_f32, xor_u64) per run, then the
@@ -403,6 +668,94 @@ def selftest():
                  __file__)["ref_gbs_serial_runs"] == [7.4])
     ck("SCHEMA constant is 2", SCHEMA == 2)
 
+    # ---- the box sidecar (header decision 3) ----
+    def sample(t_ms, procs, free=8000):
+        return {"t_ms": t_ms, "free_ram_mb": free,
+                "procs": [{"pid": p, "name": n, "cpu_s": c,
+                           "start_ms": (s[0] if s else None)}
+                          for p, n, c, *s in procs]}
+
+    # THE CASE THIS MECHANISM EXISTS FOR, in the day's real numbers: a game
+    # holding ~5.08 cores across a 100 s window. If this ever grades "gate",
+    # the guard has stopped doing the one job it was built for.
+    quiet = sample(0, [(1, "idle", 0.0)])
+    loaded_a = sample(0, [(14904, "FactoryGameSteam-Win64-Shipping", 1000.0)])
+    loaded_b = sample(100_000, [(14904, "FactoryGameSteam-Win64-Shipping",
+                                 1508.0)])
+    d_loaded = sidecar_delta(loaded_a, loaded_b)
+    ck("sidecar measures the game at 5.08 cores",
+       abs(d_loaded["foreign_cpu_cores"] - 5.08) < 0.01)
+    ck("sidecar names the culprit in the row",
+       d_loaded["top_foreign"]["name"].startswith("FactoryGame"))
+    ck("a 5-core co-load grades AMBIENT",
+       box_grade([d_loaded], 4_280_405_216, 16)[0] == "ambient")
+
+    d_quiet = sidecar_delta(quiet, sample(100_000, [(1, "idle", 0.4)]))
+    ck("an idle box grades GATE",
+       box_grade([d_quiet], 4_280_405_216, 16)[0] == "gate")
+    ck("gate verdict carries no reasons",
+       box_grade([d_quiet], 4_280_405_216, 16)[1] == [])
+
+    # A row is only as comparable as its WORST run -- one loaded run out of
+    # three is the case that produced the deleted 2026-08-03 baseline row.
+    ck("one loaded run out of three condemns the row",
+       box_grade([d_quiet, d_loaded, d_quiet], 4_280_405_216, 16)[0]
+       == "ambient")
+
+    # ABSENCE IS NOT QUIET. This is the distinction the whole mechanism turns
+    # on, so it is asserted rather than assumed.
+    ck("a missing sidecar grades AMBIENT, not gate",
+       box_grade([None], 4_280_405_216, 16)[0] == "ambient")
+    ck("no samples at all grades AMBIENT", box_grade([], 4_280_405_216, 16)[0]
+       == "ambient")
+    ck("sidecar_delta reports a missing sample as None",
+       sidecar_delta(None, quiet) is None and sidecar_delta(quiet, None) is None)
+    ck("sidecar_delta rejects a zero-length window",
+       sidecar_delta(quiet, sample(0, [(1, "idle", 5.0)])) is None)
+
+    # Free RAM under the model + headroom is disqualifying on its own, even on
+    # a CPU-quiet box: the 4.28 GB mmap under ~5 GB free is the exact
+    # condition two sessions argued about.
+    tight = sidecar_delta(sample(0, [(1, "idle", 0.0)], free=5000),
+                          sample(100_000, [(1, "idle", 0.4)], free=5000))
+    g, why = box_grade([tight], 4_280_405_216, 16)
+    ck("free RAM under model+2GB grades AMBIENT even when CPU is quiet",
+       g == "ambient" and any("free RAM" in r for r in why))
+
+    ck("a PID recycled mid-window is dropped, not subtracted",
+       sidecar_delta(sample(0, [(7, "old", 900.0)]),
+                     sample(10_000, [(7, "new", 1.0)]))
+                    ["foreign_cpu_cores"] == 0.0)
+
+    # A process seen only in the second sample is charged to the window only
+    # if it STARTED there. Otherwise it was merely unreadable the first time,
+    # and billing its whole lifetime here would break the floor guarantee --
+    # the one property that lets "gate" be trusted.
+    ck("a process that started mid-window is charged in full",
+       sidecar_delta(sample(0, [(1, "idle", 0.0)]),
+                     sample(10_000, [(1, "idle", 0.0), (99, "game", 20.0, 5000)]))
+                    ["foreign_cpu_cores"] == 2.0)
+    ck("a process merely unseen in the first sample is NOT charged",
+       sidecar_delta(sample(50_000, [(1, "idle", 0.0)]),
+                     sample(60_000, [(1, "idle", 0.0), (99, "old", 9999.0, 1000)]))
+                    ["foreign_cpu_cores"] == 0.0)
+    ck("an unreadable start time is treated as pre-existing, not as new",
+       sidecar_delta(sample(50_000, [(1, "idle", 0.0)]),
+                     sample(60_000, [(1, "idle", 0.0), (99, "sys", 9999.0)]))
+                    ["foreign_cpu_cores"] == 0.0)
+
+    # A BLIND SAMPLER MAY NOT CERTIFY QUIET. Measured under WSL 2026-08-03:
+    # host at 5.35 foreign cores, WSL's /proc/stat view 0.01, verdict "gate".
+    # The numbers below are that exact reading.
+    blind_quiet = dict(d_quiet, blind="running under WSL -- sees the VM only")
+    gb, gwhy = box_grade([blind_quiet], 4_280_405_216, 16)
+    ck("a blind sampler cannot grade GATE however quiet it reads",
+       gb == "ambient" and any("blind" in r for r in gwhy))
+
+    ck("build_row stamps a grade even with no sidecars",
+       build_row([fake_run(flags)], "l", "M3", __file__, __file__)["box"]
+       ["grade"] == "ambient")
+
     print(f"\nselftest: {checks - failed}/{checks} checks passed")
     return 1 if failed else 0
 
@@ -445,14 +798,17 @@ def main():
                  "file's header, decision 2). Use --force if you mean it.")
 
     print(f"running {a.runs} bench runs ...")
-    runs = []
+    runs, sidecars = [], []
     for i in range(a.runs):
-        r = one_run(a.exe, a.model, a.bench_args)
+        r, sc = one_run(a.exe, a.model, a.bench_args)
         runs.append(r)
+        sidecars.append(sc)
+        load = (f", foreign {sc['foreign_cpu_cores']:.2f} cores"
+                if sc else ", box UNSAMPLED")
         print(f"  run {i + 1}/{a.runs}: ref {r['ref_gbs']:.2f} GB/s, "
-              f"{len(r['ops'])} ops")
+              f"{len(r['ops'])} ops{load}")
 
-    row = build_row(runs, a.label, a.milestone, a.exe, a.model)
+    row = build_row(runs, a.label, a.milestone, a.exe, a.model, sidecars)
 
     per_op = {op: o["med_us_runs"] for op, o in row["ops"].items()}
     violations = stability_violations(per_op)
@@ -463,6 +819,17 @@ def main():
     ref_spread = rel_spread(row["ref_gbs_runs"])
     if ref_spread > STABILITY_MAX_REL:
         violations.append(("reference stream", ref_spread))
+
+    # Reported BEFORE the stability guard, because a passing guard on a loaded
+    # box is precisely the trap this exists for: the 2026-08-03 row agreed with
+    # itself across three runs and was 1.7x wrong (header decision 3).
+    if row["box"]["grade"] == "gate":
+        print("\nbox grade: GATE -- quiesced by measurement, comparison-grade.")
+    else:
+        print("\nbox grade: AMBIENT -- this row is NOT a diff base, NOT a "
+              "referent, and may not be quoted against another row:")
+        for r in row["box"]["grade_reasons"]:
+            print(f"  - {r}")
 
     if violations:
         print("\nSTABILITY GUARD FAILED -- this box is not measuring "
