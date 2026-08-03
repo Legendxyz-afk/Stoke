@@ -74,7 +74,29 @@ bool kernels_cpu_has_avx_vnni(void) {
 
 /* Sum of eight i32 lanes. Exact at any order -- integer addition is
  * associative, which is the entire reason the integer core makes a
- * bit-exact SIMD twin possible at all. */
+ * bit-exact SIMD twin possible at all.
+ *
+ * ▶ ONE REDUCTION PER BLOCK LOOKS WASTEFUL AND WAS MEASURED TO BE FINE.
+ * 2026-08-03: a 4-block unrolled variant was written and verified bit-exact,
+ * holding four accumulators in registers and folding them with three
+ * `vphaddd` so the four cross-lane chains became one. Confirmed from objdump
+ * that it did what was intended -- the reduction dropped from ~24 ops per
+ * four blocks to ~11 (and the first attempt, which used `for (k<4)` over an
+ * `__m256i acc[4]`, did NOT: gcc kept the loop rolled and spilled the
+ * accumulators, emitting 4 `vpdpbusd` where 8 were wanted).
+ *
+ * It bought nothing. Measured A,B,A,B against this version: **1.0125x CPU
+ * time, i.e. 1.25% WORSE**, over 4 interleaved cycles. The ALU savings are
+ * invisible because this loop is not ALU-bound. So the simple version
+ * stands, and the unroll is recorded here rather than re-attempted.
+ *
+ * ▶▶ AND THE MEASUREMENT METHOD IS THE MORE REUSABLE FINDING. Wall-clock
+ * A/B on a busy box was useless: 117% spread across cycles, ratios from 0.51
+ * to 1.12, on a box carrying ~8 foreign cores. The SAME comparison by
+ * PROCESS CPU TIME spread only 9.9%. Interleaving controls for slow drift
+ * BETWEEN cycles; it does nothing about high-frequency contention WITHIN
+ * one, and wall time absorbs every descheduling event while CPU time does
+ * not. When the box cannot be quiesced, compare CPU time. */
 static inline i32 hsum_i32_8(__m256i v) {
     __m128i s = _mm_add_epi32(_mm256_castsi256_si128(v),
                               _mm256_extracti128_si256(v, 1));
