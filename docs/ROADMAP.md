@@ -220,12 +220,21 @@ aligner; where they differ, this section + the ledger govern.
 `superpowers/memos/2026-08-03-m3-optimization-level-RULING-FABLE.md`;
 amends the forward note §M3 where they differ; bar/ε/waivers/corpus
 untouched):**
-(1) **Build default is `-O3`** + `-ffp-contract=off` (free now — baseline
-x86-64 has no FMA — and mandatory before K3's `-mfma`: GCC 14 flipped the
-ISO-mode contract default, so Win gcc 15.2 and WSL gcc 13.3 would
-otherwise disagree inside SIMD files). Sanitizer legs stay `-O1`
-explicitly (more sensitive there, not less; the un-instrumented `-O3`
-plain legs are what verify the shipped artifact).
+(1) **Build default is `-O3`** + `-ffp-contract=off`. Sanitizer legs stay
+`-O1` explicitly (more sensitive there, not less; the un-instrumented
+`-O3` plain legs are what verify the shipped artifact). **LANDED `d0f8a6b`
+— and the ruling's stated REASON for the fp-contract pin was refuted at
+landing, while the action stood.** The ruling argued GCC 14 flipped the
+ISO-mode contract default so Win gcc 15.2 and WSL gcc 13.3 would disagree
+inside `-mfma` files. Measured from codegen instead: under `-std=c11 -O3
+-mfma` **both** toolchains emit `vmulss`+`vaddss` and neither contracts,
+while the same source in gnu17 mode emits `vfmadd132ss` on both — probe
+sensitive, predicted divergence absent. Pinned anyway because contraction
+becomes possible under K3's `-mfma` and a future toolchain flip would
+break scalar↔SIMD f32 exactness silently. **Also: `gcc -Q --help=common`
+— the check the ruling prescribed — reports `fast` on BOTH legs and
+contradicts codegen; it prints the raw option default, not the
+language-adjusted value. Do not use it to settle this question.**
 (2) **`bench --ops`' reference stream is replaced before any new `%ref`
 row**: serial_f32 measured f32-add latency, ~2.15× under the real
 ~15 GB/s ceiling; new `ref_gbs` = max(split8_f32, xor_u64), both
