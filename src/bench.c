@@ -34,23 +34,61 @@
  * number that was really about the machine.
  *
  * The fix is to measure, in the same run and under the same conditions, a
- * plain sequential f32 read over a buffer far larger than L3. That number is
- * this machine's practical streaming bandwidth *right now*. Every op is then
- * reported BOTH as absolute GB/s and as a percentage of that reference.
+ * read over a buffer far larger than L3. That number is this machine's
+ * practical streaming bandwidth *right now*. Every op is then reported BOTH
+ * as absolute GB/s and as a percentage of that reference.
  *
  *   - The absolute number moves when the box is busy.
  *   - The RATIO does not (both numerator and denominator degrade together).
  *
- * So the ratio column is the one that survives being run on a machine someone
- * is using, and the ratio column is the one the attribution ladder should be
- * read from. An op at ~100% of reference is bandwidth-bound and no amount of
- * SIMD will help it; an op far below reference has headroom and is worth
- * attacking. That verdict is now robust to conditions rather than hostage to
- * them.
+ * ▶▶ THE DENOMINATOR WAS WRONG FROM K1 UNTIL 2026-08-03, AND EVERY %ref THIS
+ * PROJECT RECORDED BEFORE THAT DATE IS AGAINST A FIGURE ~2.15x TOO LOW.
+ *
+ * The original reference stream was `f32 acc = 0; for(..) acc += buf[i];`.
+ * That is a SERIAL FLOATING-POINT REDUCTION: every add depends on the
+ * previous one, and gcc may not reassociate it without -ffast-math, so it
+ * cannot be vectorized at ANY optimization level. Its rate is f32-add
+ * LATENCY, not memory bandwidth. Measured on this box (tests/tooling/
+ * bwprobe.c, same 256 MB buffer): serial 6.7-7.4 GB/s at both -O1 and -O3,
+ * while split8_f32 and xor_u64 -- the same reads with the dependency chain
+ * broken -- reach 13.9-16.6.
+ *
+ * So the denominator is now max(split8_f32, xor_u64), both measured in this
+ * same run. They trade places between runs, and taking the larger is the
+ * correct reading of a quantity that means "at least this much bandwidth
+ * exists". serial_f32 is still measured and printed, but ONLY as a labelled
+ * diagnostic: it is a decent FP-latency canary, and it is the conversion key
+ * that makes pre-2026-08-03 rows re-interpretable. It must never again be a
+ * denominator.
+ *
+ * ▶ HOW THE ERROR SURVIVED, which is the part worth carrying forward. The
+ * serial stream's INVARIANCE across -O levels (7.63/7.77/7.84) was cited as
+ * an internal control: "it did not speed up like everything else, therefore
+ * it must already be at DRAM, therefore it is a legitimate denominator."
+ * The invariance was the SYMPTOM, not the control. "It didn't change" is
+ * produced equally by *this is a stable reference* and by *this is measuring
+ * something the change cannot affect*. AN INVARIANT CITED AS A CONTROL MUST
+ * HAVE ITS INVARIANCE EXPLAINED BEFORE IT IS TRUSTED, NOT MERELY OBSERVED.
+ * Same family as BENCH_MIN_REPS' max/med = 1.33 reading as healthy while the
+ * median was 2.6x wrong: a statistic is most dangerous where it is blind,
+ * because that is where it looks calmest.
+ *
+ * ▶ AND %ref STILL DOES NOT MEAN "FRACTION OF WHAT THIS OP COULD ACHIEVE".
+ * A read-bandwidth ceiling is an upper bound on the machine, not a target a
+ * real kernel can reach. Measured 2026-08-03: llama.cpp's own production
+ * AVX2+VNNI decode, single thread pinned to a P-core with the model
+ * resident, runs at ~34% of this denominator -- BELOW stoke's scalar matvec
+ * rate at -O3. So an op at 40% of reference is not necessarily leaving 2.5x
+ * on the table, and "SIMD will collect the difference" does not follow from
+ * this column alone. The attribution ladder compares against the two llama
+ * referent rows (per-core and 6-core aggregate, see the M3 ruling) for
+ * "what should this achieve"; %ref answers only "how much of the machine's
+ * read bandwidth is this op moving".
  *
  * The hardcoded ~60 GB/s from the forward note is still printed, but as
  * context only -- it is a spec figure for the platform, not a measurement of
- * this box on this afternoon.
+ * this box on this afternoon. It is also wrong for this box by ~4x, which is
+ * its own argument for measuring rather than quoting.
  *
  * ---------------------------------------------------------------------------
  * DECISION 3 -- ADAPTIVE REPS, AND min/median/max IS REPORTED, NEVER A MEAN.
@@ -104,6 +142,12 @@
  * compiler must perform them -- see Decision 1. */
 static volatile f32 g_sink;
 
+/* Integer sink, same rationale: the u64 reference variant must not have its
+ * whole loop deleted as dead code. Separate from g_sink because routing a
+ * u64 through an f32 would silently lose bits and invite a future reader to
+ * think the value mattered. */
+static volatile u64 g_sink_u;
+
 typedef BenchTiming Timing;
 
 static int cmp_double(const void* a, const void* b) {
@@ -130,6 +174,10 @@ double bench_gbs(u64 bytes, double ms) {
         return 0.0;
     }
     return ((double)bytes / 1e9) / (ms / 1000.0);
+}
+
+double bench_ref_denominator(double split8_gbs, double xor_gbs) {
+    return (split8_gbs > xor_gbs) ? split8_gbs : xor_gbs;
 }
 
 u32 bench_reps_for(double pilot_ms) {
@@ -192,14 +240,59 @@ static Timing time_op(void (*fn)(void*), void* ctx, u32 reps_override) {
     return t;
 }
 
-/* ---- the reference stream (Decision 2) ---- */
+/* ---- the reference streams (Decision 2) ----
+ *
+ * Three variants over the SAME buffer. The first two are candidates for the
+ * denominator and the third is a diagnostic; see Decision 2 for why that
+ * split exists and what it cost to discover.
+ *
+ * These are transcribed from tests/tooling/bwprobe.c, which is the
+ * standalone probe that established the correction. Keeping them
+ * structurally identical is deliberate: if this file's figures and the
+ * probe's ever disagree, the difference is the harness and not the box. */
 
 typedef struct {
     const f32* buf;
     u64        n;
 } RefCtx;
 
-static void run_ref_stream(void* p) {
+/* Eight independent accumulators: the same f32 arithmetic as the old serial
+ * stream with the dependency chain broken, so eight chains interleave and
+ * the loop is bound by loads rather than by add latency. Still not
+ * auto-vectorized (gcc may not reassociate f32 without -ffast-math), which
+ * is the point -- this is an honest read rate, not a vectorization trick. */
+static void run_ref_split8(void* p) {
+    RefCtx* c = (RefCtx*)p;
+    f32 a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0, a6 = 0, a7 = 0;
+    for (u64 i = 0; i + 8 <= c->n; i += 8) {
+        a0 += c->buf[i];     a1 += c->buf[i + 1];
+        a2 += c->buf[i + 2]; a3 += c->buf[i + 3];
+        a4 += c->buf[i + 4]; a5 += c->buf[i + 5];
+        a6 += c->buf[i + 6]; a7 += c->buf[i + 7];
+    }
+    g_sink = ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+}
+
+/* XOR over the same bytes read as u64: 1-cycle latency and associative, so
+ * nothing binds but the load ports. This is the closest thing here to a pure
+ * read-bandwidth measurement. */
+static void run_ref_xor(void* p) {
+    RefCtx*    c = (RefCtx*)p;
+    const u64* q = (const u64*)(const void*)c->buf;
+    u64        acc = 0;
+    for (u64 i = 0; i < c->n / 2; i++) {
+        acc ^= q[i];
+    }
+    g_sink_u = acc;
+}
+
+/* THE OLD REFERENCE STREAM. Kept, measured, printed -- and NOT a
+ * denominator. It reports f32-add latency (~7 GB/s here, unmoved by -O),
+ * which is roughly 2.15x under this box's real read bandwidth. Two reasons
+ * it stays: it is a cheap canary for FP-latency changes, and it is the
+ * conversion key that lets pre-2026-08-03 %ref figures be re-interpreted
+ * instead of merely discarded. */
+static void run_ref_serial(void* p) {
     RefCtx* c = (RefCtx*)p;
     f32 acc = 0.0f;
     for (u64 i = 0; i < c->n; i++) {
@@ -413,7 +506,13 @@ u64 bench_json_escape(const char* in, char* out, u64 cap) {
     return w;
 }
 
-static void emit_jsonl(const char* model_path, double ref_gbs, Timing rt) {
+typedef struct {
+    double gbs;
+    Timing t;
+} RefResult;
+
+static void emit_jsonl(const char* model_path, double ref_gbs,
+                       RefResult split8, RefResult xor_u64, RefResult serial) {
     /* The model path is the only externally-supplied string in this object;
      * `op` is an internal literal and `shape` is snprintf'd from integers.
      * Both are escaped anyway -- the cost is nothing, and "safe because of
@@ -422,11 +521,32 @@ static void emit_jsonl(const char* model_path, double ref_gbs, Timing rt) {
     u64   cap = BENCH_JSON_ESCAPE_MAX(strlen(model_path));
     char* esc = (char*)xmalloc((size_t)cap);
     bench_json_escape(model_path, esc, cap);
-    printf("{\"kind\":\"ops\",\"model\":\"%s\",\"ref_gbs\":%.4f,"
+
+    /* The build flags are a compile-time literal, but they are escaped like
+     * any other string: they contain no JSON metacharacters today, and
+     * "safe because of where it comes from" is precisely the reasoning that
+     * let the unescaped model path ship. */
+    u64   fcap = BENCH_JSON_ESCAPE_MAX(strlen(STOKE_BUILD_CFLAGS));
+    char* fesc = (char*)xmalloc((size_t)fcap);
+    bench_json_escape(STOKE_BUILD_CFLAGS, fesc, fcap);
+
+    /* ref_gbs is the denominator (max of the two fast variants); each
+     * variant is also recorded whole so a future reader can re-derive the
+     * choice, and serial_f32 is recorded so pre-2026-08-03 rows remain
+     * convertible. ref_med_ms/min/max/reps describe the DENOMINATOR's
+     * timing, which is what they meant before the split. */
+    printf("{\"kind\":\"ops\",\"model\":\"%s\",\"build_cflags\":\"%s\","
+           "\"ref_gbs\":%.4f,\"ref_gbs_split8\":%.4f,\"ref_gbs_xor\":%.4f,"
+           "\"ref_gbs_serial\":%.4f,"
            "\"ref_med_ms\":%.4f,\"ref_min_ms\":%.4f,\"ref_max_ms\":%.4f,"
            "\"ref_reps\":%u,\"ops\":[",
-           esc, ref_gbs, rt.med_ms, rt.min_ms, rt.max_ms, rt.reps);
+           esc, fesc, ref_gbs, split8.gbs, xor_u64.gbs, serial.gbs,
+           (split8.gbs >= xor_u64.gbs ? split8.t : xor_u64.t).med_ms,
+           (split8.gbs >= xor_u64.gbs ? split8.t : xor_u64.t).min_ms,
+           (split8.gbs >= xor_u64.gbs ? split8.t : xor_u64.t).max_ms,
+           (split8.gbs >= xor_u64.gbs ? split8.t : xor_u64.t).reps);
     free(esc);
+    free(fesc);
 
     for (u32 i = 0; i < g_captured_n; i++) {
         const CapturedRow* c   = &g_captured[i];
@@ -554,18 +674,42 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     for (u64 i = 0; i < ref_n; i++) {
         ref_buf[i] = (f32)(i & 0xFF);
     }
-    RefCtx rc = { ref_buf, ref_n };
-    Timing rt = time_op(run_ref_stream, &rc, reps_override ? 3u : 0u);
-    g_ref_gbs = bench_gbs(ref_n * sizeof(f32), rt.med_ms);
+    RefCtx rc       = { ref_buf, ref_n };
+    u32    ref_reps = reps_override ? 3u : 0u;
+    u64    ref_bytes = ref_n * sizeof(f32);
 
-    printf("  REFERENCE STREAM (this run, this box -- the ratio denominator)\n");
-    printf("    sequential f32 read over %u MB : %.2f GB/s"
+    Timing rt_split8 = time_op(run_ref_split8, &rc, ref_reps);
+    Timing rt_xor    = time_op(run_ref_xor, &rc, ref_reps);
+    Timing rt_serial = time_op(run_ref_serial, &rc, ref_reps);
+
+    double split8_gbs = bench_gbs(ref_bytes, rt_split8.med_ms);
+    double xor_gbs    = bench_gbs(ref_bytes, rt_xor.med_ms);
+    double serial_gbs = bench_gbs(ref_bytes, rt_serial.med_ms);
+
+    g_ref_gbs = bench_ref_denominator(split8_gbs, xor_gbs);
+
+    printf("  REFERENCE STREAMS (this run, this box -- %u MB buffer)\n",
+           BENCH_REF_BYTES / (1024u * 1024u));
+    printf("    split8_f32  (8 indep. f32 chains) : %.2f GB/s"
            "  (med %.2f ms, min %.2f, max %.2f)\n",
-           BENCH_REF_BYTES / (1024u * 1024u), g_ref_gbs, rt.med_ms, rt.min_ms,
-           rt.max_ms);
-    printf("    forward-note spec ceiling      : %.1f GB/s"
-           "  -- CONTEXT ONLY, not the ratio base\n", BENCH_SPEC_CEILING_GBS);
+           split8_gbs, rt_split8.med_ms, rt_split8.min_ms, rt_split8.max_ms);
+    printf("    xor_u64     (load-port bound)     : %.2f GB/s"
+           "  (med %.2f ms, min %.2f, max %.2f)\n",
+           xor_gbs, rt_xor.med_ms, rt_xor.min_ms, rt_xor.max_ms);
+    printf("    -> %%ref DENOMINATOR = max of those : %.2f GB/s\n", g_ref_gbs);
+    printf("\n");
+    printf("    serial_f32  (DIAGNOSTIC, NOT the denominator) : %.2f GB/s\n",
+           serial_gbs);
+    printf("      f32-add LATENCY, not bandwidth -- it cannot vectorize at any\n");
+    printf("      -O level. It WAS the denominator until 2026-08-03, so every\n");
+    printf("      %%ref recorded before that date is ~%.2fx too high a ratio.\n",
+           (serial_gbs > 0.0) ? (g_ref_gbs / serial_gbs) : 0.0);
+    printf("    forward-note spec ceiling : %.1f GB/s -- CONTEXT ONLY, and ~4x\n",
+           BENCH_SPEC_CEILING_GBS);
+    printf("      wrong for this box, which is why the denominator is measured.\n");
     printf("    read the %%ref column, not GB/s, when the box is not quiesced.\n");
+    printf("    %%ref is share of READ BANDWIDTH, not of what the op could reach:\n");
+    printf("      llama.cpp's own VNNI decode runs at ~34%% of it, 1 thread pinned.\n");
     printf("\n");
 
     /* ---- warm every tensor we are about to time (Decision 1) ---- */
@@ -707,14 +851,21 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     printf("  Reading this table (forward note's ranked culprits):\n");
     printf("    * %%ref near 100  -> bandwidth-bound; SIMD will not help,\n");
     printf("                        parallelism and layout will.\n");
-    printf("    * %%ref far below -> headroom; this op is compute or\n");
-    printf("                        latency bound and is worth attacking.\n");
+    printf("    * %%ref far below -> UNEXPLAINED, not automatically headroom.\n");
+    printf("                        A real kernel does not reach a read\n");
+    printf("                        ceiling: llama.cpp's own VNNI decode sits\n");
+    printf("                        at ~34%% (1 thread, pinned, resident). Rank\n");
+    printf("                        an op against the llama referent rows, not\n");
+    printf("                        against 100%%, before calling it headroom.\n");
     printf("    * matvec LOGITS is culprit #1 -- largest single op per token.\n");
     printf("    * max >> med     -> interference during the run, not a slow\n");
     printf("                        kernel. Re-run on a quiesced box.\n");
 
     if (g_jsonl) {
-        emit_jsonl(model_path, g_ref_gbs, rt);
+        RefResult r_split8 = { split8_gbs, rt_split8 };
+        RefResult r_xor    = { xor_gbs, rt_xor };
+        RefResult r_serial = { serial_gbs, rt_serial };
+        emit_jsonl(model_path, g_ref_gbs, r_split8, r_xor, r_serial);
     }
 
     free(x);

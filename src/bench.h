@@ -61,6 +61,41 @@ BenchTiming bench_spread(double* samples, u32 n);
  * would read as "infinitely fast". */
 double bench_gbs(u64 bytes, double ms);
 
+/* The %ref denominator: the LARGER of the two fast reference variants.
+ *
+ * split8_f32 and xor_u64 trade places between runs on this box (13.9-16.6
+ * GB/s, either one on top), so neither is "the" answer. The quantity being
+ * estimated is "at least this much read bandwidth exists", and the larger of
+ * two lower bounds is the better lower bound -- taking a mean or a fixed
+ * favourite would understate it in exactly the direction that produced the
+ * original error.
+ *
+ * Exposed rather than inlined for the same reason bench_spread and bench_gbs
+ * are: this one line decides every %ref in the table, and the project has
+ * already shipped one denominator that was wrong for months. A rule that
+ * matters that much gets a test, not a reading. Non-positive inputs are
+ * passed through by the same max, so an unresolvable reference yields <= 0
+ * and row() falls back to printing 0.0% rather than dividing. */
+double bench_ref_denominator(double split8_gbs, double xor_gbs);
+
+/* The exact CFLAGS this translation unit was compiled with, injected by the
+ * Makefile's explicit bench.o rule and emitted into --jsonl.
+ *
+ * WHY THIS DOES NOT VIOLATE "PROVENANCE IS NOT THE BENCHMARK'S JOB" (see
+ * bench_ops' contract, which refuses to guess its own git commit): a commit
+ * is EXTERNAL state the process would have to infer, and inferring it writes
+ * confident falsehoods. Its own compile flags are an intrinsic property of
+ * the binary, known at compile time, and impossible to get wrong. The
+ * distinction is guessing versus knowing, not "metadata versus measurement".
+ *
+ * It became necessary on 2026-08-03: the build moved -O1 -> -O3, every
+ * matvec got 3.1x faster, and history.jsonl recorded binary_sha256 but
+ * nothing that said WHY two rows differed by 3x. A history file whose rows
+ * cannot be compared is not a history file. */
+#ifndef STOKE_BUILD_CFLAGS
+#define STOKE_BUILD_CFLAGS "(unrecorded -- built outside the Makefile)"
+#endif
+
 /* Per-op timed budget. Long enough to swamp timer granularity and scheduler
  * jitter, short enough that a full table is not a coffee break.
  *

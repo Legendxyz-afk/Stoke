@@ -110,6 +110,18 @@ $(BUILDDIR)/%.o: src/%.c $(HEADERS) Makefile | $(BUILDDIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# bench.o alone is compiled with its own CFLAGS baked in as a string, so
+# `bench --ops --jsonl` can report the flags the binary was actually built
+# with and bench/history.jsonl rows stay comparable across a flag change.
+# This is an EXPLICIT rule overriding the pattern rule above for one target;
+# the define is passed on the command line rather than added to CFLAGS,
+# because a target-specific `CFLAGS += ...$(CFLAGS)...` recurses in make.
+# The recorded string therefore excludes this -D itself, which is correct --
+# it is metadata about the build, not part of it.
+$(BUILDDIR)/bench.o: src/bench.c $(HEADERS) Makefile | $(BUILDDIR)
+	mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DSTOKE_BUILD_CFLAGS='"$(CFLAGS)"' -c -o $@ $<
+
 $(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
 

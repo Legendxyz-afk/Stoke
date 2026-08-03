@@ -130,6 +130,47 @@ TEST(gbs_ratio_is_invariant_under_uniform_slowdown) {
     ASSERT_TRUE(close_enough(fast, slow));
 }
 
+/* ---- bench_ref_denominator: which reference stream sets %ref ----
+ *
+ * This one line decides every %ref figure in the table, and the project
+ * already shipped a denominator that was wrong from K1 until 2026-08-03 --
+ * a serial f32 reduction measuring FP-add latency, ~2.15x below this box's
+ * real read bandwidth. The replacement rule is "the larger of the two fast
+ * variants", because split8_f32 and xor_u64 trade places between runs and
+ * the quantity being estimated is a LOWER BOUND on available bandwidth.
+ * A rule with that history gets asserted, not read.
+ */
+
+TEST(ref_denominator_takes_the_larger_variant) {
+    /* Either ordering, because on this box either variant can win. */
+    ASSERT_TRUE(close_enough(bench_ref_denominator(13.91, 14.42), 14.42));
+    ASSERT_TRUE(close_enough(bench_ref_denominator(16.58, 14.56), 16.58));
+}
+
+TEST(ref_denominator_equal_variants_return_that_value) {
+    ASSERT_TRUE(close_enough(bench_ref_denominator(15.0, 15.0), 15.0));
+}
+
+/* THE REGRESSION TEST FOR THE 2026-08-03 DEFECT ITSELF. The old serial
+ * stream read ~7 GB/s while the real ceiling was ~15. Whatever the rule
+ * becomes, it must never again select a value in the serial stream's range
+ * when a fast variant measured nearly twice it -- that is precisely the
+ * error that made every recorded %ref wrong by ~2.15x. A mean, a min, or a
+ * fixed favourite would all fail this. */
+TEST(ref_denominator_never_lands_near_the_retired_serial_rate) {
+    double serial_rate = 7.40;   /* what the old denominator reported */
+    double d = bench_ref_denominator(13.91, 14.42);
+    ASSERT_TRUE(d > serial_rate * 1.8);
+}
+
+/* Non-positive inputs pass straight through the same max, so an
+ * unresolvable reference yields <= 0 and bench.c's row() prints 0.0%
+ * instead of dividing. Mirrors gbs_non_positive_duration_is_zero. */
+TEST(ref_denominator_non_positive_inputs_stay_non_positive) {
+    ASSERT_TRUE(bench_ref_denominator(0.0, 0.0) == 0.0);
+    ASSERT_TRUE(bench_ref_denominator(-1.0, -2.0) == -1.0);
+}
+
 /* ---- bench_reps_for: the adaptive sample count ----
  *
  * These pin a lesson, not just an arithmetic contract. The rep floor was 3,

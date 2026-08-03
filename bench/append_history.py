@@ -58,7 +58,28 @@ from datetime import datetime, timezone
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HISTORY = os.path.join(REPO, "bench", "history.jsonl")
 
-SCHEMA = 1
+# SCHEMA 2 (2026-08-03) -- rows at schema 1 ARE NOT COMPARABLE TO THESE, and
+# the version bump is the marker that says so rather than a note someone has
+# to remember. Two things changed at once:
+#
+#   1. The build moved -O1 -> -O3. Every matvec got ~3.1x faster with
+#      byte-identical output, so a schema-1 median and a schema-2 median
+#      differ by the build before they differ by anything about the code.
+#      `build.cflags` now records the flags, read back from the binary
+#      itself (bench.c's STOKE_BUILD_CFLAGS), never from this process's
+#      environment -- the appender's environment is not the binary's.
+#   2. `ref_gbs` changed meaning. Through schema 1 it was a serial f32
+#      reduction measuring FP-add latency (~7 GB/s), roughly 2.15x below
+#      this box's real read bandwidth; every schema-1 pct_ref is therefore
+#      against a denominator that low. From schema 2 it is
+#      max(split8_f32, xor_u64), an honest read-rate lower bound.
+#
+# The two schema-1 rows stay in the file UNEDITED. Recorded evidence is
+# append-only: a row is what was measured on the day it was measured, and
+# rewriting history to make it comparable is how a history file stops being
+# evidence. `ref_gbs_serial` is carried in every schema-2 row precisely so
+# the old rows can be CONVERTED when a comparison is genuinely needed.
+SCHEMA = 2
 
 # Ops below this median cost sit on the timer's resolution floor (the ~1 us
 # primitives), where a 10% run-to-run difference is the clock, not the box.
@@ -215,6 +236,22 @@ def build_row(runs, label, milestone, exe, model):
             per_op_meta[op["op"]] = op
     ref_runs = [r["ref_gbs"] for r in runs]
 
+    # Every run in a row comes from ONE binary, so disagreeing flags mean the
+    # exe was swapped mid-append and the runs are not a median of the same
+    # thing. Refuse rather than record the first one and hope.
+    cflags = {r.get("build_cflags") for r in runs}
+    if len(cflags) != 1:
+        raise SystemExit(
+            f"runs disagree about build_cflags ({sorted(map(str, cflags))}) -- "
+            "the binary changed mid-append; a row must be one build")
+    build_cflags = cflags.pop()
+    if build_cflags is None:
+        raise SystemExit(
+            "bench emitted no build_cflags -- this is a schema-1 binary. "
+            "Rebuild before appending: a schema-2 row must record the flags "
+            "it was measured with, or it is exactly the ambiguity the bump "
+            "exists to remove.")
+
     ops_out = {}
     for op, values in per_op.items():
         meta = per_op_meta[op]
@@ -248,6 +285,8 @@ def build_row(runs, label, milestone, exe, model):
         "build": {
             "binary_sha256": sha256_of(exe),
             "binary_basename": os.path.basename(exe),
+            # From the binary, not from this process. See the SCHEMA comment.
+            "cflags": build_cflags,
         },
         # Model IDENTITY, not a path: models/ is gitignored and a committed
         # file must not point at something absent from the repo.
@@ -260,9 +299,16 @@ def build_row(runs, label, milestone, exe, model):
             "free_ram_mb": free_ram_mb(),
         },
         "runs": len(runs),
+        # THE DENOMINATOR: max(split8_f32, xor_u64) per run, then the
+        # cross-run median. The variants are kept whole beside it so the
+        # choice is re-derivable, and ref_gbs_serial is the conversion key
+        # back to schema-1 rows (see the SCHEMA comment).
         "ref_gbs": round(ref_med, 4),
         "ref_gbs_runs": [round(v, 4) for v in ref_runs],
         "ref_rel_spread": round(rel_spread(ref_runs), 4),
+        "ref_gbs_split8_runs": [round(r["ref_gbs_split8"], 4) for r in runs],
+        "ref_gbs_xor_runs": [round(r["ref_gbs_xor"], 4) for r in runs],
+        "ref_gbs_serial_runs": [round(r["ref_gbs_serial"], 4) for r in runs],
         "ops": ops_out,
     }
 
@@ -317,6 +363,45 @@ def selftest():
     ck("violations sorted worst-first",
        [op for op, _ in stability_violations(
            {"a": [100.0, 130.0], "b": [100.0, 200.0]})] == ["b", "a"])
+
+    # ---- schema 2: the build-flags guard ----
+    # A row must be one build. These drive build_row directly rather than
+    # inferring the behaviour from a full append, and they use this file as
+    # a stand-in exe/model purely so sha256_of and getsize have something
+    # real to read -- the flags logic is what is under test.
+    def fake_run(cflags, ref=15.0):
+        run = {
+            "build_cflags": cflags,
+            "ref_gbs": ref,
+            "ref_gbs_split8": ref,
+            "ref_gbs_xor": ref - 0.5,
+            "ref_gbs_serial": 7.4,
+            "ops": [{"op": "matvec ffn_up", "shape": "2560 x 9728",
+                     "bytes": 26509312, "med_us": 4000.0, "reps": 95}],
+        }
+        if cflags is None:
+            del run["build_cflags"]
+        return run
+
+    def refuses(runs):
+        try:
+            build_row(runs, "l", "M3", __file__, __file__)
+            return False
+        except SystemExit:
+            return True
+
+    flags = "-std=c11 -O3 -ffp-contract=off -Isrc"
+    ck("schema 2 stamps the binary's flags into build.cflags",
+       build_row([fake_run(flags), fake_run(flags)], "l", "M3", __file__,
+                 __file__)["build"]["cflags"] == flags)
+    ck("schema 2 REFUSES runs whose flags disagree (exe swapped mid-append)",
+       refuses([fake_run(flags), fake_run("-std=c11 -O1 -Isrc")]))
+    ck("schema 2 REFUSES a schema-1 binary that emits no flags",
+       refuses([fake_run(None), fake_run(None)]))
+    ck("schema 2 carries the serial variant as the schema-1 conversion key",
+       build_row([fake_run(flags)], "l", "M3", __file__,
+                 __file__)["ref_gbs_serial_runs"] == [7.4])
+    ck("SCHEMA constant is 2", SCHEMA == 2)
 
     print(f"\nselftest: {checks - failed}/{checks} checks passed")
     return 1 if failed else 0
