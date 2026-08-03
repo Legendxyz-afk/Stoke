@@ -282,7 +282,24 @@ tune thread count rather than assume more is better. (c) 1T→6T is
 cannot be fitted afterwards:** stoke 1.716 → ×2 (K3) → ×3.54 (K5, 6T)
 = 12.1 tok/s Q8_0 ⇒ **~20.8 tok/s Q4_K_M before the K-quant compute
 penalty, ~2.7× the 7.8 bar.** The penalty is the one open factor and
-K4 entry measures it. **STANDING
+K4 entry measures it.
+**⚠ K3 CAME IN AT ×1.390, NOT ×2 — the projection is re-run below with
+the measured value, and the pre-registered version above is left
+standing so the two can be compared.** K3 exit measured GATE-grade at
+**llama/stoke = 1.437× (spread 5.2%)**, from 1.997× at entry; per-op
+matvec time 600,865 → 442,178 µs/token. Parity (0.9–1.1) is NOT
+reached. Re-projected on measured numbers: 1.716 → ×1.390 (K3) = 2.385
+→ ×3.54 (K5, 6T) = 8.44 tok/s Q8_0 ⇒ **~14.5 tok/s Q4_K_M before the
+K-quant penalty, ~1.86× the bar** (was ~2.7×). **The bar still clears,
+with less room.** Of K3's residual gap, **1.235× is measured as the
+price of gate [1]'s bit-exactness** (three-way interleaved: bit-exact
+8.29 GB/s, ggml-style 10.23, llama 15.76) leaving ~1.16× unexplained;
+spending gate [1] is Kabir's/Fable's call and is priced, not proposed.
+**Where the remaining per-core work is, from the per-op row:** four-row
+batching gave attn_* 1.43–1.53× but ffn_up only 1.26× and **LOGITS
+1.18×, and LOGITS alone is 10% of the token** — narrow-output matvecs
+benefit least from row batching, which a uniform "memory-bound" story
+does not predict. **STANDING
 COMPARABILITY RULE (ruling §4, binds gate [3]'s referent, bench.c, the
 playbook):** two perf figures compare only if same-session, interleaved
 where runnable, cycles cited, sidecar attached; rep-±σ never certifies
