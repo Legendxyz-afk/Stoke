@@ -117,4 +117,23 @@ double bench_gbs(u64 bytes, double ms);
  * fall through to a comparison chain where every test is false. */
 u32 bench_reps_for(double pilot_ms);
 
+/* Worst-case output bytes (excluding the NUL) for escaping `n` input bytes:
+ * every byte could need the six-character \u00XX form. */
+#define BENCH_JSON_ESCAPE_MAX(n) ((n) * 6u + 1u)
+
+/* Escapes `in` for use inside a JSON string literal, writing at most `cap`
+ * bytes to `out` including the NUL. Returns bytes written, excluding the NUL.
+ * FATAL if `cap` is too small -- silently truncating would emit JSON that is
+ * well-formed but WRONG, which is worse than the malformed JSON this fixes.
+ *
+ * THIS IS NOT DEFENSIVE PROGRAMMING, it is a bug that shipped. --jsonl
+ * interpolated the model path straight into a JSON string, so the natural
+ * Windows invocation
+ *     stoke bench --ops models\foo.gguf --jsonl
+ * emitted `"model":"models\foo.gguf"` -- an invalid \f escape, which made the
+ * whole line unparseable and killed bench/append_history.py, the one consumer
+ * the flag exists to serve. It went unnoticed because every recorded run so
+ * far happened to be typed with forward slashes. */
+u64 bench_json_escape(const char* in, char* out, u64 cap);
+
 #endif /* STOKE_BENCH_H */

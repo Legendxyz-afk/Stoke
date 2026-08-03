@@ -359,19 +359,91 @@ static void row(const char* op, const char* shape, u64 bytes, Timing t) {
  * process cannot know its own git commit, and a benchmark that guesses its
  * provenance writes confident falsehoods into a file whose entire purpose is
  * historical comparison. bench/append_history.py supplies that layer. */
+u64 bench_json_escape(const char* in, char* out, u64 cap) {
+    static const char HEX[] = "0123456789abcdef";
+    u64               w     = 0;
+
+    /* Writes `n` bytes only if they fit WITH the NUL; otherwise fatal. The
+     * check is done before every write rather than once up front, because
+     * the expansion factor depends on the input's contents. */
+#define PUT(n)                                                                \
+    do {                                                                      \
+        if (w + (n) + 1u > cap) {                                             \
+            fatal("bench: bench_json_escape -- need more than %llu bytes to " \
+                  "escape a %llu-byte string; use BENCH_JSON_ESCAPE_MAX",     \
+                  (unsigned long long)cap, (unsigned long long)strlen(in));   \
+        }                                                                     \
+    } while (0)
+
+    for (const u8* p = (const u8*)in; *p; p++) {
+        const char* esc = NULL;
+        switch (*p) {
+        case '"':  esc = "\\\""; break;
+        case '\\': esc = "\\\\"; break;
+        case '\b': esc = "\\b";  break;
+        case '\f': esc = "\\f";  break;
+        case '\n': esc = "\\n";  break;
+        case '\r': esc = "\\r";  break;
+        case '\t': esc = "\\t";  break;
+        default:   break;
+        }
+        if (esc != NULL) {
+            PUT(2);
+            out[w++] = esc[0];
+            out[w++] = esc[1];
+        } else if (*p < 0x20) {
+            /* Every other control character. Bytes >= 0x80 are passed
+             * through untouched: they are UTF-8 continuation bytes of a path
+             * the shell already gave us, and re-encoding them would corrupt
+             * a non-ASCII filename rather than protect anything. */
+            PUT(6);
+            out[w++] = '\\';
+            out[w++] = 'u';
+            out[w++] = '0';
+            out[w++] = '0';
+            out[w++] = HEX[(*p >> 4) & 0xF];
+            out[w++] = HEX[*p & 0xF];
+        } else {
+            PUT(1);
+            out[w++] = (char)*p;
+        }
+    }
+#undef PUT
+    out[w] = '\0';
+    return w;
+}
+
 static void emit_jsonl(const char* model_path, double ref_gbs, Timing rt) {
+    /* The model path is the only externally-supplied string in this object;
+     * `op` is an internal literal and `shape` is snprintf'd from integers.
+     * Both are escaped anyway -- the cost is nothing, and "safe because of
+     * where it comes from" is exactly the reasoning that let the unescaped
+     * path ship in the first place. */
+    u64   cap = BENCH_JSON_ESCAPE_MAX(strlen(model_path));
+    char* esc = (char*)xmalloc((size_t)cap);
+    bench_json_escape(model_path, esc, cap);
     printf("{\"kind\":\"ops\",\"model\":\"%s\",\"ref_gbs\":%.4f,"
            "\"ref_med_ms\":%.4f,\"ref_min_ms\":%.4f,\"ref_max_ms\":%.4f,"
            "\"ref_reps\":%u,\"ops\":[",
-           model_path, ref_gbs, rt.med_ms, rt.min_ms, rt.max_ms, rt.reps);
+           esc, ref_gbs, rt.med_ms, rt.min_ms, rt.max_ms, rt.reps);
+    free(esc);
+
     for (u32 i = 0; i < g_captured_n; i++) {
         const CapturedRow* c   = &g_captured[i];
         double             g   = bench_gbs(c->bytes, c->t.med_ms);
         double             pct = (ref_gbs > 0.0) ? (100.0 * g / ref_gbs) : 0.0;
+        /* `op` is a pointer, so it gets a fixed generous bound rather than a
+         * sizeof (which would size the pointer); `shape` is a real array.
+         * bench_json_escape fatals rather than truncates if an op name ever
+         * outgrows this -- the longest today is 16 characters. */
+        char op[BENCH_JSON_ESCAPE_MAX(48u)];
+        char sh[BENCH_JSON_ESCAPE_MAX(sizeof c->shape)];
+        bench_json_escape(c->op, op, sizeof op);
+        bench_json_escape(c->shape, sh, sizeof sh);
         printf("%s{\"op\":\"%s\",\"shape\":\"%s\",\"bytes\":%llu,"
                "\"med_us\":%.3f,\"min_us\":%.3f,\"max_us\":%.3f,"
                "\"gbs\":%.4f,\"pct_ref\":%.3f,\"reps\":%u}",
-               i ? "," : "", c->op, c->shape, (unsigned long long)c->bytes,
+               i ? "," : "", op, sh, (unsigned long long)c->bytes,
                c->t.med_ms * 1000.0, c->t.min_ms * 1000.0,
                c->t.max_ms * 1000.0, g, pct, c->t.reps);
     }

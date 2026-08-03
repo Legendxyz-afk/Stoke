@@ -201,3 +201,72 @@ TEST(reps_for_is_monotone_non_increasing_in_pilot_cost) {
         ASSERT_TRUE(bench_reps_for(pilots[i]) <= bench_reps_for(pilots[i - 1]));
     }
 }
+
+/* ---- bench_json_escape ----
+ *
+ * --jsonl emitted INVALID JSON for a native Windows path, because the model
+ * path was interpolated raw into a JSON string. `models\Qwen.gguf` contains
+ * `\Q`, which is not a JSON escape at all, so the line parsed as neither the
+ * intended path nor an error -- it simply failed to parse, killing
+ * bench/append_history.py, the one consumer --jsonl exists to serve. Every
+ * recorded run so far happened to be typed with forward slashes, which is
+ * the only reason a shipped tool had a broken primary path for a day. */
+
+TEST(json_escape_passes_ordinary_text_through_unchanged) {
+    char out[BENCH_JSON_ESCAPE_MAX(64u)];
+    u64  n = bench_json_escape("models/qwen3-4b-Q8_0.gguf", out, sizeof out);
+    ASSERT_EQ_STR(out, "models/qwen3-4b-Q8_0.gguf");
+    ASSERT_EQ_U32((u32)n, 25u);
+}
+
+/* THE BUG, pinned by the exact shape of string that produced it. Written with
+ * explicit escapes rather than a literal so that what is being asserted stays
+ * legible: ONE backslash in, TWO backslashes out. */
+TEST(json_escape_doubles_backslashes_in_a_windows_path) {
+    const char in[]   = { 'm', 'o', 'd', 'e', 'l', 's', '\\',
+                          'Q', '.', 'g', 'g', 'u', 'f', '\0' };
+    const char want[] = { 'm', 'o', 'd', 'e', 'l', 's', '\\', '\\',
+                          'Q', '.', 'g', 'g', 'u', 'f', '\0' };
+    char out[BENCH_JSON_ESCAPE_MAX(64u)];
+    bench_json_escape(in, out, sizeof out);
+    ASSERT_EQ_STR(out, want);
+}
+
+/* A quote would terminate the JSON string early and leave a truncated object
+ * -- the one corruption worse than a parse failure, because a reader might
+ * still accept it. */
+TEST(json_escape_escapes_quotes_and_the_named_control_characters) {
+    char out[BENCH_JSON_ESCAPE_MAX(64u)];
+    bench_json_escape("a\"b\nc\td\re\bf\fg", out, sizeof out);
+    ASSERT_EQ_STR(out, "a\\\"b\\nc\\td\\re\\bf\\fg");
+}
+
+/* Control characters with no named escape take the \u00XX form. */
+TEST(json_escape_uses_u00xx_for_unnamed_control_characters) {
+    char out[BENCH_JSON_ESCAPE_MAX(8u)];
+    bench_json_escape("x\x01y\x1f", out, sizeof out);
+    ASSERT_EQ_STR(out, "x\\u0001y\\u001f");
+}
+
+/* Bytes >= 0x80 are UTF-8 continuation bytes of a path the shell already
+ * handed us; re-encoding them would corrupt a non-ASCII filename rather than
+ * protect anything, so they pass through byte-for-byte. */
+TEST(json_escape_leaves_utf8_high_bytes_alone) {
+    char out[BENCH_JSON_ESCAPE_MAX(16u)];
+    bench_json_escape("mod\xc3\xa8le.gguf", out, sizeof out);
+    ASSERT_EQ_STR(out, "mod\xc3\xa8le.gguf");
+}
+
+/* The advertised worst case must actually hold, and hold EXACTLY: a string of
+ * nothing but unnamed control characters expands 6x, which is what
+ * BENCH_JSON_ESCAPE_MAX promises. If that macro were ever trimmed to a more
+ * "realistic" factor, this is what fails -- rather than a fatal partway
+ * through a bench run that has already spent its time. */
+TEST(json_escape_worst_case_exactly_fills_the_advertised_bound) {
+    const char worst[] = "\x01\x02\x03\x04";
+    char       out[BENCH_JSON_ESCAPE_MAX(sizeof worst - 1u)];
+    u64        n = bench_json_escape(worst, out, sizeof out);
+    ASSERT_EQ_U32((u32)n, 24u);                    /* 4 chars x 6 */
+    ASSERT_EQ_U32((u32)(sizeof out), 25u);         /* 4*6 + 1, no slack */
+    ASSERT_EQ_STR(out, "\\u0001\\u0002\\u0003\\u0004");
+}
