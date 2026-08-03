@@ -262,9 +262,27 @@ quiesced llama already demonstrating ~39 GB/s effective. Attribution is
 now a BUDGET: bar needs ~19.5 GB/s effective aggregate (≥2× slack);
 K3 buys ~2× per-core; K5 needs only ~1.9× from a parity core; K4's
 K-quant compute penalty is the open factor; levers compose as
-min(wall, N×per-core), never a free product. The K3/K5 split is settled
-by the quiesced K3-entry session (item 4) + the K4-entry sweep — until
-then no text may claim which milestone wins the bar. **STANDING
+min(wall, N×per-core), never a free product. **✅ THE QUIESCED
+K3-ENTRY SESSION RAN 2026-08-03 (grade GATE, records under
+`bench/results/2026-08-03-k3-entry-*.json`) AND THE ATTRIBUTION IS NOW
+MEASURED, NOT ARGUED:** the interleaved 1T referent is **llama/stoke =
+1.997× (median of 4 within-cycle ratios, spread 9.4%)**, landing on the
+ruling's ~2× point estimate; and the quiet-box scaling curve is llama
+**1T 3.574 / 6T 12.645 / 10T 10.802 tok/s** = **15.3 / 54.1 / 46.2 GB/s
+effective**. Three consequences. (a) **The "26–34 GB/s wall" is dead
+twice over** — 54.1 GB/s is 70% of the 76.8 theoretical and well above
+even M0's ~39; the bar's 19.5 GB/s aggregate has **2.78× slack against
+a measured figure**. (b) **10 THREADS IS SLOWER THAN 6** (46.2 vs 54.1
+GB/s): adding the 4 E-cores COSTS 15%, which is the forward note's
+P/E-straggling trap measured on the opponent's own binary — direct
+evidence for LOCKED decision "work-stealing 64-row chunks", and K5 must
+tune thread count rather than assume more is better. (c) 1T→6T is
+**3.54× on six cores (59% of linear)**: sublinear, but the game-window
+2.49× understated it. **Projection, recorded before the work so it
+cannot be fitted afterwards:** stoke 1.716 → ×2 (K3) → ×3.54 (K5, 6T)
+= 12.1 tok/s Q8_0 ⇒ **~20.8 tok/s Q4_K_M before the K-quant compute
+penalty, ~2.7× the 7.8 bar.** The penalty is the one open factor and
+K4 entry measures it. **STANDING
 COMPARABILITY RULE (ruling §4, binds gate [3]'s referent, bench.c, the
 playbook):** two perf figures compare only if same-session, interleaved
 where runnable, cycles cited, sidecar attached; rep-±σ never certifies
@@ -309,8 +327,11 @@ ops history measured live) stays a feature, not a rewrite; (2)
 exercises** (all blocks freed, refcounts consistent) — it is the
 foundation M5's cancellation invariant stands on; (3) **the design note
 OPENS with a bandwidth budget** (08-03 K3 ruling §6): W measured
-quiesced in-session at M4 entry (floor ~39 GB/s effective from M0;
-theoretical 76.8; the game-window 34 may not be quoted as W); per-step
+quiesced in-session at M4 entry (**floor is now ~54 GB/s effective —
+measured GATE-grade 2026-08-03 at llama 6T, superseding the ~39 from
+M0**; theoretical 76.8; the game-window 34 may not be quoted as W, and
+note W PEAKS AT 6 P-THREADS — 10 threads measured 15% WORSE, so the
+budget's N is not the core count); per-step
 traffic model where batching amortizes ONLY the weight term; the
 KV-dominance crossover formula in N and ctx; Q8-KV's halving as the
 input to Kabir's M5 default call; M5's ITL and 16.8@16 bars checked as

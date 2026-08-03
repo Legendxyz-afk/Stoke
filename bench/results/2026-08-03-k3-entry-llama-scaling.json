@@ -1,0 +1,106 @@
+{
+  "kind": "llama_thread_sweep",
+  "ts": "2026-08-03T19:14:00",
+  "model": "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+  "grade": "gate",
+  "legs": [
+    {
+      "threads": 1,
+      "mask": "0x1",
+      "name": "1T pinned LP0",
+      "tok_s": 3.574032,
+      "gbs": 15.298305214950911,
+      "sidecar": {
+        "wall_s": 20.86,
+        "foreign_cpu_cores": 0.413,
+        "blind": null,
+        "top_foreign": {
+          "name": "Code",
+          "cores": 0.193
+        },
+        "busy_procs": [
+          {
+            "name": "Code",
+            "cores": 0.193
+          },
+          {
+            "name": "claude",
+            "cores": 0.103
+          }
+        ],
+        "free_ram_mb_min": 8571,
+        "power_plan": "Turbo",
+        "on_ac": true,
+        "conditions_changed": false
+      }
+    },
+    {
+      "threads": 6,
+      "mask": "0x555",
+      "name": "6T P-cores",
+      "tok_s": 12.645093,
+      "gbs": 54.126122034005085,
+      "sidecar": {
+        "wall_s": 7.4,
+        "foreign_cpu_cores": 0.652,
+        "blind": null,
+        "top_foreign": {
+          "name": "claude",
+          "cores": 0.249
+        },
+        "busy_procs": [
+          {
+            "name": "claude",
+            "cores": 0.249
+          },
+          {
+            "name": "Code",
+            "cores": 0.213
+          },
+          {
+            "name": "powershell",
+            "cores": 0.068
+          }
+        ],
+        "free_ram_mb_min": 8562,
+        "power_plan": "Turbo",
+        "on_ac": true,
+        "conditions_changed": false
+      }
+    },
+    {
+      "threads": 10,
+      "mask": "0xf555",
+      "name": "10T 6P+4E",
+      "tok_s": 10.802332,
+      "gbs": 46.23835823776371,
+      "sidecar": {
+        "wall_s": 8.17,
+        "foreign_cpu_cores": 0.585,
+        "blind": null,
+        "top_foreign": {
+          "name": "Code",
+          "cores": 0.243
+        },
+        "busy_procs": [
+          {
+            "name": "Code",
+            "cores": 0.243
+          },
+          {
+            "name": "claude",
+            "cores": 0.182
+          },
+          {
+            "name": "Code",
+            "cores": 0.057
+          }
+        ],
+        "free_ram_mb_min": 8570,
+        "power_plan": "Turbo",
+        "on_ac": true,
+        "conditions_changed": false
+      }
+    }
+  ]
+}
