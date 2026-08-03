@@ -250,6 +250,13 @@ def sidecar_delta(before, after):
         # future reader asks is whether the model could stay resident
         # throughout, and the worst moment is what answers it.
         "free_ram_mb_min": min(frees) if frees else None,
+        "power_plan": after.get("power_plan"),
+        "on_ac": after.get("on_ac"),
+        # A plan or power-source change DURING the run means the run spanned
+        # two machine configurations, so its numbers describe neither.
+        "conditions_changed": (
+            before.get("power_plan") != after.get("power_plan")
+            or before.get("on_ac") != after.get("on_ac")),
     }
 
 
@@ -273,6 +280,11 @@ def box_grade(sidecars, model_size_bytes, n_logical,
         if s.get("blind"):
             reasons.append(f"box sampler is blind: {s['blind']}")
             break
+    if any(s.get("conditions_changed") for s in sidecars):
+        reasons.append("power plan or power source CHANGED mid-run -- the run "
+                       "spans two machine configurations")
+    if any(s.get("on_ac") is False for s in sidecars):
+        reasons.append("running on battery")
 
     max_cores = max_frac * n_logical
     worst = max(s["foreign_cpu_cores"] for s in sidecars)
@@ -368,9 +380,13 @@ $procs = @(Get-Process | Where-Object { $_.CPU -gt 0 } | ForEach-Object {
     @{ pid = $_.Id; name = $_.ProcessName; cpu_s = $_.CPU; start_ms = $st }
 })
 $free = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory
+$plan = ((powercfg /getactivescheme) -replace '.*\((.*)\).*', '$1').Trim()
+$batt = (Get-CimInstance Win32_Battery).BatteryStatus
 [pscustomobject]@{
     t_ms = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     free_ram_mb = [math]::Round($free / 1024.0)
+    power_plan = $plan
+    on_ac = ($batt -eq $null -or $batt -ne 1)
     procs = $procs
 } | ConvertTo-Json -Compress -Depth 4
 """
@@ -398,6 +414,14 @@ def box_sample():
             return {
                 "t_ms": int(d["t_ms"]),
                 "free_ram_mb": d.get("free_ram_mb"),
+                # The power plan is part of the recorded conditions, not
+                # trivia: it changed from "Performance" to "Turbo" between two
+                # checks 30 minutes apart on 2026-08-03 without anyone
+                # touching a benchmark. A row that does not name it invites
+                # exactly the cross-condition comparison the grade exists to
+                # prevent, with nothing visible to catch it.
+                "power_plan": d.get("power_plan"),
+                "on_ac": d.get("on_ac"),
                 "procs": [{"pid": int(p["pid"]), "name": str(p["name"]),
                            "cpu_s": float(p["cpu_s"]),
                            "start_ms": (int(p["start_ms"])
@@ -751,6 +775,18 @@ def selftest():
     gb, gwhy = box_grade([blind_quiet], 4_280_405_216, 16)
     ck("a blind sampler cannot grade GATE however quiet it reads",
        gb == "ambient" and any("blind" in r for r in gwhy))
+
+    # The power plan really did change from Performance to Turbo between two
+    # checks 30 minutes apart on 2026-08-03, unprompted.
+    swapped = dict(d_quiet, conditions_changed=True)
+    ck("a power-plan change mid-run grades AMBIENT",
+       box_grade([swapped], 4_280_405_216, 16)[0] == "ambient")
+    ck("running on battery grades AMBIENT",
+       box_grade([dict(d_quiet, on_ac=False)], 4_280_405_216, 16)[0]
+       == "ambient")
+    ck("a quiet run on AC with a stable plan still grades GATE",
+       box_grade([dict(d_quiet, on_ac=True, conditions_changed=False,
+                       power_plan="Turbo")], 4_280_405_216, 16)[0] == "gate")
 
     ck("build_row stamps a grade even with no sidecars",
        build_row([fake_run(flags)], "l", "M3", __file__, __file__)["box"]
