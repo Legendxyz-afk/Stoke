@@ -86,6 +86,27 @@ typedef struct {
     f32 logit;
 } ModelProbeEntry;
 
+/* One generation's wall-clock split, filled by model_generate.
+ *
+ * THE BOUNDARY IS STATED HERE BECAUSE A FIELD NAME IS NOT A BASIS. The
+ * logits+argmax that yields the FIRST id consumes prefill's final hidden
+ * state, so it is counted in prefill_ms -- exactly as llama.cpp's pp phase
+ * ends by producing that token. decode_ms therefore covers only the loop
+ * whose every iteration is one forward + logits + argmax, and n_decode is
+ * the number of ids that loop produced (returned count - 1, so 0 when
+ * generation stopped at the first id).
+ *
+ * n_decode / decode_ms is thus the SAME unit as llama-bench's `tg` rate and
+ * is the figure the referent interleave compares. Dividing the returned
+ * count by the total would mix a prompt-length-dependent term into a rate
+ * that is supposed to be prompt-independent. */
+typedef struct {
+    double prefill_ms;
+    double decode_ms;
+    u32    n_prefill;
+    u32    n_decode;
+} ModelTiming;
+
 /* Runs all n_layer transformer blocks for ONE position `pos`, given input
  * token `token_id`. Reads the previous positions' K/V and writes this
  * position's own K/V via kv_view for every layer (fatal if pos >=
@@ -128,6 +149,7 @@ void model_compute_logits(Model* m, const f32* x, f32* logits_out);
  * callers must check probe_pos < (i32)returned_count themselves. */
 u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
-                    i32 probe_pos, ModelProbeEntry probe_out[5]);
+                    i32 probe_pos, ModelProbeEntry probe_out[5],
+                    ModelTiming* timing);
 
 #endif /* STOKE_MODEL_H */

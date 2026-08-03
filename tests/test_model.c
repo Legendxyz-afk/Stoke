@@ -428,7 +428,8 @@ static int model_test_child_main(int argc, char** argv) {
                           model_n_head_kv(m), model_head_dim(m));
         u32 prompt[3] = {0, 1, 2};
         u32 out[2];
-        (void)model_generate(m, kv, prompt, 3, 2, -1, out, NULL, -1, NULL);
+        (void)model_generate(m, kv, prompt, 3, 2, -1, out, NULL, -1, NULL,
+                              NULL);
     } else if (strcmp(s, "forward_token_id_oob") == 0) {
         write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
         Model* m = model_open(MODEL_FIXTURE_PATH);
@@ -734,7 +735,8 @@ TEST(model_generate_tiny_fixture_coherence_dump_probe_determinism) {
         probe[i].logit = 0.0f;
     }
     u32 count1 = model_generate(m, kv1, prompt, 3, n_gen, /*eos_id=*/-1,
-                                 out1, MODEL_DUMP_DIR, /*probe_pos=*/2, probe);
+                                 out1, MODEL_DUMP_DIR, /*probe_pos=*/2, probe,
+                                 NULL);
     kv_close(kv1);
 
     /* eos disabled -> exactly n_gen ids, every one in [0, vocab) */
@@ -774,7 +776,7 @@ TEST(model_generate_tiny_fixture_coherence_dump_probe_determinism) {
                        model_n_head_kv(m), model_head_dim(m));
     u32 out2[5];
     u32 count2 = model_generate(m, kv2, prompt, 3, n_gen, /*eos_id=*/-1,
-                                 out2, NULL, -1, NULL);
+                                 out2, NULL, -1, NULL, NULL);
     kv_close(kv2);
     ASSERT_EQ_U32(count2, count1);
     for (u32 i = 0; i < count1; i++) {
@@ -802,7 +804,7 @@ TEST(model_generate_eos_stops_early_and_is_included) {
                             model_n_head_kv(m), model_head_dim(m));
     u32 first_pass[4];
     u32 n_first = model_generate(m, kv_probe, prompt, 2, 4, /*eos_id=*/-1,
-                                  first_pass, NULL, -1, NULL);
+                                  first_pass, NULL, -1, NULL, NULL);
     kv_close(kv_probe);
     ASSERT_EQ_U32(n_first, 4u);
 
@@ -811,7 +813,7 @@ TEST(model_generate_eos_stops_early_and_is_included) {
                        model_head_dim(m));
     u32 out[4];
     u32 count = model_generate(m, kv2, prompt, 2, 4, eos_id, out, NULL, -1,
-                                NULL);
+                                NULL, NULL);
     kv_close(kv2);
 
     ASSERT_EQ_U32(count, 1u);

@@ -379,7 +379,7 @@ static void cmd_tokenize_roundtrip(const char* model_path,
 /* ===========================================================================
  * `stoke run` -- M2 op-spec design note section 7 CLI contract:
  *   stoke run <model.gguf> [--raw] [-n N] [-p "text" | -f file]
- *             [--dump dir] [--probe-pos N]
+ *             [--dump dir] [--probe-pos N] [--timing]
  * `--raw`: tokenize with add_special=false, parse-special OFF, no chat
  * template (the parity gate's mode). Without `--raw`: wraps the input as a
  * single ChatML user message via tok_apply_chatml (smoke-tested only, not
@@ -395,7 +395,7 @@ static void cmd_tokenize_roundtrip(const char* model_path,
 static void cmd_run(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke run <model.gguf> [--raw] [-n N] "
-              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N]");
+              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] [--timing]");
     }
     const char* model_path = argv[2];
     bool        raw = false;
@@ -404,6 +404,7 @@ static void cmd_run(int argc, char** argv) {
     const char* prompt_file = NULL;
     const char* dump_dir = NULL;
     long long   probe_pos_long = -1;
+    bool        report_timing = false;
 
     /* strtoll (not strtol): on this project's Windows toolchain (MSYS2
      * ucrt64, LLP64 data model) `long` is only 32 bits, so `(long)
@@ -429,6 +430,8 @@ static void cmd_run(int argc, char** argv) {
                 fatal("stoke run: --dump needs a directory argument");
             }
             dump_dir = argv[++i];
+        } else if (strcmp(argv[i], "--timing") == 0) {
+            report_timing = true;
         } else if (strcmp(argv[i], "--probe-pos") == 0) {
             if (i + 1 >= argc) {
                 fatal("stoke run: --probe-pos needs an argument");
@@ -468,6 +471,7 @@ static void cmd_run(int argc, char** argv) {
               (unsigned long long)text_len);
     }
 
+    double    t_load_start = now_ms();
     GgufFile* gf = gguf_open(model_path);
     Tok*      tok = tok_from_gguf(gf);
     gguf_close(gf); /* Tok is self-contained after construction (src/tok.h) */
@@ -497,6 +501,7 @@ static void cmd_run(int argc, char** argv) {
     Model* model = model_open(model_path);
     Kv*    kv = kv_open(model_n_layer(model), model_max_ctx(model),
                          model_n_head_kv(model), model_head_dim(model));
+    double load_ms = now_ms() - t_load_start;
 
     u32*            out_ids = (u32*)xcalloc(n, sizeof(u32));
     ModelProbeEntry probe[5];
@@ -505,9 +510,32 @@ static void cmd_run(int argc, char** argv) {
         probe[i].logit = 0.0f;
     }
 
-    i64 eos_id = (i64)tok_eos(tok);
+    i64         eos_id = (i64)tok_eos(tok);
+    ModelTiming timing;
     u32 count = model_generate(model, kv, prompt_ids, n_prompt, n, eos_id,
-                                out_ids, dump_dir, probe_pos, probe);
+                                out_ids, dump_dir, probe_pos, probe, &timing);
+
+    /* stderr, ALWAYS -- stdout is byte-compared against the goldens and
+     * against ref_forward.py, so a rate printed there would break the one
+     * property the parity gate rests on. */
+    if (report_timing) {
+        double dec_s = timing.decode_ms / 1000.0;
+        fprintf(stderr,
+                "timing: load %.1f ms | prefill %u tok in %.1f ms | "
+                "decode %u tok in %.1f ms",
+                load_ms, timing.n_prefill, timing.prefill_ms,
+                timing.n_decode, timing.decode_ms);
+        /* A rate needs both a nonzero numerator and a nonzero denominator.
+         * `-n 1` legitimately yields zero decode tokens, and printing 0.000
+         * tok/s for it would be a measurement of nothing presented as a
+         * measurement of something. */
+        if (timing.n_decode > 0u && dec_s > 0.0) {
+            fprintf(stderr, " (%.3f tok/s)", (double)timing.n_decode / dec_s);
+        } else {
+            fprintf(stderr, " (no decode-loop tokens -- no rate)");
+        }
+        fprintf(stderr, "\n");
+    }
 
     for (u32 i = 0; i < count; i++) {
         printf("%u\n", out_ids[i]);
@@ -576,7 +604,7 @@ int main(int argc, char** argv) {
         fatal("usage: stoke <command> [args] (commands: info <path.gguf>, "
               "tokenize [--special | --roundtrip] <path.gguf> <text-file>, "
               "run <path.gguf> [--raw] [-n N] [-p \"text\" | -f file] "
-              "[--dump dir] [--probe-pos N], "
+              "[--dump dir] [--probe-pos N] [--timing], "
               "bench --ops <path.gguf> [--reps N] [--jsonl])");
     }
     if (strcmp(argv[1], "bench") == 0) {

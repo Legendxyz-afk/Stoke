@@ -654,7 +654,8 @@ static void record_top5(const f32* logits, u32 n, ModelProbeEntry out[5]) {
 
 u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
-                    i32 probe_pos, ModelProbeEntry probe_out[5]) {
+                    i32 probe_pos, ModelProbeEntry probe_out[5],
+                    ModelTiming* timing) {
     if (n_prompt == 0) {
         fatal("model: generate -- prompt_ids must be non-empty");
     }
@@ -668,6 +669,12 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
               n_prompt, n_gen, (unsigned long long)total_cap,
               kv_max_ctx(kv));
     }
+
+    /* Timed unconditionally rather than under `if (timing)`: two now_ms()
+     * calls per generation are unmeasurable against a token, and a timer
+     * that only runs when someone is looking is a timer whose cost is not
+     * in the numbers it reports. */
+    double t_start = now_ms();
 
     for (u32 t = 0; t < n_prompt; t++) {
         bool last_prefill = (t == n_prompt - 1);
@@ -684,6 +691,9 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
     out_ids[0] = next_id;
     u32 count = 1;
 
+    /* Prefill ends with the first id in hand -- see ModelTiming's comment. */
+    double t_decode_start = now_ms();
+
     while (count < n_gen) {
         if (eos_id >= 0 && (i64)next_id == eos_id) break;
 
@@ -696,6 +706,14 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
         next_id = argmax(m->s_logits, m->n_vocab);
         out_ids[count] = next_id;
         count++;
+    }
+
+    if (timing != NULL) {
+        double t_end = now_ms();
+        timing->prefill_ms = t_decode_start - t_start;
+        timing->decode_ms  = t_end - t_decode_start;
+        timing->n_prefill  = n_prompt;
+        timing->n_decode   = count - 1u; /* count >= 1 always; see above */
     }
     return count;
 }

@@ -68,6 +68,26 @@ ifeq ($(SAN),tsan)
   CFLAGS     += -O1 -fsanitize=thread
   LDFLAGS    += -fsanitize=thread
   SAN_SUFFIX := -tsan
+  # TSan reserves fixed shadow-memory regions at startup and dies with
+  # "FATAL: ThreadSanitizer: unexpected memory mapping" when the kernel's
+  # ASLR entropy places the binary where it wants to map. Newer kernels
+  # (measured here: WSL2 6.6.87.2) default vm.mmap_rnd_bits high enough to
+  # hit this, and the leg fails at PROCESS STARTUP -- 33/47 on 2026-08-03,
+  # with a diagnostic that looks nothing like a test failure and reports
+  # binaries that pass everywhere else.
+  #
+  # setarch -R disables randomization for the run and needs no privileges,
+  # unlike the usual `sysctl vm.mmap_rnd_bits=28` advice. Disabling ASLR
+  # under a sanitizer weakens nothing TSan checks -- it does not detect
+  # races by address randomization.
+  #
+  # Resolved at USE time, not assigned here, so a box without setarch (or a
+  # non-Linux one) simply runs the tests directly instead of failing on a
+  # missing tool. THIS IS GATE CONDITION [4]'s LEG: K5 lands the thread
+  # pool, and a tsan leg that cannot start is the one failure mode that
+  # could be mistaken for a green matrix.
+  TSAN_RUN = $(shell command -v setarch >/dev/null 2>&1 && \
+                     echo "setarch $$(uname -m) -R")
 endif
 
 BUILDDIR := build/$(PLAT)$(SAN_SUFFIX)
@@ -90,11 +110,11 @@ STOKE_BIN := $(BUILDDIR)/stoke$(EXE)
 all: $(TEST_BIN) $(STOKE_BIN)
 
 test: $(TEST_BIN) $(STOKE_BIN)
-	sh tests/run_tests.sh $(BUILDDIR) $(EXE)
-	sh tests/golden_info.sh $(BUILDDIR) $(EXE)
-	sh tests/tok_golden.sh $(BUILDDIR) $(EXE)
-	sh tests/tok_special_golden.sh $(BUILDDIR) $(EXE)
-	sh tests/unicode_sweep_golden.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/run_tests.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/golden_info.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/tok_golden.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/tok_special_golden.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/unicode_sweep_golden.sh $(BUILDDIR) $(EXE)
 
 # One BUILDDIR per (platform,sanitizer) combination (see header comment) --
 # object files live here too, built with this invocation's exact CFLAGS, so
