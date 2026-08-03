@@ -20,7 +20,24 @@ ifeq ($(origin CC),default)
   CC := gcc
 endif
 
-CFLAGS  := -std=c11 -Wall -Wextra -Werror -g -O1 -Isrc
+# -O3 since 2026-08-03 (was -O1, inherited from ../loom and never defended).
+# Rebuilding at -O3 made every matvec 3.1x faster with byte-identical output
+# and a green matrix; the llama.cpp this is benchmarked against ships release
+# builds, so -O1 was measuring the wrong binary. Ruling:
+# docs/superpowers/memos/2026-08-03-m3-optimization-level-RULING-FABLE.md.
+#
+# -ffp-contract=off is PINNED, not inherited. Under -std=c11 both toolchains
+# here already refuse to contract a*b+c (verified from codegen at -mfma:
+# Windows gcc 15.2 and WSL gcc 13.3 both emit vmulss+vaddss, while the same
+# source in gnu17 mode emits vfmadd132ss on both -- so the probe is sensitive
+# and the agreement is real, not a blind check). It is pinned anyway because
+# K3 compiles SIMD files with -mfma, where contraction becomes POSSIBLE, and
+# a future toolchain flipping this ISO-mode default would break scalar<->SIMD
+# f32 exactness (forward-note gate [1]) silently and cross-leg. Note that
+# `gcc -Q --help=common` reports `fast` on BOTH legs and is therefore the
+# wrong instrument here -- it prints the raw option default, not the
+# language-adjusted value codegen actually uses.
+CFLAGS  := -std=c11 -Wall -Wextra -Werror -g -O3 -ffp-contract=off -Isrc
 LDFLAGS :=
 LIBS    := -lm
 SAN     ?=
@@ -33,14 +50,22 @@ else
   EXE  :=
 endif
 
+# Sanitizer legs build at -O1, deliberately, and the trailing -O1 is what
+# takes effect (gcc honours the LAST -O on the command line). They are NOT
+# raised with the default: instrumentation gets LESS sensitive as the
+# optimizer deletes or hoists the very accesses it exists to catch, and the
+# diagnostics get harder to read. An instrumented binary is never the shipped
+# code, so "what ships is what is sanitized" is not a requirement worth
+# paying for -- what verifies the shipped artifact is the un-instrumented
+# plain legs (Windows + WSL) running the same matrix at -O3.
 SAN_SUFFIX :=
 ifeq ($(SAN),asan)
-  CFLAGS     += -fsanitize=address,undefined -fno-sanitize-recover=all
+  CFLAGS     += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
   LDFLAGS    += -fsanitize=address,undefined
   SAN_SUFFIX := -asan
 endif
 ifeq ($(SAN),tsan)
-  CFLAGS     += -fsanitize=thread
+  CFLAGS     += -O1 -fsanitize=thread
   LDFLAGS    += -fsanitize=thread
   SAN_SUFFIX := -tsan
 endif
@@ -75,14 +100,20 @@ test: $(TEST_BIN) $(STOKE_BIN)
 # object files live here too, built with this invocation's exact CFLAGS, so
 # a plain build's .o's are never accidentally linked into an ASan/TSan binary
 # or vice versa.
-$(BUILDDIR)/%.o: src/%.c $(HEADERS) | $(BUILDDIR)
+#
+# Makefile is a PREREQUISITE of every object: the BUILDDIR split covers the
+# (platform, sanitizer) axes but NOT the flags themselves, so before this was
+# added, editing CFLAGS left every stale .o in place and linked it into a
+# binary claiming the new flags. The -O1 -> -O3 change that added this line is
+# exactly that case.
+$(BUILDDIR)/%.o: src/%.c $(HEADERS) Makefile | $(BUILDDIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) | $(BUILDDIR)
+$(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
 
-$(STOKE_BIN): $(MAIN_OBJ) $(LIB_OBJ) | $(BUILDDIR)
+$(STOKE_BIN): $(MAIN_OBJ) $(LIB_OBJ) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(MAIN_OBJ) $(LIB_OBJ) $(LIBS)
 
 $(BUILDDIR):
