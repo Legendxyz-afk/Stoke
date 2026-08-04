@@ -109,10 +109,11 @@ _BLOCK_INFO = {
 }
 GGML_NAME = {GGML_F32: "F32", GGML_Q8_0: "Q8_0", GGML_Q4_K: "Q4_K", GGML_Q6_K: "Q6_K"}
 
-# ggml types this module can actually DEQUANTIZE (F32 passthrough, Q8_0
-# d*qs). Anything else -- including Q4_K/Q6_K, listed above for --list
-# nbytes only -- fatals loudly if a caller asks for its row/full data.
-DEQUANT_SUPPORTED = {GGML_F32, GGML_Q8_0}
+# ggml types this module can actually DEQUANTIZE. Anything else fatals
+# loudly if a caller asks for its row/full data. K-quants added at K4
+# (2026-08-04), transcribed from ggml-quants.c and proven against
+# llama.cpp's OWN dequant of the real file -- see the selftest.
+DEQUANT_SUPPORTED = {GGML_F32, GGML_Q8_0, GGML_Q4_K, GGML_Q6_K}
 
 
 @dataclass
@@ -346,6 +347,100 @@ class GGUFFile:
 
     # ---- dequantization ----
 
+    # ---- K-quant dequant (K4). Transcribed from ggml-quants.c ----------
+    #
+    # These are module-level-in-spirit pure functions taking `np` explicitly
+    # so the selftest exercises THE SAME code the reader calls, not a copy.
+    #
+    # WHY THE ARITHMETIC ORDER IS WRITTEN OUT RATHER THAN SIMPLIFIED: the C
+    # computes `d1 * nibble - m1` with `d1 = d*sc` and `m1 = min*m`, all in
+    # f32, and `d * sc[is] * q` left-to-right for Q6_K. f32 multiplication is
+    # not associative, so a re-grouping CAN differ in the last bit while
+    # looking algebraically identical -- and the check is exact equality
+    # against llama.cpp's own output. Measured, not assumed: one regrouping
+    # tried as a mutation ((d*dmin)/dmin*sc) happened to round-trip exactly
+    # and passed, so "any regrouping breaks it" would be too strong a claim.
+    # Keep the C's grouping because matching it is free and reasoning about
+    # which regroupings are safe is not.
+
+    @staticmethod
+    def _scale_min_k4(np, scales, j: int):
+        """ggml's get_scale_min_k4, vectorised over blocks.
+
+        scales: uint8 [nb,12]. Returns (d, m) as uint8 [nb].
+
+        THE TRAP THE PLAYBOOK NAMES: in the j>=4 branch the min's high bits
+        come from `q[j-0]` -- that is q[j], NOT q[j-4]. The scale's high bits
+        DO come from q[j-4]. The two lines are near-mirror images and swapping
+        that one index is the classic transcription bug; it stays plausible
+        because both indices are in range and the output is still finite.
+        """
+        if j < 4:
+            d = scales[:, j] & 63
+            m = scales[:, j + 4] & 63
+        else:
+            d = (scales[:, j + 4] & 0xF) | ((scales[:, j - 4] >> 6) << 4)
+            m = (scales[:, j + 4] >> 4) | ((scales[:, j] >> 6) << 4)
+        return d.astype(np.uint8), m.astype(np.uint8)
+
+    @classmethod
+    def _dequant_q4_k(cls, np, raw, nblocks: int):
+        """block_q4_K: f16 d, f16 dmin, u8 scales[12], u8 qs[128] = 144 B."""
+        dt = np.dtype([("d", "<f2"), ("dmin", "<f2"),
+                       ("scales", "u1", (12,)), ("qs", "u1", (128,))])
+        if dt.itemsize != 144:
+            fatal(f"_dequant_q4_k: block dtype is {dt.itemsize} B, expected 144")
+        b = np.frombuffer(raw, dtype=dt, count=nblocks)
+        d = b["d"].astype(np.float32)
+        dmin = b["dmin"].astype(np.float32)
+        scales = b["scales"]
+        qs = b["qs"]
+        out = np.empty((nblocks, 256), dtype=np.float32)
+        # C: for (j = 0; j < QK_K; j += 64) with is += 2 each iteration.
+        for g in range(4):
+            sc1, m1u = cls._scale_min_k4(np, scales, 2 * g + 0)
+            sc2, m2u = cls._scale_min_k4(np, scales, 2 * g + 1)
+            d1 = d * sc1.astype(np.float32)
+            m1 = dmin * m1u.astype(np.float32)
+            d2 = d * sc2.astype(np.float32)
+            m2 = dmin * m2u.astype(np.float32)
+            q = qs[:, g * 32:(g + 1) * 32]
+            lo = (q & 0xF).astype(np.float32)
+            hi = (q >> 4).astype(np.float32)
+            out[:, g * 64: g * 64 + 32] = d1[:, None] * lo - m1[:, None]
+            out[:, g * 64 + 32: g * 64 + 64] = d2[:, None] * hi - m2[:, None]
+        return out
+
+    @staticmethod
+    def _dequant_q6_k(np, raw, nblocks: int):
+        """block_q6_K: u8 ql[128], u8 qh[64], i8 scales[16], f16 d = 210 B."""
+        dt = np.dtype([("ql", "u1", (128,)), ("qh", "u1", (64,)),
+                       ("scales", "i1", (16,)), ("d", "<f2")])
+        if dt.itemsize != 210:
+            fatal(f"_dequant_q6_k: block dtype is {dt.itemsize} B, expected 210")
+        b = np.frombuffer(raw, dtype=dt, count=nblocks)
+        d = b["d"].astype(np.float32)
+        out = np.empty((nblocks, 256), dtype=np.float32)
+        # is = l/16 over l in [0,32) -- 0 for the first half, 1 for the second.
+        is_ = np.repeat(np.array([0, 1], dtype=np.intp), 16)
+        for g in range(2):                       # C: for (n = 0; n < QK_K; n += 128)
+            ql = b["ql"][:, g * 64:(g + 1) * 64]
+            qh = b["qh"][:, g * 32:(g + 1) * 32]
+            sc = b["scales"][:, g * 8:(g + 1) * 8]
+            lo, hi = ql[:, 0:32], ql[:, 32:64]
+            # (int8_t)(6-bit value) is the identity here (max 63); the -32 is
+            # what makes it signed, so it must happen in a WIDER type.
+            q1 = ((lo & 0xF) | (((qh >> 0) & 3) << 4)).astype(np.int16) - 32
+            q2 = ((hi & 0xF) | (((qh >> 2) & 3) << 4)).astype(np.int16) - 32
+            q3 = ((lo >> 4) | (((qh >> 4) & 3) << 4)).astype(np.int16) - 32
+            q4 = ((hi >> 4) | (((qh >> 6) & 3) << 4)).astype(np.int16) - 32
+            base = g * 128
+            for off, q, sidx in ((0, q1, 0), (32, q2, 2), (64, q3, 4), (96, q4, 6)):
+                s = sc[:, is_ + sidx].astype(np.float32)
+                out[:, base + off: base + off + 32] = (
+                    (d[:, None] * s) * q.astype(np.float32))
+        return out
+
     def _dequant_bytes(self, ggml_type: int, raw, n: int):
         """raw: a bytes-like object of exactly the right length for `n`
         elements of `ggml_type`. Returns an OWNED float32 ndarray (not a
@@ -369,9 +464,21 @@ class GGUFFile:
             qs = blocks["qs"].astype(np.float32)         # [nblocks,32]
             vals = qs * d[:, None]                        # float32 * float32 -> float32
             return vals.reshape(n).astype(np.float32, copy=False)
+        if ggml_type in (GGML_Q4_K, GGML_Q6_K):
+            name = GGML_NAME[ggml_type]
+            block_elems, block_bytes = _BLOCK_INFO[ggml_type]
+            if n % block_elems != 0:
+                fatal(f"_dequant_bytes: {name} element count {n} not a "
+                      f"multiple of {block_elems}")
+            nblocks = n // block_elems
+            if len(raw) != nblocks * block_bytes:
+                fatal(f"_dequant_bytes: {name} raw length {len(raw)} != "
+                      f"{nblocks} blocks * {block_bytes} bytes")
+            fn = (self._dequant_q4_k if ggml_type == GGML_Q4_K
+                  else self._dequant_q6_k)
+            return fn(np, raw, nblocks).reshape(n).astype(np.float32, copy=False)
         fatal(f"_dequant_bytes: unsupported ggml_type {ggml_type} "
-              f"({GGML_NAME.get(ggml_type, '?')}) -- only F32/Q8_0 are wired "
-              f"up (M2 scope: K-quants are M3)")
+              f"({GGML_NAME.get(ggml_type, '?')})")
 
     def row_stride_bytes(self, t: TensorInfo) -> int:
         if t.type not in _BLOCK_INFO:
