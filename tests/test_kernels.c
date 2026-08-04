@@ -50,14 +50,20 @@ static int kernels_test_child_main(int argc, char** argv) {
     const char* s = argv[2];
 
     if (strcmp(s, "matvec_unsupported_type") == 0) {
-        /* A real ggml type id (Q4_K) that is simply not one of the two
-         * M2 dispatches -- no real file needed, a tiny fake GgufTensor is
-         * enough (brief's own suggested idiom). */
+        /* A real ggml type id that stoke deliberately does not dispatch.
+         * This was Q4_K until K4 implemented it; it is now Q4_0 (ggml type
+         * 2), which stays unsupported on PURPOSE -- the shipping Q4_K_M was
+         * censused at 216 Q4_K + 37 Q6_K + 145 F32 and contains no Q4_0 at
+         * all, so implementing it would be scope with no consumer. If Q4_0
+         * ever IS implemented, re-point this at another unsupported id
+         * rather than deleting the test: what it protects is that an
+         * undispatched type fatals instead of being silently mis-read.
+         * No real file needed -- a tiny fake GgufTensor is enough. */
         f32 fake_row[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         GgufTensor w;
         memset(&w, 0, sizeof w);
-        w.name    = "fake.q4k.weight";
-        w.type    = GGUF_GGML_TYPE_Q4_K;
+        w.name    = "fake.q4_0.weight";
+        w.type    = 2u; /* GGML_TYPE_Q4_0 */
         w.n_dims  = 2;
         w.dims[0] = 4;
         w.dims[1] = 1;
@@ -413,7 +419,7 @@ TEST(matvec_q8_0_without_activation_scratch_fatals) {
 
 TEST(matvec_unsupported_type_fatals) {
     assert_scenario_fatals("matvec_unsupported_type",
-                            "kernels: matvec -- tensor 'fake.q4k.weight' "
+                            "kernels: matvec -- tensor 'fake.q4_0.weight' "
                             "has unsupported ggml type");
 }
 

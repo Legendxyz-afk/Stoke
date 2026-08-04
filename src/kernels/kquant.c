@@ -29,6 +29,7 @@
 #include "kernels.h"
 
 #include <math.h>
+#include <string.h>
 
 /* Little-endian u16 read. q8_0.c has its own copy of this and of the
  * inf/nan scale check; they are deliberately NOT shared. kernels.h's
@@ -154,4 +155,298 @@ void dequant_row_q6_k(const void* row, u64 n, f32* out) {
             sc += 8;
         }
     }
+}
+
+/* ===================================================================
+ * The integer core: Q8_K activations + Q4_K/Q6_K integer dots.
+ *
+ * WHY Q8_K AND NOT Q8_0. K-quant weights are 256-element super-blocks with
+ * per-sub-block scales AND, for Q4_K, per-sub-block MINS. The min term
+ * contributes `dmin * sum(activation)` over each sub-block, so the dot needs
+ * the activation's SUMS as well as its quants -- which is exactly what
+ * block_q8_K carries and block_q8_0 does not. Q8_K is a different type, not
+ * a widened Q8_0:
+ *
+ *     block_q8_K = { f32 d; i8 qs[256]; i16 bsums[16] } = 292 B
+ *
+ * This is the same move K2 made for Q8_0 and for the same reason: it puts
+ * stoke in llama.cpp's numeric class rather than merely near it, which is
+ * what the deferred oracle gate measures.
+ * =================================================================== */
+
+/* Little-endian u32 read, for the 12 packed scale bytes. */
+static u32 kq_read_u32_le(const u8* p) {
+    return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
+
+static void kq_write_f32_le(u8* p, f32 v) {
+    u32 b;
+    memcpy(&b, &v, sizeof(b));
+    p[0] = (u8)(b & 0xFFu);
+    p[1] = (u8)((b >> 8) & 0xFFu);
+    p[2] = (u8)((b >> 16) & 0xFFu);
+    p[3] = (u8)((b >> 24) & 0xFFu);
+}
+
+static f32 kq_read_f32_le(const u8* p) {
+    u32 b = kq_read_u32_le(p);
+    f32 v;
+    memcpy(&v, &b, sizeof(v));
+    return v;
+}
+
+static void kq_write_i16_le(u8* p, i16 v) {
+    u16 u = (u16)v;
+    p[0] = (u8)(u & 0xFFu);
+    p[1] = (u8)(u >> 8);
+}
+
+static i16 kq_read_i16_le(const u8* p) {
+    return (i16)(u16)((u16)p[0] | ((u16)p[1] << 8));
+}
+
+/* ggml's nearest_int, verbatim: add 1.5*2^23 so the mantissa's low bits ARE
+ * the rounded integer, then subtract the bias. The FPU's own rounding does
+ * the work, so this is round-to-nearest-EVEN -- which is NOT what roundf()
+ * does (roundf is half-away-from-zero). Using roundf here would disagree
+ * with ggml on every exact .5 and put us in a different numeric class on
+ * those values, which is precisely what the integer core exists to avoid.
+ *
+ * ggml asserts |fval| <= 4194303. The only caller feeds `iscale*x[j]`, where
+ * |iscale*x[j]| <= 127 by construction (iscale is -127/max and |x[j]| <=
+ * |max|), so the precondition cannot be violated and is not re-checked in
+ * this inner loop. */
+static int kq_nearest_int(f32 fval) {
+    f32 val = fval + 12582912.0f;
+    int i;
+    memcpy(&i, &val, sizeof(i));
+    return (i & 0x007fffff) - 0x00400000;
+}
+
+void quantize_row_q8_k(const f32* x, u64 n, void* out) {
+    if (n % KERNELS_Q8_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: quantize_row_q8_k -- n=%llu is not a multiple of %u",
+              (unsigned long long)n, KERNELS_Q8_K_BLOCK_ELEMS);
+    }
+    u8* base = (u8*)out;
+    u64 nb = n / KERNELS_Q8_K_BLOCK_ELEMS;
+
+    for (u64 i = 0; i < nb; i++) {
+        const f32* xb = x + i * KERNELS_Q8_K_BLOCK_ELEMS;
+        u8* blk = base + i * KERNELS_Q8_K_BLOCK_BYTES;
+        u8* qs = blk + 4;
+        u8* bsums = blk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
+
+        /* `max` is the SIGNED value at the largest magnitude, not the
+         * magnitude itself -- iscale below is built from it, so its sign is
+         * load-bearing and dropping it would flip every quant in the block. */
+        f32 max = 0.0f, amax = 0.0f;
+        for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS; ++j) {
+            f32 ax = fabsf(xb[j]);
+            if (ax > amax) { amax = ax; max = xb[j]; }
+        }
+        if (amax == 0.0f) {
+            kq_write_f32_le(blk, 0.0f);
+            memset(qs, 0, KERNELS_Q8_K_BLOCK_ELEMS);
+            /* ggml `continue`s here and leaves bsums UNTOUCHED. We zero them
+             * instead. That is output-identical -- the dot multiplies the
+             * bsums term by dmin*ad, and ad is 0 here, so the term vanishes
+             * whatever the bsums are -- but this scratch buffer is REUSED
+             * across matvecs, so ggml's version would leave a previous row's
+             * sums lying in it. Provably-dead stale data in a reused buffer
+             * is still a hazard worth not having. */
+            memset(bsums, 0, 2u * (KERNELS_Q8_K_BLOCK_ELEMS / 16u));
+            continue;
+        }
+        const f32 iscale = -127.0f / max;
+        for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS; ++j) {
+            int v = kq_nearest_int(iscale * xb[j]);
+            qs[j] = (u8)(i8)(v < 127 ? v : 127);
+        }
+        for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS / 16u; ++j) {
+            int sum = 0;
+            for (u32 ii = 0; ii < 16u; ++ii) {
+                sum += (i8)qs[j * 16u + ii];
+            }
+            kq_write_i16_le(bsums + 2u * j, (i16)sum);
+        }
+        kq_write_f32_le(blk, 1.0f / iscale);
+    }
+}
+
+/* Unpacks Q4_K's 12 packed bytes into 8 six-bit scales + 8 six-bit mins.
+ *
+ * This is ggml's utmp/kmask repacking from the DOT path -- a different
+ * expression of the same thing get_scale_min_k4 computes one pair at a time
+ * in the dequant path. Both are transcribed because both exist in ggml and
+ * are used in different places; test_kquant.c asserts the two AGREE on real
+ * blocks, so if either transcription is wrong the pair disagrees and says so.
+ *
+ * ggml does this by memcpy'ing into uint32_t[4] and aliasing the result as
+ * bytes, which depends on little-endian layout. The bytes are extracted
+ * explicitly here so the result does not depend on host byte order. */
+static void kq_unpack_q4_k_scales(const u8* packed, u8* scales8, u8* mins8) {
+    static const u32 kmask1 = 0x3f3f3f3fu;
+    static const u32 kmask2 = 0x0f0f0f0fu;
+    static const u32 kmask3 = 0x03030303u;
+    u32 utmp[4];
+    utmp[0] = kq_read_u32_le(packed + 0);
+    utmp[1] = kq_read_u32_le(packed + 4);
+    utmp[2] = kq_read_u32_le(packed + 8);
+
+    utmp[3] = ((utmp[2] >> 4) & kmask2) | (((utmp[1] >> 6) & kmask3) << 4);
+    const u32 uaux = utmp[1] & kmask1;
+    utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);
+    utmp[2] = uaux;
+    utmp[0] &= kmask1;
+
+    for (u32 k = 0; k < 4u; k++) {
+        scales8[k] = (u8)((utmp[0] >> (8u * k)) & 0xFFu);
+        scales8[k + 4u] = (u8)((utmp[1] >> (8u * k)) & 0xFFu);
+        mins8[k] = (u8)((utmp[2] >> (8u * k)) & 0xFFu);
+        mins8[k + 4u] = (u8)((utmp[3] >> (8u * k)) & 0xFFu);
+    }
+}
+
+/* Exposed wrappers over the two transcriptions -- see kernels.h. These are
+ * the SAME code the kernels above call, not copies of it, so a test that
+ * exercises them exercises what actually runs. */
+void kernels_q4_k_scale_min_pair(const void* packed12, int j, u8* scale, u8* min) {
+    if (j < 0 || j >= 8) {
+        fatal("kernels: kernels_q4_k_scale_min_pair -- j=%d out of [0,8)", j);
+    }
+    get_scale_min_k4(j, (const u8*)packed12, scale, min);
+}
+
+void kernels_q4_k_unpack_scales(const void* packed12, u8* scales8, u8* mins8) {
+    kq_unpack_q4_k_scales((const u8*)packed12, scales8, mins8);
+}
+
+f32 vec_dot_q4_k_q8_k(const void* wrow, const void* arow, u64 n) {
+    if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q4_k_q8_k -- n=%llu is not a multiple of %u",
+              (unsigned long long)n, KERNELS_Q4_K_BLOCK_ELEMS);
+    }
+    const u8* wb = (const u8*)wrow;
+    const u8* ab = (const u8*)arow;
+    u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
+
+    i8 aux8[KERNELS_Q4_K_BLOCK_ELEMS];
+    i16 aux16[8];
+    i32 aux32[8];
+    f32 sums[8];
+    u8 scales8[8], mins8[8];
+    memset(sums, 0, sizeof(sums));
+
+    f32 sumf = 0.0f;
+    for (u64 i = 0; i < nb; ++i) {
+        const u8* blk = wb + i * KERNELS_Q4_K_BLOCK_BYTES;
+        const u8* q4 = blk + 16;
+        const u8* ablk = ab + i * KERNELS_Q8_K_BLOCK_BYTES;
+        const i8* q8 = (const i8*)(ablk + 4);
+        const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
+        f32 ad = kq_read_f32_le(ablk);
+
+        memset(aux32, 0, sizeof(aux32));
+        /* Widen the 4-bit quants to bytes first: low nibbles of a 32-byte
+         * span, then high nibbles of the SAME span. */
+        i8* a = aux8;
+        for (u32 j = 0; j < KERNELS_Q4_K_BLOCK_ELEMS / 64u; ++j) {
+            for (int l = 0; l < 32; ++l) a[l] = (i8)(q4[l] & 0xF);
+            a += 32;
+            for (int l = 0; l < 32; ++l) a[l] = (i8)(q4[l] >> 4);
+            a += 32;
+            q4 += 32;
+        }
+
+        kq_unpack_q4_k_scales(blk + 4, scales8, mins8);
+
+        /* The MIN term rides on the activation's per-16 sums -- the whole
+         * reason Q8_K exists. Note mins8[j/2]: one min per 32-element
+         * sub-block, two bsums entries each. */
+        i32 sumi = 0;
+        for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS / 16u; ++j) {
+            sumi += (i32)kq_read_i16_le(bsums + 2u * j) * (i32)mins8[j / 2u];
+        }
+
+        a = aux8;
+        u32 is = 0;
+        for (u32 j = 0; j < KERNELS_Q4_K_BLOCK_ELEMS / 32u; ++j) {
+            i32 scale = (i32)scales8[is++];
+            for (u32 k = 0; k < 4u; k++) {
+                for (int l = 0; l < 8; ++l) aux16[l] = (i16)(q8[l] * a[l]);
+                for (int l = 0; l < 8; ++l) aux32[l] += scale * (i32)aux16[l];
+                q8 += 8;
+                a += 8;
+            }
+        }
+
+        f32 d = f16_to_f32(kq_read_u16_le(blk)) * ad;
+        for (int l = 0; l < 8; ++l) sums[l] += d * (f32)aux32[l];
+        f32 dmin = f16_to_f32(kq_read_u16_le(blk + 2)) * ad;
+        sumf -= dmin * (f32)sumi;
+    }
+    for (int l = 0; l < 8; ++l) sumf += sums[l];
+    return sumf;
+}
+
+f32 vec_dot_q6_k_q8_k(const void* wrow, const void* arow, u64 n) {
+    if (n % KERNELS_Q6_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q6_k_q8_k -- n=%llu is not a multiple of %u",
+              (unsigned long long)n, KERNELS_Q6_K_BLOCK_ELEMS);
+    }
+    const u8* wb = (const u8*)wrow;
+    const u8* ab = (const u8*)arow;
+    u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
+
+    i8 aux8[KERNELS_Q6_K_BLOCK_ELEMS];
+    i16 aux16[8];
+    i32 aux32[8];
+    f32 sums[8];
+    memset(sums, 0, sizeof(sums));
+
+    f32 sumf = 0.0f;
+    for (u64 i = 0; i < nb; ++i) {
+        const u8* blk = wb + i * KERNELS_Q6_K_BLOCK_BYTES;
+        const u8* q4 = blk;
+        const u8* qh = blk + 128;
+        const i8* sc = (const i8*)(blk + 192);
+        const u8* ablk = ab + i * KERNELS_Q8_K_BLOCK_BYTES;
+        const i8* q8 = (const i8*)(ablk + 4);
+        f32 ad = kq_read_f32_le(ablk);
+
+        memset(aux32, 0, sizeof(aux32));
+        i8* a = aux8;
+        for (u32 j = 0; j < KERNELS_Q6_K_BLOCK_ELEMS; j += 128) {
+            (void)j;
+            for (int l = 0; l < 32; ++l) {
+                a[l + 0] = (i8)((q4[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+                a[l + 32] = (i8)((q4[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                a[l + 64] = (i8)((q4[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                a[l + 96] = (i8)((q4[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+            }
+            a += 128;
+            q4 += 64;
+            qh += 32;
+        }
+
+        /* Q6_K has NO min term -- its quants are already centred by the -32
+         * above -- so unlike Q4_K it never touches the activation's bsums. */
+        a = aux8;
+        u32 is = 0;
+        for (u32 j = 0; j < KERNELS_Q6_K_BLOCK_ELEMS / 16u; ++j) {
+            i32 scale = (i32)sc[is++];
+            for (u32 k = 0; k < 2u; k++) {
+                for (int l = 0; l < 8; ++l) aux16[l] = (i16)(q8[l] * a[l]);
+                for (int l = 0; l < 8; ++l) aux32[l] += scale * (i32)aux16[l];
+                q8 += 8;
+                a += 8;
+            }
+        }
+
+        f32 d = f16_to_f32(kq_read_u16_le(blk + 208)) * ad;
+        for (int l = 0; l < 8; ++l) sums[l] += d * (f32)aux32[l];
+    }
+    for (int l = 0; l < 8; ++l) sumf += sums[l];
+    return sumf;
 }

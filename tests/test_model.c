@@ -417,10 +417,11 @@ static int model_test_child_main(int argc, char** argv) {
         model_check_tensor_shape(t, 2, want);
         gguf_close(f);
     } else if (strcmp(s, "open_q4km_dev_file") == 0) {
-        /* The Q4_K_M dev file's weight matrices are Q4_K/Q6_K -- model.c
-         * restricts weight tensors to F32/Q8_0 at M2, so this must fatal
-         * naming the first such tensor, not deep inside a later matvec. */
-        (void)model_open(REAL_Q4KM_MODEL);
+        /* Kept as a scenario name for continuity, but K4 INVERTED it: the
+         * Q4_K_M dev file's weights are Q4_K/Q6_K, which model.c accepts as
+         * of K4, so this must now OPEN. Exits non-zero only if it fatals. */
+        Model* m = model_open(REAL_Q4KM_MODEL);
+        model_close(m);
     } else if (strcmp(s, "generate_kv_too_small") == 0) {
         write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
         Model* m = model_open(MODEL_FIXTURE_PATH);
@@ -466,7 +467,14 @@ static int model_test_child_main(int argc, char** argv) {
         return 2;
     }
 
-    printf("test_model child: scenario '%s' did NOT fatal\n", s);
+    /* Reaching here means the scenario ran to completion without fatalling.
+     * For the many negative scenarios that is the failure, and the parent
+     * catches it by rc == 0. But since K4, 'open_q4km_dev_file' is a
+     * POSITIVE scenario -- completing IS its pass -- so it must not print a
+     * line that reads like a fault in every green run. */
+    if (strcmp(s, "open_q4km_dev_file") != 0) {
+        printf("test_model child: scenario '%s' did NOT fatal\n", s);
+    }
     return 0;
 }
 #define TEST_CHILD_MAIN model_test_child_main
@@ -611,13 +619,36 @@ TEST(model_check_tensor_shape_real_tensor_doctored_dims_fatals) {
                             "blk.0.attn_q.weight");
 }
 
-TEST(model_open_q4km_dev_file_unsupported_weight_type_fatals) {
+/* K4 INVERTED THIS TEST, and the inversion IS the deliverable.
+ *
+ * Until K4 this asserted that opening the shipping Q4_K_M file FAILS, because
+ * model.c accepted only F32/Q8_0 weights. K-quants now load, so the same
+ * scenario must succeed. The test was re-pointed rather than deleted: what it
+ * has always protected is that the bar model's real weight types are handled
+ * at OPEN time and named there, instead of the problem surfacing deep inside
+ * a later matvec where the tensor name is long gone.
+ *
+ * It also checks the config the file actually reports, so "it opened" cannot
+ * pass by opening something degenerate. */
+TEST(model_open_q4km_dev_file_now_loads_k_quants) {
     if (!require_real_model_or_skip(
             REAL_Q4KM_MODEL,
-            "model_open_q4km_dev_file_unsupported_weight_type_fatals")) {
+            "model_open_q4km_dev_file_now_loads_k_quants")) {
         return;
     }
-    assert_scenario_fatals("open_q4km_dev_file", "are supported at M2");
+    char errbuf[2048];
+    int rc = spawn_scenario("open_q4km_dev_file", errbuf, sizeof errbuf);
+    if (rc != 0) {
+        fprintf(stderr, "FAIL %s:%d: opening the Q4_K_M file failed: %s\n",
+                __FILE__, __LINE__, errbuf);
+        g_test_case_failed = 1;
+        return;
+    }
+    Model* m = model_open(REAL_Q4KM_MODEL);
+    ASSERT_EQ_U32(model_n_layer(m), 36u);
+    ASSERT_EQ_U32(model_n_embd(m), 2560u);
+    ASSERT_EQ_U32(model_head_dim(m), 128u);
+    model_close(m);
 }
 
 /* ===========================================================================

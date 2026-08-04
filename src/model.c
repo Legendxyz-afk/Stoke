@@ -147,11 +147,13 @@ static void check_weight_tensor(const GgufTensor* t, u64 want0, u64 want1) {
     want[0] = want0;
     want[1] = want1;
     model_check_tensor_shape(t, 2, want);
-    if (t->type != GGUF_GGML_TYPE_F32 && t->type != GGUF_GGML_TYPE_Q8_0) {
-        fatal("model: tensor '%s' has ggml type %u -- only F32(%u)/Q8_0(%u) "
-              "are supported at M2",
+    if (t->type != GGUF_GGML_TYPE_F32 && t->type != GGUF_GGML_TYPE_Q8_0 &&
+        t->type != GGUF_GGML_TYPE_Q4_K && t->type != GGUF_GGML_TYPE_Q6_K) {
+        fatal("model: tensor '%s' has ggml type %u -- only F32(%u)/Q8_0(%u)/"
+              "Q4_K(%u)/Q6_K(%u) are supported",
               t->name, t->type, (u32)GGUF_GGML_TYPE_F32,
-              (u32)GGUF_GGML_TYPE_Q8_0);
+              (u32)GGUF_GGML_TYPE_Q8_0, (u32)GGUF_GGML_TYPE_Q4_K,
+              (u32)GGUF_GGML_TYPE_Q6_K);
     }
 }
 
@@ -250,11 +252,13 @@ Model* model_open(const char* path) {
               "expected n_dims=2 dims[0]=%u (embedding_length)",
               te_n_dims, (unsigned long long)te_dims0, n_embd);
     }
-    if (te_type != GGUF_GGML_TYPE_F32 && te_type != GGUF_GGML_TYPE_Q8_0) {
+    if (te_type != GGUF_GGML_TYPE_F32 && te_type != GGUF_GGML_TYPE_Q8_0 &&
+        te_type != GGUF_GGML_TYPE_Q4_K && te_type != GGUF_GGML_TYPE_Q6_K) {
         gguf_close(f);
         fatal("model: tensor 'token_embd.weight' has ggml type %u -- only "
-              "F32(%u)/Q8_0(%u) are supported at M2",
-              te_type, (u32)GGUF_GGML_TYPE_F32, (u32)GGUF_GGML_TYPE_Q8_0);
+              "F32(%u)/Q8_0(%u)/Q4_K(%u)/Q6_K(%u) are supported",
+              te_type, (u32)GGUF_GGML_TYPE_F32, (u32)GGUF_GGML_TYPE_Q8_0,
+              (u32)GGUF_GGML_TYPE_Q4_K, (u32)GGUF_GGML_TYPE_Q6_K);
     }
     if (n_vocab == 0) {
         gguf_close(f);
@@ -333,8 +337,21 @@ Model* model_open(const char* path) {
         u64 attn_out_in = (u64)n_head * head_dim;
         if (attn_out_in > max_n_in) max_n_in = attn_out_in;
         if ((u64)n_ff > max_n_in) max_n_in = n_ff;
-        m->s_aq_bytes = (max_n_in / KERNELS_Q8_0_BLOCK_ELEMS)
-                        * KERNELS_Q8_0_BLOCK_BYTES;
+        /* ONE scratch buffer serves both activation quantizations, sized for
+         * whichever needs more: Q8_0 for Q8_0 weights, Q8_K for K-quants.
+         * Per 256 elements that is 8*34 = 272 B against 292 B, so Q8_K wins
+         * -- but taking the max rather than hardcoding that keeps it correct
+         * if either layout ever moves.
+         *
+         * Ceiling division, not floor: a contraction length that is not a
+         * whole number of blocks is rejected loudly by the kernels
+         * themselves, and until then this buffer must not be the thing that
+         * is short. Rounding up can only over-allocate by one block. */
+        u64 q8_0_bytes = ((max_n_in + KERNELS_Q8_0_BLOCK_ELEMS - 1u)
+                          / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
+        u64 q8_k_bytes = ((max_n_in + KERNELS_Q8_K_BLOCK_ELEMS - 1u)
+                          / KERNELS_Q8_K_BLOCK_ELEMS) * KERNELS_Q8_K_BLOCK_BYTES;
+        m->s_aq_bytes = q8_0_bytes > q8_k_bytes ? q8_0_bytes : q8_k_bytes;
         m->s_aq = (u8*)xmalloc((size_t)m->s_aq_bytes);
     }
     m->s_proj = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
@@ -416,9 +433,7 @@ static void embed_row(const Model* m, u32 token_id, f32* out) {
     if (t->type == GGUF_GGML_TYPE_F32) {
         memcpy(out, base + (u64)token_id * n_embd * sizeof(f32),
                (size_t)(n_embd * sizeof(f32)));
-    } else {
-        /* Q8_0: the only other type check_weight_tensor allows at model_open
-           time, so this branch is exhaustive. */
+    } else if (t->type == GGUF_GGML_TYPE_Q8_0) {
         u64 row_bytes =
             (n_embd / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
         /* K3: bit-identical twin, so the embedding row is unchanged. */
@@ -428,6 +443,24 @@ static void embed_row(const Model* m, u32 token_id, f32* out) {
         } else {
             dequant_row_q8_0(base + (u64)token_id * row_bytes, n_embd, out);
         }
+    } else if (t->type == GGUF_GGML_TYPE_Q4_K) {
+        u64 row_bytes =
+            (n_embd / KERNELS_Q4_K_BLOCK_ELEMS) * KERNELS_Q4_K_BLOCK_BYTES;
+        dequant_row_q4_k(base + (u64)token_id * row_bytes, n_embd, out);
+    } else if (t->type == GGUF_GGML_TYPE_Q6_K) {
+        /* The shipping Q4_K_M stores token_embd as Q6_K, so this is the LIVE
+         * branch for the bar model, not a defensive one. */
+        u64 row_bytes =
+            (n_embd / KERNELS_Q6_K_BLOCK_ELEMS) * KERNELS_Q6_K_BLOCK_BYTES;
+        dequant_row_q6_k(base + (u64)token_id * row_bytes, n_embd, out);
+    } else {
+        /* check_weight_tensor / the token_embd type check at model_open
+         * already rejected everything else, so reaching here means those two
+         * lists and this switch have drifted apart -- which is exactly the
+         * kind of silent-wrong-output gap worth a loud fatal. */
+        fatal("model: embed_row -- tensor '%s' has ggml type %u, which passed "
+              "model_open's type check but has no dequant branch here",
+              t->name, t->type);
     }
 }
 

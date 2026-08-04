@@ -118,6 +118,48 @@ void dequant_row_q8_0(const void* row, u64 n, f32* out);
 void dequant_row_q4_k(const void* row, u64 n, f32* out);
 void dequant_row_q6_k(const void* row, u64 n, f32* out);
 
+/* Q8_K activation block -- the K-quant integer core's activation type.
+ *
+ *     { f32 d; i8 qs[256]; i16 bsums[16] } = 4 + 256 + 32 = 292 B
+ *
+ * NOT a widened Q8_0. Q4_K carries a per-sub-block MIN whose contribution is
+ * `dmin * sum(activation)`, so the dot needs the activation's SUMS as well
+ * as its quants; `bsums` is what carries them. Q6_K uses the same activation
+ * type but never reads bsums (its quants are pre-centred by -32). */
+#define KERNELS_Q8_K_BLOCK_ELEMS 256u
+#define KERNELS_Q8_K_BLOCK_BYTES 292u
+
+/* Quantizes n f32 activations into n/256 Q8_K blocks at `out`, which must
+ * hold (n/256)*292 bytes. Rounding is ggml's magic-constant nearest_int
+ * (round-to-nearest-EVEN), deliberately NOT roundf (half-away-from-zero) --
+ * a different tie rule here is a different numeric class. */
+void quantize_row_q8_k(const f32* x, u64 n, void* out);
+
+/* Integer dots: a Q4_K/Q6_K weight row against a Q8_K-quantized activation,
+ * without materializing either side as f32. The accumulation grouping (i32
+ * per 8-lane bucket, scaled per sub-block, summed into 8 f32 partials, and
+ * for Q4_K the min term subtracted per super-block) is ggml's and is the
+ * binding numeric contract -- it is what puts stoke in llama.cpp's numeric
+ * class on Q4_K_M, which is what the deferred oracle gate measures. */
+f32 vec_dot_q4_k_q8_k(const void* wrow, const void* arow, u64 n);
+f32 vec_dot_q6_k_q8_k(const void* wrow, const void* arow, u64 n);
+
+/* Q4_K's 12 packed bytes -> 8 six-bit scales + 8 six-bit mins, TWO WAYS.
+ *
+ * ggml contains both: the dequant path pulls one (scale, min) pair at a time
+ * with get_scale_min_k4, the dot path repacks all sixteen at once with a
+ * uint32 mask/shift dance. They must agree, and both are transcribed here
+ * because both are used. Exposed (rather than left static) so tests can
+ * assert that agreement directly on real blocks -- two independent
+ * transcriptions of the same packing agreeing is real evidence about both,
+ * where reviewing either alone is evidence about neither. This is the same
+ * reason bench_reps_for() was hoisted out of its caller.
+ *
+ * `packed12` points at the 12 scale bytes (offset 4 of a Q4_K block); j is
+ * the sub-block index in [0,8). */
+void kernels_q4_k_scale_min_pair(const void* packed12, int j, u8* scale, u8* min);
+void kernels_q4_k_unpack_scales(const void* packed12, u8* scales8, u8* mins8);
+
 /* Dot product of a Q8_0-quantized row against a dense f32 vector x,
  * WITHOUT materializing the dequantized row. Per block: `d * sum(qs[i] *
  * x[i])` -- the block's own sum accumulates first (f32, sequential over

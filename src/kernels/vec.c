@@ -113,10 +113,55 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
                                          n_in);
             }
         }
+    } else if (w->type == GGUF_GGML_TYPE_Q4_K ||
+               w->type == GGUF_GGML_TYPE_Q6_K) {
+        /* K4. Same shape as the Q8_0 path above and for the same reasons,
+         * but the activation quantizes to Q8_K rather than Q8_0 -- Q4_K's
+         * per-sub-block MIN term is paid as `dmin * sum(activation)`, so the
+         * dot needs the activation's per-16 sums, which only Q8_K carries.
+         * Both K-quant types share that activation, so it is quantized once
+         * here regardless of which branch runs below. */
+        int is_q4 = (w->type == GGUF_GGML_TYPE_Q4_K);
+        u32 blk_elems = is_q4 ? KERNELS_Q4_K_BLOCK_ELEMS
+                              : KERNELS_Q6_K_BLOCK_ELEMS;
+        u32 blk_bytes = is_q4 ? KERNELS_Q4_K_BLOCK_BYTES
+                              : KERNELS_Q6_K_BLOCK_BYTES;
+        u64 row_bytes = (n_in / blk_elems) * blk_bytes;
+
+        if (aq_scratch == NULL) {
+            /* Same rule as Q8_0: NO SILENT FALLBACK to a dequant-then-f32
+             * path. That would be a second arithmetic class reachable from
+             * one call site, invisible in the output and fatal to the parity
+             * measurement the oracle gate exists to make. */
+            fatal("kernels: matvec -- tensor '%s' is a K-quant but no "
+                  "activation scratch was supplied; the integer core requires "
+                  "a caller-owned buffer of (n_in/%u)*%u = %llu bytes",
+                  w->name, KERNELS_Q8_K_BLOCK_ELEMS, KERNELS_Q8_K_BLOCK_BYTES,
+                  (unsigned long long)((n_in / KERNELS_Q8_K_BLOCK_ELEMS)
+                                       * KERNELS_Q8_K_BLOCK_BYTES));
+        }
+
+        /* Once for the whole matrix, not once per row -- the logits matvec
+         * would otherwise re-quantize x 151,936 times. */
+        quantize_row_q8_k(x, n_in, aq_scratch);
+
+        if (is_q4) {
+            for (u64 r = 0; r < n_out; r++) {
+                y[r] = vec_dot_q4_k_q8_k(base + r * row_bytes, aq_scratch,
+                                         n_in);
+            }
+        } else {
+            for (u64 r = 0; r < n_out; r++) {
+                y[r] = vec_dot_q6_k_q8_k(base + r * row_bytes, aq_scratch,
+                                         n_in);
+            }
+        }
     } else {
         fatal("kernels: matvec -- tensor '%s' has unsupported ggml type "
-              "%u -- only F32(%u) and Q8_0(%u) are dispatched at M2",
+              "%u -- only F32(%u), Q8_0(%u), Q4_K(%u) and Q6_K(%u) are "
+              "dispatched",
               w->name, w->type, (u32)GGUF_GGML_TYPE_F32,
-              (u32)GGUF_GGML_TYPE_Q8_0);
+              (u32)GGUF_GGML_TYPE_Q8_0, (u32)GGUF_GGML_TYPE_Q4_K,
+              (u32)GGUF_GGML_TYPE_Q6_K);
     }
 }
