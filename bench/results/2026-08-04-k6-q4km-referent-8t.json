@@ -1,0 +1,303 @@
+{
+  "kind": "referent_interleave",
+  "protocol": 2,
+  "mode": "stoke-vs-llama",
+  "ts_utc": "2026-08-04T05:49:58+00:00",
+  "label": "K6: stoke vs llama on Q4_K_M, matched 8T pinned to 6P+4E",
+  "git": {
+    "commit": "5051878f180bf77722189d0219e6b68d0b396e16",
+    "dirty": true,
+    "tag": null
+  },
+  "config": {
+    "model": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+    "model_size_bytes": 2497280736,
+    "tokens_per_side": 48,
+    "affinity": "0xf555",
+    "threads": 8,
+    "stoke_threads": 8,
+    "stoke_sha256": "876ce53fd4a943fdd820f0bf9e8328b8aa751fa1269df9fd20f4fedbfb6390ff",
+    "llama_build": "llama-b10037"
+  },
+  "llama_over_stoke_median": 1.6296,
+  "llama_over_stoke_cycles": [
+    1.646,
+    1.5159,
+    1.6296
+  ],
+  "ratio_rel_spread": 0.0858,
+  "box": {
+    "platform": "win32",
+    "logical_cpus": 16,
+    "grade": "gate",
+    "grade_reasons": []
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "stoke": {
+        "tok_s": 9.967,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 1103.7
+        },
+        "error": null,
+        "wall_s": 2.66,
+        "sidecar": {
+          "wall_s": 3.13,
+          "foreign_cpu_cores": 0.788,
+          "blind": null,
+          "top_foreign": {
+            "name": "System",
+            "cores": 0.195
+          },
+          "busy_procs": [
+            {
+              "name": "System",
+              "cores": 0.195
+            },
+            {
+              "name": "claude",
+              "cores": 0.18
+            },
+            {
+              "name": "powershell",
+              "cores": 0.09
+            },
+            {
+              "name": "conhost",
+              "cores": 0.08
+            },
+            {
+              "name": "svchost",
+              "cores": 0.07
+            }
+          ],
+          "free_ram_mb_min": 11369,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 16.405218,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            16.4052
+          ]
+        },
+        "error": null,
+        "wall_s": 7.66,
+        "sidecar": {
+          "wall_s": 8.21,
+          "foreign_cpu_cores": 0.625,
+          "blind": null,
+          "top_foreign": {
+            "name": "System",
+            "cores": 0.15
+          },
+          "busy_procs": [
+            {
+              "name": "System",
+              "cores": 0.15
+            },
+            {
+              "name": "claude",
+              "cores": 0.133
+            },
+            {
+              "name": "conhost",
+              "cores": 0.086
+            }
+          ],
+          "free_ram_mb_min": 11379,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.646
+    },
+    {
+      "cycle": 2,
+      "stoke": {
+        "tok_s": 10.423,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 1055.4
+        },
+        "error": null,
+        "wall_s": 2.63,
+        "sidecar": {
+          "wall_s": 3.08,
+          "foreign_cpu_cores": 0.599,
+          "blind": null,
+          "top_foreign": {
+            "name": "System",
+            "cores": 0.137
+          },
+          "busy_procs": [
+            {
+              "name": "System",
+              "cores": 0.137
+            },
+            {
+              "name": "claude",
+              "cores": 0.112
+            },
+            {
+              "name": "powershell",
+              "cores": 0.066
+            },
+            {
+              "name": "svchost",
+              "cores": 0.061
+            }
+          ],
+          "free_ram_mb_min": 11390,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 15.799763,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            15.7998
+          ]
+        },
+        "error": null,
+        "wall_s": 4.97,
+        "sidecar": {
+          "wall_s": 5.41,
+          "foreign_cpu_cores": 0.56,
+          "blind": null,
+          "top_foreign": {
+            "name": "claude",
+            "cores": 0.144
+          },
+          "busy_procs": [
+            {
+              "name": "claude",
+              "cores": 0.144
+            },
+            {
+              "name": "System",
+              "cores": 0.101
+            },
+            {
+              "name": "conhost",
+              "cores": 0.066
+            },
+            {
+              "name": "MsMpEng",
+              "cores": 0.058
+            }
+          ],
+          "free_ram_mb_min": 11389,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.5159
+    },
+    {
+      "cycle": 3,
+      "stoke": {
+        "tok_s": 9.917,
+        "detail": {
+          "n_decode": 11,
+          "decode_ms": 1109.2
+        },
+        "error": null,
+        "wall_s": 2.6,
+        "sidecar": {
+          "wall_s": 3.02,
+          "foreign_cpu_cores": 0.73,
+          "blind": null,
+          "top_foreign": {
+            "name": "MsMpEng",
+            "cores": 0.14
+          },
+          "busy_procs": [
+            {
+              "name": "MsMpEng",
+              "cores": 0.14
+            },
+            {
+              "name": "System",
+              "cores": 0.14
+            },
+            {
+              "name": "claude",
+              "cores": 0.104
+            },
+            {
+              "name": "conhost",
+              "cores": 0.078
+            },
+            {
+              "name": "powershell",
+              "cores": 0.067
+            }
+          ],
+          "free_ram_mb_min": 11380,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama": {
+        "tok_s": 16.160829,
+        "detail": {
+          "stddev_ts": 0.0,
+          "samples": [
+            16.1608
+          ]
+        },
+        "error": null,
+        "wall_s": 4.86,
+        "sidecar": {
+          "wall_s": 5.26,
+          "foreign_cpu_cores": 0.615,
+          "blind": null,
+          "top_foreign": {
+            "name": "claude",
+            "cores": 0.119
+          },
+          "busy_procs": [
+            {
+              "name": "claude",
+              "cores": 0.119
+            },
+            {
+              "name": "System",
+              "cores": 0.11
+            },
+            {
+              "name": "conhost",
+              "cores": 0.08
+            },
+            {
+              "name": "svchost",
+              "cores": 0.077
+            },
+            {
+              "name": "MsMpEng",
+              "cores": 0.056
+            }
+          ],
+          "free_ram_mb_min": 11375,
+          "power_plan": "Turbo",
+          "on_ac": true,
+          "conditions_changed": false
+        }
+      },
+      "llama_over_stoke": 1.6296
+    }
+  ]
+}

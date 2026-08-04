@@ -108,15 +108,22 @@ def pin(proc, affinity_mask, high_priority=True):
         k32.CloseHandle(h)
 
 
-def run_stoke(exe, model, prompt, n_gen, affinity):
+def run_stoke(exe, model, prompt, n_gen, affinity, threads=1):
     """One pinned stoke generation. Returns (tok_s, detail) or (None, error).
 
     The rate is READ FROM THE BINARY, not derived from wall clock out here:
     `stoke run --timing` reports its own decode loop, so load and prefill are
     excluded at the source instead of being differenced away afterwards --
     which is the method this tool exists to retire.
+
+    `threads` is passed through since K5. Before K5 stoke was single-threaded
+    and this argument did not exist, which means every referent record taken
+    before 2026-08-04 compares a 1-thread stoke against an N-thread llama --
+    correct at the time, and NOT re-readable as an engine-vs-engine ratio now.
+    The records carry `threads` so a reader can tell which they are holding.
     """
-    cmd = [exe, "run", model, "-p", prompt, "-n", str(n_gen), "--timing"]
+    cmd = [exe, "run", model, "-p", prompt, "-n", str(n_gen), "--timing",
+           "--threads", str(threads)]
     p = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True)
     pin(p, affinity)
@@ -292,7 +299,15 @@ def main():
                     help="logical-processor mask BOTH sides are pinned to "
                          "(default 0x1)")
     ap.add_argument("--threads", type=int, default=1,
-                    help="llama threads; stoke is single-threaded until K5")
+                    help="threads for BOTH engines unless --stoke-threads "
+                         "overrides stoke's")
+    ap.add_argument("--stoke-threads", type=int, default=None,
+                    help="stoke threads if the two engines are to be run at "
+                         "their OWN tuned counts rather than a matched one. "
+                         "Leave unset for a matched comparison; set it only "
+                         "when the question is 'each at its best', and say so "
+                         "in --label, because the two questions have "
+                         "different answers and the same shape")
     ap.add_argument("--llama-reps", type=int, default=1,
                     help="llama-bench -r within one cycle (default 1: cycles "
                          "are the repetition unit here, not -r)")
@@ -325,11 +340,24 @@ def main():
         ap.error("--cycles must be >= 1")
 
     affinity = int(a.affinity, 16) if a.affinity.startswith("0x") else int(a.affinity)
+    stoke_threads = a.threads if a.stoke_threads is None else a.stoke_threads
+    # A mask with fewer set bits than threads is not a smaller experiment, it
+    # is a different one: every thread lands on the same core and the result
+    # describes oversubscription rather than the engine. Refuse rather than
+    # silently produce a number that looks like a measurement.
+    if a.mode == "stoke-vs-llama":
+        set_bits = bin(affinity).count("1")
+        need = max(stoke_threads, a.threads)
+        if set_bits < need:
+            ap.error(f"--affinity {hex(affinity)} sets {set_bits} logical "
+                     f"processors but {need} threads were requested; pass a "
+                     f"wider mask (e.g. 0x555 for 6 P-cores on this box)")
     size_a = os.path.getsize(a.model)
 
     if a.mode == "stoke-vs-llama":
         name_a, name_b, ratio_key = "stoke", "llama", "llama_over_stoke"
-        side_a = (run_stoke, a.stoke_exe, a.model, a.prompt, a.tokens, affinity)
+        side_a = (run_stoke, a.stoke_exe, a.model, a.prompt, a.tokens,
+                  affinity, stoke_threads)
         side_b = (run_llama, a.llama_bench, a.model, a.tokens, affinity,
                   a.llama_reps, a.threads)
         size_b = size_a
@@ -339,10 +367,12 @@ def main():
             "tokens_per_side": a.tokens,
             "affinity": hex(affinity),
             "threads": a.threads,
+            "stoke_threads": stoke_threads,
             "stoke_sha256": sha256_of(a.stoke_exe),
             "llama_build": os.path.basename(os.path.dirname(a.llama_bench)),
         }
-        what = f"model {os.path.basename(a.model)}"
+        what = (f"model {os.path.basename(a.model)}, stoke {stoke_threads}T "
+                f"vs llama {a.threads}T")
     else:
         name_a, name_b = "baseline", "candidate"
         ratio_key = "candidate_over_baseline"
