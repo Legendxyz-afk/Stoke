@@ -113,8 +113,20 @@ REPO_ROOT = Path(__file__).resolve().parents[2]   # tests/tooling/parity_gate.py
 
 ORACLE_EXE = REPO_ROOT / "bench" / "vendor" / "llama-b10037" / "llama-server.exe"
 STOKE_EXE = REPO_ROOT / "build" / "win" / "stoke.exe"
-MODEL_PATH = REPO_ROOT / "models" / "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf"
-MODEL_SIZE_EXPECTED = 4280405216   # bytes -- probed constant, brief header
+# The gate runs on BOTH files from M3 on (forward-note gate [2]: "50-prompt
+# parity re-passes on Q8_0 AND Q4_K_M"). Sizes are probed constants, checked
+# at every server start -- a file that is not exactly this many bytes is not
+# the file this gate was calibrated against.
+MODELS = {
+    "q8_0": (REPO_ROOT / "models" / "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+             4280405216),
+    "q4_k_m": (REPO_ROOT / "models" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+               2497280736),
+}
+# Rebound in main() from --model. Default is Q8_0 so every pre-M3 invocation
+# keeps meaning exactly what it meant.
+MODEL_KEY = "q8_0"
+MODEL_PATH, MODEL_SIZE_EXPECTED = MODELS[MODEL_KEY]
 
 CORPUS_DIR = REPO_ROOT / "tests" / "data" / "parity"
 CACHE_DIR = REPO_ROOT / "tests" / "tooling" / ".gate_cache"          # dev cache; manager gitignores it
@@ -1160,7 +1172,19 @@ def invocation_signature(args) -> str:
             continue
         if i == 0:
             continue                      # exe path -- covered by its sha256
-        flags.append("<model>" if tok == str(MODEL_PATH) else tok)
+        # ▶ THE MODEL'S IDENTITY IS IN THE KEY, and it was not always.
+        # This used to collapse to a bare "<model>", justified by "the model
+        # is separately pinned by MODEL_SIZE_EXPECTED at every server start".
+        # That was airtight while exactly ONE model existed. From M3 the gate
+        # runs on Q8_0 AND Q4_K_M, and each run pins only its OWN size -- so a
+        # bare placeholder would give the two runs the SAME cache key, and the
+        # second file would silently read the first one's banked results and
+        # report them as its own. A fabricated PASS, not an error. The path is
+        # still not used (it must stay relocatable); the NAME and SIZE are.
+        if tok == str(MODEL_PATH):
+            flags.append(f"<model:{MODEL_PATH.name}:{MODEL_SIZE_EXPECTED}>")
+        else:
+            flags.append(tok)
     parts = [
         f"oracle_exe_sha256={_sha256_file(ORACLE_EXE)}",
         f"oracle_flags={' '.join(flags)}",
@@ -2066,6 +2090,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="parity_gate.py",
         description="M2 W4 parity gate harness -- stoke vs llama-server greedy "
                      "token parity, §8 waiver protocol.")
+    p.add_argument("--model", choices=sorted(MODELS.keys()), default="q8_0",
+                    help="which GGUF to gate. Forward-note gate [2] requires "
+                         "BOTH legs from M3 on; default q8_0 so every pre-M3 "
+                         "invocation keeps its old meaning. The choice is part "
+                         "of the cache key, so the two legs cannot collide")
     p.add_argument("--clean", action="store_true",
                     help="ignore + refresh the dev cache; THE recorded gate run uses this")
     p.add_argument("--only", metavar="p00,p07,...", default=None,
@@ -2092,6 +2121,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_arg_parser().parse_args(argv)
+    # Rebind the module globals BEFORE anything reads them. Every consumer
+    # (oracle_argv, stoke_generate_argv, the size check, the cache key) reads
+    # these at call time, so one assignment here reaches all of them -- and
+    # doing it before the first branch means no code path can observe the
+    # default after the user asked for the other file.
+    global MODEL_KEY, MODEL_PATH, MODEL_SIZE_EXPECTED
+    MODEL_KEY = args.model
+    MODEL_PATH, MODEL_SIZE_EXPECTED = MODELS[MODEL_KEY]
     try:
         if args.selftest and args.survey:
             fatal("--selftest and --survey are mutually exclusive (selftest is "
