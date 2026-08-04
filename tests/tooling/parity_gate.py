@@ -1212,10 +1212,37 @@ def _cache_key_hash(parts: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# What THIS PROCESS has already written, keyed by cache-key hash.
+#
+# ▶ WHY THIS EXISTS, and why it is not a cache. A prompt's oracle result and
+# its stoke result share one cache key -- _cache_key_parts() has no term for
+# which side produced the entry -- so they share one FILENAME. Under --clean,
+# _load_cache_data() returned a bare {}, so fetch_stoke_result stored
+# {"stoke_ids": ...} over a file that held {"oracle": ...}: the stoke write
+# ERASED the oracle payload rather than joining it. Measured on the 2026-08-04
+# q8_0 leg -- 17 oracle-shaped files + 33 stoke-shaped = exactly the 50
+# prompts, i.e. every prompt had lost one of its two halves.
+#
+# No verdict was ever wrong (run_gate holds both halves in memory for the
+# comparison), but it voids the resumability the harness header promises, and
+# it destroyed 33 oracle payloads that a later analysis then had to consider
+# re-deriving from a fresh llama-server.
+#
+# ▶ WHY NOT JUST READ THE FILE BACK UNDER --clean. Because --clean's guarantee
+# is that NO GATE DECISION CAN DEPEND ON DISK STATE, and reading the file to
+# merge into it would quietly reintroduce exactly that dependency -- a stale
+# or hand-edited entry could rejoin a recorded run. This dict is fed only by
+# THIS process's own writes in THIS run, so merging from it cannot import
+# anything the run did not itself just compute. The disk stays write-only
+# under --clean, as designed.
+_SESSION_WRITES: Dict[str, dict] = {}
+
+
 def _load_cache_data(prompt_path: Path, args) -> dict:
-    if args.clean:
-        return {}
     parts = _cache_key_parts(prompt_path, args)
+    if args.clean:
+        # This run's own writes only -- never the file. See _SESSION_WRITES.
+        return dict(_SESSION_WRITES.get(_cache_key_hash(parts), {}))
     p = CACHE_DIR / f"{_cache_key_hash(parts)}.json"
     if not p.exists():
         return {}
@@ -1234,7 +1261,14 @@ def _load_cache_data(prompt_path: Path, args) -> dict:
 def _store_cache_data(prompt_path: Path, args, data: dict):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     parts = _cache_key_parts(prompt_path, args)
-    p = CACHE_DIR / f"{_cache_key_hash(parts)}.json"
+    key = _cache_key_hash(parts)
+    p = CACHE_DIR / f"{key}.json"
+    # Record before writing, so the other side's fetch in this same run sees
+    # it and merges rather than clobbers. See _SESSION_WRITES.
+    merged = dict(_SESSION_WRITES.get(key, {}))
+    merged.update(data)
+    _SESSION_WRITES[key] = merged
+    data = merged
     payload = {"prompt_path": str(prompt_path), "key": parts, "data": data}
     tmp = p.parent / (p.name + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -1304,7 +1338,12 @@ def write_report(path: Path, identity: dict, args, slot_status: Dict[str, dict],
                   slot_history: Dict[str, List[dict]], gate_fail: Optional[dict],
                   waivers: List[dict]):
     lines = []
-    lines.append(f"# M2 parity gate report -- {'GATE FAIL' if gate_fail else 'GATE PASS'}")
+    # NOT "M2" -- this tool outlived that milestone and the hardcoded label
+    # mislabelled the 2026-08-04 M3 run as an M2 report. A report that names
+    # the wrong milestone is worse than one that names none, so it now states
+    # only what it can know for certain: which model file it graded.
+    lines.append(f"# parity gate report ({getattr(args, 'model', '?')}) -- "
+                 f"{'GATE FAIL' if gate_fail else 'GATE PASS'}")
     lines.append("")
     lines.append("## Run configuration")
     lines.append(f"- n_predict: {args.n_predict}")

@@ -27,6 +27,14 @@ rem changing it can change the ORACLE'S OWN token stream -- the baseline this
 rem gate compares against. That is not a performance knob, it is the
 rem experiment's control.
 
+rem ▶ PER-LEG REPORT PATH. parity_gate's DEFAULT_REPORT_PATH is a single
+rem parity_gate_dev_report.md shared by every invocation, so two legs writing
+rem it in sequence leaves ONE report -- the second leg silently erases the
+rem first leg's evidence, and the recorded run needs both. --report is passed
+rem explicitly for that reason. (Added 2026-08-04, when the legs stopped being
+rem strictly sequential; before that the clobber was just as real but the
+rem window was smaller.)
+
 setlocal
 set MODEL=%~1
 set PORT=%~2
@@ -43,7 +51,8 @@ echo. >> "%LOG%"
 echo ===== M3 GATE LEG %MODEL% port %PORT% %DATE% %TIME% ===== >> "%LOG%"
 echo {"leg":"%MODEL%","phase":"running","port":%PORT%,"started":"%DATE% %TIME%"} > "%STATUS%"
 
-python -u tests\tooling\parity_gate.py --model %MODEL% --port %PORT% --jobs 1 --clean >> "%LOG%" 2>&1
+set REPORT=tests\tooling\parity_gate_report_%MODEL%.md
+python -u tests\tooling\parity_gate.py --model %MODEL% --port %PORT% --jobs 1 --clean --report "%REPORT%" >> "%LOG%" 2>&1
 set RC=%ERRORLEVEL%
 
 echo {"leg":"%MODEL%","phase":"done","rc":%RC%,"finished":"%DATE% %TIME%"} > "%STATUS%"
