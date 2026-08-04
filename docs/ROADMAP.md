@@ -291,7 +291,22 @@ matvec time 600,865 → 442,178 µs/token. Parity (0.9–1.1) is NOT
 reached. Re-projected on measured numbers: 1.716 → ×1.390 (K3) = 2.385
 → ×3.54 (K5, 6T) = 8.44 tok/s Q8_0 ⇒ **~14.5 tok/s Q4_K_M before the
 K-quant penalty, ~1.86× the bar** (was ~2.7×). **The bar still clears,
-with less room.** Of K3's residual gap, **1.235× is measured as the
+with less room.**
+**⚠ THE K-QUANT PENALTY IS NOW MEASURED (2026-08-04, K4 entry, GATE both
+legs) AND IT IS THREAD-DEPENDENT — the ~1.86× above assumed the full
+1.714× size ratio and does NOT survive.** llama-vs-llama interleaved,
+same engine, quant file the variable (`bench/results/
+2026-08-04-k4-entry-kquant-{1t,6t}.json`): **1T = 1.637× of a 1.714×
+size ratio = 95.5% retained; 6T = 1.356× = 79.1% retained.** The GB/s
+column carries the mechanism: at 1T neither file saturates anything
+(15.0 vs 14.2 GB/s under a ~20 ceiling), but at 6T Q8_0 sits AT the
+ceiling (57.4 GB/s, cf. the 54.13 entry sweep) while **Q4_K_M reaches
+only 46.0 GB/s** — the superblock unpack, not bandwidth, is binding.
+**So the penalty is worst exactly where the bar is measured, and a
+single-thread probe would have reported a reassuring 95.5%.**
+**Re-projected: 8.44 × 1.356 = 11.45 tok/s Q4_K_M ≈ ~1.47× the bar.**
+**This is an OPTIMISTIC bound for stoke** — it is llama's SIMD K-quant
+kernels; stoke's scalar Q4_K/Q6_K retains less until K4's twins land. Of K3's residual gap, **1.235× is measured as the
 price of gate [1]'s bit-exactness** (three-way interleaved: bit-exact
 8.29 GB/s, ggml-style 10.23, llama 15.76) leaving ~1.16× unexplained;
 spending gate [1] is Kabir's/Fable's call and is priced, not proposed.
@@ -319,7 +334,13 @@ Also K3-entry: `stoke run` in-binary timing report (differencing retired
 — valid only within one window), bench.c sidecar fields + referent
 driver script per ruling §4–5. K4 entry keeps the mandatory K-quant
 bandwidth-vs-compute measurement **plus a llama Q4_K_M 1T/6T pinned
-interleaved referent sweep**.
+interleaved referent sweep**. **✅ BOTH DONE 2026-08-04, GATE on both
+legs — see the re-projection above; the tool grew a `llama-vs-llama`
+mode (same protocol, quant file as the variable) rather than the
+comparison being written ad hoc.** **File census probed on the real
+Q4_K_M: 216 Q4_K + 37 Q6_K (18 `attn_v`, 18 `ffn_down`, `token_embd`)
++ 145 F32, and ZERO Q4_0 ⇒ playbook P-D's Q4_0 download is DEAD SCOPE;
+K4's real-bytes verification is Q4_K + Q6_K only.**
 (5) **The deferred oracle gate may run at `-O3`** (same verdict ~3×
 cheaper) under a mechanical precondition: rebuild the archived intcore
 source at `-O3`, archive + sha alongside
