@@ -339,6 +339,199 @@ u32 argmax_avx2(const f32* logits, u64 n) {
     return 0u;
 }
 
+/* ---------------------------------------------------------- K4: K-quants
+ *
+ * HOW THESE STAY BIT-EXACT, and it is a different argument from Q8_0's.
+ *
+ * The scalar K-quant kernels already keep EIGHT independent accumulators --
+ * aux32[0..7] in i32 and sums[0..7] in f32 -- where lane l collects every
+ * element whose index is congruent to l mod 8. That structure is already the
+ * shape of a 256-bit register, so the twin holds aux32 in one __m256i and
+ * sums in one __m256 and the lane assignment is IDENTICAL by construction.
+ *
+ * In the INTEGER domain reordering is free: i32 addition is exact and
+ * associative, so folding the four per-8 groups of a sub-block before
+ * applying the scale gives precisely the scalar's value (scale*sum == sum of
+ * scale*x, exactly, in integers). Bounds checked rather than assumed: the
+ * largest |product| is 127*127 = 16129, a Q4_K scale is 6-bit (<=63) and a
+ * Q6_K scale is i8 (<=127), so the worst-case |aux32| is ~32.5M (Q4_K) and
+ * ~65.5M (Q6_K) -- both far inside i32.
+ *
+ * In the f32 domain nothing may move. `sums[l] += d * (f32)aux32[l]` is a
+ * multiply THEN an add -- two roundings -- so it is written as a separate
+ * _mm256_mul_ps and _mm256_add_ps and NOT as an FMA, which would round once
+ * and produce a different number. This is the concrete reason
+ * -ffp-contract=off is pinned globally: without it the compiler is free to
+ * fuse those two into an FMA and silently break gate [1] on whichever
+ * toolchain happens to default that way.
+ *
+ * The final horizontal reduction is likewise sequential in lane order --
+ * sumf += sums[0], then [1], ... [7] -- because that is the scalar's order,
+ * and a tree reduction would be a different (equally valid, non-identical)
+ * f32 sum. Same trap K3 documented for ggml's cross-block accumulator.
+ */
+
+/* Multiply-accumulate 8 elements: acc += cvt(w8) * cvt(a8), i32 lanes.
+ * `w` values are 0..15 (Q4_K nibbles) or already-centred i8 (Q6_K), so the
+ * caller picks the right widening. */
+static inline __m256i kq_mac8(__m256i acc, __m256i w32, __m256i a32) {
+    return _mm256_add_epi32(acc, _mm256_mullo_epi32(w32, a32));
+}
+
+static inline __m256i kq_load_i8x8_to_i32(const i8* p) {
+    return _mm256_cvtepi8_epi32(
+        _mm_loadl_epi64((const __m128i*)(const void*)p));
+}
+
+static inline __m256i kq_load_u8x8_to_i32(const u8* p) {
+    return _mm256_cvtepu8_epi32(
+        _mm_loadl_epi64((const __m128i*)(const void*)p));
+}
+
+/* sums += d * (f32)acc, lane-wise, two roundings -- see the header note. */
+static inline __m256 kq_accum_sums(__m256 sums, __m256i acc, f32 d) {
+    return _mm256_add_ps(sums,
+                         _mm256_mul_ps(_mm256_set1_ps(d),
+                                       _mm256_cvtepi32_ps(acc)));
+}
+
+/* sumf += sums[0] + sums[1] + ... + sums[7], IN THAT ORDER. */
+static inline f32 kq_finish(f32 sumf, __m256 sums) {
+    f32 tmp[8];
+    _mm256_storeu_ps(tmp, sums);
+    for (int l = 0; l < 8; ++l) sumf += tmp[l];
+    return sumf;
+}
+
+f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
+    if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q4_k_q8_k_avx2 -- n=%llu is not a multiple "
+              "of %u",
+              (unsigned long long)n, KERNELS_Q4_K_BLOCK_ELEMS);
+    }
+    const u8* wb = (const u8*)wrow;
+    const u8* ab = (const u8*)arow;
+    u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
+
+    const __m256i lownib = _mm256_set1_epi32(0xF);
+    __m256 sums = _mm256_setzero_ps();
+    f32 sumf = 0.0f;
+
+    for (u64 i = 0; i < nb; ++i) {
+        const u8* blk = wb + i * KERNELS_Q4_K_BLOCK_BYTES;
+        const u8* q4 = blk + 16;
+        const u8* ablk = ab + i * KERNELS_Q8_K_BLOCK_BYTES;
+        const i8* q8 = (const i8*)(ablk + 4);
+        const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
+        f32 ad;
+        memcpy(&ad, ablk, sizeof ad);
+
+        u8 scales8[8], mins8[8];
+        kernels_q4_k_unpack_scales(blk + 4, scales8, mins8);
+
+        /* The min term: 16 i16 bsums against 8 mins, mins8[j/2]. Sixteen
+         * integer terms per super-block -- left scalar because vectorising
+         * it would cost more shuffling than it saves. */
+        i32 sumi = 0;
+        for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS / 16u; ++j) {
+            i16 bs;
+            memcpy(&bs, bsums + 2u * j, sizeof bs);
+            sumi += (i32)bs * (i32)mins8[j / 2u];
+        }
+
+        __m256i acc = _mm256_setzero_si256();
+        /* Sub-block j takes its 32 quants from q4[(j/2)*32 ...]: the LOW
+         * nibbles when j is even, the HIGH nibbles when j is odd. That is
+         * exactly the order the scalar's aux8 is filled in, so `is` still
+         * runs 0..7 straight down the scale array. */
+        for (u32 j = 0; j < 8u; ++j) {
+            const u8* qsrc = q4 + (j / 2u) * 32u;
+            int high = (int)(j & 1u);
+            __m256i sub = _mm256_setzero_si256();
+            for (u32 g = 0; g < 4u; ++g) {
+                __m256i wv = kq_load_u8x8_to_i32(qsrc + g * 8u);
+                wv = high ? _mm256_srli_epi32(wv, 4)
+                          : _mm256_and_si256(wv, lownib);
+                __m256i av = kq_load_i8x8_to_i32(q8 + j * 32u + g * 8u);
+                sub = kq_mac8(sub, wv, av);
+            }
+            /* scale*sum == sum of scale*x exactly in integers, so folding
+             * the four groups before scaling matches the scalar's value. */
+            acc = _mm256_add_epi32(
+                acc, _mm256_mullo_epi32(sub,
+                                        _mm256_set1_epi32((int)scales8[j])));
+        }
+
+        u16 draw, dmraw;
+        memcpy(&draw, blk, sizeof draw);
+        memcpy(&dmraw, blk + 2, sizeof dmraw);
+        sums = kq_accum_sums(sums, acc, f16_to_f32(draw) * ad);
+        sumf -= (f16_to_f32(dmraw) * ad) * (f32)sumi;
+    }
+    return kq_finish(sumf, sums);
+}
+
+f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
+    if (n % KERNELS_Q6_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q6_k_q8_k_avx2 -- n=%llu is not a multiple "
+              "of %u",
+              (unsigned long long)n, KERNELS_Q6_K_BLOCK_ELEMS);
+    }
+    const u8* wb = (const u8*)wrow;
+    const u8* ab = (const u8*)arow;
+    u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
+
+    __m256 sums = _mm256_setzero_ps();
+    f32 sumf = 0.0f;
+
+    for (u64 i = 0; i < nb; ++i) {
+        const u8* blk = wb + i * KERNELS_Q6_K_BLOCK_BYTES;
+        const u8* ql = blk;
+        const u8* qh = blk + 128;
+        const i8* sc = (const i8*)(blk + 192);
+        const u8* ablk = ab + i * KERNELS_Q8_K_BLOCK_BYTES;
+        const i8* q8 = (const i8*)(ablk + 4);
+        f32 ad;
+        memcpy(&ad, ablk, sizeof ad);
+
+        /* Q6_K's quants are INTERLEAVED across the 128-element half (l+0,
+         * l+32, l+64, l+96 from one l), so unlike Q4_K there is no
+         * contiguous sub-block to read straight out of the packed bytes.
+         * The twin materialises the same aux8 the scalar builds -- that is
+         * where the layout lives -- and vectorises the consumption. */
+        i8 aux8[KERNELS_Q6_K_BLOCK_ELEMS];
+        for (u32 h = 0; h < 2u; ++h) {
+            const u8* q4h = ql + h * 64u;
+            const u8* qhh = qh + h * 32u;
+            i8* a = aux8 + h * 128u;
+            for (int l = 0; l < 32; ++l) {
+                a[l + 0] = (i8)((q4h[l + 0] & 0xF) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                a[l + 32] = (i8)((q4h[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                a[l + 64] = (i8)((q4h[l + 0] >> 4) | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                a[l + 96] = (i8)((q4h[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4)) - 32;
+            }
+        }
+
+        __m256i acc = _mm256_setzero_si256();
+        /* 16 sub-blocks of 16 elements, one i8 scale each. */
+        for (u32 j = 0; j < 16u; ++j) {
+            __m256i sub = _mm256_setzero_si256();
+            for (u32 g = 0; g < 2u; ++g) {
+                __m256i wv = kq_load_i8x8_to_i32(aux8 + j * 16u + g * 8u);
+                __m256i av = kq_load_i8x8_to_i32(q8 + j * 16u + g * 8u);
+                sub = kq_mac8(sub, wv, av);
+            }
+            acc = _mm256_add_epi32(
+                acc, _mm256_mullo_epi32(sub, _mm256_set1_epi32((int)sc[j])));
+        }
+
+        u16 draw;
+        memcpy(&draw, blk + 208, sizeof draw);
+        sums = kq_accum_sums(sums, acc, f16_to_f32(draw) * ad);
+    }
+    return kq_finish(sumf, sums);
+}
+
 #else /* !x86-64 */
 
 bool kernels_cpu_has_avx_vnni(void) { return false; }
@@ -372,6 +565,24 @@ f32 vec_dot_q8_0_q8_0_avx2(const void* wrow, const void* arow, u64 n) {
     (void)n;
     fatal("kernels: vec_dot_q8_0_q8_0_avx2 called on a non-x86-64 build -- "
           "callers must check kernels_cpu_has_avx_vnni() first");
+    return 0.0f;
+}
+
+f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
+    (void)wrow;
+    (void)arow;
+    (void)n;
+    fatal("kernels: vec_dot_q4_k_q8_k_avx2 on a non-x86-64 build -- callers "
+          "must check kernels_cpu_has_avx_vnni() first");
+    return 0.0f;
+}
+
+f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
+    (void)wrow;
+    (void)arow;
+    (void)n;
+    fatal("kernels: vec_dot_q6_k_q8_k_avx2 on a non-x86-64 build -- callers "
+          "must check kernels_cpu_has_avx_vnni() first");
     return 0.0f;
 }
 

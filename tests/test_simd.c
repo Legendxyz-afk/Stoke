@@ -371,3 +371,195 @@ TEST(simd_vec_dot_q8_0_q8_0_matches_scalar_at_i8_min_saturation) {
     ASSERT_TRUE(bit_identical(vec_dot_q8_0_q8_0(w, a, 32),
                               vec_dot_q8_0_q8_0_avx2(w, a, 32)));
 }
+
+/* ------------------------------------------------------- K4: K-quant twins
+ *
+ * Same gate as the Q8_0 twins and for the same reason: these dispatch inside
+ * matvec, so anything less than bit-identical is a numerics change that
+ * would require re-running the parity gate, and it would be invisible in the
+ * output until it was not.
+ *
+ * WEIGHT BYTES ARE RANDOM, ACTIVATIONS ARE REAL. The weight side is filled
+ * with random bytes because every bit pattern is a legal quant and the
+ * packed 6-bit scale fields then span their whole 0..63 range. The
+ * activation side is produced by running the ACTUAL quantize_row_q8_k over
+ * random floats rather than by scribbling random bytes into a Q8_K block:
+ * bsums must agree with qs for the Q4_K min term to mean anything, and a
+ * block whose sums contradict its quants is a state the engine can never
+ * reach -- testing it would prove something about nothing.
+ */
+#define Q4K_BYTES 144u
+#define Q6K_BYTES 210u
+#define QK_ELEMS 256u
+
+static void fill_q4_k_block(u8* blk) {
+    u16 d = f32_to_f16(random_scale());
+    u16 dmin = f32_to_f16(random_scale());
+    memcpy(blk, &d, 2);
+    memcpy(blk + 2, &dmin, 2);
+    for (u32 i = 4; i < Q4K_BYTES; i++) blk[i] = (u8)(rng_next() & 0xFFu);
+}
+
+static void fill_q6_k_block(u8* blk) {
+    for (u32 i = 0; i < 208u; i++) blk[i] = (u8)(rng_next() & 0xFFu);
+    u16 d = f32_to_f16(random_scale());
+    memcpy(blk + 208, &d, 2);
+}
+
+static void fill_q8_k_activation(f32* x, u8* aq, u64 n) {
+    for (u64 i = 0; i < n; i++) {
+        /* Spread over several binades and both signs, and let zeros occur:
+         * an all-zero super-block takes quantize_row_q8_k's amax==0 branch,
+         * which is the one that skips the bsums loop. */
+        u32 r = rng_next();
+        f32 mag = (r & 3u) == 0u ? 0.0f : (f32)(r % 1000u) * 0.0037f;
+        x[i] = (r & 4u) ? -mag : mag;
+    }
+    quantize_row_q8_k(x, n, aq);
+}
+
+TEST(simd_vec_dot_q4_k_q8_k_is_bit_exact_vs_scalar_over_1e4_tensors) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        fprintf(stderr, "FAIL %s:%d: no AVX-VNNI -- the K4 exact-diff gate "
+                        "cannot run on this box\n", __FILE__, __LINE__);
+        g_test_case_failed = 1;
+        return;
+    }
+    /* 2560 and 9728 are the real contraction lengths of this model's
+     * matvecs; 256/512/768 cover one, two and three super-blocks so a twin
+     * that only handles an even number of blocks cannot hide. */
+    static const u64 lens[] = {256, 512, 768, 2560, 9728};
+    const u32 n_lens = (u32)(sizeof lens / sizeof lens[0]);
+    const u32 iters = 10000;
+
+    rng_reset();
+    u8* w = (u8*)xmalloc((size_t)(9728u / QK_ELEMS) * Q4K_BYTES);
+    u8* aq = (u8*)xmalloc((size_t)(9728u / QK_ELEMS) * KERNELS_Q8_K_BLOCK_BYTES);
+    f32* x = (f32*)xmalloc((size_t)9728u * sizeof(f32));
+
+    u32 mismatches = 0;
+    for (u32 it = 0; it < iters; it++) {
+        u64 n = lens[it % n_lens];
+        u64 blocks = n / QK_ELEMS;
+        for (u64 b = 0; b < blocks; b++) fill_q4_k_block(w + b * Q4K_BYTES);
+        fill_q8_k_activation(x, aq, n);
+
+        f32 got = vec_dot_q4_k_q8_k_avx2(w, aq, n);
+        f32 want = vec_dot_q4_k_q8_k(w, aq, n);
+        if (!bit_identical(got, want)) {
+            if (mismatches == 0) {
+                fprintf(stderr, "  iter %u n=%llu: scalar %.9g (0x%08X) vs "
+                                "avx2 %.9g (0x%08X)\n",
+                        it, (unsigned long long)n, (double)want,
+                        f32_bits(want), (double)got, f32_bits(got));
+            }
+            mismatches++;
+        }
+    }
+    free(w);
+    free(aq);
+    free(x);
+    ASSERT_EQ_U32(mismatches, 0u);
+}
+
+TEST(simd_vec_dot_q6_k_q8_k_is_bit_exact_vs_scalar_over_1e4_tensors) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        fprintf(stderr, "FAIL %s:%d: no AVX-VNNI -- the K4 exact-diff gate "
+                        "cannot run on this box\n", __FILE__, __LINE__);
+        g_test_case_failed = 1;
+        return;
+    }
+    static const u64 lens[] = {256, 512, 768, 2560, 9728};
+    const u32 n_lens = (u32)(sizeof lens / sizeof lens[0]);
+    const u32 iters = 10000;
+
+    rng_reset();
+    u8* w = (u8*)xmalloc((size_t)(9728u / QK_ELEMS) * Q6K_BYTES);
+    u8* aq = (u8*)xmalloc((size_t)(9728u / QK_ELEMS) * KERNELS_Q8_K_BLOCK_BYTES);
+    f32* x = (f32*)xmalloc((size_t)9728u * sizeof(f32));
+
+    u32 mismatches = 0;
+    for (u32 it = 0; it < iters; it++) {
+        u64 n = lens[it % n_lens];
+        u64 blocks = n / QK_ELEMS;
+        for (u64 b = 0; b < blocks; b++) fill_q6_k_block(w + b * Q6K_BYTES);
+        fill_q8_k_activation(x, aq, n);
+
+        f32 got = vec_dot_q6_k_q8_k_avx2(w, aq, n);
+        f32 want = vec_dot_q6_k_q8_k(w, aq, n);
+        if (!bit_identical(got, want)) {
+            if (mismatches == 0) {
+                fprintf(stderr, "  iter %u n=%llu: scalar %.9g (0x%08X) vs "
+                                "avx2 %.9g (0x%08X)\n",
+                        it, (unsigned long long)n, (double)want,
+                        f32_bits(want), (double)got, f32_bits(got));
+            }
+            mismatches++;
+        }
+    }
+    free(w);
+    free(aq);
+    free(x);
+    ASSERT_EQ_U32(mismatches, 0u);
+}
+
+/* The extremes a uniform random sweep will not reliably produce: every
+ * Q4_K scale AND min at their 6-bit maximum, against activation quants at
+ * -128. This is the worst case for the i32 accumulator bound the twin's
+ * folding relies on, so it is asserted rather than argued. */
+TEST(simd_k_quant_twins_match_scalar_at_saturating_extremes) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        g_test_case_failed = 1;
+        return;
+    }
+    u8 w4[Q4K_BYTES], w6[Q6K_BYTES];
+    u8 aq[KERNELS_Q8_K_BLOCK_BYTES];
+    f32 x[QK_ELEMS];
+
+    u16 d = f32_to_f16(133.0f), dm = f32_to_f16(-133.0f);
+    memcpy(w4, &d, 2);
+    memcpy(w4 + 2, &dm, 2);
+    for (u32 i = 4; i < Q4K_BYTES; i++) w4[i] = 0xFFu; /* all 6-bit fields max */
+
+    for (u32 i = 0; i < 192u; i++) w6[i] = 0xFFu;
+    for (u32 i = 192u; i < 208u; i++) w6[i] = 0x80u;   /* scales = -128 */
+    memcpy(w6 + 208, &d, 2);
+
+    /* Drive every activation quant to the -128 endpoint. */
+    for (u32 i = 0; i < QK_ELEMS; i++) x[i] = 1.0f;
+    x[0] = -1.0f;
+    quantize_row_q8_k(x, QK_ELEMS, aq);
+
+    ASSERT_TRUE(bit_identical(vec_dot_q4_k_q8_k(w4, aq, QK_ELEMS),
+                              vec_dot_q4_k_q8_k_avx2(w4, aq, QK_ELEMS)));
+    ASSERT_TRUE(bit_identical(vec_dot_q6_k_q8_k(w6, aq, QK_ELEMS),
+                              vec_dot_q6_k_q8_k_avx2(w6, aq, QK_ELEMS)));
+}
+
+/* An all-zero activation super-block takes quantize_row_q8_k's amax==0
+ * branch, where d is 0 and the bsums loop is skipped. Both K-quant dots must
+ * still agree -- and the Q4_K min term, which is the one that reads bsums,
+ * must not turn 0 * something into a NaN. */
+TEST(simd_k_quant_twins_match_scalar_on_a_zero_activation_block) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        g_test_case_failed = 1;
+        return;
+    }
+    u8 w4[Q4K_BYTES], w6[Q6K_BYTES];
+    u8 aq[KERNELS_Q8_K_BLOCK_BYTES];
+    f32 x[QK_ELEMS];
+    rng_reset();
+    fill_q4_k_block(w4);
+    fill_q6_k_block(w6);
+    for (u32 i = 0; i < QK_ELEMS; i++) x[i] = 0.0f;
+    quantize_row_q8_k(x, QK_ELEMS, aq);
+
+    f32 s4 = vec_dot_q4_k_q8_k(w4, aq, QK_ELEMS);
+    f32 v4 = vec_dot_q4_k_q8_k_avx2(w4, aq, QK_ELEMS);
+    f32 s6 = vec_dot_q6_k_q8_k(w6, aq, QK_ELEMS);
+    f32 v6 = vec_dot_q6_k_q8_k_avx2(w6, aq, QK_ELEMS);
+    ASSERT_TRUE(bit_identical(s4, v4));
+    ASSERT_TRUE(bit_identical(s6, v6));
+    ASSERT_TRUE(s4 == 0.0f);
+    ASSERT_TRUE(s6 == 0.0f);
+}

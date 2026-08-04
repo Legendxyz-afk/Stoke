@@ -125,4 +125,29 @@ void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out);
  * The twin reproduces that rather than the hardware's own NaN preference. */
 u32 argmax_avx2(const f32* logits, u64 n);
 
+/* K4: AVX2 twins of the K-quant integer dots. BIT-IDENTICAL to
+ * vec_dot_q4_k_q8_k / vec_dot_q6_k_q8_k, asserted over random super-blocks
+ * in tests/test_simd.c.
+ *
+ * WHY THESE ARE NOT OPTIONAL, measured 2026-08-04. Wiring the scalar
+ * K-quant core made stoke run Q4_K_M at 0.560 tok/s against Q8_0's 2.002 --
+ * the SMALLER file was 3.6x SLOWER, because the scalar dot has to widen
+ * every 4-bit quant into an int8 scratch before it can multiply anything
+ * while K3's twins covered Q8_0 only. The bar is quoted on Q4_K_M, so these
+ * twins are load-bearing for it rather than an optimization layered on a
+ * working path.
+ *
+ * BIT-EXACTNESS COMES FROM THE SCALAR'S OWN SHAPE, which is a happier
+ * accident than Q8_0's was. The scalar K-quant kernels already keep eight
+ * independent accumulators (aux32[0..7] in i32, sums[0..7] in f32) where
+ * lane l collects the elements at indices congruent to l mod 8 -- that IS a
+ * 256-bit register's lane layout, so the twins inherit the assignment rather
+ * than having to reconstruct it. Integer reordering is then free (exact and
+ * associative, bounds checked in simd.c), and the f32 side is left strictly
+ * alone: multiply and add stay two separate roundings rather than an FMA,
+ * and the final horizontal sum runs lane 0..7 in order because that is the
+ * scalar's order. */
+f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
+f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
+
 #endif /* STOKE_KERNELS_SIMD_H */

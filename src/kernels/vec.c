@@ -145,15 +145,22 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
          * would otherwise re-quantize x 151,936 times. */
         quantize_row_q8_k(x, n_in, aq_scratch);
 
+        /* K4 dispatch, hoisted out of the row loop for the same reason the
+         * Q8_0 one is. Safe in the strongest sense available: the twins are
+         * bit-identical to the scalar kernels over 1e4 random tensors each
+         * (tests/test_simd.c), so which branch runs cannot change a token. */
+        int simd = kernels_cpu_has_avx_vnni();
         if (is_q4) {
             for (u64 r = 0; r < n_out; r++) {
-                y[r] = vec_dot_q4_k_q8_k(base + r * row_bytes, aq_scratch,
-                                         n_in);
+                const void* row = base + r * row_bytes;
+                y[r] = simd ? vec_dot_q4_k_q8_k_avx2(row, aq_scratch, n_in)
+                            : vec_dot_q4_k_q8_k(row, aq_scratch, n_in);
             }
         } else {
             for (u64 r = 0; r < n_out; r++) {
-                y[r] = vec_dot_q6_k_q8_k(base + r * row_bytes, aq_scratch,
-                                         n_in);
+                const void* row = base + r * row_bytes;
+                y[r] = simd ? vec_dot_q6_k_q8_k_avx2(row, aq_scratch, n_in)
+                            : vec_dot_q6_k_q8_k(row, aq_scratch, n_in);
             }
         }
     } else {
