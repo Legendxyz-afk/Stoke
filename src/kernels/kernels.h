@@ -40,6 +40,21 @@
 #define KERNELS_Q8_0_BLOCK_ELEMS 32u
 #define KERNELS_Q8_0_BLOCK_BYTES 34u
 
+/* K-quant super-block geometry (K4, b10037 ggml-common.h; the byte counts
+ * are corroborated by the real Q4_K_M file's own tensor nbytes).
+ *
+ *   block_q4_K = { f16 d; f16 dmin; u8 scales[12]; u8 qs[128] }  = 144 B
+ *   block_q6_K = { u8 ql[128]; u8 qh[64]; i8 scales[16]; f16 d } = 210 B
+ *
+ * Both hold 256 elements, NOT 32 -- a K-quant "block" is a super-block of
+ * eight 32-element sub-blocks sharing one f16 scale pair, which is why the
+ * scale/min unpack exists at all. Shared with vec.c's matvec row-stride
+ * arithmetic for the same reason the Q8_0 pair is. */
+#define KERNELS_Q4_K_BLOCK_ELEMS 256u
+#define KERNELS_Q4_K_BLOCK_BYTES 144u
+#define KERNELS_Q6_K_BLOCK_ELEMS 256u
+#define KERNELS_Q6_K_BLOCK_BYTES 210u
+
 /* ---- f16 ----
  * IEEE 754 binary16 -> f32, exact: every f16 value (normal, subnormal,
  * signed zero, inf, or nan) is exactly representable in f32, so this is a
@@ -85,6 +100,23 @@ u16 f32_to_f16(f32 f);
 /* Dequantizes a full Q8_0 row (n/32 blocks) into out[0..n). Fatal if n is
  * not a multiple of 32, or if any block's scale is inf/nan. */
 void dequant_row_q8_0(const void* row, u64 n, f32* out);
+
+/* ---- K-quants (K4, src/kernels/kquant.c) ----
+ * Dequantize a full Q4_K / Q6_K row (n/256 super-blocks) into out[0..n).
+ * Fatal if n is not a multiple of 256, or if a super-block scale (d, or
+ * Q4_K's dmin) is inf/nan.
+ *
+ * THE CONTRACT IS BIT-EXACTNESS, not closeness. These reproduce, value for
+ * value and bit for bit, what llama.cpp's own dequant produces for the same
+ * bytes -- pinned by tests/data/k4_dequant.golden, which was generated FROM
+ * llama.cpp rather than by hand. The reason the bar is exactness and not a
+ * tolerance is measured: the classic scale/min unpack slip perturbs only
+ * ~17%% of a row by at most ~0.0138, so a tolerance accepts the one bug this
+ * gate exists to catch. Do not "simplify" the arithmetic grouping in
+ * kquant.c; f32 multiply is not associative and the grouping is part of the
+ * contract. */
+void dequant_row_q4_k(const void* row, u64 n, f32* out);
+void dequant_row_q6_k(const void* row, u64 n, f32* out);
 
 /* Dot product of a Q8_0-quantized row against a dense f32 vector x,
  * WITHOUT materializing the dequantized row. Per block: `d * sum(qs[i] *
