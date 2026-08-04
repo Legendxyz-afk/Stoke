@@ -39,7 +39,7 @@ endif
 # language-adjusted value codegen actually uses.
 CFLAGS  := -std=c11 -Wall -Wextra -Werror -g -O3 -ffp-contract=off -Isrc
 LDFLAGS :=
-LIBS    := -lm
+LIBS    := -lm -lpthread
 SAN     ?=
 
 ifeq ($(OS),Windows_NT)

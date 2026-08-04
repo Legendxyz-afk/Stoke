@@ -5,6 +5,7 @@
 #include "common.h"
 
 #include "kernels.h"
+#include "pool.h"
 #include "simd.h"
 
 f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
@@ -13,6 +14,93 @@ f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
         sum += a[i] * b[i];
     }
     return sum;
+}
+
+/* ---------------------------------------------------------- K5: row workers
+ *
+ * Every worker below computes y[r] for r in [begin, end) and touches NOTHING
+ * else -- no shared accumulator, no neighbouring output. That is what makes
+ * the pool safe here without any locking in the hot path, and it is also why
+ * the result is bit-identical at any thread count: each y[r] runs exactly
+ * the same sequential kernel over exactly the same bytes whichever thread
+ * happens to claim its chunk. The parallelism is over a dimension that
+ * carries no arithmetic dependency, so it costs no gate.
+ *
+ * The activation quantization is done ONCE, before the parallel region, by
+ * the calling thread -- it is shared read-only input to every row. */
+typedef struct {
+    const u8* base;
+    u64 row_bytes;
+    const f32* x;      /* dense activation (F32 path)      */
+    const void* aq;    /* quantized activation (all others) */
+    u64 n_in;
+    f32* y;
+} RowJob;
+
+static void rows_f32(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        const f32* row = (const f32*)(const void*)(j->base + r * j->row_bytes);
+        j->y[r] = vec_dot_f32(row, j->x, j->n_in);
+    }
+}
+
+static void rows_q8_0_scalar(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        j->y[r] = vec_dot_q8_0_q8_0(j->base + r * j->row_bytes, j->aq,
+                                    j->n_in);
+    }
+}
+
+static void rows_q8_0_avx2(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    u64 r = begin;
+    /* Four rows per pass within this slice; the tail is handled here rather
+     * than left to another chunk, since chunk bounds are row bounds. */
+    for (; r + 4u <= end; r += 4u) {
+        const void* rows[4] = {j->base + (r + 0u) * j->row_bytes,
+                               j->base + (r + 1u) * j->row_bytes,
+                               j->base + (r + 2u) * j->row_bytes,
+                               j->base + (r + 3u) * j->row_bytes};
+        vec_dot_q8_0_q8_0_x4_avx2(rows, j->aq, j->n_in, &j->y[r]);
+    }
+    for (; r < end; r++) {
+        j->y[r] = vec_dot_q8_0_q8_0_avx2(j->base + r * j->row_bytes, j->aq,
+                                         j->n_in);
+    }
+}
+
+static void rows_q4_k_scalar(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        j->y[r] = vec_dot_q4_k_q8_k(j->base + r * j->row_bytes, j->aq,
+                                    j->n_in);
+    }
+}
+
+static void rows_q4_k_avx2(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        j->y[r] = vec_dot_q4_k_q8_k_avx2(j->base + r * j->row_bytes, j->aq,
+                                         j->n_in);
+    }
+}
+
+static void rows_q6_k_scalar(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        j->y[r] = vec_dot_q6_k_q8_k(j->base + r * j->row_bytes, j->aq,
+                                    j->n_in);
+    }
+}
+
+static void rows_q6_k_avx2(void* vctx, u64 begin, u64 end) {
+    const RowJob* j = (const RowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        j->y[r] = vec_dot_q6_k_q8_k_avx2(j->base + r * j->row_bytes, j->aq,
+                                         j->n_in);
+    }
 }
 
 void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
@@ -43,11 +131,8 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
          * aligned to at least 4 bytes, and n_in*sizeof(f32) is itself a
          * multiple of 4, so every row start is a valid f32 alignment --
          * the direct typed cast below never reads a misaligned f32. */
-        u64 row_bytes = n_in * (u64)sizeof(f32);
-        for (u64 r = 0; r < n_out; r++) {
-            const f32* row = (const f32*)(base + r * row_bytes);
-            y[r] = vec_dot_f32(row, x, n_in);
-        }
+        RowJob j = {base, n_in * (u64)sizeof(f32), x, NULL, n_in, y};
+        pool_for_rows(n_out, rows_f32, &j);
     } else if (w->type == GGUF_GGML_TYPE_Q8_0) {
         /* n_in%KERNELS_Q8_0_BLOCK_ELEMS is NOT re-checked here: the dot
          * kernels enforce it on the very first row before any row-stride
@@ -87,32 +172,19 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
          * whole return on LOCKED decision #2's integer core -- an f32 SIMD
          * path would have made this a numerics change requiring a parity
          * re-run, and instead it is a pure speed change. */
-        if (kernels_cpu_has_avx_vnni()) {
-            /* FOUR ROWS PER PASS. Measured 2026-08-03: the single-row twin
-             * closed only 1.07x of the 1.997x gap to llama at one thread,
-             * and the attribution ladder put the remainder outside the
-             * kernel -- one row is one load stream feeding one serial f32
-             * chain, which leaves the core waiting rather than computing.
-             * Rows are independent dot products, so four at a time changes
-             * no arithmetic and gate [1] is untouched. */
-            u64 r = 0;
-            for (; r + 4u <= n_out; r += 4u) {
-                const void* rows[4] = {base + (r + 0u) * row_bytes,
-                                       base + (r + 1u) * row_bytes,
-                                       base + (r + 2u) * row_bytes,
-                                       base + (r + 3u) * row_bytes};
-                vec_dot_q8_0_q8_0_x4_avx2(rows, aq_scratch, n_in, &y[r]);
-            }
-            for (; r < n_out; r++) {
-                y[r] = vec_dot_q8_0_q8_0_avx2(base + r * row_bytes,
-                                              aq_scratch, n_in);
-            }
-        } else {
-            for (u64 r = 0; r < n_out; r++) {
-                y[r] = vec_dot_q8_0_q8_0(base + r * row_bytes, aq_scratch,
-                                         n_in);
-            }
-        }
+        /* FOUR ROWS PER PASS in the twin. Measured 2026-08-03: the
+         * single-row twin closed only 1.07x of the 1.997x gap to llama at
+         * one thread, and the attribution ladder put the remainder outside
+         * the kernel -- one row is one load stream feeding one serial f32
+         * chain, which leaves the core waiting rather than computing. Rows
+         * are independent dot products, so four at a time changes no
+         * arithmetic and gate [1] is untouched -- and the same independence
+         * is what lets K5 spread them over threads. */
+        RowJob j = {base, row_bytes, x, aq_scratch, n_in, y};
+        pool_for_rows(n_out,
+                      kernels_cpu_has_avx_vnni() ? rows_q8_0_avx2
+                                                 : rows_q8_0_scalar,
+                      &j);
     } else if (w->type == GGUF_GGML_TYPE_Q4_K ||
                w->type == GGUF_GGML_TYPE_Q6_K) {
         /* K4. Same shape as the Q8_0 path above and for the same reasons,
@@ -150,19 +222,11 @@ void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
          * bit-identical to the scalar kernels over 1e4 random tensors each
          * (tests/test_simd.c), so which branch runs cannot change a token. */
         int simd = kernels_cpu_has_avx_vnni();
-        if (is_q4) {
-            for (u64 r = 0; r < n_out; r++) {
-                const void* row = base + r * row_bytes;
-                y[r] = simd ? vec_dot_q4_k_q8_k_avx2(row, aq_scratch, n_in)
-                            : vec_dot_q4_k_q8_k(row, aq_scratch, n_in);
-            }
-        } else {
-            for (u64 r = 0; r < n_out; r++) {
-                const void* row = base + r * row_bytes;
-                y[r] = simd ? vec_dot_q6_k_q8_k_avx2(row, aq_scratch, n_in)
-                            : vec_dot_q6_k_q8_k(row, aq_scratch, n_in);
-            }
-        }
+        void (*rows)(void*, u64, u64) =
+            is_q4 ? (simd ? rows_q4_k_avx2 : rows_q4_k_scalar)
+                  : (simd ? rows_q6_k_avx2 : rows_q6_k_scalar);
+        RowJob j = {base, row_bytes, x, aq_scratch, n_in, y};
+        pool_for_rows(n_out, rows, &j);
     } else {
         fatal("kernels: matvec -- tensor '%s' has unsupported ggml type "
               "%u -- only F32(%u), Q8_0(%u), Q4_K(%u) and Q6_K(%u) are "

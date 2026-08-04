@@ -10,6 +10,7 @@
 #include "gguf.h"
 #include "kv.h"
 #include "model.h"
+#include "pool.h"
 #include "tok.h"
 
 #include <errno.h>
@@ -395,11 +396,17 @@ static void cmd_tokenize_roundtrip(const char* model_path,
 static void cmd_run(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke run <model.gguf> [--raw] [-n N] "
-              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] [--timing]");
+              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] "
+              "[--timing] [--threads N]");
     }
     const char* model_path = argv[2];
     bool        raw = false;
     long long   n_long = 64;
+    /* 0 means "the pool's measured default" (6 -- see pool.h; ten threads
+     * measured 15%% WORSE than six on this box). Threading changes no
+     * arithmetic: matvec rows are independent, so output is bit-identical at
+     * any count, asserted in tests/test_pool.c. */
+    long long   threads_long = 0;
     const char* prompt_text = NULL;
     const char* prompt_file = NULL;
     const char* dump_dir = NULL;
@@ -432,6 +439,13 @@ static void cmd_run(int argc, char** argv) {
             dump_dir = argv[++i];
         } else if (strcmp(argv[i], "--timing") == 0) {
             report_timing = true;
+        } else if (strcmp(argv[i], "--threads") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --threads needs an argument");
+            threads_long = strtoll(argv[++i], NULL, 10);
+            if (threads_long < 0 || threads_long > 1024) {
+                fatal("stoke run: --threads %lld out of range [0,1024] "
+                      "(0 = the measured default)", threads_long);
+            }
         } else if (strcmp(argv[i], "--probe-pos") == 0) {
             if (i + 1 >= argc) {
                 fatal("stoke run: --probe-pos needs an argument");
@@ -497,6 +511,12 @@ static void cmd_run(int argc, char** argv) {
     if (n_prompt == 0) {
         fatal("stoke run: prompt tokenized to zero ids");
     }
+
+    /* Start the pool before any forward pass. Threading is a pure speed
+     * change here -- matvec rows are independent, so the token stream is
+     * bit-identical at any count (tests/test_pool.c) -- which is why this
+     * needs no flag-gated opt-in and no parity re-run. */
+    pool_start((u32)threads_long);
 
     Model* model = model_open(model_path);
     Kv*    kv = kv_open(model_n_layer(model), model_max_ctx(model),
