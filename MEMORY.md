@@ -506,7 +506,15 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   which is the evidence for the thesis, not merely consistent with it.
   **Carried to M3:** the deferred oracle gate, the required aligner fix
   (byte lengths from the GGUF vocab via `gguf_reader.py`), and the 07-28
-  census as the M2-era baseline.
+  census as the M2-era baseline. **[RESOLVED AT M3, Fable 2026-08-05:
+  the deferred gate ran 2026-08-04 and failed leg 1 at p02:16 — an
+  M2-documented divergence where `ref_forward.py` sides with stoke — so
+  the deferral's prediction (integer core ⇒ oracle's numeric class) is
+  implemented and measured insufficient. The oracle bar is retired as
+  structurally unreachable; item [2] is restated as the
+  classified-divergence criterion and the oracle demoted to an optional
+  survey. Binding:
+  `docs/superpowers/memos/2026-08-04-m3-gate-item-2-RULING-FABLE.md`.]**
   **What M2 cost, honestly:** the forward pass itself landed in days; the
   gate took two weeks, almost entirely on measurement infrastructure —
   a cost model rebuilt twice (flat → context-aware → absolute-slack floor),

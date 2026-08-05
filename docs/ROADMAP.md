@@ -68,7 +68,7 @@ benchmark report.
 | M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
-| **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **the deferred 50-prompt ORACLE parity gate (+ the required aligner fix)**; parity re-pass Q8_0+Q4_K_M; ≥7.8 tok/s single-stream; tsan; model.c kv-cap guard (Fable 08-02) |
+| **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **item [2] RESTATED (Fable 2026-08-05): the classified-divergence criterion — M2-vs-HEAD 50-prompt sweep + ref probe grids on BOTH files, zero BUG-class; the live oracle is a SURVEY, never pass/fail**; ≥7.8 tok/s single-stream (re-anchored 8.08–8.46, ✅); tsan ✅; model.c kv-cap guard ✅ |
 | M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02) |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
@@ -348,6 +348,39 @@ source at `-O3`, archive + sha alongside
 gate-subset prompts first; any byte differs ⇒ run `-O1` and escalate.
 Launch stays Kabir's; the gate is never blocked on the -O work.
 
+**Fable 2026-08-05 — ITEM [2] RESTATED; the oracle bar is RETIRED as
+structurally unreachable (binding:
+`superpowers/memos/2026-08-04-m3-gate-item-2-RULING-FABLE.md`; the
+inherited-gate text above stands as history of what was inherited, this
+block governs).** The 2026-08-04 run failed leg 1 at p02:16 on an
+M2-documented oracle divergence where `ref_forward.py` sides with stoke
+(ref↔oracle 0.143 vs ref↔HEAD 0.043); the deferral's stated mechanism
+(integer core ⇒ oracle's numeric class) was implemented at `vec.c:162`
+and measured insufficient — matmuls converge, the f32 remainder does
+not, and the waiver requires MUTUAL near-ties so stoke's confidence
+disqualifies it by construction. **Item [2] v2 = the
+classified-divergence criterion:** (i) within-stoke exactness (gate [1],
+determinism, thread-invariance — ✅); (ii) M2-vs-HEAD sweep, all 50, every
+divergence classified by the ruling §6 rule, ZERO BUG-class; (iii) ref
+probe grids on BOTH files (τ frozen from the probe BEFORE it grades:
+f32↔intcore max(0.10, 2×band-p95) per band [0,100)/[100,300)/[300,600);
+stoke↔oracle 0.25 fixed), zero BUG-class, tripwires (sweep >30 divergent
+prompts; ≥4 class flips/file-grid) ⇒ anomaly memo. **The oracle is a
+SURVEY when Kabir authorizes it — divergence-counted vs the M2 census,
+never pass/fail, never blocking. M3 closes oracle-free.** ε=0.001/
+budget-2 waiver machinery RETIRED for cross-class token comparison.
+**Also ruled same session: K3 exits as-is** (gate [3] passed
+re-anchored-harder; ~1.16× residual + gate [1]'s 1.235× price carried as
+numbered headroom, price permanent for Phase 1 with named triggers);
+**f32-reduction twins parked dead-by-default** (≤1.32% combined, several
+change the token stream, which is now criterion substrate); **standing
+rules:** bar re-anchoring standing with asymmetric guard (easier
+re-anchors need sidecar+memo), bar-miss ⇒ results-vs-physics memo
+protocol generalized, headroom carried-vs-owed ratified (number+location+
+date; ledger is the first shopping list on any miss), forward-note
+doubts ⇒ proceed + FOR-FABLE entry except never run a gate leg the doubt
+defines. Full stamp list + M4–M7 forward rulings in the ruling §7.5/§8.
+
 **M4 — paged KV + static batch.** Forward note §M4: block=16; `kv_view`
 body swap only (M2 froze the accessor); **batch-composition independence
 by construction** (seqs-inner/weights-outer — same seq ⇒ token-identical
@@ -374,6 +407,15 @@ traffic model where batching amortizes ONLY the weight term; the
 KV-dominance crossover formula in N and ctx; Q8-KV's halving as the
 input to Kabir's M5 default call; M5's ITL and 16.8@16 bars checked as
 budget lines BEFORE paged KV is scoped.
+**Fable 2026-08-05 (binding, same ruling as §M3):** Q8-KV's
+divergence-count now HAS its bound — KV-ON vs KV-OFF within-stoke,
+classified by the ruling §6 rule with its own entry-probe τ, zero
+BUG-class, class divergences ≤ the M2 census rate (19/50 prompts AND
+≤0.5%/token); exceeding it is a results-vs-physics memo about the
+quantizer, not a grind. M4's gate-items-vs-constraints split and exact
+stamp list: ruling §8.4. Batch-composition independence stays EXACT
+(bit-level) regardless; W and the budget's N are re-measured at M4 entry
+(re-anchoring is now a STANDING rule, ruling §8.2–8.3).
 
 **M5 — continuous batching (THE product gate).** Forward note §M5: the
 locked scheduler (WAITING→PREFILLING→RUNNING→FINISHED; ≤1 active prefill;
@@ -421,6 +463,17 @@ Also at long-ctx parity (Fable 08-02): stoke's `rope_neox` accumulates
 computes per-k powers directly — same math, ~1e-9 rounding difference
 that GROWS WITH POSITION (logged 2026-07-31); if long-context parity
 wobbles, check this first.
+**Fable 2026-08-05 (binding, same ruling as §M3): M7's parity criterion
+is ruled NOW, conditional as asked.** The tokenizer gate stays M1-style
+byte-exact via `llama-tokenize` (discrete domain — unchanged). The
+FORWARD-PASS parity is the §M3 v2 SHAPE re-instantiated for Llama-3.2 —
+twins + ref probe grid + targeted tests for the four deltas — **never a
+50/50 live-oracle token bar for any model**; τ is re-frozen from M7's
+own entry probe with new position bands [600,1200)/[1200,∞) BEFORE any
+parity evidence is graded (the one named DEFER trigger of the ruling).
+"Re-run ALL baselines" resolved: PERF referents refresh at gate time,
+the PARITY oracle stays pinned b10037 (per-model pin if Llama-3.2 needs
+a newer llama); banked comparisons are never re-graded. Ruling §8.8–8.10.
 
 **Cross-cutting (every milestone):** forward note's closing section —
 16GB RAM ceilings (concurrency benching stays on Q4_K_M), every gate

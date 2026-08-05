@@ -1,6 +1,6 @@
-# FOR FABLE — 2026-08-04 — M3's exit, the parity criterion, and every ruling that follows from it
+# FOR FABLE — 2026-08-04 — M3's exit, the parity criterion, and every ruling that follows from it [ANSWERED 2026-08-05: Fable ruled — see `2026-08-04-m3-gate-item-2-RULING-FABLE.md`, which is the authority]
 
-**STATUS: OPEN — LIVE, ACCUMULATING. ONE LAUNCH, MANY RULINGS.**
+**STATUS: ANSWERED 2026-08-05 — every §13 ID ruled, none declined. This file stays as the question of record.**
 
 **How to use this file.** Kabir runs Fable sparingly and by hand. So this is
 not one question — it is **the whole decision package**: the primary question
@@ -900,3 +900,12 @@ M2↔HEAD difference is on a prompt already in M2's 19, every prompt outside it
 is token-identical. **Recorded as a pattern, explicitly NOT as a result** —
 44 prompts remain, including the whole long-context tier. Resume by re-running
 `m2_sweep.py`; it needs no oracle and no permission.
+
+**2026-08-05 ~13:12 IST — ANSWERED. Fable session, Kabir-launched.** Every
+§13 ID ruled, none `DECLINED`, one named `DEFER`-class trigger (§8.9's M7
+long-band τ re-freeze). Headline: item [2] restated as the
+classified-divergence criterion (oracle demoted to survey; M3 closes
+oracle-free); K3 exits as-is; f32 twins parked dead-by-default; §10 forward
+rulings issued M4–M7. Authority:
+`2026-08-04-m3-gate-item-2-RULING-FABLE.md`. ROADMAP §M3/§M4/§M7 and
+MEMORY.md carry supersession pointers from the same session.
