@@ -236,6 +236,105 @@ G8   does anything here change the M3 stamp list of ruling section 7.5
 
 ---
 
+## 8A. AMENDMENT, same day — A PROBE IS 64× CHEAPER THAN §5 COSTED IT, WHICH CHANGES OPTION (i)
+
+**Read this before ruling G4/G5 — it is the difference between option (i) being
+thin and option (i) being strong.**
+
+`ref_forward.py`'s generate loop **already computes the logits at every
+generated position** — it needs them to pick the next token. `--probe-pos k`
+computes 64 distributions and reports **one**. So the expensive thing is the
+**prefix prefill**, and it is *already being paid* for every position in the
+run.
+
+`--probe-all` (landed this session, python-only, additive, `top5_from_logits`
+per position ≈ 0.1% over an ~18 s forward) records all of them. **One run over
+prompt + 64 now yields 64 probes for the price of the one probe it used to
+yield.**
+
+**Re-costed, same measured constants:**
+
+| | §5 as costed | with `--probe-all` |
+|---|---|---|
+| short prompt (~87 pos), ~27 min | 1 probe | **64 probes** |
+| 4 h budget, short prompts | ~8 probes | **~550 probes**, positions 0–63 |
+| + one long prompt (~2.8 h) | 1 probe | **64 probes**, band [300,600) |
+| the full specified grid | ~49 h | **~35 h** (the 5 mid-index long runs become free) |
+
+**Consequences for the ruling:**
+
+- **Option (i) is no longer "honest but thin".** A ~4 h budget buys ~550
+  teacher-forced comparisons spanning band [0,100) densely, plus a long prompt
+  for [300,600) — enough to freeze τ's band-p95 on a real sample and to run a
+  genuine BUG check. That is within §8.1's Opus-discretion cap **without any
+  further authorization**.
+- **The full grid is still ~35 h and still not affordable**, so G1's verdict
+  stands; only option (i)'s attractiveness moves.
+- **Comparability caveat, recorded in the flag's own help text:** probes lie
+  along the run's OWN stream, so they are comparable to another
+  implementation's only up to the first divergence — which is exactly the
+  position §6 grades, so the constraint costs nothing that matters.
+- **OWED:** the flag's stream-invariance is argued structurally (append-only
+  list, read by nobody, `next_id` computed from `lg` exactly as before) and
+  `--selftest` is ALL PASS, but it has **not been confirmed empirically on a
+  model run** — the box had 0.31 GB free. First run with the flag must confirm
+  the id stream is unchanged.
+
+## 8B. ⚠ A FREEZE NOBODY HAS WRITTEN DOWN: DO NOT REBUILD `stoke.exe`
+
+`parity_gate.py:1204` keys every cache entry on `stoke_hash = sha256(STOKE_EXE)`
+and `m2_sweep.py:31` refuses any banked stream whose `stoke_hash` is not
+`876ce53f…`. **So any rebuild of `stoke.exe` — including one for pure
+instrumentation, such as adding a `--probe-all` to the C side — makes all 50
+banked HEAD streams uncreditable and the sweep exits rather than running.**
+Re-banking them is ~19 min, so this is recoverable, not catastrophic — but it
+would be discovered *after* a rebuild, not before, and a session that rebuilt
+for an unrelated reason would lose the evidence silently until the guard fired.
+**Recorded as a standing constraint for the rest of M3: the engine is frozen
+until [2v2-ii] is banked and classified.** This is also why `--probe-all` was
+added to the python side only.
+
+## 8C. THE §6 CLASSIFIER EXISTS AND IS MUTATION-VERIFIED — plus two readings the ruling's prose left open
+
+`tests/tooling/classify.py` implements §6 mechanically. **27 selftest checks ALL
+GREEN; four mutations verified failable, each caught by its intended test**
+(BUG threshold 2τ→τ; a bound treated as a known margin; the rank-5 tolerance
+dropped; CLASS no longer requiring set agreement), source `cmp`-verified
+byte-identical after restore.
+
+**One test of mine was FALSE-PASSING and the mutation harness caught it** — the
+boundary-churn case put its odd candidate exactly AT rank-5, which `>` excludes
+whether the tolerance exists or not, so it passed with the tolerance deleted.
+Rebuilt with the candidate strictly inside `(rank5, rank5+τ]`. Same family as
+the M0-era timer-floor exemption. **The lesson keeps recurring: a test can pass
+for a reason unrelated to the thing it names.**
+
+**Two places where §6's prose admits two readings. Opus chose, disclosed the
+choice in every emitted record, and asks for ratification:**
+
+- **G9 — the unobservable BUG clause.** §6 says BUG if *"either side's chosen
+  token sits more than τ below the other side's rank-5 logit"*. **When that
+  token is absent from the other side's top-5 the quantity is NOT OBSERVABLE**
+  — the probe reports five logits and it is not among them, so its value is
+  bounded below rank-5 but unknown. Opus returns **ESCALATE** for the
+  unobservable case (fail-safe: the ladder decides), and **BUG only when the
+  bound alone already proves ≥2τ**, which is affirmative. Escalating cannot
+  pass a bug; a guessed BUG would block a stamp on a number nobody measured.
+- **G10 — "the top-5 sets are equal after discarding…"** reads as either strict
+  equality of the two cores or containment of each core in the other side's
+  full top-5. Opus implements **containment**, because §6's own BUG rationale
+  is *"a candidate the other implementation never ranked"*, which is a
+  containment test; strict equality would additionally fail on pure boundary
+  churn, which the tolerance exists to forgive.
+
+**Add to the checklist:**
+
+```
+G9   ratify ESCALATE (not BUG) for the unobservable-margin case? yes/no:
+G10  ratify CONTAINMENT (not strict set equality) for the top-5 test? yes/no:
+G11  ack the stoke.exe freeze until [2v2-ii] is banked?  yes/no:
+```
+
 ## 9. APPEND-ONLY LOG
 
 **2026-08-05 — opened.** Ruling §2.3's cost line measured wrong by ~65–300×;
@@ -244,3 +343,14 @@ in `ref_forward.py:183-187` as a deliberate RAM-bound trade-off; the M2 binary
 identified as an already-validated f32 referent that makes the Q8_0 leg cheaper
 AND denser, with Q4_K_M isolated as the genuine gap. Sweep patched for resume
 and verified failable-both-ways, **not launched** (free RAM 0.31 GB).
+
+**2026-08-05 (same session, box still loaded) — §8A/8B/8C added, all
+zero-machine work done while the box was unavailable.** §8A: `--probe-all`
+lands and makes a probe **64× cheaper**, which moves option (i) from ~8 probes
+per 4 h to ~550 and brings it inside §8.1's existing authorization — G1's
+verdict on the full grid is unchanged. §8B: a previously unwritten freeze —
+**rebuilding `stoke.exe` invalidates all 50 banked HEAD streams** via
+`stoke_hash`, so the engine is frozen until [2v2-ii] is banked (G11). §8C: the
+§6 classifier is built, 27 checks green, four mutations verified failable, and
+**it caught a false-passing test of its own author's**; two readings of §6's
+prose are disclosed and asked as G9/G10.

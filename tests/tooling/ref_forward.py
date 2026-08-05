@@ -272,7 +272,25 @@ class Qwen3Ref:
                 x.tofile(os.path.join(dump_dir, f"L{L:02d}.f32"))
         return x
 
-    def generate(self, ids, n, dump_dir=None, probe_pos=None):
+    def generate(self, ids, n, dump_dir=None, probe_pos=None, probe_all=None):
+        """probe_all: an optional list. When given, the top-5 at EVERY generated
+        position is APPENDED to it.
+
+        WHY THIS IS ~FREE, and why it changes what a probe costs. The logits are
+        ALREADY computed at every generated position -- the loop below needs
+        them to pick next_id -- so `--probe-pos k` computes 64 distributions and
+        reports one. Recording all of them adds one argpartition per position
+        against ~18 s of forward pass, i.e. ~0.1%. A single run over prompt+64
+        therefore yields 64 probes rather than 1, at the cost of the ONE prefix
+        prefill that dominates everything.
+
+        IT CANNOT MOVE THE TOKEN STREAM: probe_all is append-only, is read by
+        nobody in this class, and next_id is computed from lg exactly as before.
+        Comparability caveat for the CONSUMER, not for this method: these probes
+        lie along THIS run's own stream, so they are comparable to another
+        implementation's probes only up to the first position where the two
+        streams diverge -- which is precisely the position the section 6 rule
+        grades."""
         total_cap = len(ids) + n
         if total_cap > self.max_ctx:
             fatal(f"prompt+generation length {total_cap} exceeds max_ctx {self.max_ctx}")
@@ -294,6 +312,8 @@ class Qwen3Ref:
         lg = self.logits(h)
         if probe_pos == 0:
             probe_out = top5_from_logits(lg)
+        if probe_all is not None:
+            probe_all.append({"index": 0, "top5": top5_from_logits(lg)})
         next_id = int(np.argmax(lg))
         out_ids = [next_id]
         pos += 1
@@ -308,6 +328,8 @@ class Qwen3Ref:
             # probe_pos means the identical generated position on both sides.
             if probe_pos is not None and probe_pos == len(out_ids):
                 probe_out = top5_from_logits(lg)
+            if probe_all is not None:
+                probe_all.append({"index": len(out_ids), "top5": top5_from_logits(lg)})
             next_id = int(np.argmax(lg))
             out_ids.append(next_id)
             pos += 1
@@ -333,6 +355,13 @@ def main() -> int:
                    help="print the top-5 (id, logit) at generated position N "
                         "to stderr, in stoke's exact `probe pos=N: id=U "
                         "logit=F` format (src/main.c)")
+    p.add_argument("--probe-all", metavar="FILE",
+                   help="record the top-5 at EVERY generated position to FILE "
+                        "as JSON. The logits are already computed at each "
+                        "position, so this costs ~0.1% and turns one prefix "
+                        "prefill into 64 probes instead of 1. Probes lie along "
+                        "THIS run's stream, so a consumer may compare them to "
+                        "another implementation only up to the first divergence.")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args()
 
@@ -358,13 +387,25 @@ def main() -> int:
               f"range [0,{args.n})", file=sys.stderr)
         return 1
 
+    all_probes = [] if args.probe_all else None
     try:
         model = Qwen3Ref(args.gguf)
         out, probe = model.generate(ids, args.n, dump_dir=args.dump_layers,
-                                     probe_pos=args.probe_pos)
+                                     probe_pos=args.probe_pos,
+                                     probe_all=all_probes)
     except GgufError as e:
         print(f"fatal: {e}", file=sys.stderr)
         return 1
+
+    if all_probes is not None:
+        # ids are written ALONGSIDE the probes deliberately: a probe set is
+        # only interpretable against the stream it was taken along, and
+        # separating them is how a later reader compares position k of one run
+        # against position k of a different stream without noticing.
+        import json as _json
+        with open(args.probe_all, "w", encoding="utf-8") as fh:
+            _json.dump({"ids": out, "n_input": len(ids), "probes": all_probes},
+                       fh, indent=1)
 
     for tid in out:
         print(tid)
