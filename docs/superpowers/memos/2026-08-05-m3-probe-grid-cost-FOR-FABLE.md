@@ -359,29 +359,36 @@ prose are disclosed and asked as G9/G10.
 binary is WRONG BY ~1.7× EVEN AFTER A 2× OPS DEFECT WAS FIXED.** Four items,
 one of which retires a question rather than adding one.
 
-- **§4's "~1.7 s/position (147 s for an 87-position prompt)" does not
-  reproduce.** p00 *is* that 87-position prompt (23 prompt tokens + 64
-  generated). Measured today on the same binary, model and box: **6.00
-  s/position**, and **2.96 s/position** after the ops defect below. So the
-  serial full-corpus figure is **~5.8 h, not the ~3.5 h §4 quotes**.
-  **§4's CONCLUSION SURVIVES — the sweep is still far cheaper and ~64× denser
-  than the numpy grid — but it now rests on concurrency rather than on that
-  rate, and G1 should be ruled against the real number.** Restored to ~2.2 h
-  by running prompts concurrently (`--jobs 3`, commit `c5af967`): the M2 binary
-  is single-threaded, each prompt is an independent process, so concurrency
-  changes wall time and cannot change an id.
-- **THE OPS DEFECT, worth more than this brief: Task Scheduler registers tasks
-  at priority 7 (BelowNormal) by default, and on this hybrid CPU (6 P-cores at
-  LP 0-11, 4 E-cores at LP 12-15) Windows' thread director parks
-  low-priority work on the E-cores — a flat 2× on identical work.** p00/p01 at
-  6.00/6.12 s/position, p02 at 2.96 after being raised to Normal mid-run.
-  **The process consumed a full core throughout (CPU_s ≈ wall), so every
-  utilisation reading looked healthy** — same family as "max/med = 1.33 reads
-  healthy while the median is 2.6× wrong". **Every detached launcher in this
-  tree inherits the default** (`run_survey_detached.cmd`,
-  `run_ref_gate_detached.cmd`, and the `stoke-m2-survey` / `stoke-m2-ref-gate`
-  tasks), so any wall-clock figure previously taken through one of them may be
-  ~2× pessimistic. Fixed here with `-Priority 4`.
+- **§4's "~1.7 s/position" IS CONFIRMED. An earlier version of this entry
+  claimed it was wrong by ~1.7×; THAT CLAIM IS RETRACTED, and the retraction is
+  the more useful record.** Clean measurements once the box settled: p04–p09 at
+  **1.56–1.68 s/position** (128.7 / 133.0 / 137.3 / 153.1 / 133.3 / 143.2 s
+  over 82–91 positions), against §4's 147 s for an 87-position prompt. §4
+  stands as written and G1 should be ruled against it unchanged. Serial
+  full-corpus ≈ 3.1 h; at `--jobs 3`, ≈ 1.1 h.
+- **HOW THE WRONG NUMBER HAPPENED, because the mechanism matters more than the
+  number: I CHANGED FOUR THINGS AND ATTRIBUTED THE RESULT TO ONE.** The early
+  prompts measured 6.00–6.12 s/position and I attributed that to Task
+  Scheduler's default priority 7 (BelowNormal) placing work on this hybrid
+  part's E-cores. But between those rows and the clean ones I had *also*
+  pinned affinity to `0x555`, started three concurrent jobs, and let the 4 GB
+  model page cache go from churning (I was running 50 `stoke tokenize`
+  invocations against it at the time) to warm. The intermediate rows — Normal
+  priority *with* my pin, single job — sit at 2.89–3.26, so the pin was itself
+  costing roughly 2× and my "fixed" figure was measured under a defect I had
+  just introduced. **NONE of the 6.00 → 1.6 improvement is cleanly attributed.**
+  This is the 2026-08-04 lesson exactly ("a row-level grade is an AGGREGATE,
+  and attributing it to the change you just made without opening the per-run
+  sidecar is how a working fix gets reverted"), and it caught me on a decision
+  brief rather than in a bench row.
+- **What survives, stated at the strength it has:** Task Scheduler *does*
+  register tasks at priority 7 unless given `-Priority`, and every detached
+  launcher in this tree inherits that (`run_survey_detached.cmd`,
+  `run_ref_gate_detached.cmd`, `stoke-m2-survey`, `stoke-m2-ref-gate`). Raising
+  it is retained on principle — a multi-hour compute job should not run at
+  BelowNormal — but **its cost is NOT established at 2×, or at any number**,
+  and no wall-clock figure elsewhere in this tree should be re-read on the
+  strength of this entry.
 - **A QUESTION THAT DISSOLVED BEFORE IT COST A RULING: the frozen τ bands cover
   this corpus.** Prompt lengths were measured with `stoke tokenize` (which
   calls `tok_encode(add_special=false)`, the exact call `run --raw` makes):
