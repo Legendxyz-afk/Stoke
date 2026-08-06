@@ -621,6 +621,23 @@ def main() -> int:
 
     rows = div + (same if env_path else [])
     todo = [r for r in sorted(rows, key=lambda r: r["prompt"]) if r["prompt"] not in done]
+
+    # ▶ LONGEST-FIRST, because the cost here is wildly uneven and name order is
+    # the worst possible schedule for it. A probe re-generates prompt_len + k
+    # positions, so p40-p44 cost 31-36 min each while a typical prompt costs ~6
+    # -- and sorted by name the expensive five land LAST, leaving workers idle
+    # through a tail nothing can fill. Dispatching longest-first (the standard
+    # LPT makespan heuristic) lets the short prompts backfill around them, which
+    # on the remaining 25 is worth about as much as adding a whole job -- and
+    # unlike adding a job it costs no RAM, which is the resource that has
+    # actually bitten twice today.
+    #
+    # Ordering is a SCHEDULING choice only: every prompt is an independent
+    # process and results are banked per prompt as they land, so it cannot
+    # change any recorded value, only when each is recorded.
+    if a.jobs > 1:
+        todo.sort(key=lambda r: lens.get(r["prompt"], 0) + comparison_index(r),
+                  reverse=True)
     if a.limit:
         todo = todo[:a.limit]
 
