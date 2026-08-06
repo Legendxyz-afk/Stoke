@@ -62,6 +62,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import pathlib
@@ -91,6 +92,25 @@ PAIR = "f32_intcore_q8_0"
 # already relies on; a second spelling of it here would be a second thing to
 # get wrong, so it is deliberately identical.
 _PROBE_RE = re.compile(r"^probe pos=(-?\d+): id=(\d+) logit=(-?\d+\.\d{6})$")
+
+# ▶ SAME P-CORE PIN AND PRIORITY AS m2_sweep.py, AND DUPLICATED ON PURPOSE.
+# A probe IS a full re-generation, so it is the identical workload under the
+# identical physics: measured 2026-08-06, work left unplaced bounces onto
+# E-cores and second-hyperthreads for ~1.6x. The lines are copied rather than
+# imported because m2_sweep.py is a SCRIPT -- importing it would run a sweep.
+# ctypes argtypes are declared because HANDLE/DWORD_PTR are 64-bit here and
+# ctypes defaults to c_int, which truncates the pseudo-handle silently.
+# Priority is passed at creation because it is NOT reliably inherited by
+# children (observed directly: parent High, fresh children Normal).
+P_CORE_MASK = 0x555
+_HIGH = getattr(subprocess, "HIGH_PRIORITY_CLASS", 0) if sys.platform == "win32" else 0
+
+if sys.platform == "win32":
+    _k32 = ctypes.WinDLL("kernel32")
+    _k32.GetCurrentProcess.restype = ctypes.c_void_p
+    _k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    if not _k32.SetProcessAffinityMask(_k32.GetCurrentProcess(), P_CORE_MASK):
+        sys.exit(f"fatal: could not pin to P-cores (mask 0x{P_CORE_MASK:X})")
 
 PROBE_TIMEOUT_S = 2400.0   # p40-p44 re-generate ~550 positions on the M2
                            # binary at ~1.7 s each; the sweep measured 940 s
@@ -196,7 +216,8 @@ def run_probe(exe: pathlib.Path, prompt: pathlib.Path, pos: int, n_predict: int)
     argv = [str(exe), "run", str(MODEL), "--raw", "-f", str(prompt),
             "-n", str(n_predict), "--probe-pos", str(pos)]
     try:
-        p = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT_S)
+        p = subprocess.run(argv, capture_output=True, timeout=PROBE_TIMEOUT_S,
+                           creationflags=_HIGH)
     except subprocess.TimeoutExpired:
         raise ProbeError(f"probe timed out after {PROBE_TIMEOUT_S}s: {' '.join(argv)}")
     if p.returncode != 0:
