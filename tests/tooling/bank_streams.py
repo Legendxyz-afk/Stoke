@@ -97,10 +97,31 @@ def pin_model_size():
 
 
 class _Args:
-    """The attribute surface fetch_stoke_result actually reads."""
+    """The attribute surface parity_gate reads on the banking path.
+
+    ▶ THIS SHIM WAS WRONG ON ITS FIRST RUN and the selftest did not notice,
+    because every check exercised the cache-KEY helpers and none of them
+    exercised the path the tool actually walks. `_load_cache_data` reads
+    `args.clean`, which was absent, so the launch died on prompt 1 with an
+    AttributeError after the selftest had reported 11/11. The attribute list
+    is no longer guessed: it is `clean` and `n_predict`, read across
+    _load_cache_data / _store_cache_data / _cache_key_parts /
+    fetch_stoke_result / invocation_signature, and the selftest now CALLS
+    those rather than describing them.
+
+    `clean` is fixed False and is deliberately not a flag. parity_gate's
+    --clean discards cached entries; a banking run whose whole value is the
+    cache must never be able to wipe it, and an operator reaching for --clean
+    here would mean "start over", which is what deleting the jsonl already
+    expresses without risking the streams.
+    """
+
+    clean = False
 
     def __init__(self, model, n_predict):
-        self.model = model
+        self.model = model          # recorded in the progress line; parity_gate
+                                    # itself reads the model from the globals
+                                    # bind_model() rebinds, never from args.
         self.n_predict = n_predict
 
 
@@ -232,6 +253,34 @@ def run_selftest() -> int:
     ck("...and the check can see symbols at all", "fetch_stoke_result" in referenced)
 
     ck("guard reads ullAvailPhys", _free_gb() is None or _free_gb() > 0)
+
+    # ▶▶ THE CHECK THAT WAS MISSING, and whose absence let a 11/11 selftest ship
+    # a tool that died on its first real prompt: WALK THE ACTUAL PATH. Everything
+    # above tests cache-key helpers; none of it ever handed _Args to the function
+    # the banking loop calls first. _load_cache_data reads args.clean, which the
+    # shim did not have. A shim is a claim about someone else's code, so it has
+    # to be checked against that code running, not against a docstring listing
+    # what it is believed to need.
+    bind_model("q4_k_m")
+    probe_args = _Args("q4_k_m", 64)
+    try:
+        data = pg._load_cache_data(pg.corpus_path("p00"), probe_args)
+        ck("_load_cache_data accepts the shim", isinstance(data, dict))
+    except AttributeError as e:
+        ck(f"_load_cache_data accepts the shim ({e})", False)
+    try:
+        pg._cache_key_parts(pg.corpus_path("p00"), probe_args)
+        pg.stoke_generate_argv(pg.corpus_path("p00"), probe_args.n_predict)
+        ck("key + argv builders accept the shim", True)
+    except AttributeError as e:
+        ck(f"key + argv builders accept the shim ({e})", False)
+    # getattr with a sentinel, not probe_args.clean: this file prints its
+    # results only after every check has run, so one uncaught AttributeError
+    # here discards the whole report -- including the FAIL that would have
+    # named the cause. Verified by mutation: deleting `clean` used to crash
+    # with no checks printed at all, and now prints two FAILs that say why.
+    ck("clean is False -- banking can never wipe the cache it exists to fill",
+       getattr(probe_args, "clean", None) is False)
 
     bad = [n for n, ok in checks if not ok]
     for n, ok in checks:
