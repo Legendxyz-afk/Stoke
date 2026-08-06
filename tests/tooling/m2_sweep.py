@@ -96,9 +96,38 @@ if len(banked) != 50:
     sys.exit(f"expected 50 HEAD streams under sha {HEAD_SHA[:8]}, got {len(banked)}")
 
 
+# ▶ PLACEMENT AND PRIORITY ARE SET HERE, NOT LEFT TO THE SCHEDULER OR TO A
+# LAUNCHER. Measured 2026-08-06 on this 6P+4E part: with the work left
+# unplaced, two single-threaded prompts were bouncing across LP 1/5/13/15 --
+# two of those are E-cores and two are the SECOND hyperthread of a P-core --
+# and prompts took 448-607 s. Pinned to one thread per P-core they took
+# 333-357 s. Affinity is inherited by child processes, so setting it on this
+# process covers every stoke run it spawns; PRIORITY IS NOT RELIABLY INHERITED
+# (observed: this process at High, its children still Normal), so the flag is
+# passed explicitly at creation instead.
+#
+# 0x555 = LP 0,2,4,6,8,10, one thread on each of the six P-cores. Same mask the
+# K6 gate legs use, for the same reason. It is deliberately NOT 0xFFF: giving
+# the scheduler both hyperthreads of a core invites it to put two prompts on
+# one physical core while another sits idle.
+P_CORE_MASK = 0x555
+_HIGH = getattr(subprocess, "HIGH_PRIORITY_CLASS", 0) if sys.platform == "win32" else 0
+
+if sys.platform == "win32":
+    # argtypes/restype are set explicitly: HANDLE and DWORD_PTR are 64-bit here
+    # and ctypes defaults to c_int, which truncates the pseudo-handle silently.
+    _k32 = ctypes.WinDLL("kernel32")
+    _k32.GetCurrentProcess.restype = ctypes.c_void_p
+    _k32.SetProcessAffinityMask.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    if not _k32.SetProcessAffinityMask(_k32.GetCurrentProcess(), P_CORE_MASK):
+        sys.exit(f"fatal: could not pin to P-cores (mask 0x{P_CORE_MASK:X}); "
+                 f"unpinned this job measured 448-607 s/prompt against 333-357 "
+                 f"pinned, so proceeding would silently halve throughput")
+
+
 def ids_of(exe, prompt):
     p = subprocess.run([str(exe), "run", str(MODEL), "--raw", "-f", str(prompt), "-n", "64"],
-                       capture_output=True, timeout=1800)
+                       capture_output=True, timeout=1800, creationflags=_HIGH)
     if p.returncode != 0:
         return None, p.stderr.decode("utf-8", "replace")[-300:]
     out = []

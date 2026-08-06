@@ -53,19 +53,31 @@ rem multi-hour compute job should not run at BelowNormal, and on this hybrid
 rem part (i5-13450HX: 6 P-cores at LP 0-11, 4 E-cores at LP 12-15) low-priority
 rem work is what the thread director puts on the E-cores.
 rem
-rem ▶▶ WHAT THAT IS WORTH IS **NOT ESTABLISHED**, and the retraction is worth
-rem more than the claim was. An earlier version of this header asserted "costs
-rem 2x", citing p00/p01 at 6.00/6.12 s per position against a later 2.96. But
-rem between those rows FOUR things changed -- task priority, a 0x555 affinity
-rem pin I had added, single-vs-concurrent jobs, and the 4 GB model page cache
-rem going from churning (50 `stoke tokenize` invocations were running against
-rem it) to warm. The clean rate once the box settled is 1.56-1.68 s/position,
-rem which matches the pre-existing record exactly, and the intermediate rows
-rem show the PIN was itself costing ~2x. So the aggregate is real and the
-rem attribution was invented. Do not re-read any wall-clock figure elsewhere in
-rem this tree on the strength of this header.
+rem ▶▶ THIS BOX HAS TWO SPEEDS, AND ONLY ONE OF THEM IS SUSTAINABLE. Every
+rem earlier version of this header attributed the session's rate swings to
+rem whichever knob had just been turned; all of those attributions were wrong,
+rem and the reason they were wrong is worth more than any of them:
 rem
-rem ▶ --jobs 2: the M2 binary is single-threaded, so concurrency across PROMPTS
+rem   * SHORT BURSTS AFTER AN IDLE PERIOD RUN AT BOOST. Measured _Total
+rem     % Processor Performance of 141% (~3.4 GHz) minutes after a restart,
+rem     falling to ~102% (~2.4 GHz, i.e. base) under sustained load, with the
+rem     busy P-core itself reading 98.5% / ~2,363 MHz. The 1.56-1.68 s/position
+rem     rows that match the pre-existing ~1.7 record were ALL taken inside such
+rem     a window, in the first minutes after a relaunch on a cool box. They are
+rem     real numbers and they are not a rate this job can hold for an hour.
+rem   * PLACEMENT IS WORTH ~1.6x AND IS THE PART WE CONTROL. Left unplaced,
+rem     two single-threaded prompts bounced across LP 1/5/13/15 -- two E-cores
+rem     and two second-hyperthreads -- for 448-607 s per prompt. Pinned one
+rem     thread per P-core: 333-357 s. m2_sweep.py now sets that mask on itself
+rem     (children inherit it) rather than leaving it to the launcher.
+rem
+rem So the sustained expectation is ~3.7-4.0 s/position PINNED, not 1.7, and a
+rem quoted rate is meaningless without saying which window it came from. Do not
+rem re-read wall-clock figures elsewhere in this tree against this header
+rem without checking that. Thermals were NOT the cause (27.9 C) and memory was
+rem NOT the cause (0 pages/sec in, cache faults at 16/sec).
+rem
+rem ▶ --jobs 3: the M2 binary is single-threaded, so concurrency across PROMPTS
 rem is the only parallelism available. Each prompt is an independent process on
 rem an independent prompt, so ids cannot change -- only wall time. The ceiling
 rem is RAM, not cores: ~4.0 GB shared model + ~1.2 GB private KV per job on a
@@ -84,7 +96,7 @@ if not exist "%CACHE%" mkdir "%CACHE%"
 echo. >> "%LOG%"
 echo ===== M2-vs-HEAD SWEEP [2v2-ii] %DATE% %TIME% ===== >> "%LOG%"
 
-python -u tests\tooling\m2_sweep.py "%STATE%" --jobs 2 >> "%LOG%" 2>&1
+python -u tests\tooling\m2_sweep.py "%STATE%" --jobs 3 >> "%LOG%" 2>&1
 set RC=%ERRORLEVEL%
 
 echo ===== SWEEP COMPLETE rc=%RC% %DATE% %TIME% ===== >> "%LOG%"
