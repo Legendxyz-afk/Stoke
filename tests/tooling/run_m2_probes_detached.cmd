@@ -51,7 +51,7 @@ python -u tests\tooling\m2_classify_probes.py ^
   --sweep "%CACHE%\m2_sweep.json" ^
   --out "%CACHE%\m3_records.json" ^
   --envelope "%CACHE%\m3_envelope.json" ^
-  --jobs 3 >> "%LOG%" 2>&1
+  --jobs 2 >> "%LOG%" 2>&1
 set RC=%ERRORLEVEL%
 
 echo ===== PROBE PASS COMPLETE rc=%RC% %DATE% %TIME% ===== >> "%LOG%"

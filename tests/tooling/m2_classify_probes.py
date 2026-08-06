@@ -112,6 +112,39 @@ if sys.platform == "win32":
     if not _k32.SetProcessAffinityMask(_k32.GetCurrentProcess(), P_CORE_MASK):
         sys.exit(f"fatal: could not pin to P-cores (mask 0x{P_CORE_MASK:X})")
 
+# ▶ RAM CEILING, and it is the second time this session that ignoring it cost
+# real time. Each probe process holds ~1.2 GB private KV on top of ONE shared
+# ~4.0 GB model. When the total exceeds what is free, the model starts being
+# trimmed and re-faulted: measured signature is Cache Faults/sec jumping from
+# ~60 to ~7,000 with Pages Input/sec still near zero, and prompts taking 3x
+# longer. The arithmetic that matters: 3 jobs under that pressure completed 3
+# prompts per 513 s where 2 jobs without it did 2 per 140 s -- FEWER JOBS IS
+# 2.5x FASTER once the model stops fitting.
+#
+# ▶ THIS GUARD IS DELIBERATELY PARTIAL, and saying so is the point: it fires at
+# LAUNCH only. Both collapses this session were caused by an application
+# opening AFTER the run started (Chrome once, VS Code the next), which no
+# launch-time check can see. Mid-run pressure needs an operator restart at a
+# lower --jobs; the run is resumable per prompt precisely so that costs one
+# probe.
+MODEL_GB, PER_JOB_GB = 4.0, 1.3
+
+
+def _free_gb():
+    if sys.platform != "win32":
+        return None
+    class _MS(ctypes.Structure):
+        _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+    ms = _MS()
+    ms.dwLength = ctypes.sizeof(_MS)
+    ctypes.WinDLL("kernel32").GlobalMemoryStatusEx(ctypes.byref(ms))
+    return ms.ullAvailPhys / (1024.0 ** 3)
+
+
 PROBE_TIMEOUT_S = 2400.0   # p40-p44 re-generate ~550 positions on the M2
                            # binary at ~1.7 s each; the sweep measured 940 s
                            # worst case, so this is a ~2.5x margin. Loose is
@@ -543,6 +576,15 @@ def main() -> int:
     if not (a.sweep and a.out):
         print("fatal: --sweep and --out are both required", file=sys.stderr)
         return 2
+
+    if a.jobs > 1:
+        free, need = _free_gb(), MODEL_GB + a.jobs * PER_JOB_GB
+        if free is not None and free < need:
+            print(f"fatal: --jobs {a.jobs} needs ~{need:.1f} GB (model {MODEL_GB} + "
+                  f"{a.jobs}x{PER_JOB_GB} private KV), {free:.1f} GB free. Under that, "
+                  f"the model is trimmed and re-faulted and FEWER JOBS RUN FASTER.",
+                  file=sys.stderr)
+            return 2
 
     live = sha256_of(HEAD_EXE)
     if live != HEAD_SHA:
