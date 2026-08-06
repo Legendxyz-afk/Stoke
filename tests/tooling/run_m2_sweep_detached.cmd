@@ -47,6 +47,25 @@ rem page cache, and if that cache is evicted the recorded ~3x rate collapse
 rem applies. Launch condition is free RAM > model + 2 GB (~6 GB). The 08-05
 rem attempt was refused at 0.31 GB free.
 rem
+rem ▶▶ TASK SCHEDULER RUNS TASKS AT BelowNormal BY DEFAULT, AND ON THIS HYBRID
+rem CPU THAT COSTS 2x. Measured here 2026-08-06 on identical work: p00/p01 at
+rem 6.00/6.12 s per position while the process sat at BelowNormal, then 2.96
+rem once raised to Normal and pinned to P-cores. The i5-13450HX is 6 P-cores
+rem (LP 0-11) + 4 E-cores (LP 12-15), and Windows' thread director parks
+rem low-priority work on the E-cores -- so the process burned a full core the
+rem whole time and simply ran on a slower one. CPU_s ~= wall the whole way, so
+rem NOTHING in a utilisation reading would have shown this. The task must be
+rem registered with -Priority 4 (Normal); a task registered with the default
+rem silently halves throughput on every long run this project launches, which
+rem is every long run this project launches.
+rem
+rem ▶ --jobs 3: the M2 binary is single-threaded, so concurrency across PROMPTS
+rem is the only parallelism available. Each prompt is an independent process on
+rem an independent prompt, so ids cannot change -- only wall time. The ceiling
+rem is RAM, not cores: ~4.0 GB shared model + ~1.2 GB private KV per job on a
+rem 15.6 GB box, which is why the 2026-07-28 sizing says 2-3 and NOT 4.
+rem m2_sweep.py refuses a --jobs its own free-RAM check cannot cover.
+rem
 rem `python -u` is REQUIRED, not cosmetic: with stdout redirected Python block-
 rem buffers it, so a multi-hour run shows a 0-byte log the whole time and a
 rem crash flushes nothing -- you lose both progress and the evidence.
@@ -59,7 +78,7 @@ if not exist "%CACHE%" mkdir "%CACHE%"
 echo. >> "%LOG%"
 echo ===== M2-vs-HEAD SWEEP [2v2-ii] %DATE% %TIME% ===== >> "%LOG%"
 
-python -u tests\tooling\m2_sweep.py "%STATE%" >> "%LOG%" 2>&1
+python -u tests\tooling\m2_sweep.py "%STATE%" --jobs 3 >> "%LOG%" 2>&1
 set RC=%ERRORLEVEL%
 
 echo ===== SWEEP COMPLETE rc=%RC% %DATE% %TIME% ===== >> "%LOG%"
