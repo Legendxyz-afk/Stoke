@@ -69,6 +69,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MODEL = ROOT / "models" / "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf"
@@ -158,11 +159,37 @@ def divergent_rows(sweep: dict):
     return out
 
 
+def comparison_index(row) -> int:
+    """The only position at which the two streams are comparable.
+
+    For a DIVERGENT prompt that is first_diff: past it the two sides are
+    generating from different prefixes, so they are no longer answering the same
+    question and a logit difference there measures nothing. For an AGREEING
+    prompt every position is comparable, and the last generated index is used --
+    which is also the index the ruling's own grid samples (63)."""
+    if row.get("first_diff") is not None:
+        return int(row["first_diff"])
+    return len(row["head_ids"]) - 1
+
+
 def probeable(row) -> bool:
-    """False when one side stopped before the divergent index -- that side has
+    """False when one side stopped before the comparison index -- that side has
     no distribution there, so no top-5 exists to collect (see header)."""
-    k = int(row["first_diff"])
+    k = comparison_index(row)
     return k < len(row["m2_ids"]) and k < len(row["head_ids"])
+
+
+def probe_pair(row):
+    """Both binaries' top-5 at the comparison index. Worker body: subprocesses
+    only, no shared state, no file writes -- the parent stays the single writer
+    for the same reason m2_sweep.py's does."""
+    k = comparison_index(row)
+    prompt = PROMPTS / f"{row['prompt']}.txt"
+    head5 = run_probe(HEAD_EXE, prompt, k, len(row["head_ids"]))
+    check_rank0(head5, int(row["head_ids"][k]), "HEAD", k)
+    m2_5 = run_probe(M2_EXE, prompt, k, len(row["m2_ids"]))
+    check_rank0(m2_5, int(row["m2_ids"][k]), "M2", k)
+    return row, k, m2_5, head5
 
 
 def run_probe(exe: pathlib.Path, prompt: pathlib.Path, pos: int, n_predict: int):
@@ -176,6 +203,62 @@ def run_probe(exe: pathlib.Path, prompt: pathlib.Path, pos: int, n_predict: int)
         raise ProbeError(f"probe failed (exit {p.returncode}): {' '.join(argv)}\n"
                          f"stderr: {p.stderr.decode('utf-8', 'replace')[-400:]}")
     return parse_probe(p.stderr.decode("utf-8", "replace"), pos)
+
+
+def delta_profile(m2_top5, head_top5, head_chose: int):
+    """|Δ| between the two sides' logits, over the ids BOTH sides ranked.
+
+    ▶ ANCHORED, and the choice is disclosed rather than resolved silently. Two
+    implementations of the same forward pass can in principle carry a constant
+    offset across a whole logit vector, which would inflate a raw difference
+    without any token decision being at risk. Anchoring on HEAD's chosen id (the
+    memo section 3.6 method) subtracts that offset out and measures what the
+    classification rule actually consumes: how much the two sides disagree about
+    MARGINS. Both are returned -- `anchored` is what tau is frozen from,
+    `raw` is recorded beside it so a reader can see whether the distinction
+    mattered on this corpus. If they differ materially that is itself a finding.
+
+    Only ids present on BOTH sides can be differenced: a top-5 reports five
+    logits, and an id outside the other side's five has an unknown logit, not a
+    large one. Excluding them is the same asymmetry classify.py enforces -- a
+    bound may prove BUG, never CLASS."""
+    x, y = dict(m2_top5), dict(head_top5)
+    shared = sorted(set(x) & set(y))
+    if head_chose not in x or head_chose not in y:
+        # No common anchor => no offset-free comparison exists here. Refusing is
+        # the fail-safe direction: a sample that cannot be anchored must not
+        # quietly enter the envelope that sets tau for everything else.
+        return None
+    ax, ay = x[head_chose], y[head_chose]
+    return {
+        "shared_ids": shared,
+        "anchored": [abs((x[i] - ax) - (y[i] - ay)) for i in shared],
+        "raw": [abs(x[i] - y[i]) for i in shared],
+    }
+
+
+def build_envelope_sample(row, plen: int, m2_top5, head_top5) -> dict:
+    """One class-noise sample, taken at a position where the two streams AGREE.
+
+    ▶ WHY AGREEING POSITIONS, AND WHY THAT IS NOT CIRCULAR. tau exists to say
+    how large a logit disagreement is ordinary for this implementation pair. It
+    is measured here on positions where M2 and HEAD chose the SAME token, and
+    spent on positions where they chose differently -- disjoint sets, so no
+    divergence contributes to the threshold that grades it. This is the same
+    shape as the ruling's ref grid (which samples index 63 on all 50 prompts,
+    overwhelmingly agreeing positions); only the referent differs, and section
+    2.3 names M2<->HEAD and ref<->HEAD as the same tau family.
+
+    ▶ ITS BLIND SPOT, stated because it is real: M2 and HEAD share every line of
+    composition logic (attention, rope, layer order), so a bug there is invisible
+    to this pair -- but it is equally invisible to the COMPARISON being graded,
+    which is the same pair. This measures exactly the arithmetic-class question
+    it is asked. Independent coverage of the shared logic is what the ref
+    referent supplies, and for Q8_0 it already exists at 1.4e-5 (memo 3.6)."""
+    k = int(row["first_diff"]) if row.get("first_diff") is not None else len(row["head_ids"]) - 1
+    prof = delta_profile(m2_top5, head_top5, int(row["head_ids"][k]))
+    return {"prompt": row["prompt"], "position": k, "abs_position": plen + k,
+            "pair": PAIR, "profile": prof}
 
 
 def build_record(row, plen: int, m2_top5, head_top5) -> dict:
@@ -193,6 +276,64 @@ def build_record(row, plen: int, m2_top5, head_top5) -> dict:
         "y": {"name": "HEAD", "chose": int(row["head_ids"][k]),
               "top5": [[i, l] for i, l in head_top5]},
     }
+
+
+TAU_FLOOR = 0.10          # ruling 9.4-2: the floor exists because 0.0430 is a
+                          # SINGLE-position measurement and a knife-edge tau
+                          # would classify on noise.
+TAU_MULTIPLIER = 2.0
+
+
+def _classify_mod():
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import classify
+    return classify
+
+
+def percentile(values, q):
+    """Nearest-rank percentile on sorted values. Nearest-rank, not interpolated:
+    with a handful of samples per band an interpolated p95 invents a value that
+    was never measured, and tau is a threshold that must be traceable to an
+    observation."""
+    if not values:
+        raise ProbeError("percentile of an empty sample")
+    s = sorted(values)
+    idx = max(0, min(len(s) - 1, int(-(-q * len(s) // 100)) - 1))
+    return s[idx]
+
+
+def freeze_tau(envelope, min_per_band=8):
+    """tau(pair, band) = max(0.10, 2 x band p95), ruling 9.4-2, applied
+    mechanically to the measured envelope.
+
+    ▶ A BAND WITH TOO FEW SAMPLES IS REFUSED, NOT FLOORED. It is tempting to let
+    a thin band fall back on the 0.10 floor and carry on -- but that silently
+    converts "we did not measure this band" into "this band measured quiet",
+    which is precisely the substitution the freeze exists to prevent. A refused
+    band means positions in it cannot be graded until it is measured, and
+    classify.py already fatals on a missing entry, so the refusal propagates
+    instead of evaporating."""
+    classify = _classify_mod()
+    by_band = {}
+    for s in envelope:
+        prof = s.get("profile")
+        if not prof:
+            continue
+        band = classify.band_of(int(s["abs_position"]))
+        by_band.setdefault(band, []).extend(prof["anchored"])
+
+    table, report = {PAIR: {}}, []
+    for band, vals in sorted(by_band.items()):
+        p95 = percentile(vals, 95)
+        tau = max(TAU_FLOOR, TAU_MULTIPLIER * p95)
+        if len(vals) < min_per_band:
+            report.append(f"  {band}: REFUSED -- {len(vals)} samples < {min_per_band} "
+                          f"(p95 would be {p95:.6f}, tau {tau:.6f})")
+            continue
+        table[PAIR][band] = tau
+        report.append(f"  {band}: n={len(vals)} max={max(vals):.6f} p95={p95:.6f} "
+                      f"=> tau={tau:.6f}{'  (floor)' if tau == TAU_FLOOR else ''}")
+    return table, report
 
 
 # ============================================================================
@@ -276,6 +417,55 @@ def run_selftest() -> int:
     check("record top5 is JSON-shaped pairs",
           rec["x"]["top5"][0] == [4, 5.0] and len(rec["x"]["top5"]) == 5)
 
+    # --- comparison index -------------------------------------------------
+    check("comparison_index = first_diff when divergent", comparison_index(d[0]) == 3)
+    check("comparison_index = last index when agreeing",
+          comparison_index({"identical": True, "first_diff": None,
+                            "head_ids": [1, 2, 3, 4]}) == 3)
+
+    # --- delta profile ----------------------------------------------------
+    # A pure additive offset on one side must vanish under anchoring and must
+    # NOT vanish in the raw figures -- that contrast is the whole reason the
+    # anchored form is the one tau is frozen from.
+    xs = [(10, 5.0), (20, 4.0), (30, 3.0), (40, 2.0), (50, 1.0)]
+    ys_off = [(10, 6.0), (20, 5.0), (30, 4.0), (40, 3.0), (50, 2.0)]
+    prof = delta_profile(xs, ys_off, 10)
+    check("anchored delta cancels a constant offset", max(prof["anchored"]) == 0.0)
+    check("raw delta does NOT cancel it", min(prof["raw"]) == 1.0)
+    ys_real = [(10, 5.0), (20, 4.25), (30, 3.0), (40, 2.0), (50, 1.0)]
+    check("anchored delta sees a real disagreement",
+          abs(max(delta_profile(xs, ys_real, 10)["anchored"]) - 0.25) < 1e-9)
+    check("delta profile uses only ids BOTH sides ranked",
+          delta_profile(xs, [(10, 5.0), (99, 4.0), (30, 3.0), (40, 2.0), (50, 1.0)],
+                        10)["shared_ids"] == [10, 30, 40, 50])
+    check("delta profile REFUSES when the anchor is not on both sides",
+          delta_profile(xs, [(11, 5.0), (20, 4.0), (30, 3.0), (40, 2.0), (50, 1.0)],
+                        10) is None)
+
+    # --- percentile / tau freeze -----------------------------------------
+    check("percentile is nearest-rank, never interpolated",
+          percentile([1.0, 2.0, 3.0, 4.0], 95) == 4.0)
+    check("percentile fatal on empty sample", raises(lambda: percentile([], 95)))
+
+    def env(n, val, absolute):
+        return [{"prompt": f"p{i:02d}", "abs_position": absolute, "pair": PAIR,
+                 "profile": {"shared_ids": [1], "anchored": [val], "raw": [val]}}
+                for i in range(n)]
+
+    tbl, _ = freeze_tau(env(10, 0.01, 50))
+    check("tau takes the 0.10 floor when the band is quiet",
+          tbl[PAIR]["[0,100)"] == 0.10)
+    tbl2, _ = freeze_tau(env(10, 0.20, 50))
+    check("tau is 2x p95 when that exceeds the floor",
+          abs(tbl2[PAIR]["[0,100)"] - 0.40) < 1e-9)
+    tbl3, rep3 = freeze_tau(env(3, 0.20, 50))
+    check("a thin band is REFUSED, not floored", "[0,100)" not in tbl3[PAIR])
+    check("a refused band says so in the report",
+          any("REFUSED" in line for line in rep3))
+    tbl4, _ = freeze_tau(env(10, 0.20, 50) + env(10, 0.05, 350))
+    check("tau is frozen PER BAND, not globally",
+          abs(tbl4[PAIR]["[0,100)"] - 0.40) < 1e-9 and tbl4[PAIR]["[300,600)"] == 0.10)
+
     # The record must be something classify.py actually accepts -- a shape that
     # only this file agrees with would fail an hour into a probe run.
     try:
@@ -297,14 +487,38 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sweep")
     ap.add_argument("--out")
+    ap.add_argument("--envelope",
+                    help="where to write the class-noise samples taken at AGREEING "
+                         "positions; these are what tau is later frozen from")
+    ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0,
-                    help="probe at most N divergent prompts (banking is per-prompt, "
-                         "so a limited run is a prefix of the full one, not a "
+                    help="probe at most N prompts (banking is per-prompt, so a "
+                         "limited run is a prefix of the full one, not a "
                          "different experiment)")
+    ap.add_argument("--freeze-tau", metavar="ENVELOPE.json",
+                    help="SEPARATE INVOCATION, deliberately: compute the tau table "
+                         "from an envelope file. Keeping the freeze out of the "
+                         "collecting run is what makes ruling 2.3's ordering rule "
+                         "structural -- the numbers exist, and are fixed, before "
+                         "anything is graded against them.")
+    ap.add_argument("--tau-out")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         return run_selftest()
+
+    if a.freeze_tau:
+        envelope = json.loads(pathlib.Path(a.freeze_tau).read_text())
+        table, report = freeze_tau(envelope)
+        print(f"tau frozen from {len(envelope)} envelope samples "
+              f"(agreeing positions only):")
+        for line in report:
+            print(line)
+        if a.tau_out:
+            pathlib.Path(a.tau_out).write_text(json.dumps(table, indent=1))
+            print(f"\n-> {a.tau_out}")
+        return 0 if table[PAIR] else 1
+
     if not (a.sweep and a.out):
         print("fatal: --sweep and --out are both required", file=sys.stderr)
         return 2
@@ -318,29 +532,38 @@ def main() -> int:
 
     sweep = json.loads(pathlib.Path(a.sweep).read_text())
     lens = json.loads(LENS.read_text())
-    rows = divergent_rows(sweep)
-    print(f"divergent prompts: {len(rows)} of {sweep.get('of', '?')}", flush=True)
+    all_rows = [r for r in sweep.get("rows", []) if not r.get("error")]
+    div = divergent_rows(sweep)
+    same = [r for r in all_rows if r.get("identical")]
+    print(f"prompts: {len(all_rows)} usable of {sweep.get('of', '?')} "
+          f"-- {len(div)} divergent (graded), {len(same)} agreeing (envelope)",
+          flush=True)
 
     out_path = pathlib.Path(a.out)
     side_path = out_path.with_name(out_path.stem + "_unprobeable.json")
-    records, unprobeable = [], []
+    env_path = pathlib.Path(a.envelope) if a.envelope else None
+    records, unprobeable, envelope = [], [], []
+    done = set()
     if out_path.exists():
         records = json.loads(out_path.read_text())
-        done = {r["prompt"] for r in records}
-        print(f"resuming: {len(done)} records already collected", flush=True)
-    else:
-        done = set()
+        done |= {r["prompt"] for r in records}
     if side_path.exists():
         unprobeable = json.loads(side_path.read_text())
         done |= {r["prompt"] for r in unprobeable}
+    if env_path and env_path.exists():
+        envelope = json.loads(env_path.read_text())
+        done |= {r["prompt"] for r in envelope}
+    if done:
+        print(f"resuming: {len(done)} prompts already probed", flush=True)
 
-    todo = [r for r in rows if r["prompt"] not in done]
+    rows = div + (same if env_path else [])
+    todo = [r for r in sorted(rows, key=lambda r: r["prompt"]) if r["prompt"] not in done]
     if a.limit:
         todo = todo[:a.limit]
 
+    runnable = []
     for row in todo:
         pid = row["prompt"]
-        k = int(row["first_diff"])
         plen = lens.get(pid)
         if plen is None:
             # Regenerable, and the recipe travels with the error: `stoke
@@ -351,6 +574,7 @@ def main() -> int:
                 f"{pid}: no measured prompt token length in {LENS.name}. "
                 f"Regenerate with: build\\win\\stoke.exe tokenize <model.gguf> "
                 f"tests\\data\\parity\\{pid}.txt  (count the ids)")
+        k = comparison_index(row)
         if not probeable(row):
             short = "M2" if k >= len(row["m2_ids"]) else "HEAD"
             unprobeable.append({"prompt": pid, "position": k, "abs_position": plen + k,
@@ -360,24 +584,47 @@ def main() -> int:
             side_path.write_text(json.dumps(unprobeable, indent=1))
             print(f"{pid}: UNPROBEABLE ({short} stopped before {k}) -> ESCALATE", flush=True)
             continue
-        prompt = PROMPTS / f"{pid}.txt"
-        t0 = time.time()
-        head5 = run_probe(HEAD_EXE, prompt, k, len(row["head_ids"]))
-        check_rank0(head5, int(row["head_ids"][k]), "HEAD", k)
-        m2_5 = run_probe(M2_EXE, prompt, k, len(row["m2_ids"]))
-        check_rank0(m2_5, int(row["m2_ids"][k]), "M2", k)
-        records.append(build_record(row, plen, m2_5, head5))
-        out_path.write_text(json.dumps(records, indent=1))
-        print(f"{pid}: probed at k={k} abs={plen + k} "
-              f"(M2 chose {row['m2_ids'][k]}, HEAD chose {row['head_ids'][k]}, "
-              f"{time.time() - t0:.0f}s)", flush=True)
+        runnable.append(row)
 
-    print(f"\ncollected {len(records)} records, {len(unprobeable)} unprobeable")
+    t_all = time.time()
+    if a.jobs > 1:
+        pool = ThreadPoolExecutor(max_workers=a.jobs)
+        futs = [pool.submit(probe_pair, r) for r in runnable]
+        results = (f.result() for f in as_completed(futs))
+    else:
+        results = (probe_pair(r) for r in runnable)
+
+    for row, k, m2_5, head5 in results:
+        pid = row["prompt"]
+        plen = lens[pid]
+        if row.get("identical"):
+            sample = build_envelope_sample(row, plen, m2_5, head5)
+            envelope.append(sample)
+            envelope.sort(key=lambda r: r["prompt"])
+            env_path.write_text(json.dumps(envelope, indent=1))
+            prof = sample["profile"]
+            worst = max(prof["anchored"]) if prof else float("nan")
+            print(f"{pid}: ENVELOPE at k={k} abs={plen + k} "
+                  f"n={len(prof['shared_ids']) if prof else 0} "
+                  f"worst|d|={worst:.6f}", flush=True)
+        else:
+            records.append(build_record(row, plen, m2_5, head5))
+            records.sort(key=lambda r: r["prompt"])
+            out_path.write_text(json.dumps(records, indent=1))
+            print(f"{pid}: RECORD at k={k} abs={plen + k} "
+                  f"(M2 chose {row['m2_ids'][k]}, HEAD chose {row['head_ids'][k]})",
+                  flush=True)
+
+    print(f"\n{len(records)} grading records, {len(envelope)} envelope samples, "
+          f"{len(unprobeable)} unprobeable, {time.time() - t_all:.0f}s")
     print(f"records -> {out_path}")
+    if env_path:
+        print(f"envelope -> {env_path}")
     if unprobeable:
         print(f"unprobeable -> {side_path}")
-    print("\nNOT GRADED. Ruling 2.3 requires the probe grid to freeze tau first; "
-          f"then:\n  python classify.py --records {out_path} --tau-table <frozen>.json")
+    print("\nNOT GRADED, and this tool has no path that would. Next, in order:"
+          f"\n  1. python m2_classify_probes.py --freeze-tau {env_path} --tau-out tau.json"
+          f"\n  2. python classify.py --records {out_path} --tau-table tau.json")
     return 0
 
 

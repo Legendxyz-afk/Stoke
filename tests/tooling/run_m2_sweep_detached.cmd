@@ -47,19 +47,25 @@ rem page cache, and if that cache is evicted the recorded ~3x rate collapse
 rem applies. Launch condition is free RAM > model + 2 GB (~6 GB). The 08-05
 rem attempt was refused at 0.31 GB free.
 rem
-rem ▶▶ TASK SCHEDULER RUNS TASKS AT BelowNormal BY DEFAULT, AND ON THIS HYBRID
-rem CPU THAT COSTS 2x. Measured here 2026-08-06 on identical work: p00/p01 at
-rem 6.00/6.12 s per position while the process sat at BelowNormal, then 2.96
-rem once raised to Normal and pinned to P-cores. The i5-13450HX is 6 P-cores
-rem (LP 0-11) + 4 E-cores (LP 12-15), and Windows' thread director parks
-rem low-priority work on the E-cores -- so the process burned a full core the
-rem whole time and simply ran on a slower one. CPU_s ~= wall the whole way, so
-rem NOTHING in a utilisation reading would have shown this. The task must be
-rem registered with -Priority 4 (Normal); a task registered with the default
-rem silently halves throughput on every long run this project launches, which
-rem is every long run this project launches.
+rem ▶ TASK SCHEDULER REGISTERS TASKS AT priority 7 (BelowNormal) UNLESS GIVEN
+rem -Priority, and this task is registered with -Priority 4 (Normal). A
+rem multi-hour compute job should not run at BelowNormal, and on this hybrid
+rem part (i5-13450HX: 6 P-cores at LP 0-11, 4 E-cores at LP 12-15) low-priority
+rem work is what the thread director puts on the E-cores.
 rem
-rem ▶ --jobs 3: the M2 binary is single-threaded, so concurrency across PROMPTS
+rem ▶▶ WHAT THAT IS WORTH IS **NOT ESTABLISHED**, and the retraction is worth
+rem more than the claim was. An earlier version of this header asserted "costs
+rem 2x", citing p00/p01 at 6.00/6.12 s per position against a later 2.96. But
+rem between those rows FOUR things changed -- task priority, a 0x555 affinity
+rem pin I had added, single-vs-concurrent jobs, and the 4 GB model page cache
+rem going from churning (50 `stoke tokenize` invocations were running against
+rem it) to warm. The clean rate once the box settled is 1.56-1.68 s/position,
+rem which matches the pre-existing record exactly, and the intermediate rows
+rem show the PIN was itself costing ~2x. So the aggregate is real and the
+rem attribution was invented. Do not re-read any wall-clock figure elsewhere in
+rem this tree on the strength of this header.
+rem
+rem ▶ --jobs 2: the M2 binary is single-threaded, so concurrency across PROMPTS
 rem is the only parallelism available. Each prompt is an independent process on
 rem an independent prompt, so ids cannot change -- only wall time. The ceiling
 rem is RAM, not cores: ~4.0 GB shared model + ~1.2 GB private KV per job on a
@@ -78,7 +84,7 @@ if not exist "%CACHE%" mkdir "%CACHE%"
 echo. >> "%LOG%"
 echo ===== M2-vs-HEAD SWEEP [2v2-ii] %DATE% %TIME% ===== >> "%LOG%"
 
-python -u tests\tooling\m2_sweep.py "%STATE%" --jobs 3 >> "%LOG%" 2>&1
+python -u tests\tooling\m2_sweep.py "%STATE%" --jobs 2 >> "%LOG%" 2>&1
 set RC=%ERRORLEVEL%
 
 echo ===== SWEEP COMPLETE rc=%RC% %DATE% %TIME% ===== >> "%LOG%"
