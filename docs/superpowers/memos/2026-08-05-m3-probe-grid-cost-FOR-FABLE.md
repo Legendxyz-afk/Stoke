@@ -408,3 +408,57 @@ one of which retires a question rather than adding one.
   `classify.py` fatals on a τ nobody froze. **Nothing is being banked under a
   criterion believed wrong; the carve-out is being honoured, not worked
   around.**
+
+**2026-08-06 (Opus, later same day) — [2v2-ii] IS GRADED AND ITS ONE ESCALATE
+IS RESOLVED. Three items; the first is a criterion-shape defect that will
+recur at M4 and M7, the third is a scope question owed before the stamp.**
+
+- **§6's LADDER CLAUSE CARRIES A PAIR-SPECIFIC CONSTANT AS THOUGH IT WERE
+  UNIVERSAL — the same error the ruling itself corrected one level up.** §6
+  says *"Ladder ≤1e-3 / no-STEP ⇒ ARITHMETIC-CLASS."* That `1e-3` is
+  `l2_diff.py`'s threshold, built for M2's gate, which compared **C f32 against
+  numpy f32** — the same arithmetic differing only by float32
+  non-associativity, worst layer **6.104e-04** (`2026-08-02-m2-parity.md`).
+  The pair §6 actually points it at is **M2 f32 vs HEAD's integer core**, which
+  since K2 quantizes activations to int8 and therefore differs **by
+  construction**. It is exceeded by every curve regardless of health: `36/36
+  layers over 1e-3` was returned at the divergent position **and at all three
+  control positions where both engines chose the SAME token.** A reading that
+  cannot distinguish those four cases is carrying no information. **The clause
+  wants restating in the per-pair, per-band form τ already has** — M7 re-runs
+  ladders on Llama-3.2 and any M4+ escalation hits this immediately.
+- **NOT A CARVE-OUT CASE, and the distinction is the point.** §6 names exactly
+  one BUG trigger at ESCALATE — a STEP — and its fail-safe says outright *"the
+  ladder — **not the constant** — decides."* So p41 was resolved by applying §6
+  **as written**, not by overriding it: STEP negative at the divergence and on
+  three controls, `JUMP_FACTOR = 10.0` nowhere approached. Nothing was banked
+  under a criterion believed wrong; §8.12's default path (proceed + append)
+  applies, and **no ruling is required before M3 stamps.** Full record:
+  `docs/superpowers/gate-reports/2026-08-06-m3-p41-escalate-resolution.md`.
+- **THE MAGNITUDE LEG WAS MEASURED INSTEAD, BY τ's OWN METHOD — and the
+  statistic §6 implicitly relies on is the wrong one.** Controls are each
+  prompt's last prefill position, where both binaries have consumed identical
+  tokens, so agreement is guaranteed without teacher-forcing: calibrate on
+  agreeing positions, spend on divergent ones, disjoint by construction.
+  Result at L35 — **`max_abs_diff` varies 1.94× among the three CONTROLS
+  alone** (0.6983 / 0.8103 / 1.355) with the divergence at 2.687, i.e. 1.98×
+  the highest control; **`mean_abs_diff` varies only 1.07×** among the same
+  controls (0.1094–0.1166) with the divergence at 0.1342, i.e. **1.15×**.
+  `max_abs_diff` is the worst single value of 2,560 per layer — an
+  extreme-value statistic whose spread among *agreeing* positions is nearly as
+  large as the effect it is being asked to detect. **A ladder bar written
+  against `max_abs_diff`, as `1e-3` is, is reading the noisiest column on the
+  page.** Stated with its confound: a divergence is *selected* for being a
+  position where perturbation flipped a decision, so mild elevation there is
+  close to the definition of the event.
+- **SCOPE QUESTION OWED BEFORE THE STAMP, not a defect: does [2v2-iii] require
+  numpy BY NAME on the Q8_0 leg?** §2.2 requires the reference probe grid on
+  **both** files. Q8_0 has now been checked end-to-end against the archived M2
+  binary — a genuinely independent f32 implementation, predating K1–K6 and
+  agreeing with `ref_forward.py` to 1.4e-5 — via the 50/50 sweep *and* the
+  50/50 probe pass that froze τ. If that satisfies [2v2-iii] for Q8_0, the only
+  remaining grid work is Q4_K_M, which has no C referent at all and is what
+  §5's options cost. If numpy is required by name even where a validated C
+  referent exists, the Q8_0 grid is additional multi-hour work nobody has
+  costed. **Opus has not assumed either answer and is banking neither as
+  [2v2-iii].**
