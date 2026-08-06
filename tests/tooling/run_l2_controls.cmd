@@ -28,27 +28,61 @@ rem                            the layer stack changed at the divergence.
 rem   p43 at abs 470, p42 at abs 461 -- different prompts, same band, for breadth
 rem                            so the verdict does not rest on one curve.
 rem
-rem ▶ COST: 477 + 471 + 462 = 1,410 M2 prefill positions at the measured
-rem sustained pinned rate (~3.9 s/position). Run concurrently they finish in
-rem ~31 min wall. HEAD's side is ~0.15 s/position, negligible.
+rem ▶ COST: 477 + 471 + 462 = 1,410 M2 prefill positions. THE LOOP IS SEQUENTIAL
+rem -- an earlier version of this header claimed "run concurrently ~31 min wall",
+rem which this file never did. At the measured SUSTAINED pinned rate (~3.9
+rem s/position) a from-scratch run is ~92 min; the ~1.6 s/position boost window a
+rem cool box gives for a few minutes after a restart would say ~38 min, and
+rem quoting either without naming the window is how the FOR-FABLE memo ended up
+rem with a rate it could not reproduce. HEAD's side is ~0.15 s/position,
+rem negligible. One prompt alone is ~30 min sustained.
+rem
+rem ▶ RESUMABLE PER PROMPT. A control whose two dumps are already complete on
+rem disk is not re-run -- the 08-06 box shutdown landed mid-p42 with p41 and p43
+rem already banked, and without this the only way to finish p42 was to spend 60
+rem min re-deriving the two curves that were already in the log.
 cd /d "%~dp0..\.."
 set CACHE=tests\tooling\.gate_cache
 set LOG=%CACHE%\l2-controls.log
 set MODEL=models\Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf
+rem COUPLED TO %MODEL%: layers are dumped in ascending order (model.c:645), so
+rem the last layer's file is the completeness marker for a dump directory. Qwen3-4B
+rem has 36 layers => L35. Change this line whenever %MODEL% changes; a model with
+rem MORE layers would make L35 a false "complete" and skip a truncated dump.
+set LASTLAYER=L35
 
 echo. >> "%LOG%"
 echo ===== L2 CONTROLS %DATE% %TIME% ===== >> "%LOG%"
 
-for %%P in (p41 p43 p42) do (
-  if exist "%CACHE%\ctl_head_%%P" rmdir /s /q "%CACHE%\ctl_head_%%P"
-  if exist "%CACHE%\ctl_m2_%%P"   rmdir /s /q "%CACHE%\ctl_m2_%%P"
-  echo [%%P] HEAD dump at last prefill >> "%LOG%"
-  build\win\stoke.exe run "%MODEL%" --raw -f tests\data\parity\%%P.txt -n 1 --dump "%CACHE%\ctl_head_%%P" >> "%LOG%" 2>&1
-  echo [%%P] M2 dump at last prefill >> "%LOG%"
-  build\stoke-m2-gate-d2b17c53.exe run "%MODEL%" --raw -f tests\data\parity\%%P.txt -n 1 --dump "%CACHE%\ctl_m2_%%P" >> "%LOG%" 2>&1
-  echo [%%P] l2_diff control curve >> "%LOG%"
-  python -u tests\tooling\l2_diff.py "%CACHE%\ctl_m2_%%P" "%CACHE%\ctl_head_%%P" >> "%LOG%" 2>&1
-)
+for %%P in (p41 p43 p42) do call :control %%P
 
 echo ===== L2 CONTROLS COMPLETE %DATE% %TIME% ===== >> "%LOG%"
 exit /b 0
+
+rem ---------------------------------------------------------------------------
+rem :control <prompt> -- dump both sides at the last prefill position, then diff.
+rem
+rem The skip test is a FLAG, not `if exist A if exist B (...) else (...)`: in that
+rem form the `else` binds to the INNER `if`, so a missing A runs NEITHER branch --
+rem it would skip the dumps and then hand l2_diff two directories that do not
+rem exist. Failure would be loud here, but the same shape silently does nothing in
+rem cases where the diff is optional.
+:control
+set P=%~1
+set SKIP=
+if exist "%CACHE%\ctl_head_%P%\%LASTLAYER%.f32" if exist "%CACHE%\ctl_m2_%P%\%LASTLAYER%.f32" set SKIP=1
+if defined SKIP (
+  echo [%P%] dumps already complete on disk -- prefills skipped >> "%LOG%"
+) else (
+  if exist "%CACHE%\ctl_head_%P%" rmdir /s /q "%CACHE%\ctl_head_%P%"
+  if exist "%CACHE%\ctl_m2_%P%"   rmdir /s /q "%CACHE%\ctl_m2_%P%"
+  echo [%P%] HEAD dump at last prefill >> "%LOG%"
+  build\win\stoke.exe run "%MODEL%" --raw -f tests\data\parity\%P%.txt -n 1 --dump "%CACHE%\ctl_head_%P%" >> "%LOG%" 2>&1
+  echo [%P%] M2 dump at last prefill >> "%LOG%"
+  build\stoke-m2-gate-d2b17c53.exe run "%MODEL%" --raw -f tests\data\parity\%P%.txt -n 1 --dump "%CACHE%\ctl_m2_%P%" >> "%LOG%" 2>&1
+)
+rem l2_diff is seconds and is re-run even on a skip, so a resumed run leaves a log
+rem holding all three curves rather than only the ones this invocation computed.
+echo [%P%] l2_diff control curve >> "%LOG%"
+python -u tests\tooling\l2_diff.py "%CACHE%\ctl_m2_%P%" "%CACHE%\ctl_head_%P%" >> "%LOG%" 2>&1
+goto :eof
