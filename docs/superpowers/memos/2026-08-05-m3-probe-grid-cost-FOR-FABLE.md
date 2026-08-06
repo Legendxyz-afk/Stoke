@@ -354,3 +354,50 @@ verdict on the full grid is unchanged. §8B: a previously unwritten freeze —
 §6 classifier is built, 27 checks green, four mutations verified failable, and
 **it caught a false-passing test of its own author's**; two readings of §6's
 prose are disclosed and asked as G9/G10.
+
+**2026-08-06 (Opus, box quiet) — [2v2-ii] IS RUNNING, and §4's rate for the M2
+binary is WRONG BY ~1.7× EVEN AFTER A 2× OPS DEFECT WAS FIXED.** Four items,
+one of which retires a question rather than adding one.
+
+- **§4's "~1.7 s/position (147 s for an 87-position prompt)" does not
+  reproduce.** p00 *is* that 87-position prompt (23 prompt tokens + 64
+  generated). Measured today on the same binary, model and box: **6.00
+  s/position**, and **2.96 s/position** after the ops defect below. So the
+  serial full-corpus figure is **~5.8 h, not the ~3.5 h §4 quotes**.
+  **§4's CONCLUSION SURVIVES — the sweep is still far cheaper and ~64× denser
+  than the numpy grid — but it now rests on concurrency rather than on that
+  rate, and G1 should be ruled against the real number.** Restored to ~2.2 h
+  by running prompts concurrently (`--jobs 3`, commit `c5af967`): the M2 binary
+  is single-threaded, each prompt is an independent process, so concurrency
+  changes wall time and cannot change an id.
+- **THE OPS DEFECT, worth more than this brief: Task Scheduler registers tasks
+  at priority 7 (BelowNormal) by default, and on this hybrid CPU (6 P-cores at
+  LP 0-11, 4 E-cores at LP 12-15) Windows' thread director parks
+  low-priority work on the E-cores — a flat 2× on identical work.** p00/p01 at
+  6.00/6.12 s/position, p02 at 2.96 after being raised to Normal mid-run.
+  **The process consumed a full core throughout (CPU_s ≈ wall), so every
+  utilisation reading looked healthy** — same family as "max/med = 1.33 reads
+  healthy while the median is 2.6× wrong". **Every detached launcher in this
+  tree inherits the default** (`run_survey_detached.cmd`,
+  `run_ref_gate_detached.cmd`, and the `stoke-m2-survey` / `stoke-m2-ref-gate`
+  tasks), so any wall-clock figure previously taken through one of them may be
+  ~2× pessimistic. Fixed here with `-Priority 4`.
+- **A QUESTION THAT DISSOLVED BEFORE IT COST A RULING: the frozen τ bands cover
+  this corpus.** Prompt lengths were measured with `stoke tokenize` (which
+  calls `tok_encode(add_special=false)`, the exact call `run --raw` makes):
+  longest is p40 at 490 tokens, so the **largest absolute position is 553 < 600**
+  and nothing falls outside [0,100)/[100,300)/[300,600). Band [300,600) is
+  populated by exactly p40–p44 — the five prompts §2.3 singles out for
+  mid-index probes, which is a coherence check on the ruling's grid rather than
+  a coincidence. **No §8.9 band re-freeze is needed for M3.** (File-size
+  arithmetic had suggested up to ~1080 tokens and an escalation; measurement
+  removed it.)
+- **⚠ THE ORDERING RULE MEANS G1 GATES THE M3 STAMP EVEN IF [2v2-ii] COMPLETES
+  CLEAN.** §2.3 requires the probe grid to freeze τ **before** [2v2-ii]'s
+  divergences are graded, and the grid is the blocked item. So the sweep can
+  bank but its verdict cannot be taken. Collection is *not* blocked — a top-5
+  logit does not depend on τ — so `m2_classify_probes.py` (commit `518b917`,
+  21/21 selftest) collects §6's input now and has **no verdict path at all**;
+  `classify.py` fatals on a τ nobody froze. **Nothing is being banked under a
+  criterion believed wrong; the carve-out is being honoured, not worked
+  around.**
