@@ -130,6 +130,12 @@ WINDOW_BUDGET_S = 4 * 3600        # section 5: every window <=4 h
 # the ruling would have allowed and permits none the ruling forbids.
 RAM_MARGIN_GB = 2.5               # was 2.0; see the measurement above
 
+# Private (non-shared) footprint of one ref_forward.py instance: the 1.56 GB
+# f32 _embd_cache plus per-layer dequant transients. Measured 2026-08-07 as
+# 3.9 GB working set minus the ~2.33 GB mapped model, which a second instance
+# on the SAME file shares rather than duplicates.
+PRIVATE_PER_INSTANCE_GB = 1.9
+
 # Applied to every window-guard projection. The fit is a two-point line from
 # this run's own legs; the margin covers box drift over a multi-hour window,
 # not a modelling gap. It is deliberately small -- a large factor would make
@@ -211,9 +217,66 @@ def pin_model_size():
     return actual
 
 
-def check_ram(model_bytes: int):
-    need = model_bytes / (1024.0 ** 3) + RAM_MARGIN_GB
+def running_ref_instances():
+    """PIDs of live ref_forward.py processes, found by COMMAND LINE.
+
+    By command line, never by image name: every one of these is `python.exe`,
+    and the 2026-07-28 kill-order lesson is that identifying them by name is
+    how the wrong process gets touched.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*ref_forward.py*' } | "
+             "ForEach-Object { $_.ProcessId }"],
+            capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+
+
+def ram_requirement(model_bytes: int, additional_instance: bool, live_instances):
+    """The launch bar, as a PURE function of its inputs.
+
+    Split out from check_ram because the version that read the live process
+    list inline could only be tested against whatever happened to be running:
+    the selftest for "the discount is refused with nothing running" passed
+    vacuously while a leg was in flight, and the mutation harness caught it
+    granting the discount unconditionally. Taking `live_instances` as an
+    argument makes both branches decidable on demand. Fourth recording of a
+    test that passed for a reason unrelated to the thing it names.
+    """
+    if not additional_instance:
+        return model_bytes / (1024.0 ** 3) + RAM_MARGIN_GB
+    if not live_instances:
+        raise GridError(
+            "--additional-instance was passed but no ref_forward.py process is "
+            "running. The reduced bar is justified ONLY by the model already "
+            "being mapped by another instance; with none running this instance "
+            "must pay the full launch condition.")
+    return PRIVATE_PER_INSTANCE_GB + 0.5
+
+
+def check_ram(model_bytes: int, additional_instance: bool = False):
+    """Launch condition. `additional_instance` charges only the PRIVATE
+    footprint, and only when the fact that justifies it is verified.
+
+    ▶ WHY A SECOND INSTANCE IS CHEAPER, AND WHY THE DISCOUNT IS CONDITIONAL.
+    gguf_reader mmaps the model, so two processes reading the SAME file share
+    those pages -- the second instance's marginal cost is its private working
+    set (the ~1.56 GB f32 _embd_cache plus transients), not another copy of the
+    model. Measured 2026-08-07: 3.9 GB working set of which ~2.33 GB is the
+    mapped file. But that discount is only real if another instance is
+    ACTUALLY mapping the file, so this VERIFIES one is running rather than
+    trusting the flag. A flag that weakens a guard on an unchecked assertion is
+    the failure this project keeps recording.
+    """
     free = free_gb()
+    need = ram_requirement(model_bytes, additional_instance,
+                           running_ref_instances() if additional_instance else [])
     if free is None:
         return None, need
     if free < need:
@@ -536,6 +599,41 @@ def banked_head_ids(pid: str) -> list:
     return list(ids)
 
 
+def filter_legs(legs, only):
+    """Restrict to named prompts or legs, for running disjoint subsets as
+    SEPARATE processes.
+
+    ▶ WHY PARALLELISM IS A FILTER AND NOT A THREAD POOL IN HERE. Each leg is
+    an independent ref_forward.py process that is ~1 core busy on a 10-core
+    box, so the speedup is available from the OS for free. Putting a worker
+    pool inside a gate tool at the point where its output becomes evidence
+    buys the same wall-clock for new concurrency bugs in the one program that
+    must not have any. ref_gate.py's --jobs did the same thing for M2.
+    Disjointness is the caller's to arrange; the per-leg output files make an
+    accidental overlap loud rather than silent, since the second finisher
+    rewrites a file the first already validated.
+
+    Accepts prompt ids (p20) or full leg names (p00-probe).
+    """
+    want = {s.strip() for s in only.split(",") if s.strip()}
+    kept = [l for l in legs if l["leg"] in want or l["prompt"] in want]
+    unknown = want - {l["leg"] for l in legs} - {l["prompt"] for l in legs}
+    if unknown:
+        raise GridError(f"--only names nothing in this run: {sorted(unknown)}")
+    if not kept:
+        raise GridError(f"--only {only!r} selected no legs")
+    # The 8A pair is a DEPENDENCY, not a preference: p00-probe's discharge
+    # compares against p00-bare's ids, and selecting the probe without the
+    # bare run would silently produce a probe leg that cannot discharge 8A.
+    names = {l["leg"] for l in kept}
+    if "p00-probe" in names and "p00-bare" not in names:
+        raise GridError(
+            "--only selected p00-probe without p00-bare. Section 8A's discharge "
+            "compares the flagged run's ids against the bare run's; select both "
+            "(they are sequential) or neither.")
+    return kept
+
+
 def make_legs(prompts, tokens, run_name):
     """Build the leg list for a run. RUN A's p00 pair comes first, in the
     ruling's order, because it is the section 8A discharge gate."""
@@ -624,6 +722,13 @@ def main(argv=None) -> int:
     ap.add_argument("--budget-s", type=float, default=WINDOW_BUDGET_S)
     ap.add_argument("--rate-s-per-pos", type=float, default=REF_SEC_PER_POS_PRIOR,
                     help="prior for the FIRST leg only; measured on Q4_K_M")
+    ap.add_argument("--only", default=None, metavar="p20,p30 or p00-bare",
+                    help="run only these prompts/legs, so disjoint subsets can "
+                         "run as separate concurrent processes")
+    ap.add_argument("--additional-instance", action="store_true",
+                    help="another ref_forward.py is already mapping the model, "
+                         "so charge only this instance's private footprint "
+                         "(verified, not trusted)")
     ap.add_argument("--dry-run", action="store_true",
                     help="guards, tokenization, banked ids, projections -- no model run")
     ap.add_argument("--selftest", action="store_true")
@@ -647,7 +752,7 @@ def main(argv=None) -> int:
     try:
         stoke_hash = check_freeze()
         size = pin_model_size()
-        free, need = check_ram(size)
+        free, need = check_ram(size, a.additional_instance)
         holders = check_no_q8_holder()
     except GridError as e:
         print(f"fatal: {e}", file=sys.stderr)
@@ -663,7 +768,12 @@ def main(argv=None) -> int:
         log(f"WARNING    : processes that may map a model file are running: {holders}")
 
     prompts = RUN_A_PROMPTS if a.run == "A" else RUN_B_PROMPTS if a.run == "B" else []
-    manifest_path = outdir / f"manifest-{a.run or 'cont'}.json"
+    # The manifest name carries --only so two CONCURRENT instances cannot
+    # clobber each other's record. The probe files are already per leg; this
+    # was the one shared artifact, and a lost manifest would lose the recorded
+    # divergence indexes that the required continuations are built from.
+    slug = "" if not a.only else "-" + re.sub(r"[^A-Za-z0-9]+", "_", a.only)
+    manifest_path = outdir / f"manifest-{a.run or 'cont'}{slug}.json"
 
     try:
         if a.continuations:
@@ -672,6 +782,9 @@ def main(argv=None) -> int:
             tokens = {pid: tokenize(pid) for pid in prompts}
             head = {pid: banked_head_ids(pid) for pid in prompts}
             legs = make_legs(prompts, tokens, a.run)
+            if a.only:
+                legs = filter_legs(legs, a.only)
+                prompts = [p for p in prompts if p in {l["prompt"] for l in legs}]
             for pid in prompts:
                 log(f"  {pid}: {len(tokens[pid])} prompt tokens, "
                     f"{len(head[pid])} banked HEAD ids")
@@ -1029,6 +1142,43 @@ def run_selftest() -> int:
           [l["leg"] for l in legs if l.get("probe_pos") is not None] == ["p00-probe"])
     check("the probe-pos index is the last generated position",
           legs[1]["probe_pos"] == N_PREDICT - 1)
+
+    # ---- the leg filter that makes concurrent subsets possible ----
+    allA = make_legs(RUN_A_PROMPTS, {p: [0] * n for p, n in
+                                     zip(RUN_A_PROMPTS, (23, 24, 64, 53, 14))}, "A")
+    check("--only selects by prompt id",
+          [l["leg"] for l in filter_legs(allA, "p20,p30")] == ["p20-probe", "p30-probe"])
+    check("--only selects by full leg name",
+          [l["leg"] for l in filter_legs(allA, "p00-bare,p00-probe")] ==
+          ["p00-bare", "p00-probe"])
+    check("--only p00 keeps the 8A pair together",
+          [l["leg"] for l in filter_legs(allA, "p00")] == ["p00-bare", "p00-probe"])
+    check("selecting p00-probe WITHOUT p00-bare is refused (8A dependency)",
+          _raises(lambda: filter_legs(allA, "p00-probe")))
+    check("an unknown --only name is refused, not silently ignored",
+          _raises(lambda: filter_legs(allA, "p20,p99")))
+    check("a filter selecting nothing is refused",
+          _raises(lambda: filter_legs(allA, "")))
+    check("disjoint subsets partition the run exactly",
+          sorted(l["leg"] for l in filter_legs(allA, "p00,p10")) +
+          sorted(l["leg"] for l in filter_legs(allA, "p20,p30,p45")) ==
+          sorted(l["leg"] for l in allA))
+
+    # ---- the additional-instance discount is conditional on a VERIFIED fact ----
+    # Decidable on demand, in BOTH directions, regardless of what is running.
+    check("--additional-instance is refused when nothing is mapping the model",
+          _raises(lambda: ram_requirement(MODEL_SIZE_EXPECTED, True, [])))
+    check("--additional-instance charges only the private footprint when one is",
+          ram_requirement(MODEL_SIZE_EXPECTED, True, [4321]) ==
+          PRIVATE_PER_INSTANCE_GB + 0.5)
+    check("the full bar still applies without the flag, whatever is running",
+          ram_requirement(MODEL_SIZE_EXPECTED, False, [4321]) ==
+          MODEL_SIZE_EXPECTED / 1024.0 ** 3 + RAM_MARGIN_GB)
+    check("the discounted bar is strictly below the full one",
+          ram_requirement(MODEL_SIZE_EXPECTED, True, [1]) <
+          ram_requirement(MODEL_SIZE_EXPECTED, False, []))
+    check("the private-footprint figure is below a full instance's working set",
+          0 < PRIVATE_PER_INSTANCE_GB < MODEL_SIZE_EXPECTED / 1024.0 ** 3 + RAM_MARGIN_GB)
 
     # ---- constants that must not drift from the ruling ----
     check("the pair key is per-file and not Q8_0's", PAIR == "f32_intcore_q4_k_m")
