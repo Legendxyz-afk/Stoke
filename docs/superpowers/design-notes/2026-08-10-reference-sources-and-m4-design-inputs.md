@@ -352,7 +352,71 @@ Consequences that bind the M4 design note:
 
 ---
 
-## 9. Posture
+## 9. Where the speed actually comes from — two independent stories
+
+Written because the two get merged in conversation, and merging them produces
+wrong plans. They are not the same mechanism and they do not trade against each
+other.
+
+**Story 1 — single-stream tok/s. Kernels. This is M3 and it is nearly done.**
+SIMD/VNNI, the thread pool, K-quants. Measured 0.626 tok/s at K1 against a
+≥7.8 bar, so roughly 12.5x, from SIMD (~3x) times pool threads, plus Q4_K_M
+moving ~1.7x less data than Q8_0. **Paged KV contributes nothing here.** This
+is the llama-shaped foundation: bit-exact arithmetic, one stream at a time.
+
+**Story 2 — concurrency. Architecture. This is M4/M5 and it is the product
+thesis.** The mechanism is NOT paging. On CPU, decode is bandwidth-bound on
+WEIGHTS, and weights are loaded once per step regardless of how many sequences
+are in flight — so batching N sequences divides the weight cost by N. That is
+the entire concurrency win, and it is why an engine without continuous batching
+collapses at N=4 (M0 measured exactly that: every engine peaked at N=4, best
+concurrent baseline 11% of the ~160 ceiling).
+
+**Paged KV is not the speedup. It is what makes large N reachable.** No
+contiguous per-sequence reservation, so the pool does not fragment itself out
+of memory; and a shared prefix is stored once, which for agent swarms on a
+common 1–2k prefix is the difference between N=4 and N=16.
+
+**The catch, already required of the M4 design note:** KV traffic grows with
+N x context while the weight term amortizes, so there is a crossover beyond
+which KV dominates and further batching stops paying. ROADMAP §M4 already
+requires that crossover derived in N and ctx BEFORE paged KV is scoped, and it
+is why Q8-KV (halving KV traffic) is an M4 item rather than a nicety.
+
+**Kernels give tok/s per stream; architecture gives streams. The two multiply
+only up to that crossover.**
+
+### 9.1 The single-stream gap to llama.cpp, decomposed
+
+Asked directly 2026-08-10: does stoke match llama.cpp single-stream? **No, and
+the shortfall factors exactly.**
+
+- K3 exit measured **llama/stoke = 1.437x** (spread 5.2%), down from 1.997x at
+  K3 entry.
+- Of that, **1.235x is the measured price of gate [1]'s bit-exactness**
+  (bit-exact 8.29 GB/s, ggml-style 10.23, llama 15.76) and **~1.16x is
+  unexplained**.
+- The decomposition closes: 1.235 x 1.16 = 1.43, against the measured 1.437x.
+
+Two consequences worth stating plainly.
+
+1. **Most of the remaining gap is already scheduled to close.** The ~1.16x is
+   where llama's hand-written SIMD K-quant kernels live, and K4's SIMD twins
+   are already scoped to answer them. That work needs no decision.
+2. **Only the last 1.235x requires giving up bit-exactness**, and spending
+   gate [1] is recorded as Kabir's call — priced, never proposed. Note the
+   asymmetry in what it buys: exactness costs SINGLE-STREAM speed and costs
+   NOTHING on concurrency, while the concurrency opportunity M0 measured is
+   roughly 9x. Trading a checkable correctness bar for ~1.24x on the smaller
+   axis is a bad exchange at today's numbers; it becomes a live question only
+   if an M4/M5 bar is missed and the headroom ledger says this covers it.
+
+**The bar is deliberately not "match llama".** M3 requires ≥7.8 tok/s
+single-stream (re-anchored 8.08–8.46, passed), and stoke's Q4_K_M is projected
+at 11.45 tok/s — ~1.47x its own bar. The bar is set by what the product needs,
+not by parity with a single-stream engine.
+
+## 10. Posture
 
 These trees are **read-only reference**. The rule for M4 and beyond: read for
 invariants, write stoke's own implementation from them, port no code. That
