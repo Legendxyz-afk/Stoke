@@ -214,13 +214,24 @@ written; none of them binds anything today.
 Recorded as hypotheses with the measurement that would settle each. None is
 claimed as fact.
 
-**6.1 stoke's KV never leaves system RAM, which inverts the preemption trade.**
-vLLM preempts by discarding and recomputing because moving KV over PCIe costs
-more than redoing the work. stoke's blocks are already in host memory, so
-preemption could be a pointer move with no recompute. *Settles by:* measuring
-re-prefill cost against block-table rewrite cost at M4, on the M5 agentic
-trace. If it holds it is a different answer to the same question, available
-only because of where stoke runs.
+**6.1 On the CPU path, stoke's KV never leaves system RAM, which inverts the
+preemption trade.** vLLM preempts by discarding and recomputing because moving
+KV over PCIe costs more than redoing the work. stoke's blocks are already in
+host memory, so preemption could be a pointer move with no recompute.
+*Settles by:* measuring re-prefill cost against block-table rewrite cost at M4,
+on the M5 agentic trace.
+
+**AMENDED 2026-08-10 (Kabir): this advantage is CPU-PATH-ONLY and must not be
+designed in as a general property.** Kabir has confirmed GPU support is a real
+target — he has a GPU and expects users to have a decent one — so the moment KV
+blocks live in VRAM, stoke faces exactly vLLM's constraint and vLLM's answer
+becomes the right one. **The block pool must therefore treat "where a block
+lives" as a property of the block, not an assumption of the allocator**, in the
+same way ROADMAP §M4 constraint (1) already forbids assuming a fixed pool size.
+That is the same lesson twice: the pool's invariants must not encode today's
+placement. Preemption policy then becomes per-placement — pointer move on
+host, recompute-or-transfer on device — decided by measurement at M4, not
+chosen once.
 
 **6.2 A narrower target buys a scheduler that can be proven.** vLLM's 137 KB
 scheduler and 12-parameter `allocate_slots` are the price of serving sessions,
@@ -272,13 +283,51 @@ prefix.
   with slot management, the closest existing thing to M4/M6's target. Read it
   from the tree that is already there.
 
-**Two open questions for Kabir that change what is worth studying.** (1) Is
-Phase-1.5 CUDA real? If GPU is genuinely coming, vLLM's attention-backend and
-kernel layers become worth reading; if Phase 1 stays CPU-only through M7, that
-majority of the tree stays irrelevant. (2) What hardware is the Phase-2 NPU
-for? The reference box is an i5-13450HX (16 threads, no on-die NPU), so either
-other hardware is in play or NPU is a later-machine concern that should stop
-constraining M4's block pool now.
+**ANSWERED 2026-08-10 (Kabir), and both answers change the reading list.**
+
+- **GPU IS A REAL TARGET, not a Phase-1.5 maybe.** Kabir's words: he has a GPU,
+  users will have a decent GPU, "we need to make it GPU compatible too" — the
+  "too" is load-bearing, the CPU path stays. This promotes vLLM's
+  attention-backend layer (`vllm/v1/attention/backends/`), its worker split
+  (`v1/worker/gpu` vs `v1/worker/cpu`), and `v1/kv_offload/` (CPU offload and
+  tiering) from irrelevant to worth reading at M4 entry — roughly inverting
+  this note's earlier estimate that most of the tree did not apply.
+  llama.cpp's own split is the closer model to copy in shape (one engine, CPU
+  path plus optional device offload) rather than vLLM's device-first design.
+- **NO NPU FOCUS.** It stops constraining M4's block pool. ROADMAP's Phase-2
+  ordering already put NPU behind the bridge layer; this pushes it further out.
+  It is not deleted, just not a design input.
+
+### 8.1 The collision this creates, flagged now rather than discovered at M4
+
+**ROADMAP §M4 requires batch-composition independence to be EXACT (bit-level)
+"regardless" — and that is materially harder on a GPU than on the CPU path.**
+The CPU design earns it by construction (seqs-inner/weights-outer, so the same
+sequence is token-identical at any batch size). Device GEMM libraries generally
+do NOT promise shape-invariant reduction order: split-k choice, tile size and
+tensor-core path commonly vary with batch shape, so the same sequence in a
+batch of 2 and a batch of 9 can differ in the last bits. The same tension
+applies one level up to gate [1]'s bit-exactness against llama.cpp, whose CUDA
+kernels are a different arithmetic target from its scalar CPU path.
+
+This is not a problem to solve today and nothing here resolves it. It is
+recorded because it is exactly the class of constraint that is cheap to
+restate now and expensive to discover mid-milestone. Three shapes are
+available when M4 entry arrives — keep the bar and constrain the device path to
+shape-invariant kernels; scope the bar per-backend (EXACT on CPU,
+classified-divergence on device, reusing §6's existing machinery); or make the
+device path a separate numeric class with its own entry probe. **Choosing among
+them edits criterion text, which is §8.4-reserved: under the 2026-08-07
+governance change Opus decides, records the reasoning with a direction check,
+and Kabir overrules.** It should be decided at M4 entry with a measurement in
+hand, not now.
+
+**Open, and genuinely not yet answered: what "GPU compatible" means in scope.**
+Offload-style (llama.cpp's `-ngl`: some layers on device, KV possibly split),
+or a full device path with CPU fallback. The two produce different block pools
+— the first needs blocks that can live in either place and a policy for which,
+the second needs a device allocator and a transfer path. Worth settling before
+the M4 design note is written, not before M3 closes.
 
 ---
 
