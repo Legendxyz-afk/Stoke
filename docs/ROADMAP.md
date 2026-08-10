@@ -310,6 +310,19 @@ kernels; stoke's scalar Q4_K/Q6_K retains less until K4's twins land. Of K3's re
 price of gate [1]'s bit-exactness** (three-way interleaved: bit-exact
 8.29 GB/s, ggml-style 10.23, llama 15.76) leaving ~1.16× unexplained;
 spending gate [1] is Kabir's/Fable's call and is priced, not proposed.
+**DECIDED BY KABIR 2026-08-10: "keep exactness."** Gate [1] is NOT spent;
+the 1.235× stays carried headroom, ratifying the 08-05 ruling's
+"permanent for Phase 1" rather than changing it. The two named triggers
+survive unchanged (a bar miss this would cover; Phase-1.5 CUDA) — and
+note the CUDA trigger is now answered by scope rather than by spending:
+GPU is offload-style with the CPU path as the REFERENCE (design note
+2026-08-10 §8.2), so the CPU path keeps EXACT and the device path, which
+could never be bit-exact against a different kernel family anyway, takes
+its own numeric class (§8.1 shape #2, still to be decided at M4 entry).
+Rationale of record: exactness costs SINGLE-STREAM speed and costs
+NOTHING on concurrency, and M0 measured the concurrency opportunity at
+~9× against this 1.24×. The ~1.16× residual needs no decision — K4's
+SIMD twins are already scoped to answer it.
 **Where the remaining per-core work is, from the per-op row:** four-row
 batching gave attn_* 1.43–1.53× but ffn_up only 1.26× and **LOGITS
 1.18×, and LOGITS alone is 10% of the token** — narrow-output matvecs
