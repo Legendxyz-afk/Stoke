@@ -356,9 +356,22 @@ def percentile(values, q):
     return s[idx]
 
 
-def freeze_tau(envelope, min_per_band=8):
+def freeze_tau(envelope, min_per_band=8, pair=PAIR):
     """tau(pair, band) = max(0.10, 2 x band p95), ruling 9.4-2, applied
     mechanically to the measured envelope.
+
+    ▶ `pair` IS A PARAMETER BECAUSE TAU IS PER PAIR AND PER FILE (9.4-2, G6),
+    AND THE DEFAULT IS Q8_0's KEY SO THIS FILE'S OWN LEG IS UNCHANGED. A
+    Q4_K_M envelope frozen under the default would be written under the Q8_0
+    key -- which is the one thing G6 forbids in both directions, and it would
+    NOT be loud, because classify.py's missing-entry fatal only fires on a key
+    that is absent, not on a key that is present and wrong.
+
+    ▶ `min_per_band` COUNTS ANCHORED VALUES, NOT POSITIONS. Each position
+    contributes one value per shared id (up to 5), so a floor of 20 here is
+    roughly FOUR positions, not twenty. A caller told to sample "20 agreeing
+    positions per band" must enforce that in POSITIONS upstream; this floor is
+    a second, weaker guard and cannot substitute for it.
 
     ▶ A BAND WITH TOO FEW SAMPLES IS REFUSED, NOT FLOORED. It is tempting to let
     a thin band fall back on the 0.10 floor and carry on -- but that silently
@@ -376,7 +389,7 @@ def freeze_tau(envelope, min_per_band=8):
         band = classify.band_of(int(s["abs_position"]))
         by_band.setdefault(band, []).extend(prof["anchored"])
 
-    table, report = {PAIR: {}}, []
+    table, report = {pair: {}}, []
     for band, vals in sorted(by_band.items()):
         p95 = percentile(vals, 95)
         tau = max(TAU_FLOOR, TAU_MULTIPLIER * p95)
@@ -384,7 +397,7 @@ def freeze_tau(envelope, min_per_band=8):
             report.append(f"  {band}: REFUSED -- {len(vals)} samples < {min_per_band} "
                           f"(p95 would be {p95:.6f}, tau {tau:.6f})")
             continue
-        table[PAIR][band] = tau
+        table[pair][band] = tau
         report.append(f"  {band}: n={len(vals)} max={max(vals):.6f} p95={p95:.6f} "
                       f"=> tau={tau:.6f}{'  (floor)' if tau == TAU_FLOOR else ''}")
     return table, report
