@@ -416,6 +416,17 @@ quantizer, not a grind. M4's gate-items-vs-constraints split and exact
 stamp list: ruling §8.4. Batch-composition independence stays EXACT
 (bit-level) regardless; W and the budget's N are re-measured at M4 entry
 (re-anchoring is now a STANDING rule, ruling §8.2–8.3).
+**Design inputs from the reference engines (2026-08-10, non-binding):**
+`docs/superpowers/design-notes/2026-08-10-reference-sources-and-m4-design-inputs.md`
+— read at M4 entry, before the M4 design note is written. It records that
+vLLM independently reached three constraints M4 already binds (full-
+reservation admission, first-class teardown, runtime-variable pool), adds
+four inputs (free-list-as-eviction-order; the prefix-cache last-token
+recompute rule; block reservation against livelock; frees fenced behind
+step retirement), and names two anti-patterns not to reproduce. It also
+carries the llama.cpp b10037-vs-master re-verification (15/15 transcribed
+facts unchanged) that keeps M2's kernel and M7's rope transcriptions
+trustworthy. It binds nothing and changes no gate.
 
 **M5 — continuous batching (THE product gate).** Forward note §M5: the
 locked scheduler (WAITING→PREFILLING→RUNNING→FINISHED; ≤1 active prefill;
