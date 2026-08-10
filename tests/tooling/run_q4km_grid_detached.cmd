@@ -50,17 +50,37 @@ rem this quietly is worse than one that crashes. `+` needs no quoting at any
 rem layer and is converted to `,` below, so the argument survives Task
 rem Scheduler, cmd, and the .cmd's own parsing unchanged.
 rem
-rem USAGE:  run_q4km_grid_detached.cmd A|B|CONT <rate_s_per_pos> [p20+p45] [EXTRA]
+rem ▶ BUDGET IS THE 5th ARGUMENT AND EXISTS FOR p41. Section 5's windows are
+rem <=4 h, which the driver's default enforces. p41 is ONE indivisible
+rem 541-position invocation that cannot fit that, so Kabir authorized a single
+rem long window for it by name -- and the driver refuses to START a leg whose
+rem (intercept + rate*positions) * 1.15 exceeds the budget, which is exactly the
+rem guard that must be given the real number rather than worked around. Passing
+rem the authorized window here keeps the guard armed against the TRUE deadline
+rem instead of being bypassed. Omit it and the 4 h default stands.
+rem
+rem USAGE:  run_q4km_grid_detached.cmd A|B|CONT <rate_s_per_pos> [p20+p45] [EXTRA] [budget_s]
 cd /d "%~dp0..\.."
 set WHICH=%~1
 set RATE=%~2
 set ONLY=%~3
 set EXTRA=%~4
+set BUDGET=%~5
 if "%WHICH%"=="" set WHICH=A
 if "%RATE%"=="" set RATE=18.42
 rem `+` is the entry separator; `,` is what --only wants. Undefined ONLY stays
 rem undefined through this line.
 set ONLY=%ONLY:+=,%
+
+rem ▶ `-` MEANS "NOT SUPPLIED", AND IT EXISTS SO POSITIONAL SKIPS NEED NO EMPTY
+rem QUOTES. RUN B takes no --only and no EXTRA but still needs the 5th argument,
+rem and writing that as `B 64.26 "" "" 43200` puts eight quotes in the task's
+rem argument string -- which is the exact `cmd /c` rule that already broke one
+rem launch silently (exit 1, no log, no process). A bare `-` needs no quoting at
+rem any layer.
+if "%ONLY%"=="-" set ONLY=
+if "%EXTRA%"=="-" set EXTRA=
+if "%BUDGET%"=="-" set BUDGET=
 
 set OUT=tests\tooling\.gate_cache\q4km_grid
 if not exist "%OUT%" mkdir "%OUT%"
@@ -77,15 +97,18 @@ if not "%ONLY%"=="" (
 set EXTRAARG=
 if /I "%EXTRA%"=="EXTRA" set EXTRAARG=--additional-instance
 
+set BUDGETARG=
+if not "%BUDGET%"=="" set BUDGETARG=--budget-s %BUDGET%
+
 set LOG=%OUT%\window%SLUG%.log
 
 echo. >> "%LOG%"
 echo ===== Q4KM GRID %WHICH% %DATE% %TIME% (rate %RATE% s/pos, only '%ONLY%' %EXTRAARG%) ===== >> "%LOG%"
 
 if /I "%WHICH%"=="CONT" (
-  python -u tests\tooling\q4km_grid.py --continuations --out "%OUT%" --rate-s-per-pos %RATE% %ONLYARG% %EXTRAARG% >> "%LOG%" 2>&1
+  python -u tests\tooling\q4km_grid.py --continuations --out "%OUT%" --rate-s-per-pos %RATE% %ONLYARG% %EXTRAARG% %BUDGETARG% >> "%LOG%" 2>&1
 ) else (
-  python -u tests\tooling\q4km_grid.py --run %WHICH% --out "%OUT%" --rate-s-per-pos %RATE% %ONLYARG% %EXTRAARG% >> "%LOG%" 2>&1
+  python -u tests\tooling\q4km_grid.py --run %WHICH% --out "%OUT%" --rate-s-per-pos %RATE% %ONLYARG% %EXTRAARG% %BUDGETARG% >> "%LOG%" 2>&1
 )
 
 echo ===== Q4KM GRID %WHICH% EXIT %ERRORLEVEL% %DATE% %TIME% ===== >> "%LOG%"
