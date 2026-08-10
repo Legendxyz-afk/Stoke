@@ -322,12 +322,33 @@ governance change Opus decides, records the reasoning with a direction check,
 and Kabir overrules.** It should be decided at M4 entry with a measurement in
 hand, not now.
 
-**Open, and genuinely not yet answered: what "GPU compatible" means in scope.**
-Offload-style (llama.cpp's `-ngl`: some layers on device, KV possibly split),
-or a full device path with CPU fallback. The two produce different block pools
-— the first needs blocks that can live in either place and a policy for which,
-the second needs a device allocator and a transfer path. Worth settling before
-the M4 design note is written, not before M3 closes.
+### 8.2 Scope, settled by Kabir 2026-08-10
+
+**OFFLOAD-STYLE, CPU-FIRST.** His words: offload style, keep the CPU path
+working, GPU optional "but should work flawlessly and better"; first focus CPU,
+"just like llama but concurrent and faster for multiple users".
+
+Consequences that bind the M4 design note:
+
+1. **The CPU path is the reference implementation, not a fallback.** It is what
+   ships, what the gates measure, and what must be correct on its own. The
+   device path is additive.
+2. **The block pool needs blocks that can live in either place, plus a
+   placement policy** — this is the offload shape, not a device allocator with
+   a host fallback. §6.1's amendment is the mechanism: placement is a property
+   of the block.
+3. **The positioning sentence is now explicit and worth quoting at M5:**
+   llama.cpp's single-stream quality, made concurrent and faster for multiple
+   simultaneous requests. That is the same target M0's premise gate measured
+   (every engine peaked at N=4 then collapsed; best concurrent baseline 11% of
+   the ceiling) — the GPU answer does not move it.
+4. **It points §8.1's collision at one of the three shapes without deciding
+   it.** If CPU is the reference and GPU is optional, scoping the bar
+   per-backend — EXACT on CPU, classified-divergence on device via §6's
+   existing machinery — is the reading most consistent with this scope, because
+   it keeps the bar that ships un-weakened and puts the new numeric class where
+   the new arithmetic actually is. **Still not decided here:** it edits
+   criterion text (§8.4-reserved) and belongs at M4 entry with a measurement.
 
 ---
 
