@@ -113,7 +113,7 @@ def prompt_coverage(pid, probe_doc, cont_doc, cont_forced_from, head_ids):
     because section 5 authorizes one continuation per leg -- so `covered` is
     NOT 64 in general, and the tripwire's denominator must be summed from
     these rather than assumed."""
-    agreeing, flips, covered = [], 0, 0
+    agreeing, flips, covered, divergences = [], 0, 0, []
 
     j = _first_divergence(probe_doc["ids"], head_ids)
     if j is None:
@@ -123,6 +123,8 @@ def prompt_coverage(pid, probe_doc, cont_doc, cont_forced_from, head_ids):
         agreeing.extend(range(j))
         covered += j + 1          # 0..j-1 agreed, j is the flip, all comparable
         flips += 1
+        divergences.append({"index": j, "ref_chose": int(probe_doc["ids"][j]),
+                            "source": "probe"})
 
     if cont_doc is not None:
         if cont_forced_from is None:
@@ -142,9 +144,12 @@ def prompt_coverage(pid, probe_doc, cont_doc, cont_forced_from, head_ids):
             agreeing.extend(range(start, start + i))
             covered += i + 1
             flips += 1
+            divergences.append({"index": start + i,
+                                "ref_chose": int(cont_doc["ids"][i]),
+                                "source": "cont"})
 
     return {"prompt": pid, "agreeing": agreeing, "flips": flips,
-            "covered": covered, "diverged_at": j}
+            "covered": covered, "diverged_at": j, "divergences": divergences}
 
 
 def _load(path):
@@ -305,6 +310,44 @@ def build_samples(chosen, ref_probes, log):
     return samples
 
 
+def build_records(records, ref_probes, log):
+    """One classify.py record per divergence -- BOTH sides, both rank-0 checked.
+
+    ▶ THIS IS NOT GRADING. It assembles what classify.py grades, and it is a
+    SEPARATE INVOCATION from the freeze on purpose (main() refuses to do both
+    at once): a tool that can set the threshold and produce the records it will
+    be applied to can always be run in the order that passes. Same split
+    m2_classify_probes.py keeps between --sweep and --freeze-tau."""
+    out = []
+    for rec in records:
+        pid = rec["prompt"]
+        probe_doc, cont_doc, dj = ref_probes[pid]
+        head_ids = qg.banked_head_ids(pid)
+        for d in rec["divergences"]:
+            idx = int(d["index"])
+            ref_chose, head_chose = int(d["ref_chose"]), int(head_ids[idx])
+            if ref_chose == head_chose:
+                raise TauError(
+                    f"{pid}@{idx}: both sides chose {ref_chose}; a position "
+                    f"recorded as a divergence is not one")
+            ref5, src = ref_top5_at(probe_doc, cont_doc, dj, idx)
+            mcp.check_rank0(ref5, ref_chose, f"ref/{pid}", idx)
+            st5 = stoke_top5(pid, idx)
+            mcp.check_rank0(st5, head_chose, f"stoke/{pid}", idx)
+            out.append({
+                "prompt": pid, "position": idx,
+                "abs_position": rec["n_input"] + idx,
+                "pair": qg.PAIR, "source": src,
+                "x": {"top5": [list(t) for t in ref5], "chose": ref_chose,
+                      "name": "ref_forward"},
+                "y": {"top5": [list(t) for t in st5], "chose": head_chose,
+                      "name": "stoke-HEAD"},
+            })
+            log(f"  {pid}@{idx} (abs {rec['n_input'] + idx}, {src}): "
+                f"ref {ref_chose} vs HEAD {head_chose}")
+    return out
+
+
 # ============================================================================
 # selftest
 # ============================================================================
@@ -399,6 +442,36 @@ def run_selftest() -> int:
     check("the divergent position itself reads the probe leg, not the continuation",
           src == "probe")
 
+    # ---- records ---------------------------------------------------------
+    check("a probe-leg divergence is recorded with ref's chosen id",
+          dc["divergences"][0] == {"index": 9, "ref_chose": 7, "source": "probe"})
+    check("a continuation divergence is recorded at its ORIGINAL index",
+          dc["divergences"][1]["index"] == 15
+          and dc["divergences"][1]["source"] == "cont")
+    check("a clean leg records no divergence", clean["divergences"] == [])
+
+    _orig_head = qg.banked_head_ids
+    qg.banked_head_ids = lambda pid: head
+    try:
+        bad = {"prompt": "pXX", "n_input": 10,
+               "divergences": [{"index": 3, "ref_chose": head[3],
+                                "source": "probe"}]}
+        try:
+            build_records([bad], {"pXX": (_doc(head), None, None)}, lambda s: None)
+            why = "returned normally"
+        except TauError as e:
+            why = str(e)
+        # The MESSAGE is asserted, not merely the exception type. With the guard
+        # deleted this call falls through to stoke_top5, which also raises
+        # TauError -- so `except TauError: pass` marked the mutant as caught and
+        # the check passed for a reason unrelated to the thing it names. A
+        # mutation is what exposed it; this tree has now recorded that shape
+        # four times.
+        check("a 'divergence' where both sides agree is refused, by its own guard",
+              "is not one" in why)
+    finally:
+        qg.banked_head_ids = _orig_head
+
     # ---- band + key ------------------------------------------------------
     recs = [{"prompt": "p20", "agreeing": [36, 37], "n_input": 64},
             {"prompt": "p00", "agreeing": [1], "n_input": 23}]
@@ -427,6 +500,10 @@ def main(argv=None) -> int:
     ap.add_argument("--grid-dir")
     ap.add_argument("--envelope-out")
     ap.add_argument("--tau-out")
+    ap.add_argument("--records-out",
+                    help="SEPARATE INVOCATION, deliberately: emit classify.py's "
+                         "records for every divergence. Refused alongside the "
+                         "freeze -- see build_records")
     ap.add_argument("--coverage-only", action="store_true",
                     help="report coverage and the tripwire denominator; run no "
                          "stoke probes and freeze nothing")
@@ -437,6 +514,11 @@ def main(argv=None) -> int:
         return run_selftest()
     if not a.grid_dir:
         ap.error("--grid-dir is required")
+    if a.records_out and (a.tau_out or a.envelope_out):
+        ap.error("--records-out is a SEPARATE invocation from the freeze. A tool "
+                 "that can set the threshold AND build the records it will be "
+                 "applied to can always be run in the order that passes; "
+                 "section 2.3's ordering rule is kept structural, not remembered")
 
     def log(s):
         print(s, flush=True)
@@ -472,6 +554,14 @@ def main(argv=None) -> int:
                 f"samples (ruling section 5 fail-safe)")
 
     if a.coverage_only:
+        return 0
+
+    if a.records_out:
+        log("=== divergence records (classify.py grades these, this does not) ===")
+        recs = build_records(records, ref_probes, log)
+        pathlib.Path(a.records_out).write_text(
+            json.dumps(recs, indent=1), encoding="utf-8")
+        log(f"records: {len(recs)} divergences -> {a.records_out}")
         return 0
 
     samples = []
