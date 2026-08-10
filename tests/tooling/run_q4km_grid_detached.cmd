@@ -39,7 +39,18 @@ rem granularity is the LEG, not the position: ref_forward.py has no intra-leg
 rem checkpoint, so an interrupted leg costs the whole leg (~1.5 h at the
 rem 2026-08-07 prior). Plan interruptions around leg boundaries.
 rem
-rem USAGE:  run_q4km_grid_detached.cmd A|B|CONT <rate_s_per_pos> ["p20,p45"] [EXTRA]
+rem ▶ SEPARATE LEGS WITH `+`, NOT `,`, AND DO NOT QUOTE THEM. Measured
+rem 2026-08-10: a Task Scheduler action of the form
+rem   /c "...\run_q4km_grid_detached.cmd" A 56.6 "p10,p30,p45" EXTRA
+rem FAILS. `cmd /c` preserves quotes only when the whole remainder contains
+rem EXACTLY TWO of them; with four it falls back to stripping the first quote
+rem and the last one on the line, which silently rebuilds a different command.
+rem The task exited 1, wrote no log, and started nothing -- a launch that fails
+rem this quietly is worse than one that crashes. `+` needs no quoting at any
+rem layer and is converted to `,` below, so the argument survives Task
+rem Scheduler, cmd, and the .cmd's own parsing unchanged.
+rem
+rem USAGE:  run_q4km_grid_detached.cmd A|B|CONT <rate_s_per_pos> [p20+p45] [EXTRA]
 cd /d "%~dp0..\.."
 set WHICH=%~1
 set RATE=%~2
@@ -47,6 +58,9 @@ set ONLY=%~3
 set EXTRA=%~4
 if "%WHICH%"=="" set WHICH=A
 if "%RATE%"=="" set RATE=18.42
+rem `+` is the entry separator; `,` is what --only wants. Undefined ONLY stays
+rem undefined through this line.
+set ONLY=%ONLY:+=,%
 
 set OUT=tests\tooling\.gate_cache\q4km_grid
 if not exist "%OUT%" mkdir "%OUT%"
