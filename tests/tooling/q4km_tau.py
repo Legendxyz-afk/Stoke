@@ -193,6 +193,42 @@ def gather_coverage(grid_dir):
     return records, ref_probes
 
 
+def check_added_pids(pids):
+    """An added sample must come from OUTSIDE the fixed grid.
+
+    A grid prompt passed here would have its positions counted twice -- once in
+    coverage and the tripwire, again in the envelope -- which is exactly the
+    separation the added-sample contract exists to keep."""
+    grid = set(qg.RUN_A_PROMPTS) | set(qg.RUN_B_PROMPTS)
+    clash = sorted(set(pids) & grid)
+    if clash:
+        raise TauError(
+            f"{clash} are grid prompts; an added sample must come from outside "
+            f"the fixed grid or its positions are counted twice")
+    return list(pids)
+
+
+def gather_added(grid_dir, pids):
+    """Coverage-shaped records for added-sample legs, flagged and kept apart.
+
+    These feed the tau envelope and NOTHING else: not the coverage total, not
+    the flip count, not the tripwire. main() never adds them to `records`, so
+    the totals it reports stay the fixed grid's."""
+    grid_dir = pathlib.Path(grid_dir)
+    recs, ref_probes = [], {}
+    for pid in check_added_pids(pids):
+        path = grid_dir / f"{pid}-added.json"
+        if not path.exists():
+            raise TauError(f"no added-sample leg banked for {pid} ({path.name})")
+        doc = _load(path)
+        rec = prompt_coverage(pid, doc, None, None, qg.banked_head_ids(pid))
+        rec["n_input"] = doc["n_input"]
+        rec["added"] = True
+        recs.append(rec)
+        ref_probes[pid] = (doc, None, rec["diverged_at"])
+    return recs, ref_probes
+
+
 # ============================================================================
 # selection
 # ============================================================================
@@ -472,6 +508,26 @@ def run_selftest() -> int:
     finally:
         qg.banked_head_ids = _orig_head
 
+    # ---- added samples ---------------------------------------------------
+    try:
+        check_added_pids(["p20"])
+        why_clash = "returned normally"
+    except TauError as e:
+        why_clash = str(e)
+    check("a grid prompt is refused as an added sample, by its own guard",
+          "counted twice" in why_clash)
+    check("an outside prompt is accepted", check_added_pids(["p32"]) == ["p32"])
+
+    grid_rec = {"prompt": "p30", "agreeing": [47, 48], "n_input": 53}
+    add_rec = {"prompt": "p32", "agreeing": [0, 1, 2], "n_input": 104,
+               "added": True}
+    bp_grid = band_positions([grid_rec])
+    bp_both = band_positions([grid_rec, add_rec])
+    check("added samples DO enter band selection",
+          len(bp_both["[100,300)"]) == len(bp_grid["[100,300)"]) + 3)
+    check("grid positions keep precedence in rule order",
+          bp_both["[100,300)"][0][0] == "p30")
+
     # ---- band + key ------------------------------------------------------
     recs = [{"prompt": "p20", "agreeing": [36, 37], "n_input": 64},
             {"prompt": "p00", "agreeing": [1], "n_input": 23}]
@@ -504,6 +560,10 @@ def main(argv=None) -> int:
                     help="SEPARATE INVOCATION, deliberately: emit classify.py's "
                          "records for every divergence. Refused alongside the "
                          "freeze -- see build_records")
+    ap.add_argument("--added", default="",
+                    help="comma-separated prompts banked as {pid}-added.json, "
+                         "contributed to the tau ENVELOPE only -- never to "
+                         "coverage, flips, or the tripwire")
     ap.add_argument("--coverage-only", action="store_true",
                     help="report coverage and the tripwire denominator; run no "
                          "stoke probes and freeze nothing")
@@ -539,7 +599,22 @@ def main(argv=None) -> int:
     log(f"  TOTAL: covered {tot_cov}, flips {tot_flip} "
         f"({100 * rate:.2f}%/token), tripwire fires at >= 8")
 
-    bands = band_positions(records)
+    added_recs = []
+    if a.added:
+        added_recs, added_probes = gather_added(
+            a.grid_dir, [s.strip() for s in a.added.split(",") if s.strip()])
+        ref_probes.update(added_probes)
+        log("=== added samples (envelope ONLY -- excluded from the totals above) ===")
+        for r in added_recs:
+            dj = r["diverged_at"]
+            where = "agrees throughout" if dj is None else f"diverged at index {dj}"
+            log(f"  {r['prompt']}: {len(r['agreeing'])} agreeing, {where} "
+                f"(flips not counted toward the tripwire)")
+
+    # Grid prompts first, then added -- "(prompt-order, index-order)" with the
+    # fixed grid keeping precedence, so adding samples never reshuffles which
+    # grid positions the rule would have picked.
+    bands = band_positions(records + added_recs)
     log("=== band occupancy and selection ===")
     plan = {}
     for band in sorted(bands):
