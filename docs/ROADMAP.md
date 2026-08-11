@@ -72,7 +72,7 @@ benchmark report.
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
 | M3 | AVX2+VNNI kernels + pool | ✅ 2026-08-11 tag `m3` | **[2v2] ZERO BUG-CLASS: 9/9 divergences ARITHMETIC-CLASS on the Q4_K_M grid (worst margin 0.555672 vs τ 1.023739 = 54% of threshold, no ESCALATE); τ_Q4KM frozen BEFORE grading under key `f32_intcore_q4_k_m` = 1.023739 / 1.178094 / 0.811432; 290 covered positions, per-prompt stated; p41 clean 64/64. Q8_0 discharged by the 08-06 ruling.** [1] test_simd 12/12 ✅; [3] re-anchored 8.08–8.46 both legs ✅; [4] matrix green at `5051878` ✅; [5] ✅. **⚠ FLAGGED, NOT QUIET — the flip tripwire FIRED (9 ≥ 8).** Its λ inherited a ~0.5%/token base measured on **Q8_0**; Q4_K_M measures **3.10%/token**, so the threshold fires by construction on this file. Kept at ≥8 rather than recalibrated from the data it polices (circular); the mismatch was committed in `6b484b9` at 5 flips, before the count could be known. Disposition: `superpowers/memos/2026-08-11-m3-tripwire-anomaly-memo.md`. Report: `superpowers/gate-reports/2026-08-11-m3-q4km-grid-gate-report.md` |
-| **M4** | **Paged KV + static batch** | **← NOW** | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
+| **M4** | **Paged KV + static batch** | **← NOW** | invariant sim ×1e6 ASan — **the set is ENUMERATED in `superpowers/design-notes/2026-08-11-m4-invariants.md`; cite the set, never a bare count**; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02) |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
 | M7 | Harden + launch-ready | queued | Llama-3.2 parity incl. long-ctx; unsloth-file run; 24h soak; reproducible report; Kabir sign-offs |
@@ -429,7 +429,10 @@ defines. Full stamp list + M4–M7 forward rulings in the ruling §7.5/§8.
 body swap only (M2 froze the accessor); **batch-composition independence
 by construction** (seqs-inner/weights-outer — same seq ⇒ token-identical
 at any batch size; this is what keeps M5 debuggable); full-reservation
-admission until preemption exists; the 11 sim invariants asserted after
+admission until preemption exists; **the sim invariants — ENUMERATED
+2026-08-11 in `superpowers/design-notes/2026-08-11-m4-invariants.md`,
+derived from 12 failure modes; the count was asserted in three places
+before the set existed anywhere, so cite the SET** — asserted after
 EVERY op; Q8-KV is property-tested + divergence-counted, never
 token-parity-gated (default ON/OFF is Kabir's call at M5).
 **Fable 2026-08-02 design constraints (Kabir-approved; bind the M4
