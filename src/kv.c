@@ -36,23 +36,77 @@
 
 #include "blockpool.h"
 
+struct KvStore {
+    u32 n_layer, n_head_kv, head_dim, capacity;
+    BlockPool* pool;
+    f32* k;   /* [n_layer][capacity][BP_BLOCK_TOKENS][n_head_kv][head_dim] */
+    f32* v;   /* same shape                                                */
+};
+
 struct Kv {
     u32 n_layer;
     u32 max_ctx;
     u32 n_head_kv;
     u32 head_dim;
 
-    BlockPool* pool;
-    bool       owns_pool;
-    BpSeq*     seq;
-    u32        capacity;   /* blocks in the arena                          */
-
-    f32* k;   /* [n_layer][capacity][BP_BLOCK_TOKENS][n_head_kv][head_dim] */
-    f32* v;   /* same shape                                                */
+    KvStore* store;
+    bool     owns_store;
+    BpSeq*   seq;
 };
 
 static u32 blocks_needed(u32 tokens) {
     return (tokens + BP_BLOCK_TOKENS - 1u) / BP_BLOCK_TOKENS;
+}
+
+KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
+                       u32 head_dim) {
+    if (n_layer == 0 || capacity_blocks == 0 || n_head_kv == 0 || head_dim == 0) {
+        fatal("kv: kv_store_open -- all dims must be > 0 (n_layer=%u "
+              "capacity_blocks=%u n_head_kv=%u head_dim=%u)",
+              n_layer, capacity_blocks, n_head_kv, head_dim);
+    }
+    KvStore* st = (KvStore*)xmalloc(sizeof(KvStore));
+    st->n_layer   = n_layer;
+    st->n_head_kv = n_head_kv;
+    st->head_dim  = head_dim;
+    st->capacity  = capacity_blocks;
+    st->pool      = bp_open(capacity_blocks);
+
+    /* Whole blocks always, so a non-multiple context's tail block is fully
+     * backed rather than partially -- the slack is unreachable (pos is
+     * bounded by max_ctx) and uniform block size is what lets a block move
+     * as one contiguous run per layer. */
+    u64 total = (u64)n_layer * capacity_blocks * BP_BLOCK_TOKENS *
+                (u64)n_head_kv * (u64)head_dim;
+    st->k = (f32*)xcalloc((size_t)total, sizeof(f32));
+    st->v = (f32*)xcalloc((size_t)total, sizeof(f32));
+    return st;
+}
+
+void kv_store_close(KvStore* st) {
+    if (!st) return;
+    bp_close(st->pool);
+    free(st->k);
+    free(st->v);
+    free(st);
+}
+
+u32 kv_store_free_blocks(const KvStore* st) { return bp_free_count(st->pool); }
+
+Kv* kv_open_in(KvStore* st, u32 max_ctx) {
+    if (max_ctx == 0) fatal("kv: kv_open_in -- max_ctx must be > 0");
+    BpSeq* seq = bp_admit(st->pool, max_ctx);
+    if (!seq) return NULL;    /* full-reservation admission refused (I8) */
+
+    Kv* kv = (Kv*)xmalloc(sizeof(Kv));
+    kv->n_layer    = st->n_layer;
+    kv->max_ctx    = max_ctx;
+    kv->n_head_kv  = st->n_head_kv;
+    kv->head_dim   = st->head_dim;
+    kv->store      = st;
+    kv->owns_store = false;
+    kv->seq        = seq;
+    return kv;
 }
 
 Kv* kv_open(u32 n_layer, u32 max_ctx, u32 n_head_kv, u32 head_dim) {
@@ -61,39 +115,20 @@ Kv* kv_open(u32 n_layer, u32 max_ctx, u32 n_head_kv, u32 head_dim) {
               "n_head_kv=%u head_dim=%u)",
               n_layer, max_ctx, n_head_kv, head_dim);
     }
-
-    Kv* kv = (Kv*)xmalloc(sizeof(Kv));
-    kv->n_layer   = n_layer;
-    kv->max_ctx   = max_ctx;
-    kv->n_head_kv = n_head_kv;
-    kv->head_dim  = head_dim;
-    kv->capacity  = blocks_needed(max_ctx);
-
-    kv->pool      = bp_open(kv->capacity);
-    kv->owns_pool = true;
-    kv->seq       = bp_admit(kv->pool, max_ctx);
-    if (!kv->seq) fatal("kv: kv_open -- admission failed for max_ctx=%u", max_ctx);
-
-    /* The arena rounds max_ctx up to a whole block, so the tail block of a
-     * non-multiple context is fully backed rather than partially -- reading
-     * the slack is impossible (pos is bounded by max_ctx) and allocating it
-     * keeps every block the same size, which is what lets a block be moved
-     * as one contiguous run per layer. */
-    u64 total = (u64)n_layer * kv->capacity * BP_BLOCK_TOKENS *
-                (u64)n_head_kv * (u64)head_dim;
-    kv->k = (f32*)xcalloc((size_t)total, sizeof(f32));
-    kv->v = (f32*)xcalloc((size_t)total, sizeof(f32));
+    KvStore* st = kv_store_open(n_layer, blocks_needed(max_ctx), n_head_kv,
+                                head_dim);
+    Kv* kv = kv_open_in(st, max_ctx);
+    if (!kv) fatal("kv: kv_open -- admission failed for max_ctx=%u", max_ctx);
+    kv->owns_store = true;
     return kv;
 }
 
 void kv_close(Kv* kv) {
     if (!kv) return;
-    if (kv->pool) {
-        if (kv->seq) bp_release(kv->pool, kv->seq);
-        if (kv->owns_pool) bp_close(kv->pool);
+    if (kv->store) {
+        if (kv->seq) bp_release(kv->store->pool, kv->seq);
+        if (kv->owns_store) kv_store_close(kv->store);
     }
-    free(kv->k);
-    free(kv->v);
     free(kv);
 }
 
@@ -111,7 +146,8 @@ KvSlot kv_view(Kv* kv, u32 layer, u32 kv_head, u32 pos) {
               kv->max_ctx);
     }
 
-    if (!bp_seq_ensure(kv->pool, kv->seq, pos + 1u)) {
+    KvStore* st = kv->store;
+    if (!bp_seq_ensure(st->pool, kv->seq, pos + 1u)) {
         /* Full-reservation admission is supposed to make this unreachable,
          * so it is a bug in the reservation rather than a condition callers
          * handle -- fatal, naming what could not be satisfied. */
@@ -122,16 +158,16 @@ KvSlot kv_view(Kv* kv, u32 layer, u32 kv_head, u32 pos) {
     u32 ord  = pos / BP_BLOCK_TOKENS;
     u32 off  = pos % BP_BLOCK_TOKENS;
     u32 blk  = bp_seq_block(kv->seq, ord);
-    u32 slot = bp_block_slot(kv->pool, blk);
+    u32 slot = bp_block_slot(st->pool, blk);
 
     /* [n_layer][capacity][16][n_head_kv][head_dim]; u64 throughout so the
      * multiply chain cannot overflow on a larger future model. */
-    u64 idx = ((((u64)layer * kv->capacity + slot) * BP_BLOCK_TOKENS + off) *
-               kv->n_head_kv + kv_head) * kv->head_dim;
+    u64 idx = ((((u64)layer * st->capacity + slot) * BP_BLOCK_TOKENS + off) *
+               st->n_head_kv + kv_head) * st->head_dim;
 
     KvSlot s;
-    s.k = kv->k + idx;
-    s.v = kv->v + idx;
+    s.k = st->k + idx;
+    s.v = st->v + idx;
     return s;
 }
 

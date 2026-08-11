@@ -36,6 +36,34 @@ typedef struct {
     f32* v;
 } KvSlot;
 
+/* ---- M4: the shared store -------------------------------------------
+ * A KvStore owns the block pool AND the arena those blocks index into.
+ * Several Kv handles -- one per sequence, since the frozen kv_view carries
+ * no sequence parameter -- share one store. That sharing is the entire
+ * point of paged KV: sequences draw blocks from a common pool instead of
+ * each reserving a whole contiguous max_ctx.
+ *
+ * kv_open() below is unchanged and still works: it wraps a private store,
+ * so every existing caller keeps its own arena and never notices.
+ *
+ * `capacity_blocks` is the pool size, not a token count -- the pool is what
+ * gets sized against RAM, and at M5's target it is the larger consumer
+ * (design note section 3.1: 9.66 GB of f32 KV against a 2.50 GB model). */
+typedef struct KvStore KvStore;
+
+KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
+                       u32 head_dim);
+void     kv_store_close(KvStore* st);
+
+/* One sequence's view onto a shared store. Admission is full-reservation
+ * (I8), so this returns NULL when the store cannot guarantee max_ctx -- the
+ * caller must not start a sequence it cannot finish. */
+Kv*  kv_open_in(KvStore* st, u32 max_ctx);
+
+/* Blocks currently free in the store's pool -- for admission decisions and
+ * for tests that need to see sharing actually happen. */
+u32  kv_store_free_blocks(const KvStore* st);
+
 /* Allocates (xcalloc, zero-initialized) both the K and V backing arrays,
  * sized n_layer*max_ctx*n_head_kv*head_dim floats each. All four
  * dimensions must be > 0 (fatal otherwise -- a degenerate KV cache can
