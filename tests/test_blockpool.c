@@ -219,6 +219,15 @@ static void test_dedup_collision(void) {
 
 static void storm(u32 ops) {
     enum { NSEQ = 12 };
+    u32 n_settok = 0, n_adopt = 0, n_hit = 0;
+    /* A SHARED PREFIX, because that is the workload. Looking up a RANDOM
+     * 16-token prefix from a 6-symbol alphabet is 6^16 possibilities and
+     * never hits -- the first version of this storm reported dedup_hit=0
+     * and would have passed as green while testing none of the sharing it
+     * exists to test. M5's own trace is a shared system prefix, so the
+     * storm now models that. */
+    u32 shared[BP_BLOCK_TOKENS];
+    for (u32 t = 0; t < BP_BLOCK_TOKENS; t++) shared[t] = 40 + t;
     BlockPool* bp = bp_open(96);
     BpSeq* seq[NSEQ];
     u32 maxtok[NSEQ];
@@ -227,9 +236,16 @@ static void storm(u32 ops) {
     u32 in_step = 0;
     for (u32 op = 0; op < ops; op++) {
         u32 i = rnd(NSEQ);
-        switch (rnd(10)) {
+        switch (rnd(12)) {
         case 0: case 1:
-            if (!seq[i]) { maxtok[i] = 16 * (1 + rnd(6)); seq[i] = bp_admit(bp, maxtok[i]); }
+            if (!seq[i]) {
+                maxtok[i] = 16 * (1 + rnd(6));
+                seq[i] = bp_admit(bp, maxtok[i]);
+                /* Most sequences open with the shared prefix. */
+                if (seq[i] && rnd(3) != 0)
+                    for (u32 t = 0; t < BP_BLOCK_TOKENS; t++)
+                        bp_seq_set_token(bp, seq[i], t, shared[t]);
+            }
             break;
         case 2: case 3: case 4: case 5:
             if (seq[i] && bp_seq_len(seq[i]) < maxtok[i]) bp_append(bp, seq[i], rnd(50));
@@ -245,6 +261,25 @@ static void storm(u32 ops) {
         case 7:
             if (seq[i]) { bp_release(bp, seq[i]); seq[i] = NULL; }
             break;
+        case 10:
+            /* THE ID PATH. A small token alphabet makes prefixes collide
+             * naturally, so dedup gets real hits instead of only misses --
+             * a storm that never hits exercises the lookup and none of the
+             * sharing it exists to enable. */
+            if (seq[i] && bp_seq_len(seq[i]) < maxtok[i]) {
+                bp_seq_set_token(bp, seq[i], bp_seq_len(seq[i]), rnd(6));
+                n_settok++;
+            }
+            break;
+        case 11: {
+            /* Dedup + adopt: find a full block matching a known prefix and
+             * share it. Exercises I1/I2/I6/I7 against genuinely shared
+             * blocks, which nothing else in the storm produces. */
+            u32 hit = bp_dedup_find(bp, 0, shared);
+            if (hit != BP_NIL) n_hit++;
+            if (hit != BP_NIL && seq[i] && bp_seq_adopt(bp, seq[i], hit)) n_adopt++;
+            break;
+        }
         case 8:
             if (!in_step) { bp_step_begin(bp); in_step = 1; }
             else { bp_step_retire(bp); in_step = 0; }
@@ -270,6 +305,15 @@ static void storm(u32 ops) {
     if (in_step) bp_step_retire(bp);
     for (u32 i = 0; i < NSEQ; i++) if (seq[i]) bp_release(bp, seq[i]);
     inv(bp, "storm teardown");
+
+    /* A storm that never reached these paths would pass while testing
+     * nothing -- the shape this tree keeps getting caught by. Assert the
+     * coverage rather than assuming the op mix produced it. */
+    printf("  storm coverage: set_token=%u dedup_hit=%u adopt=%u\n",
+           n_settok, n_hit, n_adopt);
+    ok("the storm actually exercised the id path", n_settok > 0);
+    ok("the storm actually HIT dedup, not just missed", n_hit > 0);
+    ok("the storm actually adopted shared blocks", n_adopt > 0);
     bp_close(bp);
 }
 

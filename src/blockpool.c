@@ -366,6 +366,24 @@ bool bp_seq_adopt(BlockPool* bp, BpSeq* seq, u32 block) {
     if (block >= bp->capacity) return false;
     if (seq->nblocks == seq->cap_blocks) return false;
     if (bp->b[block].refcount == 0) return false;
+
+    /* ▶ ONLY A BLOCK-ALIGNED SEQUENCE MAY ADOPT. Appending a shared block to
+     * a sequence whose tail is partially filled would put the adopted
+     * block's 16 positions at offsets that do not line up with its own
+     * length -- I4 (table length == ceil(len/16)) and I5 (only the last
+     * block partial) would both break, and the positions would silently
+     * mean something different from what the block holds. Refusing is the
+     * only correct answer; there is no useful partial adoption. */
+    if (seq->len % BP_BLOCK_TOKENS != 0) return false;
+
+    /* A shared block must be FULL. A partial tail is still being written by
+     * its owner, and I7 forbids two writers. */
+    if (bp->b[block].n_filled != BP_BLOCK_TOKENS) return false;
+
+    /* Adopting a block already in this table would alias it (I6). */
+    for (u32 k = 0; k < seq->nblocks; k++)
+        if (seq->table[k] == block) return false;
+
     bp->b[block].refcount++;
     seq->table[seq->nblocks++] = block;
     seq->len += bp->b[block].n_filled;
