@@ -133,11 +133,15 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
  * to what model_forward_position would have written for it alone, whatever N
  * is and wherever it sits in the batch.
  *
- * ▶ CURRENTLY SEQUENCE-OUTER. The weight-amortizing form calls matvec_batch
- * per weight with the sequence loop inside; matvec_batch exists and is fused
- * for all four weight types, but the forward BODY still steps one sequence at
- * a time, so this API is correct and not yet faster. Wiring the body is the
- * remaining step, and the identity test already guards it. */
+ * ▶ SEQS-INNER / WEIGHTS-OUTER. Per layer, each weight is applied once to
+ * all N activations through matvec_batch, so the weight bytes are read once
+ * for the whole batch instead of once per sequence -- which is the entire
+ * reason batching wins until the KV crossover (design note section 1.4).
+ * The work that has no weight to amortize (QK-norm, rope, the KV append,
+ * attention) stays per-sequence and reads only that sequence's own cache.
+ *
+ * model_forward_position is this same body at n_seq=1; there is no second
+ * implementation to drift from it. */
 void model_forward_batch(Model* m, Kv* const* kv, const u32* token_ids,
                          const u32* positions, u32 n_seq, f32* const* x_out);
 

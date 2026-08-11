@@ -80,6 +80,33 @@ typedef struct {
     u64 s_aq_bytes;
 } SeqScratch;
 
+/* Pointer views over the N scratch sets a batch is stepping.
+ *
+ * matvec_batch takes ARRAYS OF POINTERS -- one activation per sequence --
+ * but the scratch sets are structs, so those pointers have to be gathered
+ * somewhere. They are gathered ONCE per forward call rather than at each
+ * call site: seven batched weights x n_layer means the same gather would
+ * otherwise be redone 252 times per token on the real model, to no purpose.
+ *
+ * Grown on demand and never shrunk, exactly like scratch_n, and for the same
+ * reason -- the batch width belongs to the caller and model_open cannot know
+ * it. Kept as f32** (not const) because s_gate is a matvec_batch OUTPUT for
+ * ffn_gate and then an INPUT for ffn_down; the const is added at the call
+ * site, see forward_batch_body. */
+typedef struct {
+    f32**  a;        /* s_a        : x for attn_q/attn_k/attn_v       */
+    f32**  q;        /* s_q        : y for attn_q                     */
+    f32**  k;        /* s_k        : y for attn_k                     */
+    f32**  v;        /* s_v        : y for attn_v                     */
+    f32**  attn_out; /* s_attn_out : x for attn_output                */
+    f32**  proj;     /* s_proj     : y for attn_output and ffn_down   */
+    f32**  f;        /* s_f        : x for ffn_gate/ffn_up            */
+    f32**  gate;     /* s_gate     : y for ffn_gate, then x for down  */
+    f32**  up;       /* s_up       : y for ffn_up                     */
+    void** aq;       /* s_aq       : one quantized-activation buffer  */
+    u32    n;        /* sets the arrays are sized for                 */
+} BatchViews;
+
 struct Model {
     GgufFile* f; /* owned; kept open for the model's whole lifetime -- tensor
                     data is borrowed from its mmap (gguf.h) */
@@ -96,7 +123,9 @@ struct Model {
 
     SeqScratch scratch;      /* the single-sequence set          */
     SeqScratch* scratch_n;   /* [n_scratch], grown by the batch  */
+    SeqScratch** scratch_p;  /* [n_scratch], &scratch_n[s]       */
     u32 n_scratch;
+    BatchViews views;        /* pointer arrays over N of them    */
 };
 
 /* ===========================================================================
@@ -197,6 +226,47 @@ static void scratch_alloc(Model* m, SeqScratch* sc) {
     sc->s_logits   = (f32*)xmalloc((size_t)m->n_vocab * sizeof(f32));
     sc->s_aq_bytes = m->scratch.s_aq_bytes;
     sc->s_aq       = (u8*)xmalloc((size_t)sc->s_aq_bytes);
+}
+
+/* Sizes the view arrays for at least `n` sequences and points them at `scs`.
+ *
+ * Grown independently of scratch_n because the two have different callers:
+ * model_forward_position steps ONE sequence off m->scratch, which is not in
+ * scratch_n at all, so n_scratch can legitimately be 0 while the views need
+ * room for one. */
+static void views_bind(BatchViews* vw, SeqScratch* const* scs, u32 n) {
+    if (n > vw->n) {
+        vw->a        = (f32**)xrealloc(vw->a, (size_t)n * sizeof(f32*));
+        vw->q        = (f32**)xrealloc(vw->q, (size_t)n * sizeof(f32*));
+        vw->k        = (f32**)xrealloc(vw->k, (size_t)n * sizeof(f32*));
+        vw->v        = (f32**)xrealloc(vw->v, (size_t)n * sizeof(f32*));
+        vw->attn_out = (f32**)xrealloc(vw->attn_out, (size_t)n * sizeof(f32*));
+        vw->proj     = (f32**)xrealloc(vw->proj, (size_t)n * sizeof(f32*));
+        vw->f        = (f32**)xrealloc(vw->f, (size_t)n * sizeof(f32*));
+        vw->gate     = (f32**)xrealloc(vw->gate, (size_t)n * sizeof(f32*));
+        vw->up       = (f32**)xrealloc(vw->up, (size_t)n * sizeof(f32*));
+        vw->aq       = (void**)xrealloc(vw->aq, (size_t)n * sizeof(void*));
+        vw->n        = n;
+    }
+    for (u32 s = 0; s < n; s++) {
+        vw->a[s]        = scs[s]->s_a;
+        vw->q[s]        = scs[s]->s_q;
+        vw->k[s]        = scs[s]->s_k;
+        vw->v[s]        = scs[s]->s_v;
+        vw->attn_out[s] = scs[s]->s_attn_out;
+        vw->proj[s]     = scs[s]->s_proj;
+        vw->f[s]        = scs[s]->s_f;
+        vw->gate[s]     = scs[s]->s_gate;
+        vw->up[s]       = scs[s]->s_up;
+        vw->aq[s]       = scs[s]->s_aq;
+    }
+}
+
+static void views_free(BatchViews* vw) {
+    free(vw->a); free(vw->q); free(vw->k); free(vw->v);
+    free(vw->attn_out); free(vw->proj); free(vw->f);
+    free(vw->gate); free(vw->up); free(vw->aq);
+    memset(vw, 0, sizeof *vw);
 }
 
 static void scratch_free(SeqScratch* sc) {
@@ -414,8 +484,11 @@ void model_close(Model* m) {
     if (m) {
         for (u32 i = 0; i < m->n_scratch; i++) scratch_free(&m->scratch_n[i]);
         free(m->scratch_n);
+        free(m->scratch_p);
         m->scratch_n = NULL;
+        m->scratch_p = NULL;
         m->n_scratch = 0;
+        views_free(&m->views);
     }
     if (!m) return;
     free(m->layers);
@@ -561,19 +634,11 @@ static void write_dump_layer(const char* dir, u32 layer, const f32* x,
  * ===========================================================================
  */
 
-/* The forward pass, parameterised on WHICH scratch it uses.
- *
- * ▶ SCRATCH COMES IN AS AN ARGUMENT SO A BATCH CAN GIVE EACH SEQUENCE
- * ITS OWN. Every buffer in SeqScratch is per-sequence state (s_x is a
- * running residual, s_scores one head's softmax row), so N sequences
- * stepping together need N sets. Reading it off `m` instead would make
- * the batch share one set and silently interleave the sequences'
- * activations -- which produces plausible output, not a crash.
- *
- * model_forward_position below is this with m->scratch, so every
- * existing caller is unchanged. */
-static void forward_one(Model* m, SeqScratch* sc, Kv* kv, u32 token_id,
-                        u32 pos, const char* dump_dir, f32* x_out) {
+/* One sequence's admission checks, hoisted out of the forward body so the
+ * batch can run ALL of them before stepping ANY sequence. The messages still
+ * say "forward_position" because that is the public entry point a caller
+ * recognises, and every one of these is a caller error. */
+static void validate_seq(Model* m, Kv* kv, u32 token_id, u32 pos) {
     if (token_id >= m->n_vocab) {
         fatal("model: forward_position -- token id %u out of vocab range "
               "[0,%u)",
@@ -620,103 +685,198 @@ static void forward_one(Model* m, SeqScratch* sc, Kv* kv, u32 token_id,
               "overrun it)",
               kv_max_ctx(kv), m->max_ctx);
     }
+}
+
+/* THE forward pass. One body, N sequences, SEQS-INNER/WEIGHTS-OUTER.
+ *
+ * ▶ THE LOOP ORDER IS THE WHOLE POINT (static-batch design note section 5.2).
+ * Per layer, each weight is applied ONCE to all N activations via
+ * matvec_batch, so the weight bytes are read once and amortized across the
+ * batch. The naive order -- a whole forward per sequence -- re-reads every
+ * weight N times and amortizes nothing, which is what this replaced.
+ *
+ * ▶ AND IT IS ALSO WHY BATCH-COMPOSITION INDEPENDENCE IS EXACT RATHER THAN
+ * APPROXIMATE. Every value a sequence computes comes from its own SeqScratch
+ * and its own Kv; nothing sums across sequences, and the accumulation order
+ * inside each dot product is untouched by how many sequences share the call.
+ * So sequence s's output is bit-identical whatever N is and wherever s sits
+ * in the batch -- ROADMAP section M4's EXACT bar, earned by construction.
+ * tests/test_model.c's interleaved-identity test checks it rather than
+ * trusting this paragraph.
+ *
+ * ▶ THERE IS DELIBERATELY NO SEPARATE SINGLE-SEQUENCE BODY.
+ * model_forward_position is this at n_seq=1 over m->scratch. A second body
+ * would drift from this one, and -- worse -- the byte-compare against the
+ * archived m3 gate binary runs through model_forward_position, so a split
+ * would leave the batch path with no golden reference at all. One body means
+ * that comparison covers both.
+ *
+ * The per-sequence work that remains sequence-outer (QK-norm, rope, the KV
+ * append, attention) is exactly the work with no weight to amortize: it
+ * reads that sequence's own cache and nothing else. */
+static void forward_batch_body(Model* m, SeqScratch* const* scs,
+                               Kv* const* kv, const u32* token_ids,
+                               const u32* positions, u32 n_seq,
+                               const char* dump_dir, f32* const* x_out) {
+    if (n_seq == 0) return;
+
+    /* EVERY sequence is validated before ANY of them is stepped.
+     *
+     * Not a style preference: this body writes KV as it goes, so a fatal
+     * raised halfway through would leave the sequences already stepped with
+     * a K/V row appended for a position the batch never completed. Decide
+     * every refusal before any mutation -- the same rule bp_resize's shrink
+     * path had to learn when a refused shrink left blocks orphaned. */
+    for (u32 s = 0; s < n_seq; s++) {
+        validate_seq(m, kv[s], token_ids[s], positions[s]);
+    }
 
     if (dump_dir != NULL) {
+        /* Refused rather than silently interleaved: write_dump_layer names
+         * its files by LAYER only, so N sequences would overwrite each
+         * other's L00.f32 and the survivor would be whichever ran last. The
+         * dump exists to be diffed against ref_forward.py, and a file that
+         * silently belongs to a different sequence than the reader assumes
+         * is worse than no file. */
+        if (n_seq != 1) {
+            fatal("model: forward -- dump_dir is single-sequence only "
+                  "(n_seq=%u); layer dumps are named by layer, so a batch "
+                  "would overwrite them",
+                  n_seq);
+        }
         ensure_dir(dump_dir);
     }
 
-    f32* x = sc->s_x;
-    embed_row(m, token_id, x);
+    BatchViews* vw = &m->views;
+    views_bind(vw, scs, n_seq);
+
+    for (u32 s = 0; s < n_seq; s++) embed_row(m, token_ids[s], scs[s]->s_x);
 
     f32 scale = 1.0f / sqrtf((f32)m->head_dim);
 
     for (u32 L = 0; L < m->n_layer; L++) {
         const Layer* ly = &m->layers[L];
 
-        /* rmsnorm(attn_norm) -> Q/K/V matvec */
-        rmsnorm(x, (const f32*)ly->attn_norm->data, m->n_embd, m->eps,
-                sc->s_a);
-        matvec(ly->attn_q, sc->s_a, m->n_embd, sc->s_q,
-               (u64)m->n_head * m->head_dim, sc->s_aq);
-        matvec(ly->attn_k, sc->s_a, m->n_embd, sc->s_k,
-               (u64)m->n_head_kv * m->head_dim, sc->s_aq);
-        matvec(ly->attn_v, sc->s_a, m->n_embd, sc->s_v,
-               (u64)m->n_head_kv * m->head_dim, sc->s_aq);
+        /* rmsnorm(attn_norm) -> Q/K/V matvec.
+         *
+         * The (const f32* const*) casts on every x argument add const, never
+         * remove it: C will not implicitly convert f32** to const f32* const*
+         * (the classic T** rule), and the arrays must stay f32** because
+         * vw->gate is an OUTPUT here and an INPUT to ffn_down below. */
+        for (u32 s = 0; s < n_seq; s++) {
+            rmsnorm(scs[s]->s_x, (const f32*)ly->attn_norm->data, m->n_embd,
+                    m->eps, scs[s]->s_a);
+        }
+        matvec_batch(ly->attn_q, (const f32* const*)vw->a, m->n_embd, vw->q,
+                     (u64)m->n_head * m->head_dim, vw->aq, n_seq);
+        matvec_batch(ly->attn_k, (const f32* const*)vw->a, m->n_embd, vw->k,
+                     (u64)m->n_head_kv * m->head_dim, vw->aq, n_seq);
+        matvec_batch(ly->attn_v, (const f32* const*)vw->a, m->n_embd, vw->v,
+                     (u64)m->n_head_kv * m->head_dim, vw->aq, n_seq);
 
-        /* per head: rmsnorm(q_norm/k_norm) THEN rope_neox (P3.4: QK-norm
-           BEFORE rope) */
         const f32* qn = (const f32*)ly->attn_q_norm->data;
         const f32* kn = (const f32*)ly->attn_k_norm->data;
-        for (u32 h = 0; h < m->n_head; h++) {
-            f32* qh = sc->s_q + (u64)h * m->head_dim;
-            rmsnorm(qh, qn, m->head_dim, m->eps, qh);
-            rope_neox(qh, m->head_dim, (u64)pos, m->freq_base);
-        }
-        for (u32 h = 0; h < m->n_head_kv; h++) {
-            f32* kh = sc->s_k + (u64)h * m->head_dim;
-            rmsnorm(kh, kn, m->head_dim, m->eps, kh);
-            rope_neox(kh, m->head_dim, (u64)pos, m->freq_base);
-        }
 
-        /* M4: record WHICH token this position holds, once per position.
-         * kv_view backs a position so K/V can be written; this says what
-         * token it is, and only that makes the block eligible for prefix
-         * dedup. Pure bookkeeping -- it touches no arithmetic, which is why
-         * the token stream stays byte-identical. Done on the first layer
-         * only because the answer does not vary by layer. */
-        if (L == 0) kv_note_token(kv, pos, token_id);
+        /* Sequence-outer from here to the attn_output matvec: none of it
+         * touches a weight, so there is nothing to amortize. Each iteration
+         * reads only sequence s's own scratch and its own Kv. */
+        for (u32 s = 0; s < n_seq; s++) {
+            SeqScratch* sc  = scs[s];
+            Kv*         kvs = kv[s];
+            const u32   pos = positions[s];
 
-        /* kv append via kv_view -- the ONLY place K/V ever get written */
-        for (u32 h = 0; h < m->n_head_kv; h++) {
-            KvSlot slot = kv_view(kv, L, h, pos);
-            memcpy(slot.k, sc->s_k + (u64)h * m->head_dim,
-                   (size_t)m->head_dim * sizeof(f32));
-            memcpy(slot.v, sc->s_v + (u64)h * m->head_dim,
-                   (size_t)m->head_dim * sizeof(f32));
-        }
-
-        /* causal GQA attention: q-head h reads kv-head h/gqa_group */
-        for (u32 h = 0; h < m->n_head; h++) {
-            u32        kvh = h / m->gqa_group;
-            const f32* qh = sc->s_q + (u64)h * m->head_dim;
-
-            for (u32 j = 0; j <= pos; j++) {
-                KvSlot slot = kv_view(kv, L, kvh, j);
-                sc->s_scores[j] = vec_dot_f32(qh, slot.k, m->head_dim) * scale;
+            /* per head: rmsnorm(q_norm/k_norm) THEN rope_neox (P3.4: QK-norm
+               BEFORE rope) */
+            for (u32 h = 0; h < m->n_head; h++) {
+                f32* qh = sc->s_q + (u64)h * m->head_dim;
+                rmsnorm(qh, qn, m->head_dim, m->eps, qh);
+                rope_neox(qh, m->head_dim, (u64)pos, m->freq_base);
             }
-            softmax(sc->s_scores, (u64)pos + 1u);
+            for (u32 h = 0; h < m->n_head_kv; h++) {
+                f32* kh = sc->s_k + (u64)h * m->head_dim;
+                rmsnorm(kh, kn, m->head_dim, m->eps, kh);
+                rope_neox(kh, m->head_dim, (u64)pos, m->freq_base);
+            }
 
-            f32* out_h = sc->s_attn_out + (u64)h * m->head_dim;
-            for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
-            for (u32 j = 0; j <= pos; j++) {
-                KvSlot slot = kv_view(kv, L, kvh, j);
-                f32    wgt = sc->s_scores[j];
-                for (u32 d = 0; d < m->head_dim; d++) {
-                    out_h[d] += wgt * slot.v[d];
+            /* M4: record WHICH token this position holds, once per position.
+             * kv_view backs a position so K/V can be written; this says what
+             * token it is, and only that makes the block eligible for prefix
+             * dedup. Pure bookkeeping -- it touches no arithmetic, which is
+             * why the token stream stays byte-identical. Done on the first
+             * layer only because the answer does not vary by layer. */
+            if (L == 0) kv_note_token(kvs, pos, token_ids[s]);
+
+            /* kv append via kv_view -- the ONLY place K/V ever get written */
+            for (u32 h = 0; h < m->n_head_kv; h++) {
+                KvSlot slot = kv_view(kvs, L, h, pos);
+                memcpy(slot.k, sc->s_k + (u64)h * m->head_dim,
+                       (size_t)m->head_dim * sizeof(f32));
+                memcpy(slot.v, sc->s_v + (u64)h * m->head_dim,
+                       (size_t)m->head_dim * sizeof(f32));
+            }
+
+            /* causal GQA attention: q-head h reads kv-head h/gqa_group */
+            for (u32 h = 0; h < m->n_head; h++) {
+                u32        kvh = h / m->gqa_group;
+                const f32* qh = sc->s_q + (u64)h * m->head_dim;
+
+                for (u32 j = 0; j <= pos; j++) {
+                    KvSlot slot = kv_view(kvs, L, kvh, j);
+                    sc->s_scores[j] =
+                        vec_dot_f32(qh, slot.k, m->head_dim) * scale;
+                }
+                softmax(sc->s_scores, (u64)pos + 1u);
+
+                f32* out_h = sc->s_attn_out + (u64)h * m->head_dim;
+                for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
+                for (u32 j = 0; j <= pos; j++) {
+                    KvSlot slot = kv_view(kvs, L, kvh, j);
+                    f32    wgt = sc->s_scores[j];
+                    for (u32 d = 0; d < m->head_dim; d++) {
+                        out_h[d] += wgt * slot.v[d];
+                    }
                 }
             }
         }
 
         /* attn_output matvec -> residual add */
-        matvec(ly->attn_output, sc->s_attn_out, (u64)m->n_head * m->head_dim,
-               sc->s_proj, m->n_embd, sc->s_aq);
-        for (u32 i = 0; i < m->n_embd; i++) x[i] += sc->s_proj[i];
+        matvec_batch(ly->attn_output, (const f32* const*)vw->attn_out,
+                     (u64)m->n_head * m->head_dim, vw->proj, m->n_embd,
+                     vw->aq, n_seq);
+        for (u32 s = 0; s < n_seq; s++) {
+            f32* x = scs[s]->s_x;
+            for (u32 i = 0; i < m->n_embd; i++) x[i] += scs[s]->s_proj[i];
+        }
 
         /* rmsnorm(ffn_norm) -> SwiGLU -> ffn_down -> residual add */
-        rmsnorm(x, (const f32*)ly->ffn_norm->data, m->n_embd, m->eps, sc->s_f);
-        matvec(ly->ffn_gate, sc->s_f, m->n_embd, sc->s_gate, m->n_ff, sc->s_aq);
-        matvec(ly->ffn_up, sc->s_f, m->n_embd, sc->s_up, m->n_ff, sc->s_aq);
-        swiglu(sc->s_gate, sc->s_up, m->n_ff, sc->s_gate); /* in place: safe
-            aliasing per kernels.h's swiglu contract */
-        matvec(ly->ffn_down, sc->s_gate, m->n_ff, sc->s_proj, m->n_embd, sc->s_aq);
-        for (u32 i = 0; i < m->n_embd; i++) x[i] += sc->s_proj[i];
+        for (u32 s = 0; s < n_seq; s++) {
+            rmsnorm(scs[s]->s_x, (const f32*)ly->ffn_norm->data, m->n_embd,
+                    m->eps, scs[s]->s_f);
+        }
+        matvec_batch(ly->ffn_gate, (const f32* const*)vw->f, m->n_embd,
+                     vw->gate, m->n_ff, vw->aq, n_seq);
+        matvec_batch(ly->ffn_up, (const f32* const*)vw->f, m->n_embd, vw->up,
+                     m->n_ff, vw->aq, n_seq);
+        for (u32 s = 0; s < n_seq; s++) {
+            swiglu(scs[s]->s_gate, scs[s]->s_up, m->n_ff, scs[s]->s_gate);
+            /* in place: safe aliasing per kernels.h's swiglu contract */
+        }
+        matvec_batch(ly->ffn_down, (const f32* const*)vw->gate, m->n_ff,
+                     vw->proj, m->n_embd, vw->aq, n_seq);
+        for (u32 s = 0; s < n_seq; s++) {
+            f32* x = scs[s]->s_x;
+            for (u32 i = 0; i < m->n_embd; i++) x[i] += scs[s]->s_proj[i];
+        }
 
         if (dump_dir != NULL) {
-            write_dump_layer(dump_dir, L, x, m->n_embd);
+            /* n_seq == 1 here -- refused above otherwise. */
+            write_dump_layer(dump_dir, L, scs[0]->s_x, m->n_embd);
         }
     }
 
-    memcpy(x_out, x, (size_t)m->n_embd * sizeof(f32));
+    for (u32 s = 0; s < n_seq; s++) {
+        memcpy(x_out[s], scs[s]->s_x, (size_t)m->n_embd * sizeof(f32));
+    }
 }
 
 /* ===========================================================================
@@ -727,7 +887,12 @@ static void forward_one(Model* m, SeqScratch* sc, Kv* kv, u32 token_id,
 
 void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
                             const char* dump_dir, f32* x_out) {
-    forward_one(m, &m->scratch, kv, token_id, pos, dump_dir, x_out);
+    /* The batch body at N=1, over the single-sequence scratch. Deliberately
+     * not a second implementation: see forward_batch_body's header. */
+    SeqScratch* scs[1] = {&m->scratch};
+    Kv*         kvs[1] = {kv};
+    f32*        out[1] = {x_out};
+    forward_batch_body(m, scs, kvs, &token_id, &pos, 1u, dump_dir, out);
 }
 
 void model_forward_batch(Model* m, Kv* const* kv, const u32* token_ids,
@@ -742,12 +907,29 @@ void model_forward_batch(Model* m, Kv* const* kv, const u32* token_ids,
         for (u32 s = m->n_scratch; s < n_seq; s++) {
             scratch_alloc(m, &m->scratch_n[s]);
         }
+        m->scratch_p = (SeqScratch**)xrealloc(
+            m->scratch_p, (size_t)n_seq * sizeof(SeqScratch*));
         m->n_scratch = n_seq;
+
+        /* EVERY entry is rewritten, not just the newly added ones. The
+         * xrealloc of scratch_n above may have MOVED the array, which leaves
+         * every previously stored &scratch_n[s] dangling; refilling only
+         * [old_n, n_seq) would leave the older entries pointing into freed
+         * memory. That is a use-after-free reachable ONLY by a batch that
+         * grows -- so no fixed-width test would ever see it.
+         *
+         * The block pool met this same hazard and answered it with indices
+         * instead of pointers. Here the array is model-owned and rebuilt in
+         * this one place, which is small enough to keep honest; the rebuild
+         * is what makes it so, not the pointer type. */
+        for (u32 s = 0; s < n_seq; s++) m->scratch_p[s] = &m->scratch_n[s];
     }
-    for (u32 s = 0; s < n_seq; s++) {
-        forward_one(m, &m->scratch_n[s], kv[s], token_ids[s], positions[s],
-                    NULL, x_out[s]);
-    }
+
+    /* One scratch set per sequence -- the array the seqs-inner body indexes.
+     * Pointing several entries at the same set is exactly the failure the
+     * interleaved-identity test now catches. */
+    forward_batch_body(m, m->scratch_p, kv, token_ids, positions, n_seq, NULL,
+                       x_out);
 }
 
 void model_compute_logits(Model* m, const f32* x, f32* logits_out) {

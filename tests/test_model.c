@@ -883,18 +883,19 @@ TEST(model_generate_eos_stops_early_and_is_included) {
  * POSITION IN THE ROUND-ROBIN IS VARIED deliberately. "First to step" is
  * exactly the case an off-by-one in a batched inner loop would leave working.
  *
- * ▶ WHAT THIS TEST DOES *NOT* COVER YET, MEASURED RATHER THAN ASSUMED.
+ * ▶ THIS TEST IS NOW LOAD-BEARING, AND THAT WAS MEASURED, NOT ASSUMED.
  * Pointing every sequence at scratch_n[0] -- one shared SeqScratch for the
- * whole batch -- does NOT fail this test today, and that was checked by
- * mutation, not guessed. The reason is structural: model_forward_batch is
- * still SEQUENCE-OUTER, so each sequence finishes its entire forward pass
- * before the next begins and can never observe another's scratch.
+ * whole batch -- USED to pass here, because the body was sequence-outer and
+ * each sequence finished its entire forward pass before the next began, so
+ * none could observe another's scratch. That mutation was re-run against the
+ * sequence-outer body immediately before the seqs-inner change (21/21, still
+ * passing) and again immediately after, where it FAILS at all three
+ * round-robin slots. Per-sequence scratch stopped being plumbing and started
+ * being a correctness requirement at that commit.
  *
- * Per-sequence scratch therefore is not yet load-bearing. It becomes so the
- * moment the body goes seqs-inner (matvec_batch per weight, sequence loop
- * inside), at which point that same mutation starts failing here. The
- * plumbing lands first on purpose; what must not happen is claiming this
- * test proves a separation it cannot currently see.
+ * The width is fixed at 3 here. Independence across DIFFERENT N -- and the
+ * scratch-table realloc that only a GROWING batch can reach -- is the
+ * separate test below.
  * ===========================================================================
  */
 TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
@@ -963,6 +964,92 @@ TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
 
     free(solo);
     free(co);
+    model_close(m);
+}
+
+/* ===========================================================================
+ * M4: a sequence's output must not depend on the batch WIDTH -- including
+ * when the width GROWS between calls.
+ *
+ * Two things are under test here, neither covered by the interleaved test
+ * above, which only ever runs N=3.
+ *
+ * (1) BATCH-COMPOSITION INDEPENDENCE ACROSS DIFFERENT N. ROADMAP section M4
+ *     wants A bit-identical whatever N is; a single fixed N cannot show that.
+ *
+ * (2) THE SCRATCH POINTER TABLE SURVIVING A REALLOC. model_forward_batch
+ *     keeps a parallel array of &scratch_n[s] for the seqs-inner body to
+ *     index. Growing the batch xreallocs scratch_n, which may MOVE it, so
+ *     every entry of that array has to be rewritten -- not just the newly
+ *     added ones. Refilling only the new range leaves the earlier entries
+ *     pointing into freed memory: a use-after-free NO fixed-width batch can
+ *     reach, because it needs one call to populate the table and a second,
+ *     WIDER call to move it.
+ *
+ * Hence widths that ASCEND (2 -> 5), and A at index 0 -- the entry a partial
+ * refill strands. Under ASan the stranded read is loud; without it, A's
+ * hidden state simply stops matching solo.
+ * ===========================================================================
+ */
+TEST(m4_a_sequence_is_bit_identical_across_batch_widths_including_growth) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 n_embd = model_n_embd(m);
+    const u32 NTOK = 5;
+    const u32 tokens_a[5] = {0, 1, 2, 3, 4};
+
+    f32* solo = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+    {
+        Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                         model_n_head_kv(m), model_head_dim(m));
+        for (u32 t = 0; t < NTOK; t++)
+            model_forward_position(m, kv, tokens_a[t], t, NULL,
+                                   solo + (size_t)t * n_embd);
+        kv_close(kv);
+    }
+
+    /* ASCENDING, in this order: the second call is the one that grows the
+     * table. Reversing them would test nothing. */
+    const u32 widths[2] = {2u, 5u};
+    for (u32 w = 0; w < 2; w++) {
+        const u32 n = widths[w];
+        KvStore*  st =
+            kv_store_open(model_n_layer(m),
+                          n * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
+                          model_n_head_kv(m), model_head_dim(m));
+
+        Kv**  kv   = (Kv**)xmalloc((size_t)n * sizeof(Kv*));
+        f32** dst  = (f32**)xmalloc((size_t)n * sizeof(f32*));
+        u32*  tok  = (u32*)xmalloc((size_t)n * sizeof(u32));
+        u32*  posn = (u32*)xmalloc((size_t)n * sizeof(u32));
+        for (u32 i = 0; i < n; i++) {
+            kv[i] = kv_open_in(st, model_max_ctx(m));
+            ASSERT_TRUE(kv[i] != NULL);
+            dst[i] = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+        }
+
+        f32* co = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+        for (u32 t = 0; t < NTOK; t++) {
+            for (u32 i = 0; i < n; i++) {
+                /* A at index 0; the others run unrelated streams, so a bleed
+                 * between them is a WRONG value rather than a coincidence. */
+                tok[i]  = (i == 0) ? tokens_a[t] : ((tokens_a[t] + i) % 5u);
+                posn[i] = t;
+            }
+            model_forward_batch(m, kv, tok, posn, n, dst);
+            memcpy(co + (size_t)t * n_embd, dst[0],
+                   (size_t)n_embd * sizeof(f32));
+        }
+
+        ASSERT_TRUE(memcmp(solo, co, (size_t)NTOK * n_embd * sizeof(f32)) == 0);
+
+        for (u32 i = 0; i < n; i++) { kv_close(kv[i]); free(dst[i]); }
+        free(co); free(kv); free(dst); free(tok); free(posn);
+        kv_store_close(st);
+    }
+
+    free(solo);
     model_close(m);
 }
 
