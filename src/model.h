@@ -123,6 +123,24 @@ typedef struct {
 void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
                              const char* dump_dir, f32* x_out);
 
+/* Steps `n_seq` sequences by one position each, one Kv handle per sequence.
+ *
+ * Each sequence gets its OWN SeqScratch, so nothing they compute can reach
+ * each other -- that is what makes batch-composition independence possible
+ * at all, and it is checked by test_model.c's interleaved-identity test.
+ *
+ * The bar (ROADMAP section M4): every sequence's x_out must be BIT-IDENTICAL
+ * to what model_forward_position would have written for it alone, whatever N
+ * is and wherever it sits in the batch.
+ *
+ * ▶ CURRENTLY SEQUENCE-OUTER. The weight-amortizing form calls matvec_batch
+ * per weight with the sequence loop inside; matvec_batch exists and is fused
+ * for all four weight types, but the forward BODY still steps one sequence at
+ * a time, so this API is correct and not yet faster. Wiring the body is the
+ * remaining step, and the identity test already guards it. */
+void model_forward_batch(Model* m, Kv* const* kv, const u32* token_ids,
+                         const u32* positions, u32 n_seq, f32* const* x_out);
+
 /* output_norm rmsnorm(x) -> tied matvec (output.weight if present, else
  * token_embd.weight) -> logits_out[model_n_vocab(m)]. Caller-owned
  * logits_out buffer; no allocation. */

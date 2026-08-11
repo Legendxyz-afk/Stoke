@@ -882,6 +882,19 @@ TEST(model_generate_eos_stops_early_and_is_included) {
  *
  * POSITION IN THE ROUND-ROBIN IS VARIED deliberately. "First to step" is
  * exactly the case an off-by-one in a batched inner loop would leave working.
+ *
+ * ▶ WHAT THIS TEST DOES *NOT* COVER YET, MEASURED RATHER THAN ASSUMED.
+ * Pointing every sequence at scratch_n[0] -- one shared SeqScratch for the
+ * whole batch -- does NOT fail this test today, and that was checked by
+ * mutation, not guessed. The reason is structural: model_forward_batch is
+ * still SEQUENCE-OUTER, so each sequence finishes its entire forward pass
+ * before the next begins and can never observe another's scratch.
+ *
+ * Per-sequence scratch therefore is not yet load-bearing. It becomes so the
+ * moment the body goes seqs-inner (matvec_batch per weight, sequence loop
+ * inside), at which point that same mutation starts failing here. The
+ * plumbing lands first on purpose; what must not happen is claiming this
+ * test proves a separation it cannot currently see.
  * ===========================================================================
  */
 TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
@@ -922,14 +935,25 @@ TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
         toks[(slot + 1u) % 3u] = tokens_b;
         toks[(slot + 2u) % 3u] = tokens_c;
 
+        /* Driven through model_forward_batch, so the N-scratch plumbing is
+         * what is under test -- each sequence gets its own SeqScratch and
+         * none of them may reach another's. Stepping them by hand would
+         * have exercised only the single m->scratch. */
+        f32* scratchpad[3];
+        for (u32 i = 0; i < 3; i++)
+            scratchpad[i] = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+
         for (u32 t = 0; t < NTOK; t++) {
+            u32 tok[3], posn[3];
+            f32* dst[3];
             for (u32 i = 0; i < 3; i++) {
-                f32* dst = (i == slot) ? co + (size_t)t * n_embd : NULL;
-                f32  sink[8];
-                model_forward_position(m, kv[i], toks[i][t], t, NULL,
-                                       dst ? dst : sink);
+                tok[i]  = toks[i][t];
+                posn[i] = t;
+                dst[i]  = (i == slot) ? co + (size_t)t * n_embd : scratchpad[i];
             }
+            model_forward_batch(m, kv, tok, posn, 3u, dst);
         }
+        for (u32 i = 0; i < 3; i++) free(scratchpad[i]);
 
         ASSERT_TRUE(memcmp(solo, co, (size_t)NTOK * n_embd * sizeof(f32)) == 0);
 
