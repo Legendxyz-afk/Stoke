@@ -230,6 +230,27 @@ bool bp_append(BlockPool* bp, BpSeq* seq, u32 token_id) {
     return true;
 }
 
+bool bp_seq_ensure(BlockPool* bp, BpSeq* seq, u32 n_tokens) {
+    if (n_tokens <= seq->len) return true;
+    u32 need = blocks_for(n_tokens);
+    if (need > seq->cap_blocks) return false;
+
+    while (seq->nblocks < need) {
+        u32 nb = block_alloc(bp);
+        if (nb == BP_NIL) return false;
+        seq->table[seq->nblocks++] = nb;
+    }
+    /* Fill counts follow the length so I4/I5 hold: every block but the last
+     * is full, the last carries the remainder. Ids and hash stay unset. */
+    seq->len = n_tokens;
+    for (u32 k = 0; k < seq->nblocks; k++) {
+        u32 full = (k + 1 < seq->nblocks) ? BP_BLOCK_TOKENS
+                                          : n_tokens - k * BP_BLOCK_TOKENS;
+        bp->b[seq->table[k]].n_filled = (u16)full;
+    }
+    return true;
+}
+
 BpSeq* bp_fork(BlockPool* bp, BpSeq* seq, u32 max_tokens) {
     u32 want = blocks_for(max_tokens);
     if (want < seq->nblocks) want = seq->nblocks;
@@ -321,6 +342,18 @@ bool bp_seq_adopt(BlockPool* bp, BpSeq* seq, u32 block) {
 }
 
 /* ---- introspection -------------------------------------------------- */
+
+u32 bp_seq_block(const BpSeq* seq, u32 ordinal) {
+    if (ordinal >= seq->nblocks)
+        fatal("bp_seq_block: ordinal %u out of range [0,%u)", ordinal, seq->nblocks);
+    return seq->table[ordinal];
+}
+
+u32 bp_block_slot(const BlockPool* bp, u32 block) {
+    if (block >= bp->capacity)
+        fatal("bp_block_slot: block %u out of range [0,%u)", block, bp->capacity);
+    return bp->b[block].arena_slot;
+}
 
 u32 bp_capacity(const BlockPool* bp)   { return bp->capacity; }
 u32 bp_free_count(const BlockPool* bp) { return bp->free_n; }

@@ -78,6 +78,19 @@ bool bp_append(BlockPool* bp, BpSeq* seq, u32 token_id);
  * does not fit. */
 BpSeq* bp_fork(BlockPool* bp, BpSeq* seq, u32 max_tokens);
 
+/* Grows `seq` to cover `n_tokens` positions, allocating blocks as needed,
+ * WITHOUT token ids.
+ *
+ * ▶ WHY THIS EXISTS SEPARATELY FROM bp_append. The KV path and the token
+ * path need different halves of a block. model.c writes K/V through
+ * kv_view(pos) and never tells anyone a token was appended, so the storage
+ * side needs blocks by POSITION; dedup needs ids and hashes. Blocks grown
+ * this way carry hash 0, which bp_dedup_find never matches (hash_block never
+ * returns 0), so they are storage-only and cannot be silently deduped
+ * against -- which is the safe direction: a block whose ids we never
+ * recorded must never satisfy a prefix match. */
+bool bp_seq_ensure(BlockPool* bp, BpSeq* seq, u32 n_tokens);
+
 /* ---- step fencing (I10) ---------------------------------------------
  * A block freed mid-step must not be reallocated until that step retires,
  * or an in-flight reader sees another sequence's KV. Frees between
@@ -111,6 +124,11 @@ u64  bp_test_hash(u64 parent_hash, const u32* ids);
 void bp_test_force_hash(BlockPool* bp, u32 block, u64 hash);
 
 /* ---- introspection for the checker and the sim ---------------------- */
+/* Translation primitives kv_view needs. Kept here rather than exposing the
+ * descriptor struct, so "where a block lives" stays this file's business. */
+u32  bp_seq_block(const BpSeq* seq, u32 ordinal);
+u32  bp_block_slot(const BlockPool* bp, u32 block);
+
 u32  bp_capacity(const BlockPool* bp);
 u32  bp_free_count(const BlockPool* bp);
 u32  bp_seq_len(const BpSeq* seq);
