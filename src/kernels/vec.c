@@ -237,6 +237,39 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
         return;
     }
 
+    if (w->type == GGUF_GGML_TYPE_Q4_K || w->type == GGUF_GGML_TYPE_Q6_K) {
+        int is_q4 = (w->type == GGUF_GGML_TYPE_Q4_K);
+        u32 blk_elems = is_q4 ? KERNELS_Q4_K_BLOCK_ELEMS
+                              : KERNELS_Q6_K_BLOCK_ELEMS;
+        u32 blk_bytes = is_q4 ? KERNELS_Q4_K_BLOCK_BYTES
+                              : KERNELS_Q6_K_BLOCK_BYTES;
+        u64 row_bytes = (n_in / blk_elems) * blk_bytes;
+
+        for (u32 s = 0; s < n_seq; s++) {
+            if (aq_scratch == NULL || aq_scratch[s] == NULL) {
+                fatal("kernels: matvec_batch -- tensor '%s' is a K-quant but "
+                      "sequence %u supplied no activation scratch "
+                      "((n_in/%u)*%u = %llu bytes required)",
+                      w->name, s, KERNELS_Q8_K_BLOCK_ELEMS,
+                      KERNELS_Q8_K_BLOCK_BYTES,
+                      (unsigned long long)((n_in / KERNELS_Q8_K_BLOCK_ELEMS)
+                                           * KERNELS_Q8_K_BLOCK_BYTES));
+            }
+            quantize_row_q8_k(x[s], n_in, aq_scratch[s]);
+        }
+
+        int simd = kernels_cpu_has_avx_vnni();
+        BatchRowJob j = {(const u8*)w->data, row_bytes, NULL, n_in, y, n_seq,
+                         aq_scratch,
+                         is_q4 ? (simd ? rows_q4_k_avx2 : rows_q4_k_scalar)
+                               : (simd ? rows_q6_k_avx2 : rows_q6_k_scalar)};
+        pool_for_rows(n_out, rows_delegate_batch, &j);
+        return;
+    }
+
+    /* Unreachable for the four supported types; matvec's own else-branch
+     * fatals on anything else, so delegating here keeps that one refusal in
+     * one place rather than duplicating its message. */
     for (u32 s = 0; s < n_seq; s++) {
         matvec(w, x[s], n_in, y[s], n_out, aq_scratch ? aq_scratch[s] : NULL);
     }
