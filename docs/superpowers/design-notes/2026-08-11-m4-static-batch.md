@@ -83,7 +83,50 @@ its op mix produced hits.
 
 Point 4 is the one an obvious implementation of this test would miss.
 
-## 5.5 Order of work
+## 5.5 The batched matvec, read off the existing one
+
+`matvec(w, x, n_in, y, n_out, aq_scratch)` (`src/kernels/vec.c:106`) already
+has the right shape. It builds a `RowJob` and hands it to
+`pool_for_rows(n_out, rows_*, &j)` — **the K5 pool parallelizes over ROWS**.
+
+The batched form changes the loop nesting and nothing else:
+
+    per row r:                     per row r:
+      y[r] = dot(W_r, x)    ->       for s in 0..N-1:
+                                       y[s][r] = dot(W_r, x[s])
+
+**Bit-exactness is free, and the reason is worth stating precisely: the
+accumulation order INSIDE each dot product is untouched.** `y[s][r]` is
+computed by the same kernel over the same bytes in the same sequence as it
+would be in a solo call. Nothing sums across s. That is the same argument
+`tests/test_pool.c` already rests on for threads — rows are independent, so
+redistributing them reorders nothing — and it is why ROADMAP §M4 can demand
+bit-level independence rather than a tolerance.
+
+Row-parallelism survives unchanged: each worker takes a row range and does
+all N sequences for its rows. Rows stay independent, so the pool's existing
+bit-identical-at-any-thread-count property carries over untouched.
+
+**The one real constraint is the quantized activation.** The header notes
+that x is quantized ONCE per call rather than per row, "x is constant across
+rows". Under batching x is constant across rows but **not** across sequences,
+so each sequence needs its own `aq_scratch` — which is exactly why
+`SeqScratch` was grouped first (`1989726`). N scratch sets, indexed by s.
+
+**Scope, so the size is not a surprise:** four weight paths (F32, Q8_0, Q4_K,
+Q6_K) plus the SIMD twins, each needing the batched form, each under gate
+[1]'s bit-exactness requirement. That gate is why this is not a mechanical
+edit: the twins must stay bit-identical to the scalar path, and a batched
+twin that changes grouping fails it — the exact trap the 08-03 session
+recorded when an 8-lane f32 accumulator differed from per-block grouping on
+4 of 4 real rows.
+
+**Its test is standalone and should be written first:** `matvec_batch` over
+N activations must produce, for each s, a result BYTE-IDENTICAL to
+`matvec` called on `x[s]` alone — checkable at the kernel level with no
+model, no KV, and no forward pass.
+
+## 5.6 Order of work
 
 1. Per-sequence scratch in `Model` (the §5.3 hazard that is pure plumbing).
 2. The identity test, against the sequential path — green, and honest about
