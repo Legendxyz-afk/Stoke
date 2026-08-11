@@ -108,7 +108,74 @@ Throughput ceiling implied by the budget, at W = 43.6 GB/s (Q4_K_M, 6T):
 These are ceilings from traffic alone — no compute, no scheduling, no
 overhead — so they are upper bounds on what M5 can reach, not predictions.
 
-## 1.5 What this does and does not settle
+## 1.5 The E-core datum that did not reproduce, and what it costs
+
+The thread-peak claim traces to one measurement (ROADMAP §M3, 08-03 K3-entry,
+quiesced, grade GATE): llama Q8_0 **1T 3.574 / 6T 12.645 / 10T 10.802 tok/s**,
+read as *"10 THREADS IS SLOWER THAN 6 … adding the 4 E-cores COSTS 15%, which
+is the forward note's P/E-straggling trap measured on the opponent's own
+binary — direct evidence for LOCKED decision 'work-stealing 64-row chunks'."*
+
+Today, same box, same binary family:
+
+| threads | 08-03 | 2026-08-11 | delta |
+|---:|---:|---:|---:|
+| 1 | 3.574 | 3.49 | −2.4 % |
+| 6 | 12.645 | 12.62 | −0.2 % |
+| **10** | **10.802** | **13.47** | **+24.7 %** |
+
+**Two of the three points reproduce almost exactly; only 10T does not.** The
+topology assumption behind the reading is correct — the CPU is an i5-13450HX,
+6 P-cores + 4 E-cores — so `-t 10` really does span both core types. But
+E-cores did not cost 15 % today; they *gained* 6.7 % on Q8_0 and 2.8 % on
+Q4_K_M.
+
+A single depressed datum in an otherwise-reproducing triple is a box-state
+signature, and this milestone has the precedent on record: `38b4f5a`
+(2026-08-03, the same week) reopened ruling D3 because *"its central
+measurement was a depressed box state."* Today's power plan is "Turbo"; what
+it was on 08-03 cannot be recovered. **Hypothesis, not finding.**
+
+**What this costs the LOCKED decision: less than it first appears, and the
+distinction is worth being precise about.** "Work-stealing 64-row chunks" was
+justified by E-cores *subtracting*. They do not subtract — but 4 extra cores
+(+67 % core count) buy only +6.7 %, which is still straggling, just the
+non-negative kind. **The decision survives; its cited evidence does not.**
+Static equal partitioning across heterogeneous cores strands work either way,
+and that is the argument to keep. The ROADMAP's parenthetical should stop
+claiming a 15 % penalty.
+
+## 1.6 M5's bars checked as budget lines — the ROADMAP's required check
+
+The bars are **aggregate** tok/s on Q4_K_M (forward-designs note: "S2
+aggregate ≥17.7 @8 AND ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16"). Two families:
+llamacpp-tuned parity (17.7 / 14.2, from M0's measured baseline) and
+2×-ollama (10.8 / 16.8; the 16.8 is M0's unexplained N=16 inversion).
+
+Against the traffic ceilings of §1.4 (W = 43.6 GB/s, L = 1,500, f16 KV):
+
+| N | budget ceiling | binding bar | slack |
+|---:|---:|---:|---:|
+| 8 | 81.7 tok/s | 17.7 | **4.6×** |
+| 16 | 115.5 tok/s | 16.8 | **6.9×** |
+
+**M5's bars are nowhere near the bandwidth ceiling.** Whatever makes M5 hard,
+it is not weight streaming — it will be per-core compute efficiency and
+scheduler behaviour. That is the answer the ROADMAP wanted before paged KV is
+scoped, and it means paged KV should be designed for *correctness and
+teardown cost*, not for bandwidth.
+
+**One correction this forces on the headline premise.** M0's "best concurrent
+baseline is 11 % of the ceiling" implies a ~9× opportunity, and that ceiling
+amortizes weights while ignoring KV traffic: 8 × 43.6 / 2.4973 = 139.7 tok/s,
+against which 17.7 is 12.7 % — M0's number, reproduced. But at **M5's own
+agentic trace** (N=8, shared 1–2k prefix) the KV term is real and the ceiling
+is 81.7, against which 17.7 is **21.7 %**. **The opportunity at M5's operating
+point is ~4.6×, not ~9×.** Both are large and the premise stands; but the 9×
+belongs to short contexts, and quoting it for the agentic trace overstates the
+room by roughly half. Worth stating plainly before M5's bars are judged.
+
+## 1.7 What this does and does not settle
 
 - **Settles:** W for both files; N = 6 for budget lines; the crossover formula
   and its value; that Q8 KV is a *structural* lever at M5's operating point,

@@ -295,7 +295,19 @@ a measured figure**. (b) **10 THREADS IS SLOWER THAN 6** (46.2 vs 54.1
 GB/s): adding the 4 E-cores COSTS 15%, which is the forward note's
 P/E-straggling trap measured on the opponent's own binary — direct
 evidence for LOCKED decision "work-stealing 64-row chunks", and K5 must
-tune thread count rather than assume more is better. (c) 1T→6T is
+tune thread count rather than assume more is better. **[⚠ THE 10T DATUM
+DID NOT REPRODUCE, 2026-08-11 M4 entry, quiesced, same box and binary
+family — `docs/superpowers/design-notes/2026-08-11-m4-bandwidth-budget.md`
+§1.5. 1T and 6T reproduce to −2.4% and −0.2%; 10T measures 13.47 against
+10.802, i.e. +24.7%, so E-cores GAINED 6.7% (Q8_0) and 2.8% (Q4_K_M)
+rather than costing 15%. Topology confirmed correct (i5-13450HX, 6P+4E).
+A single depressed point in an otherwise-reproducing triple is a
+box-state signature, and `38b4f5a` reopened D3 that same week for exactly
+that — hypothesis, not finding. THE LOCKED DECISION SURVIVES, ITS CITED
+EVIDENCE DOES NOT: 4 extra cores (+67% count) buy only +6.7%, which is
+still straggling, just the non-negative kind, and static equal
+partitioning across heterogeneous cores strands work either way. Stop
+quoting a 15% penalty.]** (c) 1T→6T is
 **3.54× on six cores (59% of linear)**: sublinear, but the game-window
 2.49× understated it. **Projection, recorded before the work so it
 cannot be fitted afterwards:** stoke 1.716 → ×2 (K3) → ×3.54 (K5, 6T)
