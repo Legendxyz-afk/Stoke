@@ -54,7 +54,41 @@ typedef struct {
     u64 n_in;
     f32* const* y;
     u32 n_seq;
+    void* const* aq;                     /* quant paths: one per sequence  */
+    void (*row_fn)(void*, u64, u64);     /* the validated 1-seq row worker */
 } BatchRowJob;
+
+/* ▶ QUANT PATHS FUSE BY REUSING THE VALIDATED ROW WORKER, NOT BY REWRITING
+ * IT. rows_q8_0_avx2 processes FOUR rows per pass, and gate [1] holds it
+ * bit-identical to the scalar kernel; a hand-written batched twin would have
+ * to reproduce that grouping exactly, which is the 2026-08-03 trap (an
+ * 8-lane f32 accumulator differed from per-block grouping on 4 of 4 real
+ * rows). So instead the worker is called unchanged, once per (row chunk,
+ * sequence) -- each call computes exactly what a solo matvec would compute
+ * for those rows, so bit-exactness is structural rather than re-argued.
+ *
+ * The CHUNK is what buys the amortization. Looping sequences around the
+ * worker's whole row range would re-read every row per sequence, and a
+ * thread's range (n_out/threads rows, ~25k on the logits matvec) does not
+ * fit in cache. A chunk does: its rows are read once from memory and then
+ * hit warm for every remaining sequence. Multiple of 4 so the twin's
+ * four-row stepping is never split across a chunk boundary. */
+#define BATCH_ROW_CHUNK 64u
+
+static void rows_delegate_batch(void* vctx, u64 begin, u64 end) {
+    const BatchRowJob* j = (const BatchRowJob*)vctx;
+    for (u64 r0 = begin; r0 < end; r0 += BATCH_ROW_CHUNK) {
+        u64 r1 = r0 + BATCH_ROW_CHUNK;
+        if (r1 > end) r1 = end;
+        for (u32 s = 0; s < j->n_seq; s++) {
+            RowJob rj = {j->base, j->row_bytes,
+                         j->x ? j->x[s] : NULL,
+                         j->aq ? j->aq[s] : NULL,
+                         j->n_in, j->y[s]};
+            j->row_fn(&rj, r0, r1);
+        }
+    }
+}
 
 static void rows_f32_batch(void* vctx, u64 begin, u64 end) {
     const BatchRowJob* j = (const BatchRowJob*)vctx;
@@ -171,8 +205,35 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
                   (unsigned long long)n_out);
         }
         BatchRowJob j = {(const u8*)w->data, n_in * (u64)sizeof(f32), x, n_in,
-                         y, n_seq};
+                         y, n_seq, NULL, NULL};
         pool_for_rows(n_out, rows_f32_batch, &j);
+        return;
+    }
+
+    if (w->type == GGUF_GGML_TYPE_Q8_0) {
+        u64 row_bytes =
+            (n_in / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
+        for (u32 s = 0; s < n_seq; s++) {
+            if (aq_scratch == NULL || aq_scratch[s] == NULL) {
+                /* Same refusal as matvec, for the same reason: no silent
+                 * fallback to the f32 path, because the two are different
+                 * arithmetic classes. */
+                fatal("kernels: matvec_batch -- tensor '%s' is Q8_0 but "
+                      "sequence %u supplied no activation scratch "
+                      "((n_in/%u)*%u = %llu bytes required)",
+                      w->name, s, KERNELS_Q8_0_BLOCK_ELEMS,
+                      KERNELS_Q8_0_BLOCK_BYTES,
+                      (unsigned long long)row_bytes);
+            }
+            /* Once per sequence, outside the parallel region -- x differs
+             * per sequence but not across rows, exactly as in matvec. */
+            quantize_row_q8_0(x[s], n_in, aq_scratch[s]);
+        }
+        BatchRowJob j = {(const u8*)w->data, row_bytes, NULL, n_in, y, n_seq,
+                         aq_scratch,
+                         kernels_cpu_has_avx_vnni() ? rows_q8_0_avx2
+                                                    : rows_q8_0_scalar};
+        pool_for_rows(n_out, rows_delegate_batch, &j);
         return;
     }
 

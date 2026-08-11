@@ -148,7 +148,7 @@ int main(void) {
     for (u32 threads = 1; threads <= 4; threads *= 2) {
         pool_start(threads);
         check_type("f32 (FUSED)",   GGUF_GGML_TYPE_F32,  1u,  4u);
-        check_type("q8_0",          GGUF_GGML_TYPE_Q8_0, 32u, 34u);
+        check_type("q8_0 (FUSED)",   GGUF_GGML_TYPE_Q8_0, 32u, 34u);
         check_type("q4_K",          GGUF_GGML_TYPE_Q4_K, 256u, 144u);
         check_type("q6_K",          GGUF_GGML_TYPE_Q6_K, 256u, 210u);
         pool_stop();
