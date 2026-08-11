@@ -50,6 +50,8 @@
 
 #include "gguf.h"
 #include "kv.h"
+
+#include "blockpool.h"
 #include "model.h"
 
 #include <errno.h>
@@ -861,6 +863,85 @@ TEST(model_generate_eos_stops_early_and_is_included) {
  * parses metadata + validates shapes (mmap is lazy), no forward pass.
  * ===========================================================================
  */
+/* ===========================================================================
+ * M4: sequences sharing one paged KV store must not influence each other.
+ *
+ * The bar (static-batch design note section 5.4): a sequence's forward pass
+ * must produce a BIT-IDENTICAL hidden state whether it runs alone or
+ * interleaved with others, whatever else shares the pool.
+ *
+ * THIS IS NOT VACUOUS TODAY even though the forward path is sequential.
+ * The sequences share a KvStore: they draw from one block pool, recycle each
+ * other's freed blocks, and index through per-sequence block tables. Any of
+ * that going wrong shows up here as one sequence reading another's KV --
+ * which produces a plausible hidden state, not a crash.
+ *
+ * It also becomes the batch-of-N identity gate the moment the matvecs go
+ * seqs-inner, which is why it lands BEFORE that change rather than after:
+ * a test written against code you already believe works gets shaped to pass.
+ *
+ * POSITION IN THE ROUND-ROBIN IS VARIED deliberately. "First to step" is
+ * exactly the case an off-by-one in a batched inner loop would leave working.
+ * ===========================================================================
+ */
+TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 n_embd = model_n_embd(m);
+    const u32 NTOK = 5;
+    const u32 tokens_a[5] = {0, 1, 2, 3, 4};
+    const u32 tokens_b[5] = {4, 3, 2, 1, 0};
+    const u32 tokens_c[5] = {2, 2, 0, 4, 1};
+
+    f32* solo = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+    f32* co   = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+
+    /* A alone, in its own store. */
+    {
+        Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                         model_n_head_kv(m), model_head_dim(m));
+        for (u32 t = 0; t < NTOK; t++)
+            model_forward_position(m, kv, tokens_a[t], t, NULL,
+                                   solo + (size_t)t * n_embd);
+        kv_close(kv);
+    }
+
+    /* A interleaved with B and C on ONE shared store, at three different
+     * positions in the round-robin. */
+    for (u32 slot = 0; slot < 3; slot++) {
+        KvStore* st = kv_store_open(model_n_layer(m),
+                                    3u * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
+                                    model_n_head_kv(m), model_head_dim(m));
+        Kv* kv[3];
+        for (u32 i = 0; i < 3; i++) kv[i] = kv_open_in(st, model_max_ctx(m));
+        ASSERT_TRUE(kv[0] && kv[1] && kv[2]);
+
+        const u32* toks[3];
+        toks[slot] = tokens_a;
+        toks[(slot + 1u) % 3u] = tokens_b;
+        toks[(slot + 2u) % 3u] = tokens_c;
+
+        for (u32 t = 0; t < NTOK; t++) {
+            for (u32 i = 0; i < 3; i++) {
+                f32* dst = (i == slot) ? co + (size_t)t * n_embd : NULL;
+                f32  sink[8];
+                model_forward_position(m, kv[i], toks[i][t], t, NULL,
+                                       dst ? dst : sink);
+            }
+        }
+
+        ASSERT_TRUE(memcmp(solo, co, (size_t)NTOK * n_embd * sizeof(f32)) == 0);
+
+        for (u32 i = 0; i < 3; i++) kv_close(kv[i]);
+        kv_store_close(st);
+    }
+
+    free(solo);
+    free(co);
+    model_close(m);
+}
+
 TEST(model_open_real_q8_0_file_matches_probed_config) {
     if (!require_real_model_or_skip(
             REAL_Q8_0_MODEL, "model_open_real_q8_0_file_matches_probed_config")) {
