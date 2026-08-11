@@ -1,6 +1,9 @@
 # stoke — Phase 1 roadmap (the operational map)
 
-*Updated 2026-08-02, M2 CLOSED (tag `m2`) — M3 is now. Amended same day
+*Updated 2026-08-11, M3 CLOSED (tag `m3`) — M4 is now. M3 closed with the
+flip tripwire FLAGGED rather than quiet: see its row and the anomaly memo;
+the zero-BUG criterion passed on its own terms. Previously updated
+2026-08-02, M2 CLOSED (tag `m2`). Amended 2026-08-02
 by a Kabir-launched Fable strategic review (additions marked "Fable
 2026-08-02"; all tightenings, no gate loosened). This is the FIRST document a working
 session reads. It is a map, not the territory: every milestone's binding
@@ -68,8 +71,8 @@ benchmark report.
 | M0 | Measure the enemy | ✅ 2026-07-17 `8ce4fd8` | Premise: best baseline 11% of ceiling (kill ≥70%) — GO |
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
-| **M3** | **AVX2+VNNI kernels + pool** | **← NOW** | Scalar↔SIMD exact-diff; **item [2] RESTATED (Fable 2026-08-05): the classified-divergence criterion — M2-vs-HEAD 50-prompt sweep + ref probe grids on BOTH files, zero BUG-class; the live oracle is a SURVEY, never pass/fail**; ≥7.8 tok/s single-stream (re-anchored 8.08–8.46, ✅); tsan ✅; model.c kv-cap guard ✅ |
-| M4 | Paged KV + static batch | queued | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
+| M3 | AVX2+VNNI kernels + pool | ✅ 2026-08-11 tag `m3` | **[2v2] ZERO BUG-CLASS: 9/9 divergences ARITHMETIC-CLASS on the Q4_K_M grid (worst margin 0.555672 vs τ 1.023739 = 54% of threshold, no ESCALATE); τ_Q4KM frozen BEFORE grading under key `f32_intcore_q4_k_m` = 1.023739 / 1.178094 / 0.811432; 290 covered positions, per-prompt stated; p41 clean 64/64. Q8_0 discharged by the 08-06 ruling.** [1] test_simd 12/12 ✅; [3] re-anchored 8.08–8.46 both legs ✅; [4] matrix green at `5051878` ✅; [5] ✅. **⚠ FLAGGED, NOT QUIET — the flip tripwire FIRED (9 ≥ 8).** Its λ inherited a ~0.5%/token base measured on **Q8_0**; Q4_K_M measures **3.10%/token**, so the threshold fires by construction on this file. Kept at ≥8 rather than recalibrated from the data it polices (circular); the mismatch was committed in `6b484b9` at 5 flips, before the count could be known. Disposition: `superpowers/memos/2026-08-11-m3-tripwire-anomaly-memo.md`. Report: `superpowers/gate-reports/2026-08-11-m3-q4km-grid-gate-report.md` |
+| **M4** | **Paged KV + static batch** | **← NOW** | 11-invariant sim ×1e6 ASan; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02) |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
 | M7 | Harden + launch-ready | queued | Llama-3.2 parity incl. long-ctx; unsloth-file run; 24h soak; reproducible report; Kabir sign-offs |
@@ -156,6 +159,22 @@ over); (2) L2 ladder re-run after it; (3) adjudication per the ruling §3;
 ruling, the rest stand. FREEZES until the report is stamped: no `stoke.exe`
 rebuild, no `ref_forward.py` edit (both hash-pinned into the evidence
 chain). The ledger NEXT-SESSION block has the exact resume point.
+
+**M3 — ✅ CLOSED 2026-08-11, tag `m3`.** Closed on the classified-divergence
+criterion: 9/9 ARITHMETIC-CLASS, zero BUG, τ_Q4KM frozen before grading.
+**One precondition was met by judgement, not measurement — the flip tripwire
+fired (9 ≥ 8) and is FLAGGED, not quiet** (`superpowers/memos/2026-08-11-m3-
+tripwire-anomaly-memo.md`; Kabir confirmed 2026-08-11). Two entries ride into
+M4 as carried headroom: **(a)** τ is frozen from agreeing positions on the
+same pair it grades, so a defect uniformly inflating logit differences would
+inflate τ and the margins together and this criterion cannot see it —
+`ref_forward.py`'s independence from stoke's C lineage is the actual
+protection, and a spec misreading shared by ref and HEAD stays invisible (the
+07-28 blind spot, still deferred); **(b)** gate [1]'s bit-exactness price of
+1.235× and K3's ~1.16× residual, permanent for Phase 1 per the 08-05 ruling
+and ratified by Kabir 2026-08-10. The text below is the milestone's original
+scope, kept for its reasoning; the oracle gate it describes was RETIRED by
+the 08-05 ruling and M3 closed oracle-free.
 
 **M3 — SIMD + pool. NOW ALSO CARRIES M2'S DEFERRED ORACLE GATE.** Inherited
 from the 07-28 option-3 decision, and M3 does not close without them:

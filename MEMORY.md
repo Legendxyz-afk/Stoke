@@ -523,6 +523,55 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   run survives sessions, reboots and gaming. The final run banked 16 prompts
   in 731.8 min unattended with **zero restarts**.
 
+- **2026-08-11 — M3 COMPLETE (tag `m3`) — the SIMD kernels and the thread
+  pool are in, and every divergence from an independent implementation is
+  accounted for as arithmetic, not as a defect.** Gate report:
+  `docs/superpowers/gate-reports/2026-08-11-m3-q4km-grid-gate-report.md`
+  (`d145659`). **[2v2] ZERO BUG-CLASS: 9 divergences on the Q4_K_M
+  reference grid, 9 ARITHMETIC-CLASS**, worst margin 0.555672 against a τ of
+  1.023739 — 54 % of threshold, no ESCALATE, so the L2/L3 ladder was never
+  needed; every top-5 set agreed modulo the rank-5 tolerance and no foreign
+  core candidate appeared. **τ_Q4KM frozen BEFORE any grading** under the
+  per-file key `f32_intcore_q4_k_m`: 1.023739 / 1.178094 / 0.811432 over
+  bands [0,100) / [100,300) / [300,600), each from 20 rule-selected agreeing
+  positions. Evidence: 6 probe legs + 5 required continuations + 2
+  added-sample legs, **290 covered positions with per-prompt coverage stated
+  so the tripwire's denominator is explicit**; p41 — the adversarial
+  477-token leg — ran clean 64/64 and needed no continuation. Q8_0 was
+  discharged by the 08-06 ruling against the archived M2 binary. Binary
+  `stoke.exe 876ce53f…` frozen since 2026-04-08 and re-verified by sha256 at
+  every leg and every probe; archived at the tag as
+  `build/stoke-m3-gate-876ce53f.exe`. Matrix green at the last
+  source-touching commit `5051878` (Windows 9/9 + 4 goldens; WSL
+  plain/asan/tsan, zero sanitizer findings) with no `src/` file changed
+  since. Other items: [1] test_simd 12/12 across all quant kinds; [3] the
+  bar re-anchored HARDER to 8.08–8.46 and passed on both legs; [5]
+  microbench table + `history.jsonl` GATE row.
+  **THE ONE PRECONDITION MET BY JUDGEMENT, flagged rather than smoothed
+  over.** The close criterion requires the flip tripwire quiet; **it fired,
+  9 ≥ 8.** Its threshold was derived from a ~0.5 %/token near-tie base
+  measured on **Q8_0**, and Q4_K_M measures **3.10 %/token** — 4.2× Q8_0's
+  own rate, because 4-bit puts the f32 reference and the integer core
+  further apart than 8-bit does. Under the assumed rate the observation is a
+  1-in-46,800 event; under the file's own measured rate the expectation is
+  exactly 9.0. **Kept at ≥8 rather than recalibrated**, because setting a
+  detector's threshold from the data it must police is the circularity the
+  whole τ discipline exists to prevent. What makes that an explanation
+  rather than an excuse: the mismatch was computed and committed in
+  `6b484b9` **when only 5 flips existed**, before p41 and before any
+  continuation, and predicted the firing in writing. Disposition:
+  `docs/superpowers/memos/2026-08-11-m3-tripwire-anomaly-memo.md`; Kabir
+  confirmed 2026-08-11.
+  **What M3 cost, honestly:** the kernels were the easy half. The gate
+  consumed the milestone — an oracle bar that had to be retired as
+  structurally unreachable after it failed on a divergence the reference
+  itself sided with stoke on, a replacement criterion that took two Fable
+  rulings to fix, and a τ-freeze pipeline that did not exist end-to-end
+  until the final night. Three silent traps were found in inherited tooling
+  while wiring it: a τ key that would have frozen Q4_K_M under Q8_0's name,
+  a sample floor counting values where the ruling meant positions (20 → about
+  4), and continuation divergences recorded in no manifest at all.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
