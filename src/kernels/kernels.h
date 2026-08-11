@@ -241,6 +241,26 @@ f32 vec_dot_f32(const f32* a, const f32* b, u64 n);
 void matvec(const GgufTensor* w, const f32* x, u64 n_in, f32* y, u64 n_out,
             void* aq_scratch);
 
+/* Applies `w` to `n_seq` activations at once -- seqs-inner/weights-outer, so
+ * the weight row is read once and applied to every sequence. Design:
+ * docs/superpowers/design-notes/2026-08-11-m4-static-batch.md section 5.5.
+ *
+ * THE CONTRACT IS BYTE-IDENTITY: for every s, y[s] must equal what
+ * matvec(w, x[s], n_in, y[s], n_out, aq_scratch[s]) would have written,
+ * bit for bit. ROADMAP section M4 requires batch-composition independence
+ * EXACT, and this is where it is earned -- by construction, since the
+ * accumulation order inside each dot product is untouched and nothing sums
+ * across sequences. tests/test_matvec_batch.c checks it rather than
+ * assuming it.
+ *
+ * `x` and `y` are arrays of n_seq pointers; `aq_scratch` likewise (one
+ * quantized-activation buffer per sequence, because x is constant across
+ * rows but NOT across sequences). aq_scratch may be NULL only when `w` is
+ * F32, which needs none. */
+void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
+                  f32* const* y, u64 n_out, void* const* aq_scratch,
+                  u32 n_seq);
+
 /* ---- normalization / positional / activation ---- */
 
 /* y[i] = (x[i] / sqrt(mean(x^2) + eps)) * w[i], f32 mean, for i in

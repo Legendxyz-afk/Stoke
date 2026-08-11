@@ -37,6 +37,35 @@ typedef struct {
     f32* y;
 } RowJob;
 
+/* ▶ THE BATCHED JOB. Identical to RowJob except x and y are ARRAYS indexed
+ * by sequence. The row loop is unchanged and the sequence loop goes INSIDE
+ * it, which is the whole of "seqs-inner/weights-outer": the weight row is
+ * read once and applied to every sequence.
+ *
+ * Bit-exactness falls out and the reason is worth being precise about: the
+ * accumulation order INSIDE each dot product is untouched, and nothing sums
+ * across sequences. y[s][r] is computed by the same kernel over the same
+ * bytes in the same order as a solo matvec would compute it. That is the
+ * same argument row-parallelism already rests on. */
+typedef struct {
+    const u8* base;
+    u64 row_bytes;
+    const f32* const* x;
+    u64 n_in;
+    f32* const* y;
+    u32 n_seq;
+} BatchRowJob;
+
+static void rows_f32_batch(void* vctx, u64 begin, u64 end) {
+    const BatchRowJob* j = (const BatchRowJob*)vctx;
+    for (u64 r = begin; r < end; r++) {
+        const f32* row = (const f32*)(const void*)(j->base + r * j->row_bytes);
+        for (u32 s = 0; s < j->n_seq; s++) {
+            j->y[s][r] = vec_dot_f32(row, j->x[s], j->n_in);
+        }
+    }
+}
+
 static void rows_f32(void* vctx, u64 begin, u64 end) {
     const RowJob* j = (const RowJob*)vctx;
     for (u64 r = begin; r < end; r++) {
@@ -100,6 +129,55 @@ static void rows_q6_k_avx2(void* vctx, u64 begin, u64 end) {
     for (u64 r = begin; r < end; r++) {
         j->y[r] = vec_dot_q6_k_q8_k_avx2(j->base + r * j->row_bytes, j->aq,
                                          j->n_in);
+    }
+}
+
+/* Applies `w` to n_seq activations at once. For each s the result is
+ * BYTE-IDENTICAL to matvec(w, x[s], ...) called alone -- that is the
+ * contract, it is what ROADMAP section M4's batch-composition independence
+ * requires, and tests/test_matvec_batch.c checks it rather than assuming it.
+ *
+ * ▶ THE F32 PATH IS FUSED; THE QUANT PATHS STILL DELEGATE, ONE CALL PER
+ * SEQUENCE. That is deliberate and is not a stub: each quant path has a SIMD
+ * twin under gate [1]'s bit-exactness requirement, and a batched twin that
+ * changes accumulation grouping fails it -- the 2026-08-03 trap where an
+ * 8-lane f32 accumulator differed from per-block grouping on 4 of 4 real
+ * rows. Fusing them is worth doing one path at a time, against the test that
+ * already exists. Delegation is exactly correct meanwhile; it is only slower
+ * than it could be. */
+void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
+                  f32* const* y, u64 n_out, void* const* aq_scratch,
+                  u32 n_seq) {
+    if (n_seq == 0) return;
+
+    if (w->type == GGUF_GGML_TYPE_F32) {
+        /* The fused path never enters matvec, so it must repeat matvec's
+         * shape checks itself -- a wrong n_in here would silently address
+         * memory with the wrong row stride rather than fatal. */
+        if (w->n_dims != 2) {
+            fatal("kernels: matvec_batch -- tensor '%s' has n_dims=%u, want 2",
+                  w->name, w->n_dims);
+        }
+        if (w->dims[0] != n_in) {
+            fatal("kernels: matvec_batch -- tensor '%s' dims[0]=%llu but "
+                  "caller passed n_in=%llu -- shape mismatch",
+                  w->name, (unsigned long long)w->dims[0],
+                  (unsigned long long)n_in);
+        }
+        if (w->dims[1] != n_out) {
+            fatal("kernels: matvec_batch -- tensor '%s' dims[1]=%llu but "
+                  "caller passed n_out=%llu -- shape mismatch",
+                  w->name, (unsigned long long)w->dims[1],
+                  (unsigned long long)n_out);
+        }
+        BatchRowJob j = {(const u8*)w->data, n_in * (u64)sizeof(f32), x, n_in,
+                         y, n_seq};
+        pool_for_rows(n_out, rows_f32_batch, &j);
+        return;
+    }
+
+    for (u32 s = 0; s < n_seq; s++) {
+        matvec(w, x[s], n_in, y[s], n_out, aq_scratch ? aq_scratch[s] : NULL);
     }
 }
 
