@@ -299,6 +299,17 @@ u32 bp_dedup_find(const BlockPool* bp, u64 parent_hash, const u32* ids) {
     return BP_NIL;
 }
 
+/* Test-only; see the header for why these exist and why they are not
+ * behind a macro. */
+u64 bp_test_hash(u64 parent_hash, const u32* ids) {
+    return hash_block(parent_hash, ids);
+}
+
+void bp_test_force_hash(BlockPool* bp, u32 block, u64 hash) {
+    if (block >= bp->capacity) fatal("bp_test_force_hash: block %u out of range", block);
+    bp->b[block].hash = hash;
+}
+
 bool bp_seq_adopt(BlockPool* bp, BpSeq* seq, u32 block) {
     if (block >= bp->capacity) return false;
     if (seq->nblocks == seq->cap_blocks) return false;

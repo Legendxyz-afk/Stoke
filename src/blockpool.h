@@ -93,6 +93,23 @@ void bp_step_retire(BlockPool* bp);
 u32  bp_dedup_find(const BlockPool* bp, u64 parent_hash, const u32* ids);
 bool bp_seq_adopt(BlockPool* bp, BpSeq* seq, u32 block);
 
+/* ---- test-only hooks -------------------------------------------------
+ * ▶ THESE EXIST TO REACH A PATH NOTHING ELSE CAN. I9 -- a dedup match must
+ * compare stored token ids, not just hashes -- has a load-bearing half that
+ * only runs AFTER a hash match, and no ordinary test reaches it: changing a
+ * token id changes the hash, so the lookup misses at the hash and would miss
+ * identically with the comparison deleted. The only way to exercise the
+ * comparison is a HASH COLLISION, which cannot be produced by choosing
+ * inputs against a 64-bit mixer. So the test manufactures one.
+ *
+ * Named bp_test_* so a production caller is self-evidently wrong. They are
+ * not compiled out by a macro because this tree's Makefile builds every
+ * tests/test_*.c against the same objects with no per-target flags, and
+ * plumbing one -D through it would be a larger change than the hooks. That
+ * tradeoff is deliberate and disclosed rather than hidden. */
+u64  bp_test_hash(u64 parent_hash, const u32* ids);
+void bp_test_force_hash(BlockPool* bp, u32 block, u64 hash);
+
 /* ---- introspection for the checker and the sim ---------------------- */
 u32  bp_capacity(const BlockPool* bp);
 u32  bp_free_count(const BlockPool* bp);

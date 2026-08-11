@@ -173,13 +173,48 @@ static void test_dedup(void) {
     bp_release(bp, t);
     bp_close(bp);
 
-    /* ▶ DISCLOSED GAP, because a test that looks like it covers I9 and does
-     * not is worse than no test. I9's load-bearing half is the memcmp that
-     * runs AFTER a hash match. The cases above never reach it: a changed id
-     * changes the hash, so they miss at the hash and would still miss with
-     * the memcmp deleted. Exercising it needs a CRAFTED COLLISION -- two id
-     * arrays with equal chained hashes -- which this test does not build.
-     * Recorded as owed, not silently skipped. */
+}
+
+/* ▶ I9's REAL PATH: a MANUFACTURED HASH COLLISION.
+ *
+ * Everything in test_dedup misses at the HASH, so it would pass unchanged
+ * with the id comparison deleted -- full coverage of the wrong thing, the
+ * shape this tree has been caught by four times. The comparison only runs
+ * after a hash match, and a 64-bit mixer will not hand one over, so the
+ * collision is manufactured: store block A, then force its recorded hash to
+ * equal what a DIFFERENT id array B hashes to.
+ *
+ * A dedup that trusts the hash now returns A for a lookup of B -- silently
+ * substituting another sequence's KV behind a prefix that merely hashed the
+ * same, which is the one failure in this structure that leaves the output
+ * plausible. I9 says it must return a miss. */
+static void test_dedup_collision(void) {
+    BlockPool* bp = bp_open(16);
+    BpSeq* s = bp_admit(bp, 64);
+
+    u32 a[BP_BLOCK_TOKENS], b[BP_BLOCK_TOKENS];
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) {
+        a[i] = 6000 + i;
+        b[i] = 7000 + i;            /* every id differs */
+        bp_append(bp, s, a[i]);
+    }
+
+    u32 blk = bp_dedup_find(bp, 0, a);
+    ok("collision setup: A is findable by its own ids", blk != BP_NIL);
+    ok("B does not match before the collision is forced",
+       bp_dedup_find(bp, 0, b) == BP_NIL);
+
+    bp_test_force_hash(bp, blk, bp_test_hash(0, b));
+
+    /* The hash now matches for B while the stored ids are still A's. */
+    ok("I9: a HASH MATCH with different ids is REFUSED",
+       bp_dedup_find(bp, 0, b) == BP_NIL);
+    ok("and A no longer matches, since its recorded hash was overwritten",
+       bp_dedup_find(bp, 0, a) == BP_NIL);
+    inv(bp, "forced collision");
+
+    bp_release(bp, s);
+    bp_close(bp);
 }
 
 static void storm(u32 ops) {
@@ -249,6 +284,7 @@ int main(int argc, char** argv) {
     test_fencing();
     test_resize();
     test_dedup();
+    test_dedup_collision();
     printf("targeted: %d checks, %d failures\n", checks, failures);
 
     storm(ops);
