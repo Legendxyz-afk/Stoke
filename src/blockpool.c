@@ -251,6 +251,37 @@ bool bp_seq_ensure(BlockPool* bp, BpSeq* seq, u32 n_tokens) {
     return true;
 }
 
+bool bp_seq_set_token(BlockPool* bp, BpSeq* seq, u32 pos, u32 token_id) {
+    if (!bp_seq_ensure(bp, seq, pos + 1u)) return false;
+
+    u32 ord = pos / BP_BLOCK_TOKENS;
+    u32 off = pos % BP_BLOCK_TOKENS;
+    BpBlock* x = &bp->b[seq->table[ord]];
+
+    /* I7: never mutate a block someone else can see. A forked sequence
+     * shares FULL blocks whose ids are already recorded, so there is
+     * nothing to write -- skipping is correct, not a silent failure. */
+    if (x->refcount != 1) return true;
+
+    x->ids[off] = token_id;
+
+    if (off == BP_BLOCK_TOKENS - 1u) {
+        u64 parent = 0;
+        if (ord > 0) {
+            parent = bp->b[seq->table[ord - 1]].hash;
+            /* ▶ A CHAIN IS ONLY FORMED WHEN THE WHOLE PREFIX IS RECORDED.
+             * If the previous block has no hash its ids were never noted,
+             * and chaining from 0 would make this block indistinguishable
+             * from a FIRST block with the same 16 ids -- a prefix match
+             * that skipped everything before it. Leaving the hash at 0
+             * makes the block storage-only, which is the safe direction. */
+            if (parent == 0) return true;
+        }
+        x->hash = hash_block(parent, x->ids);
+    }
+    return true;
+}
+
 BpSeq* bp_fork(BlockPool* bp, BpSeq* seq, u32 max_tokens) {
     u32 want = blocks_for(max_tokens);
     if (want < seq->nblocks) want = seq->nblocks;

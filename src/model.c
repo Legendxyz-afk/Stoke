@@ -597,6 +597,14 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
             rope_neox(kh, m->head_dim, (u64)pos, m->freq_base);
         }
 
+        /* M4: record WHICH token this position holds, once per position.
+         * kv_view backs a position so K/V can be written; this says what
+         * token it is, and only that makes the block eligible for prefix
+         * dedup. Pure bookkeeping -- it touches no arithmetic, which is why
+         * the token stream stays byte-identical. Done on the first layer
+         * only because the answer does not vary by layer. */
+        if (L == 0) kv_note_token(kv, pos, token_id);
+
         /* kv append via kv_view -- the ONLY place K/V ever get written */
         for (u32 h = 0; h < m->n_head_kv; h++) {
             KvSlot slot = kv_view(kv, L, h, pos);

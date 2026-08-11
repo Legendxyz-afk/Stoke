@@ -21,6 +21,8 @@
 
 #include "kv.h"
 
+#include "blockpool.h"
+
 #include <stdbool.h>
 
 static int checks = 0, failures = 0;
@@ -55,6 +57,64 @@ static bool check_pos(Kv* kv, u32 pos, f32 tag) {
         }
     }
     return true;
+}
+
+/* Storage and identity are separate halves of a block, and only the second
+ * makes it dedup-eligible. These check that the separation holds in BOTH
+ * directions -- a noted block becomes findable, an un-noted one never does
+ * -- because the dangerous failure is a block matching a prefix whose ids
+ * were never actually recorded. */
+static void test_token_ids(void) {
+    /* 12 blocks, three 32-token sequences = 2 blocks reserved each. Sized
+     * against the RESERVATION, not against what gets written: at max_ctx=64
+     * each would reserve 4 and the third admission would be refused -- which
+     * it was, and dereferencing that NULL is how this test first crashed
+     * rather than reported. */
+    KvStore* st = kv_store_open(2, 12, 2, 4);
+    BlockPool* pool = kv_store_pool(st);
+    Kv* a = kv_open_in(st, 32);
+    if (!a) { ok("token-id setup: sequence a admitted", false); kv_store_close(st); return; }
+
+    u32 ids[BP_BLOCK_TOKENS];
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) {
+        ids[i] = 300 + i;
+        kv_note_token(a, i, ids[i]);
+    }
+    ok("a fully noted block becomes dedup-eligible",
+       bp_dedup_find(pool, 0, ids) != BP_NIL);
+
+    u32 other[BP_BLOCK_TOKENS];
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) other[i] = 900 + i;
+    ok("a different prefix does not match", bp_dedup_find(pool, 0, other) == BP_NIL);
+
+    /* Storage without identity: back positions via kv_view only. */
+    Kv* b = kv_open_in(st, 32);
+    if (!b) { ok("token-id setup: sequence b admitted", false); kv_close(a); kv_store_close(st); return; }
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) (void)kv_view(b, 0, 0, i);
+    u32 blank[BP_BLOCK_TOKENS];
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) blank[i] = 0;
+    ok("a block backed but never noted is NOT dedup-eligible",
+       bp_dedup_find(pool, 0, blank) == BP_NIL);
+
+    /* THE CHAIN GUARD. Note block 1's ids while block 0's were never
+     * recorded. Chaining from a zero parent would make this block
+     * indistinguishable from a FIRST block holding the same 16 ids -- a
+     * prefix match that silently skipped everything before it. */
+    Kv* c = kv_open_in(st, 32);
+    if (!c) { ok("token-id setup: sequence c admitted", false); kv_close(a); kv_close(b); kv_store_close(st); return; }
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) (void)kv_view(c, 0, 0, i);
+    u32 second[BP_BLOCK_TOKENS];
+    for (u32 i = 0; i < BP_BLOCK_TOKENS; i++) {
+        second[i] = 700 + i;
+        kv_note_token(c, BP_BLOCK_TOKENS + i, second[i]);
+    }
+    ok("a block whose PREFIX was never recorded does not become eligible",
+       bp_dedup_find(pool, 0, second) == BP_NIL);
+
+    ok("the pool's invariants survive all of it", bp_check(pool) == NULL);
+
+    kv_close(a); kv_close(b); kv_close(c);
+    kv_store_close(st);
 }
 
 int main(void) {
@@ -122,6 +182,8 @@ int main(void) {
     write_pos(solo, 39, 7.0f);
     ok("kv_open still works and is self-contained", check_pos(solo, 39, 7.0f));
     kv_close(solo);
+
+    test_token_ids();
 
     printf("test_kvshare: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

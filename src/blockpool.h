@@ -91,6 +91,12 @@ BpSeq* bp_fork(BlockPool* bp, BpSeq* seq, u32 max_tokens);
  * recorded must never satisfy a prefix match. */
 bool bp_seq_ensure(BlockPool* bp, BpSeq* seq, u32 n_tokens);
 
+/* Records the token id sitting at `pos`, growing the sequence if needed.
+ * This is what makes a block dedup-eligible: a block's hash is finalized
+ * when its last id lands, and only when the whole prefix before it is also
+ * recorded. Blocks grown by bp_seq_ensure alone stay storage-only. */
+bool bp_seq_set_token(BlockPool* bp, BpSeq* seq, u32 pos, u32 token_id);
+
 /* ---- step fencing (I10) ---------------------------------------------
  * A block freed mid-step must not be reallocated until that step retires,
  * or an in-flight reader sees another sequence's KV. Frees between

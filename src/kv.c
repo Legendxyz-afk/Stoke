@@ -93,6 +93,19 @@ void kv_store_close(KvStore* st) {
 
 u32 kv_store_free_blocks(const KvStore* st) { return bp_free_count(st->pool); }
 
+BlockPool* kv_store_pool(KvStore* st) { return st->pool; }
+
+void kv_note_token(Kv* kv, u32 pos, u32 token_id) {
+    if (pos >= kv->max_ctx) {
+        fatal("kv: kv_note_token -- pos %u out of range [0,%u)", pos,
+              kv->max_ctx);
+    }
+    if (!bp_seq_set_token(kv->store->pool, kv->seq, pos, token_id)) {
+        fatal("kv: kv_note_token -- could not back position %u (max_ctx=%u)",
+              pos, kv->max_ctx);
+    }
+}
+
 Kv* kv_open_in(KvStore* st, u32 max_ctx) {
     if (max_ctx == 0) fatal("kv: kv_open_in -- max_ctx must be > 0");
     BpSeq* seq = bp_admit(st->pool, max_ctx);

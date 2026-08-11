@@ -50,6 +50,21 @@ typedef struct {
  * gets sized against RAM, and at M5's target it is the larger consumer
  * (design note section 3.1: 9.66 GB of f32 KV against a 2.50 GB model). */
 typedef struct KvStore KvStore;
+typedef struct BlockPool BlockPool;
+
+/* The store's pool, for admission decisions, prefix lookups and the sim.
+ * Exposed because the pool IS the shared resource -- hiding it would mean
+ * re-exporting each of its operations through kv.h one at a time. */
+BlockPool* kv_store_pool(KvStore* st);
+
+/* Records which token sits at `pos`. Storage and identity are separate
+ * halves of a block: kv_view backs a position so K/V can be written, this
+ * says WHICH token it is, and only the second makes a block eligible for
+ * prefix dedup. model_forward_position calls it, since that is where both
+ * the token id and the position are already in hand.
+ *
+ * Fatal if pos >= max_ctx, matching kv_view's bound exactly. */
+void kv_note_token(Kv* kv, u32 pos, u32 token_id);
 
 KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
                        u32 head_dim);
