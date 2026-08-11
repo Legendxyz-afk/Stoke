@@ -5,27 +5,39 @@ here is a preference; where a choice was genuinely open it says so.
 
 ## 3.1 The number that should shape this design
 
-KV per token is 147,456 B at f16 (§1.3), so a 16-token block holds **2.25 MiB**
-across all 36 layers, K and V.
+**stoke's KV is f32 today** — `src/kv.c:41` is `xcalloc(total, sizeof(f32))`,
+read from the accessor rather than assumed (§1.3 carries the correction and
+what it cost). So KV per token is 294,912 B and **a 16-token block holds
+4.50 MiB** across all 36 layers, K and V.
 
-| N | ctx | pool @ f16 | @ Q8 KV | blocks |
-|---:|---:|---:|---:|---:|
-| 8 | 2,048 | 2.42 GB | 1.21 | 1,024 |
-| **16** | **2,048** | **4.83 GB** | 2.42 | 2,048 |
-| 16 | 1,024 | 2.42 GB | 1.21 | 1,024 |
+| N | ctx | pool @ **f32 (today)** | @ f16 | @ Q8 | blocks |
+|---:|---:|---:|---:|---:|---:|
+| 8 | 2,048 | **4.83 GB** | 2.42 | 1.21 | 1,024 |
+| **16** | **2,048** | **9.66 GB** | 4.83 | 2.42 | 2,048 |
+| 16 | 1,024 | 4.83 GB | 2.42 | 1.21 | 1,024 |
 
-**At M5's own target the KV pool is nearly twice the model** (2.50 GB) on a
-15.63 GB box. Two consequences that are easy to miss:
+**At M5's own target the f32 pool is 9.66 GB against a 2.50 GB model, on a
+15.63 GB box — 12.16 GB before activations, the OS, or any page cache.** That
+is not a tight fit; it does not fit. This box's recorded failure mode is a
+page-cache collapse when a large mmap loses residency (~3× slowdown, measured
+live twice), and 12.16 GB of 15.63 GB walks straight into it.
 
-1. **Memory-elastic serving is not a Phase-2 nicety, it is load-bearing at
-   M5's target on this hardware.** Model + pool + activations ≈ 7.5 GB before
-   anything else runs, and this box's recorded failure mode is a page-cache
-   collapse when a large mmap loses residency (~3× slowdown, measured live
-   twice). ROADMAP §M4 constraint (1) — runtime-variable capacity — is what
-   keeps that survivable.
-2. **Q8 KV halves the pool as well as the traffic.** §1.4 already made it a
-   bandwidth lever at the crossover; it is equally a *footprint* lever, and the
-   two arguments are independent. Both feed Kabir's M5 default call.
+Two consequences, and the first is stronger than the earlier draft claimed:
+
+1. **A KV dtype reduction is REQUIRED to reach M5's target on this hardware,
+   not merely a lever.** At f16 the pool is 4.83 GB (7.33 GB with the model);
+   at Q8, 2.42 GB (4.92 GB). The ROADMAP already frames Q8-KV as an M4/M5
+   option whose default is Kabir's call at M5 — this says the *option* is load-
+   bearing for the target, independent of the bandwidth argument in §1.4.
+   Those two arguments are separate and both point the same way.
+2. **Memory-elastic serving is not a Phase-2 nicety either.** Even at Q8, a
+   2,048-block pool plus the model is ~4.9 GB of a box that also runs a
+   desktop. ROADMAP §M4 constraint (1) — runtime-variable capacity, give
+   blocks *back* under pressure — is what keeps that survivable, and it is why
+   §3.2's index-not-pointer decision matters rather than being pedantry.
+
+*The earlier version of this section sized the pool at f16 and reported 4.83 GB
+at N=16. It was wrong by 2× in the same way §1.3 was, from the same cause.*
 
 ## 3.2 Indices, never pointers
 
@@ -78,8 +90,8 @@ one currently being filled.
 
 So COW reduces to a single rule: **on `fork`, if the parent's tail block is
 partially filled, copy that one block; every full block is shared by refcount
-alone.** One 2.25 MiB copy per fork, worst case, and zero copies when the fork
-point lands on a block boundary.
+alone.** One 4.50 MiB copy per fork, worst case at today's f32 (2.25 at f16,
+1.12 at Q8), and zero copies when the fork point lands on a block boundary.
 
 That is a large simplification and it is worth stating as a property rather
 than leaving it implicit, because a later reader adding "COW check" to the
@@ -89,8 +101,8 @@ that never fires is a branch nobody tests.
 ## 3.5 Verified dedup, and what I9 costs
 
 **I9** requires that a dedup match compares stored token ids, not just hashes.
-That means each block carries its 16 ids: **64 B against 2,359,296 B of KV, or
-0.0027 %.** The strongest invariant in the set is essentially free.
+That means each block carries its 16 ids: **64 B against 4,718,592 B of KV, or
+0.0014 %.** The strongest invariant in the set is essentially free.
 
 Hash chaining follows vLLM: `hash(block) = H(hash(parent), token_ids)`, so a
 match implies the whole prefix matches, not just this block's contents. The

@@ -65,8 +65,23 @@ Geometry read from the Q4_K_M GGUF, not recalled: 36 layers, 32 heads, **8 KV
 heads** (GQA 4:1), head_dim 128, embedding 2560.
 
     KV bytes per token = 2 (K,V) × 8 kv_heads × 128 × 36 layers × dtype
-                       = 73,728 elements
-                       = 147,456 B @ f16  (144.0 KiB; 294,912 @ f32, ~73,728 @ Q8)
+                       = 73,728 elements × sizeof(dtype)
+
+**⚠ CORRECTION 2026-08-11, after the first version of this note was committed.
+stoke's KV is f32, not f16.** `src/kv.c:41` allocates
+`xcalloc(total, sizeof(f32))` and `kv.h` types the slot as `f32* k, *v`. I
+sized the first draft at f16 because that is the industry default, **instead of
+reading the accessor** — the precise failure this milestone keeps recording, a
+quantity taken from convention rather than from the artifact, committed here
+three times over in a note about that failure. Everything downstream of the KV
+term was wrong by 2×. The dtype is now carried as a variable so the note
+survives M4 changing it:
+
+| KV dtype | B/token | block (16 tok) | crossover `N×L` |
+|---|---:|---:|---:|
+| **f32 — TODAY** | **294,912** | **4.50 MiB** | **8,467** |
+| f16 | 147,456 | 2.25 MiB | 16,935 |
+| Q8 | 73,728 | 1.12 MiB | 33,871 |
 
 One decode step over a batch of N sequences each at context L:
 
@@ -79,31 +94,33 @@ continuous batching wins, and the whole reason it stops winning.
 
 ## 1.4 The KV-dominance crossover
 
-KV traffic overtakes weight traffic when `N × L × 147,456 = 2.4973e9`:
+KV traffic overtakes weight traffic when `N × L × kv_bytes = 2.4973e9`. **At
+today's f32 KV that is `N × L = 8,467` token-positions:**
 
-    N × L = 16,936 token-positions      (Q4_K_M, f16 KV)
+| N | crossover L @ f32 | @ f16 | @ Q8 | M5's point (L ≈ 1–2k) |
+|---:|---:|---:|---:|---|
+| 4 | 2,117 | 4,234 | 8,468 | borderline |
+| 8 | **1,058** | 2,116 | 4,233 | **KV dominates** |
+| 16 | **529** | 1,058 | 2,116 | **KV dominates heavily** |
 
-| N | crossover L | M5's operating point (L ≈ 1–2k) |
-|---:|---:|---|
-| 4 | 4,234 | weights dominate |
-| 8 | 2,117 | borderline at 2k |
-| **16** | **1,059** | **KV dominates** |
+**At M5's stated trace — 16 concurrent over a shared 1–2k prefix — the
+crossover sits at L = 529, so KV is the larger term across essentially the
+whole envelope**, not merely at its top end. M5's bars are not a
+weight-streaming problem; they are a KV-traffic problem, which is exactly what
+paged KV exists to control.
 
-**At M5's stated trace — bursty, shared 1–2k prefix, 16 concurrent — the KV
-term is already the larger one.** M5's bars are therefore not a weight-
-streaming problem; they are a KV-traffic problem, which is precisely what
-paged KV exists to control. Q8 KV halves the KV term and moves the crossover
-to `N × L = 33,872`, restoring weight-dominance across the whole M5 envelope —
-that is the quantitative input to Kabir's M5 default call.
+Throughput ceilings at W = 43.6 GB/s (Q4_K_M, 6T), L = 1,500:
 
-Throughput ceiling implied by the budget, at W = 43.6 GB/s (Q4_K_M, 6T):
+| N | KV dtype | traffic/step | ms/step | aggregate tok/s |
+|---:|---|---:|---:|---:|
+| 1 | f32 | 2.94 GB | 67.5 | 14.8 |
+| 8 | **f32 (today)** | 6.04 GB | 138.5 | **57.8** |
+| 16 | **f32 (today)** | 9.58 GB | 219.6 | **72.9** |
+| 8 | Q8 | 3.38 GB | 77.6 | 103.1 |
+| 16 | Q8 | 3.68 GB | 97.9 | 163.5 |
 
-| N | L | traffic/step | ms/step | aggregate tok/s |
-|---:|---:|---:|---:|---:|
-| 1 | 1,500 | 2.72 GB | 62.4 | 16.0 |
-| 8 | 1,500 | 4.27 GB | 97.9 | 81.7 |
-| 16 | 1,500 | 6.04 GB | 138.5 | 115.5 |
-| 16 | 1,500 (Q8 KV) | 4.27 GB | 97.9 | 163.5 |
+Ceilings from traffic alone — no compute, no scheduling — so upper bounds, not
+predictions.
 
 These are ceilings from traffic alone — no compute, no scheduling, no
 overhead — so they are upper bounds on what M5 can reach, not predictions.
@@ -152,12 +169,13 @@ aggregate ≥17.7 @8 AND ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16"). Two familie
 llamacpp-tuned parity (17.7 / 14.2, from M0's measured baseline) and
 2×-ollama (10.8 / 16.8; the 16.8 is M0's unexplained N=16 inversion).
 
-Against the traffic ceilings of §1.4 (W = 43.6 GB/s, L = 1,500, f16 KV):
+Against the traffic ceilings of §1.4 (W = 43.6 GB/s, L = 1,500, **f32 KV as
+shipped**):
 
 | N | budget ceiling | binding bar | slack |
 |---:|---:|---:|---:|
-| 8 | 81.7 tok/s | 17.7 | **4.6×** |
-| 16 | 115.5 tok/s | 16.8 | **6.9×** |
+| 8 | 57.8 tok/s | 17.7 | **3.3×** |
+| 16 | 72.9 tok/s | 16.8 | **4.3×** |
 
 **M5's bars are nowhere near the bandwidth ceiling.** Whatever makes M5 hard,
 it is not weight streaming — it will be per-core compute efficiency and
@@ -169,11 +187,13 @@ teardown cost*, not for bandwidth.
 baseline is 11 % of the ceiling" implies a ~9× opportunity, and that ceiling
 amortizes weights while ignoring KV traffic: 8 × 43.6 / 2.4973 = 139.7 tok/s,
 against which 17.7 is 12.7 % — M0's number, reproduced. But at **M5's own
-agentic trace** (N=8, shared 1–2k prefix) the KV term is real and the ceiling
-is 81.7, against which 17.7 is **21.7 %**. **The opportunity at M5's operating
-point is ~4.6×, not ~9×.** Both are large and the premise stands; but the 9×
-belongs to short contexts, and quoting it for the agentic trace overstates the
-room by roughly half. Worth stating plainly before M5's bars are judged.
+agentic trace** (N=8, shared 1–2k prefix, f32 KV as shipped) the ceiling is
+57.8, against which 17.7 is **30.6 %**. **The opportunity at M5's operating
+point is ~3.3×, not ~9×.** The premise stands — 3.3× is still a large,
+worth-building win — but the 9× belongs to short contexts, and quoting it for
+the agentic trace overstates the room by nearly threefold. Worth stating
+plainly before M5's bars are judged, and worth re-checking if the KV dtype
+changes: at Q8 the same point is 103.1 and the opportunity returns to ~5.8×.
 
 ## 1.7 What this does and does not settle
 
