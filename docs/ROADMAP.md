@@ -434,7 +434,19 @@ quiesced in-session at M4 entry (**floor is now ~54 GB/s effective —
 measured GATE-grade 2026-08-03 at llama 6T, superseding the ~39 from
 M0**; theoretical 76.8; the game-window 34 may not be quoted as W, and
 note W PEAKS AT 6 P-THREADS — 10 threads measured 15% WORSE, so the
-budget's N is not the core count); per-step
+budget's N is not the core count **[SUPERSEDED BY MEASUREMENT 2026-08-11
+at M4 entry, quiesced with ISLC stopped —
+`docs/superpowers/design-notes/2026-08-11-m4-bandwidth-budget.md`. The 54
+GB/s floor REPRODUCES exactly (Q8_0 6T = 54.0 vs the 54.13 entry sweep),
+but it is a Q8_0 number: Q4_K_M tops out at ~44.8 GB/s because superblock
+unpack binds before bandwidth does. THE THREAD-PEAK CLAIM DOES NOT
+REPRODUCE — neither file peaks at 6; both rise monotonically through 10T
+and 10T is BETTER (Q4_K_M +2.8%, Q8_0 +6.7%), not 15% worse; variance is
+±0.02–0.27, too tight for noise. What survives is the conclusion, not the
+mechanism: the budget's N is still not the core count, because returns
+past 4–6 threads are small (Q4_K_M +63.3% over 2→4, then only +11.6%
+across all of 4→10). USE N=6, which captures 97.3% of achievable W.]**);
+per-step
 traffic model where batching amortizes ONLY the weight term; the
 KV-dominance crossover formula in N and ctx; Q8-KV's halving as the
 input to Kabir's M5 default call; M5's ITL and 16.8@16 bars checked as
