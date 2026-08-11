@@ -46,23 +46,17 @@ typedef struct {
     const GgufTensor* ffn_down;
 } Layer;
 
-struct Model {
-    GgufFile* f; /* owned; kept open for the model's whole lifetime -- tensor
-                    data is borrowed from its mmap (gguf.h) */
-
-    u32 n_layer, n_embd, n_ff, n_head, n_head_kv, head_dim, gqa_group;
-    u32 max_ctx, n_vocab;
-    f32 freq_base, eps;
-
-    const GgufTensor* tok_embd;
-    const GgufTensor* output_norm;
-    const GgufTensor* output; /* NULL => tied to tok_embd (M2 note TRAP #2) */
-
-    Layer* layers; /* [n_layer], xmalloc'd */
-
-    /* Scratch: allocated once here, reused by every forward_position/
-     * compute_logits/generate call -- "no malloc inside the per-token
-     * loop" (M2 op-spec section 6). */
+/* ▶ PER-SEQUENCE SCRATCH, GROUPED SO IT CAN BECOME PER-SEQUENCE.
+ * Every buffer below is written and read within ONE sequence's forward
+ * pass. Static batch (design note 2026-08-11-m4-static-batch.md section
+ * 5.3) needs one of these per sequence in the batch; leaving them as
+ * loose fields on Model would make that an edit at 67 call sites instead
+ * of an array subscript. THIS COMMIT CHANGES NO BEHAVIOUR -- it is the
+ * grouping only, verified byte-identical.
+ *
+ * Allocated once at open, reused by every forward_position/compute_logits/
+ * generate call -- "no malloc inside the per-token loop" (M2 op-spec 6). */
+typedef struct {
     f32* s_a;        /* [n_embd]              post-attn_norm            */
     f32* s_q;        /* [n_head*head_dim]     Q, all heads flattened    */
     f32* s_k;        /* [n_head_kv*head_dim]  K, all kv-heads flattened */
@@ -84,6 +78,23 @@ struct Model {
      * the token loop still allocates nothing. */
     u8* s_aq;
     u64 s_aq_bytes;
+} SeqScratch;
+
+struct Model {
+    GgufFile* f; /* owned; kept open for the model's whole lifetime -- tensor
+                    data is borrowed from its mmap (gguf.h) */
+
+    u32 n_layer, n_embd, n_ff, n_head, n_head_kv, head_dim, gqa_group;
+    u32 max_ctx, n_vocab;
+    f32 freq_base, eps;
+
+    const GgufTensor* tok_embd;
+    const GgufTensor* output_norm;
+    const GgufTensor* output; /* NULL => tied to tok_embd (M2 note TRAP #2) */
+
+    Layer* layers; /* [n_layer], xmalloc'd */
+
+    SeqScratch scratch;
 };
 
 /* ===========================================================================
@@ -321,12 +332,12 @@ Model* model_open(const char* path) {
         check_weight_tensor(ly->ffn_down, n_ff, n_embd);
     }
 
-    m->s_a = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
-    m->s_q = (f32*)xmalloc((size_t)n_head * head_dim * sizeof(f32));
-    m->s_k = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
-    m->s_v = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
-    m->s_attn_out = (f32*)xmalloc((size_t)n_head * head_dim * sizeof(f32));
-    m->s_scores = (f32*)xmalloc((size_t)max_ctx * sizeof(f32));
+    m->scratch.s_a = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+    m->scratch.s_q = (f32*)xmalloc((size_t)n_head * head_dim * sizeof(f32));
+    m->scratch.s_k = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
+    m->scratch.s_v = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
+    m->scratch.s_attn_out = (f32*)xmalloc((size_t)n_head * head_dim * sizeof(f32));
+    m->scratch.s_scores = (f32*)xmalloc((size_t)max_ctx * sizeof(f32));
     /* Largest contraction length over every matvec in the forward pass:
      * n_embd (Q/K/V, ffn_gate/up, logits), n_head*head_dim (attn_output),
      * and n_ff (ffn_down). Taking the max rather than assuming which one
@@ -351,17 +362,17 @@ Model* model_open(const char* path) {
                           / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
         u64 q8_k_bytes = ((max_n_in + KERNELS_Q8_K_BLOCK_ELEMS - 1u)
                           / KERNELS_Q8_K_BLOCK_ELEMS) * KERNELS_Q8_K_BLOCK_BYTES;
-        m->s_aq_bytes = q8_0_bytes > q8_k_bytes ? q8_0_bytes : q8_k_bytes;
-        m->s_aq = (u8*)xmalloc((size_t)m->s_aq_bytes);
+        m->scratch.s_aq_bytes = q8_0_bytes > q8_k_bytes ? q8_0_bytes : q8_k_bytes;
+        m->scratch.s_aq = (u8*)xmalloc((size_t)m->scratch.s_aq_bytes);
     }
-    m->s_proj = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
-    m->s_f = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
-    m->s_gate = (f32*)xmalloc((size_t)n_ff * sizeof(f32));
-    m->s_up = (f32*)xmalloc((size_t)n_ff * sizeof(f32));
-    m->s_x = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
-    m->s_h = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
-    m->s_xout = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
-    m->s_logits = (f32*)xmalloc((size_t)n_vocab * sizeof(f32));
+    m->scratch.s_proj = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+    m->scratch.s_f = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+    m->scratch.s_gate = (f32*)xmalloc((size_t)n_ff * sizeof(f32));
+    m->scratch.s_up = (f32*)xmalloc((size_t)n_ff * sizeof(f32));
+    m->scratch.s_x = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+    m->scratch.s_h = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+    m->scratch.s_xout = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
+    m->scratch.s_logits = (f32*)xmalloc((size_t)n_vocab * sizeof(f32));
 
     return m;
 }
@@ -369,21 +380,21 @@ Model* model_open(const char* path) {
 void model_close(Model* m) {
     if (!m) return;
     free(m->layers);
-    free(m->s_a);
-    free(m->s_q);
-    free(m->s_k);
-    free(m->s_v);
-    free(m->s_attn_out);
-    free(m->s_scores);
-    free(m->s_aq);
-    free(m->s_proj);
-    free(m->s_f);
-    free(m->s_gate);
-    free(m->s_up);
-    free(m->s_x);
-    free(m->s_h);
-    free(m->s_xout);
-    free(m->s_logits);
+    free(m->scratch.s_a);
+    free(m->scratch.s_q);
+    free(m->scratch.s_k);
+    free(m->scratch.s_v);
+    free(m->scratch.s_attn_out);
+    free(m->scratch.s_scores);
+    free(m->scratch.s_aq);
+    free(m->scratch.s_proj);
+    free(m->scratch.s_f);
+    free(m->scratch.s_gate);
+    free(m->scratch.s_up);
+    free(m->scratch.s_x);
+    free(m->scratch.s_h);
+    free(m->scratch.s_xout);
+    free(m->scratch.s_logits);
     gguf_close(m->f);
     free(m);
 }
@@ -564,7 +575,7 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
         ensure_dir(dump_dir);
     }
 
-    f32* x = m->s_x;
+    f32* x = m->scratch.s_x;
     embed_row(m, token_id, x);
 
     f32 scale = 1.0f / sqrtf((f32)m->head_dim);
@@ -574,25 +585,25 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
 
         /* rmsnorm(attn_norm) -> Q/K/V matvec */
         rmsnorm(x, (const f32*)ly->attn_norm->data, m->n_embd, m->eps,
-                m->s_a);
-        matvec(ly->attn_q, m->s_a, m->n_embd, m->s_q,
-               (u64)m->n_head * m->head_dim, m->s_aq);
-        matvec(ly->attn_k, m->s_a, m->n_embd, m->s_k,
-               (u64)m->n_head_kv * m->head_dim, m->s_aq);
-        matvec(ly->attn_v, m->s_a, m->n_embd, m->s_v,
-               (u64)m->n_head_kv * m->head_dim, m->s_aq);
+                m->scratch.s_a);
+        matvec(ly->attn_q, m->scratch.s_a, m->n_embd, m->scratch.s_q,
+               (u64)m->n_head * m->head_dim, m->scratch.s_aq);
+        matvec(ly->attn_k, m->scratch.s_a, m->n_embd, m->scratch.s_k,
+               (u64)m->n_head_kv * m->head_dim, m->scratch.s_aq);
+        matvec(ly->attn_v, m->scratch.s_a, m->n_embd, m->scratch.s_v,
+               (u64)m->n_head_kv * m->head_dim, m->scratch.s_aq);
 
         /* per head: rmsnorm(q_norm/k_norm) THEN rope_neox (P3.4: QK-norm
            BEFORE rope) */
         const f32* qn = (const f32*)ly->attn_q_norm->data;
         const f32* kn = (const f32*)ly->attn_k_norm->data;
         for (u32 h = 0; h < m->n_head; h++) {
-            f32* qh = m->s_q + (u64)h * m->head_dim;
+            f32* qh = m->scratch.s_q + (u64)h * m->head_dim;
             rmsnorm(qh, qn, m->head_dim, m->eps, qh);
             rope_neox(qh, m->head_dim, (u64)pos, m->freq_base);
         }
         for (u32 h = 0; h < m->n_head_kv; h++) {
-            f32* kh = m->s_k + (u64)h * m->head_dim;
+            f32* kh = m->scratch.s_k + (u64)h * m->head_dim;
             rmsnorm(kh, kn, m->head_dim, m->eps, kh);
             rope_neox(kh, m->head_dim, (u64)pos, m->freq_base);
         }
@@ -608,28 +619,28 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
         /* kv append via kv_view -- the ONLY place K/V ever get written */
         for (u32 h = 0; h < m->n_head_kv; h++) {
             KvSlot slot = kv_view(kv, L, h, pos);
-            memcpy(slot.k, m->s_k + (u64)h * m->head_dim,
+            memcpy(slot.k, m->scratch.s_k + (u64)h * m->head_dim,
                    (size_t)m->head_dim * sizeof(f32));
-            memcpy(slot.v, m->s_v + (u64)h * m->head_dim,
+            memcpy(slot.v, m->scratch.s_v + (u64)h * m->head_dim,
                    (size_t)m->head_dim * sizeof(f32));
         }
 
         /* causal GQA attention: q-head h reads kv-head h/gqa_group */
         for (u32 h = 0; h < m->n_head; h++) {
             u32        kvh = h / m->gqa_group;
-            const f32* qh = m->s_q + (u64)h * m->head_dim;
+            const f32* qh = m->scratch.s_q + (u64)h * m->head_dim;
 
             for (u32 j = 0; j <= pos; j++) {
                 KvSlot slot = kv_view(kv, L, kvh, j);
-                m->s_scores[j] = vec_dot_f32(qh, slot.k, m->head_dim) * scale;
+                m->scratch.s_scores[j] = vec_dot_f32(qh, slot.k, m->head_dim) * scale;
             }
-            softmax(m->s_scores, (u64)pos + 1u);
+            softmax(m->scratch.s_scores, (u64)pos + 1u);
 
-            f32* out_h = m->s_attn_out + (u64)h * m->head_dim;
+            f32* out_h = m->scratch.s_attn_out + (u64)h * m->head_dim;
             for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
             for (u32 j = 0; j <= pos; j++) {
                 KvSlot slot = kv_view(kv, L, kvh, j);
-                f32    wgt = m->s_scores[j];
+                f32    wgt = m->scratch.s_scores[j];
                 for (u32 d = 0; d < m->head_dim; d++) {
                     out_h[d] += wgt * slot.v[d];
                 }
@@ -637,18 +648,18 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
         }
 
         /* attn_output matvec -> residual add */
-        matvec(ly->attn_output, m->s_attn_out, (u64)m->n_head * m->head_dim,
-               m->s_proj, m->n_embd, m->s_aq);
-        for (u32 i = 0; i < m->n_embd; i++) x[i] += m->s_proj[i];
+        matvec(ly->attn_output, m->scratch.s_attn_out, (u64)m->n_head * m->head_dim,
+               m->scratch.s_proj, m->n_embd, m->scratch.s_aq);
+        for (u32 i = 0; i < m->n_embd; i++) x[i] += m->scratch.s_proj[i];
 
         /* rmsnorm(ffn_norm) -> SwiGLU -> ffn_down -> residual add */
-        rmsnorm(x, (const f32*)ly->ffn_norm->data, m->n_embd, m->eps, m->s_f);
-        matvec(ly->ffn_gate, m->s_f, m->n_embd, m->s_gate, m->n_ff, m->s_aq);
-        matvec(ly->ffn_up, m->s_f, m->n_embd, m->s_up, m->n_ff, m->s_aq);
-        swiglu(m->s_gate, m->s_up, m->n_ff, m->s_gate); /* in place: safe
+        rmsnorm(x, (const f32*)ly->ffn_norm->data, m->n_embd, m->eps, m->scratch.s_f);
+        matvec(ly->ffn_gate, m->scratch.s_f, m->n_embd, m->scratch.s_gate, m->n_ff, m->scratch.s_aq);
+        matvec(ly->ffn_up, m->scratch.s_f, m->n_embd, m->scratch.s_up, m->n_ff, m->scratch.s_aq);
+        swiglu(m->scratch.s_gate, m->scratch.s_up, m->n_ff, m->scratch.s_gate); /* in place: safe
             aliasing per kernels.h's swiglu contract */
-        matvec(ly->ffn_down, m->s_gate, m->n_ff, m->s_proj, m->n_embd, m->s_aq);
-        for (u32 i = 0; i < m->n_embd; i++) x[i] += m->s_proj[i];
+        matvec(ly->ffn_down, m->scratch.s_gate, m->n_ff, m->scratch.s_proj, m->n_embd, m->scratch.s_aq);
+        for (u32 i = 0; i < m->n_embd; i++) x[i] += m->scratch.s_proj[i];
 
         if (dump_dir != NULL) {
             write_dump_layer(dump_dir, L, x, m->n_embd);
@@ -664,9 +675,9 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
  */
 
 void model_compute_logits(Model* m, const f32* x, f32* logits_out) {
-    rmsnorm(x, (const f32*)m->output_norm->data, m->n_embd, m->eps, m->s_h);
+    rmsnorm(x, (const f32*)m->output_norm->data, m->n_embd, m->eps, m->scratch.s_h);
     const GgufTensor* w = (m->output != NULL) ? m->output : m->tok_embd;
-    matvec(w, m->s_h, m->n_embd, logits_out, m->n_vocab, m->s_aq);
+    matvec(w, m->scratch.s_h, m->n_embd, logits_out, m->n_vocab, m->scratch.s_aq);
 }
 
 /* ===========================================================================
@@ -737,15 +748,15 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
     for (u32 t = 0; t < n_prompt; t++) {
         bool last_prefill = (t == n_prompt - 1);
         model_forward_position(m, kv, prompt_ids[t], t,
-                                last_prefill ? dump_dir : NULL, m->s_xout);
+                                last_prefill ? dump_dir : NULL, m->scratch.s_xout);
     }
 
     u32 pos = n_prompt; /* absolute position the next forward call will use */
-    model_compute_logits(m, m->s_xout, m->s_logits);
+    model_compute_logits(m, m->scratch.s_xout, m->scratch.s_logits);
     if (probe_pos == 0) {
-        record_top5(m->s_logits, m->n_vocab, probe_out);
+        record_top5(m->scratch.s_logits, m->n_vocab, probe_out);
     }
-    u32 next_id = model_argmax(m->s_logits, m->n_vocab);
+    u32 next_id = model_argmax(m->scratch.s_logits, m->n_vocab);
     out_ids[0] = next_id;
     u32 count = 1;
 
@@ -755,13 +766,13 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
     while (count < n_gen) {
         if (eos_id >= 0 && (i64)next_id == eos_id) break;
 
-        model_forward_position(m, kv, next_id, pos, NULL, m->s_xout);
+        model_forward_position(m, kv, next_id, pos, NULL, m->scratch.s_xout);
         pos++;
-        model_compute_logits(m, m->s_xout, m->s_logits);
+        model_compute_logits(m, m->scratch.s_xout, m->scratch.s_logits);
         if (probe_pos >= 0 && (u32)probe_pos == count) {
-            record_top5(m->s_logits, m->n_vocab, probe_out);
+            record_top5(m->scratch.s_logits, m->n_vocab, probe_out);
         }
-        next_id = model_argmax(m->s_logits, m->n_vocab);
+        next_id = model_argmax(m->scratch.s_logits, m->n_vocab);
         out_ids[count] = next_id;
         count++;
     }
