@@ -397,7 +397,7 @@ static void cmd_run(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke run <model.gguf> [--raw] [-n N] "
               "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] "
-              "[--timing] [--threads N]");
+              "[--timing] [--threads N] [--kv f32|q8]");
     }
     const char* model_path = argv[2];
     bool        raw = false;
@@ -412,6 +412,11 @@ static void cmd_run(int argc, char** argv) {
     const char* dump_dir = NULL;
     long long   probe_pos_long = -1;
     bool        report_timing = false;
+    /* M4 gate item 4 needs the KV-ON/KV-OFF pair to be gradeable by the
+     * ruling's section 6 rule, which compares LOGITS at the divergence --
+     * and --probe-pos is here, not in `batch`. So the dtype switch is here
+     * too, rather than teaching `batch` a second probe implementation. */
+    KvDtype     kv_dt = KV_F32;
 
     /* strtoll (not strtol): on this project's Windows toolchain (MSYS2
      * ucrt64, LLP64 data model) `long` is only 32 bits, so `(long)
@@ -451,6 +456,12 @@ static void cmd_run(int argc, char** argv) {
                 fatal("stoke run: --probe-pos needs an argument");
             }
             probe_pos_long = strtoll(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--kv") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --kv needs f32 or q8");
+            const char* w = argv[++i];
+            if (strcmp(w, "f32") == 0)     kv_dt = KV_F32;
+            else if (strcmp(w, "q8") == 0) kv_dt = KV_Q8_0;
+            else fatal("stoke run: --kv '%s' -- expected f32 or q8", w);
         } else {
             fatal("stoke run: unknown argument '%s'", argv[i]);
         }
@@ -519,8 +530,20 @@ static void cmd_run(int argc, char** argv) {
     pool_start((u32)threads_long);
 
     Model* model = model_open(model_path);
-    Kv*    kv = kv_open(model_n_layer(model), model_max_ctx(model),
-                         model_n_head_kv(model), model_head_dim(model));
+    /* One private store, exactly what kv_open builds -- spelled out here only
+     * so the dtype can be chosen. At KV_F32 this is the same allocation and
+     * the same arithmetic kv_open would have made, which is what keeps every
+     * parity artifact produced through this path comparable (checked against
+     * the archived m3 gate binary, not assumed). */
+    KvStore* store = kv_store_open(model_n_layer(model),
+                                   kv_blocks_for_ctx(model_max_ctx(model)),
+                                   model_n_head_kv(model),
+                                   model_head_dim(model), kv_dt);
+    Kv* kv = kv_open_in(store, model_max_ctx(model));
+    if (kv == NULL) {
+        fatal("stoke run: could not admit a sequence of max_ctx %u",
+              model_max_ctx(model));
+    }
     double load_ms = now_ms() - t_load_start;
 
     u32*            out_ids = (u32*)xcalloc(n, sizeof(u32));
@@ -587,6 +610,7 @@ static void cmd_run(int argc, char** argv) {
     free(out_ids);
     free(prompt_ids);
     kv_close(kv);
+    kv_store_close(store); /* kv_open_in does not own the store */
     model_close(model);
     tok_free(tok);
     free(file_buf);
