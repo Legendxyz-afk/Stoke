@@ -35,12 +35,22 @@
 #include "kv.h"
 
 #include "blockpool.h"
+#include "kernels/kernels.h"
+
+#include <string.h>
 
 struct KvStore {
     u32 n_layer, n_head_kv, head_dim, capacity;
+    KvDtype dtype;
+    /* Bytes per K (or V) vector. head_dim*4 at f32; (head_dim/32)*34 at Q8,
+     * where 34 is an f16 scale plus 32 int8. Kept as a FIELD rather than
+     * recomputed at each call so the address arithmetic below is the same
+     * expression for both representations -- two parallel index formulas is
+     * how the two modes drift apart. */
+    u64 vec_bytes;
     BlockPool* pool;
-    f32* k;   /* [n_layer][capacity][BP_BLOCK_TOKENS][n_head_kv][head_dim] */
-    f32* v;   /* same shape                                                */
+    u8* k;   /* [n_layer][capacity][BP_BLOCK_TOKENS][n_head_kv] vectors */
+    u8* v;   /* same shape                                             */
 };
 
 struct Kv {
@@ -61,17 +71,30 @@ static u32 blocks_needed(u32 tokens) {
 u32 kv_blocks_for_ctx(u32 max_ctx) { return blocks_needed(max_ctx); }
 
 KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
-                       u32 head_dim) {
+                       u32 head_dim, KvDtype dtype) {
     if (n_layer == 0 || capacity_blocks == 0 || n_head_kv == 0 || head_dim == 0) {
         fatal("kv: kv_store_open -- all dims must be > 0 (n_layer=%u "
               "capacity_blocks=%u n_head_kv=%u head_dim=%u)",
               n_layer, capacity_blocks, n_head_kv, head_dim);
+    }
+    if (dtype != KV_F32 && dtype != KV_Q8_0) {
+        fatal("kv: kv_store_open -- unknown dtype %d", (int)dtype);
+    }
+    if (dtype == KV_Q8_0 && head_dim % KERNELS_Q8_0_BLOCK_ELEMS != 0) {
+        fatal("kv: kv_store_open -- Q8 needs head_dim (%u) a multiple of %u; "
+              "a partial quantization block has no defined encoding",
+              head_dim, KERNELS_Q8_0_BLOCK_ELEMS);
     }
     KvStore* st = (KvStore*)xmalloc(sizeof(KvStore));
     st->n_layer   = n_layer;
     st->n_head_kv = n_head_kv;
     st->head_dim  = head_dim;
     st->capacity  = capacity_blocks;
+    st->dtype     = dtype;
+    st->vec_bytes = (dtype == KV_F32)
+                        ? (u64)head_dim * sizeof(f32)
+                        : ((u64)head_dim / KERNELS_Q8_0_BLOCK_ELEMS) *
+                              KERNELS_Q8_0_BLOCK_BYTES;
     st->pool      = bp_open(capacity_blocks);
 
     /* Whole blocks always, so a non-multiple context's tail block is fully
@@ -79,9 +102,9 @@ KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
      * bounded by max_ctx) and uniform block size is what lets a block move
      * as one contiguous run per layer. */
     u64 total = (u64)n_layer * capacity_blocks * BP_BLOCK_TOKENS *
-                (u64)n_head_kv * (u64)head_dim;
-    st->k = (f32*)xcalloc((size_t)total, sizeof(f32));
-    st->v = (f32*)xcalloc((size_t)total, sizeof(f32));
+                (u64)n_head_kv * st->vec_bytes;
+    st->k = (u8*)xcalloc((size_t)total, 1);
+    st->v = (u8*)xcalloc((size_t)total, 1);
     return st;
 }
 
@@ -162,7 +185,7 @@ Kv* kv_open(u32 n_layer, u32 max_ctx, u32 n_head_kv, u32 head_dim) {
               n_layer, max_ctx, n_head_kv, head_dim);
     }
     KvStore* st = kv_store_open(n_layer, blocks_needed(max_ctx), n_head_kv,
-                                head_dim);
+                                head_dim, KV_F32);
     Kv* kv = kv_open_in(st, max_ctx);
     if (!kv) fatal("kv: kv_open -- admission failed for max_ctx=%u", max_ctx);
     kv->owns_store = true;
@@ -178,26 +201,28 @@ void kv_close(Kv* kv) {
     free(kv);
 }
 
-KvSlot kv_view(Kv* kv, u32 layer, u32 kv_head, u32 pos) {
+/* THE ONE PLACE KV ADDRESSES ARE COMPUTED. kv_view, kv_write and kv_read all
+ * come through here -- M2's rule was that one place owns this arithmetic, and
+ * splitting it per representation is exactly how two modes stop meaning the
+ * same thing. Returns the byte offset of the (layer, kv_head, pos) vector
+ * within either the K or the V array; they have identical shape. */
+static u64 kv_vec_offset(Kv* kv, u32 layer, u32 kv_head, u32 pos,
+                         const char* who) {
     if (layer >= kv->n_layer) {
-        fatal("kv: kv_view -- layer %u out of range [0,%u)", layer,
+        fatal("kv: %s -- layer %u out of range [0,%u)", who, layer,
               kv->n_layer);
     }
     if (kv_head >= kv->n_head_kv) {
-        fatal("kv: kv_view -- kv_head %u out of range [0,%u)", kv_head,
+        fatal("kv: %s -- kv_head %u out of range [0,%u)", who, kv_head,
               kv->n_head_kv);
     }
     if (pos >= kv->max_ctx) {
-        fatal("kv: kv_view -- pos %u out of range [0,%u)", pos,
-              kv->max_ctx);
+        fatal("kv: %s -- pos %u out of range [0,%u)", who, pos, kv->max_ctx);
     }
 
     KvStore* st = kv->store;
     if (!bp_seq_ensure(st->pool, kv->seq, pos + 1u)) {
-        /* Full-reservation admission is supposed to make this unreachable,
-         * so it is a bug in the reservation rather than a condition callers
-         * handle -- fatal, naming what could not be satisfied. */
-        fatal("kv: kv_view -- could not back position %u (max_ctx=%u)", pos,
+        fatal("kv: %s -- could not back position %u (max_ctx=%u)", who, pos,
               kv->max_ctx);
     }
 
@@ -206,14 +231,66 @@ KvSlot kv_view(Kv* kv, u32 layer, u32 kv_head, u32 pos) {
     u32 blk  = bp_seq_block(kv->seq, ord);
     u32 slot = bp_block_slot(st->pool, blk);
 
-    /* [n_layer][capacity][16][n_head_kv][head_dim]; u64 throughout so the
+    /* [n_layer][capacity][16][n_head_kv] vectors; u64 throughout so the
      * multiply chain cannot overflow on a larger future model. */
-    u64 idx = ((((u64)layer * st->capacity + slot) * BP_BLOCK_TOKENS + off) *
-               st->n_head_kv + kv_head) * st->head_dim;
+    u64 vec = ((((u64)layer * st->capacity + slot) * BP_BLOCK_TOKENS + off) *
+               st->n_head_kv + kv_head);
+    return vec * st->vec_bytes;
+}
 
-    KvSlot s;
-    s.k = st->k + idx;
-    s.v = st->v + idx;
+KvDtype kv_dtype(const Kv* kv) { return kv->store->dtype; }
+
+void kv_write(Kv* kv, u32 layer, u32 kv_head, u32 pos, const f32* k,
+              const f32* v) {
+    KvStore* st  = kv->store;
+    u64      byt = kv_vec_offset(kv, layer, kv_head, pos, "kv_write");
+    if (st->dtype == KV_F32) {
+        /* Byte-for-byte the memcpy model.c used to do through kv_view. */
+        memcpy(st->k + byt, k, (size_t)st->head_dim * sizeof(f32));
+        memcpy(st->v + byt, v, (size_t)st->head_dim * sizeof(f32));
+    } else {
+        quantize_row_q8_0(k, st->head_dim, st->k + byt);
+        quantize_row_q8_0(v, st->head_dim, st->v + byt);
+    }
+}
+
+KvSlot kv_read(Kv* kv, u32 layer, u32 kv_head, u32 pos, f32* scratch) {
+    KvStore* st  = kv->store;
+    u64      byt = kv_vec_offset(kv, layer, kv_head, pos, "kv_read");
+    KvSlot   s;
+    if (st->dtype == KV_F32) {
+        /* Zero copy: f32 costs exactly what it cost before this pair
+         * existed, which is what keeps every parity artifact comparable. */
+        s.k = (f32*)(void*)(st->k + byt);
+        s.v = (f32*)(void*)(st->v + byt);
+        return s;
+    }
+    if (scratch == NULL) {
+        fatal("kv: kv_read -- a Q8 store needs a scratch buffer of "
+              "2*head_dim (%u) floats", 2u * st->head_dim);
+    }
+    dequant_row_q8_0(st->k + byt, st->head_dim, scratch);
+    dequant_row_q8_0(st->v + byt, st->head_dim, scratch + st->head_dim);
+    s.k = scratch;
+    s.v = scratch + st->head_dim;
+    return s;
+}
+
+KvSlot kv_view(Kv* kv, u32 layer, u32 kv_head, u32 pos) {
+    if (kv->store->dtype != KV_F32) {
+        /* A pointer is a promise about representation and a quantized store
+         * cannot keep it. Callers that need both use kv_read/kv_write. */
+        fatal("kv: kv_view -- this store is Q8; there is no f32 address to "
+              "return. Use kv_read/kv_write.");
+    }
+    /* Same arithmetic as kv_read's f32 path, from the same function -- the
+     * "full-reservation admission makes this unreachable" fatal for an
+     * unbackable position lives there too. */
+    u64      byt = kv_vec_offset(kv, layer, kv_head, pos, "kv_view");
+    KvStore* st  = kv->store;
+    KvSlot   s;
+    s.k = (f32*)(void*)(st->k + byt);
+    s.v = (f32*)(void*)(st->v + byt);
     return s;
 }
 

@@ -926,7 +926,7 @@ TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
     for (u32 slot = 0; slot < 3; slot++) {
         KvStore* st = kv_store_open(model_n_layer(m),
                                     3u * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
-                                    model_n_head_kv(m), model_head_dim(m));
+                                    model_n_head_kv(m), model_head_dim(m), KV_F32);
         Kv* kv[3];
         for (u32 i = 0; i < 3; i++) kv[i] = kv_open_in(st, model_max_ctx(m));
         ASSERT_TRUE(kv[0] && kv[1] && kv[2]);
@@ -1017,7 +1017,7 @@ TEST(m4_a_sequence_is_bit_identical_across_batch_widths_including_growth) {
         KvStore*  st =
             kv_store_open(model_n_layer(m),
                           n * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
-                          model_n_head_kv(m), model_head_dim(m));
+                          model_n_head_kv(m), model_head_dim(m), KV_F32);
 
         Kv**  kv   = (Kv**)xmalloc((size_t)n * sizeof(Kv*));
         f32** dst  = (f32**)xmalloc((size_t)n * sizeof(f32*));
@@ -1101,7 +1101,7 @@ TEST(m4_batched_generation_is_token_identical_to_solo_generation) {
 
     KvStore* st = kv_store_open(model_n_layer(m),
                                 BATCH_NSEQ * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
-                                model_n_head_kv(m), model_head_dim(m));
+                                model_n_head_kv(m), model_head_dim(m), KV_F32);
     Kv*           kv[BATCH_NSEQ];
     u32           got[BATCH_NSEQ][6];
     ModelBatchSeq bs[BATCH_NSEQ];
@@ -1161,7 +1161,7 @@ TEST(m4_a_sequence_retiring_early_does_not_disturb_the_rest_of_the_batch) {
 
     KvStore* st = kv_store_open(model_n_layer(m),
                                 BATCH_NSEQ * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
-                                model_n_head_kv(m), model_head_dim(m));
+                                model_n_head_kv(m), model_head_dim(m), KV_F32);
     Kv*           kv[BATCH_NSEQ];
     u32           got[BATCH_NSEQ][7];
     ModelBatchSeq bs[BATCH_NSEQ];
@@ -1220,7 +1220,7 @@ TEST(m4_batched_generation_stops_a_sequence_at_eos) {
 
     KvStore* st = kv_store_open(model_n_layer(m),
                                 2u * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
-                                model_n_head_kv(m), model_head_dim(m));
+                                model_n_head_kv(m), model_head_dim(m), KV_F32);
     Kv*           kv[2];
     u32           got[2][6];
     ModelBatchSeq bs[2];
@@ -1300,7 +1300,7 @@ TEST(m4_prefix_dedup_reproduces_the_undeduped_streams_exactly) {
         bool     use_dedup = (pass == 1);
         KvStore* st = kv_store_open(model_n_layer(m),
                                     2u * kv_blocks_for_ctx(CTX),
-                                    model_n_head_kv(m), model_head_dim(m));
+                                    model_n_head_kv(m), model_head_dim(m), KV_F32);
         Kv*           kv[2];
         ModelBatchSeq bs[2];
         for (u32 s = 0; s < 2; s++) {

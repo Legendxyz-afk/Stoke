@@ -625,13 +625,14 @@ static void cmd_batch(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke batch <model.gguf> [--raw] [-n N] "
               "(-p \"text\" | -f file)... [--seqs N] [--ctx N] "
-              "[--threads N] [--timing] [--dedup]");
+              "[--threads N] [--timing] [--dedup] [--kv f32|q8]");
     }
     const char* model_path = argv[2];
     bool        raw = false;
     long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
     bool        report_timing = false;
     bool        dedup = false;
+    KvDtype     kv_dt = KV_F32;   /* M2's representation stays the default */
 
     const char* src[BATCH_MAX_PROMPTS];
     bool        src_is_file[BATCH_MAX_PROMPTS];
@@ -644,6 +645,12 @@ static void cmd_batch(int argc, char** argv) {
             report_timing = true;
         } else if (strcmp(argv[i], "--dedup") == 0) {
             dedup = true;
+        } else if (strcmp(argv[i], "--kv") == 0) {
+            if (i + 1 >= argc) fatal("stoke batch: --kv needs f32 or q8");
+            const char* w = argv[++i];
+            if (strcmp(w, "f32") == 0)      kv_dt = KV_F32;
+            else if (strcmp(w, "q8") == 0)  kv_dt = KV_Q8_0;
+            else fatal("stoke batch: --kv '%s' -- expected f32 or q8", w);
         } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--seqs") == 0 ||
                    strcmp(argv[i], "--ctx") == 0 ||
                    strcmp(argv[i], "--threads") == 0) {
@@ -757,7 +764,7 @@ static void cmd_batch(int argc, char** argv) {
     u32      capacity = n_seq * kv_blocks_for_ctx(ctx);
     KvStore* store = kv_store_open(model_n_layer(model), capacity,
                                    model_n_head_kv(model),
-                                   model_head_dim(model));
+                                   model_head_dim(model), kv_dt);
 
     Kv**           kv = (Kv**)xcalloc(n_seq, sizeof(Kv*));
     ModelBatchSeq* bs = (ModelBatchSeq*)xcalloc(n_seq, sizeof(ModelBatchSeq));
@@ -807,9 +814,10 @@ static void cmd_batch(int argc, char** argv) {
     if (report_timing) {
         double dec_s = timing.decode_ms / 1000.0;
         fprintf(stderr,
-                "timing: load %.1f ms | %u seqs x ctx %u (%u blocks) | "
+                "timing: load %.1f ms | %u seqs x ctx %u (%u blocks, kv %s) | "
                 "prefill %u tok in %.1f ms | decode %u tok in %.1f ms",
-                load_ms, n_seq, ctx, capacity, timing.n_prefill,
+                load_ms, n_seq, ctx, capacity,
+                (kv_dt == KV_Q8_0) ? "q8" : "f32", timing.n_prefill,
                 timing.prefill_ms, timing.n_decode, timing.decode_ms);
         if (timing.n_decode > 0u && dec_s > 0.0) {
             fprintf(stderr, " (%.3f tok/s aggregate)",

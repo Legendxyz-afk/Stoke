@@ -1,0 +1,30 @@
+##### GATE ITEM 2 -- batch identity #####
+model   : models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+prompts : p00, p10, p20, p30, p45
+widths  : [1, 2, 4, 8, 16]   n_gen=16
+
+  solo p00: 16 ids in 5.2s
+  solo p10: 16 ids in 5.2s
+  solo p20: 16 ids in 10.8s
+  solo p30: 16 ids in 9.2s
+  solo p45: 16 ids in 4.3s
+
+  N=1   OK   1/1 slots compared in 5.4s
+  N=2   OK   2/2 slots compared in 9.9s
+  N=4   OK   4/4 slots compared in 27.7s
+  N=8   OK   8/8 slots compared in 47.2s
+  N=16  OK   16/16 slots compared in 416.8s
+
+GATE ITEM 2: PASS -- 31 sequence streams over 5 widths, all byte-identical to solo
+
+##### GATE ITEM 3 -- prefix dedup #####
+model    : models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+preamble : tests/data/parity/p20.txt (195 bytes)
+seqs     : 4 sharing that preamble, diverging after it
+n_gen    : 16
+
+  dedup OFF: prefill 287 tok  (222.6s)
+  dedup ON : prefill 95 tok  (16.1s)
+  adopted  : 192 of 287 prompt positions [0, 64, 64, 64]
+
+GATE ITEM 3: PASS -- 192 prompt positions served from the prefix cache, prefill fell 287 -> 95, streams byte-identical

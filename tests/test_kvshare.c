@@ -75,7 +75,7 @@ static void test_token_ids(void) {
      * each would reserve 4 and the third admission would be refused -- which
      * it was, and dereferencing that NULL is how this test first crashed
      * rather than reported. */
-    KvStore* st = kv_store_open(2, 12, 2, 4);
+    KvStore* st = kv_store_open(2, 12, 2, 4, KV_F32);
     BlockPool* pool = kv_store_pool(st);
     Kv* a = kv_open_in(st, 32);
     if (!a) { ok("token-id setup: sequence a admitted", false); kv_store_close(st); return; }
@@ -148,7 +148,7 @@ static void test_prefix_adoption(void) {
     /* 16 blocks. Reservations below total 13 (3+3+3+1+3), so admission is
      * never the thing under test -- what the count has to show is that
      * SHARING keeps allocation below reservation. */
-    KvStore*   st   = kv_store_open(2, 16, 2, 4);
+    KvStore*   st   = kv_store_open(2, 16, 2, 4, KV_F32);
     BlockPool* pool = kv_store_pool(st);
 
     u32 shared[48];
@@ -228,11 +228,114 @@ static void test_prefix_adoption(void) {
     kv_store_close(st);
 }
 
+/* ===========================================================================
+ * M4 gate item 4 -- the Q8 KV representation.
+ *
+ * Two claims, and they are different claims.
+ *
+ * (1) f32 MODE IS UNCHANGED BY THE NEW ACCESSOR PAIR. kv_write must be the
+ *     memcpy kv_view enabled, and kv_read must hand back the STORAGE pointer
+ *     rather than a copy -- checked as pointer identity against kv_view, so
+ *     "zero copy" is verified rather than asserted. If that ever stops
+ *     holding, f32 stops being free and every parity artifact in the project
+ *     is measuring a different thing.
+ *
+ * (2) Q8 MODE ROUND-TRIPS WITHIN THE BOUND THAT IS ACTUALLY TRUE OF IT.
+ *     The playbook asks for |dq(q(x)) - x| <= d/2. ggml's reference computes
+ *     d = amax/127 and quantizes with q = round(x/d), but STORES d as f16, so
+ *     the reconstruction is f16(d)*q and the error can reach
+ *     d/2 + 127*d*2^-11 ~ 0.562*d. The strict bound is therefore NOT expected
+ *     to hold, and the reason is the scale's storage, not the quantizer.
+ *     Asserting d/2 and widening the constant until it passed would turn a
+ *     known property into a fitted one, so this asserts the f16-adjusted
+ *     bound and PRINTS the worst case measured against both.
+ * ===========================================================================
+ */
+static void test_kv_dtype(void) {
+    const u32 NL = 2, NH = 2, HD = 32; /* Q8 needs head_dim % 32 == 0 */
+
+    /* Values with a real dynamic range and one outlier per vector: a scale
+     * chosen from an amax that is not representative is where quantization
+     * error actually lives, and a flat test vector would hide it. */
+    f32 k_in[32], v_in[32];
+    for (u32 d = 0; d < HD; d++) {
+        k_in[d] = (f32)((int)d - 16) * 0.37f;
+        v_in[d] = (f32)((int)(d * 7u % 31u) - 15) * 0.11f;
+    }
+    k_in[9]  = 12.5f;   /* outlier: drags the scale for its whole block */
+    v_in[20] = -9.75f;
+
+    /* ---- f32: exact, and zero copy ---- */
+    {
+        KvStore* st = kv_store_open(NL, 4, NH, HD, KV_F32);
+        Kv*      a  = kv_open_in(st, 32);
+        f32      scratch[64];
+        kv_write(a, 1, 1, 5, k_in, v_in);
+        KvSlot got  = kv_read(a, 1, 1, 5, scratch);
+        KvSlot direct = kv_view(a, 1, 1, 5);
+        ok("f32 kv_read returns the storage pointer, not a copy",
+           got.k == direct.k && got.v == direct.v);
+        bool exact = true;
+        for (u32 d = 0; d < HD; d++) {
+            if (got.k[d] != k_in[d] || got.v[d] != v_in[d]) exact = false;
+        }
+        ok("f32 round-trips bit-exactly through kv_write/kv_read", exact);
+        kv_close(a);
+        kv_store_close(st);
+    }
+
+    /* ---- Q8: within the bound the scheme actually has ---- */
+    {
+        KvStore* st = kv_store_open(NL, 4, NH, HD, KV_Q8_0);
+        Kv*      a  = kv_open_in(st, 32);
+        f32      scratch[64];
+        kv_write(a, 1, 1, 5, k_in, v_in);
+        KvSlot got = kv_read(a, 1, 1, 5, scratch);
+        ok("Q8 kv_read fills the caller's scratch",
+           got.k == scratch && got.v == scratch + HD);
+
+        /* d is per 32-element block; HD is exactly one block here. */
+        f32 amax_k = 0.0f, amax_v = 0.0f;
+        for (u32 d = 0; d < HD; d++) {
+            f32 ak = k_in[d] < 0 ? -k_in[d] : k_in[d];
+            f32 av = v_in[d] < 0 ? -v_in[d] : v_in[d];
+            if (ak > amax_k) amax_k = ak;
+            if (av > amax_v) amax_v = av;
+        }
+        f32 dk = amax_k / 127.0f, dv = amax_v / 127.0f;
+
+        f32 worst_k = 0.0f, worst_v = 0.0f;
+        for (u32 d = 0; d < HD; d++) {
+            f32 ek = got.k[d] - k_in[d]; if (ek < 0) ek = -ek;
+            f32 ev = got.v[d] - v_in[d]; if (ev < 0) ev = -ev;
+            if (ek > worst_k) worst_k = ek;
+            if (ev > worst_v) worst_v = ev;
+        }
+        /* 0.5 + 127*2^-11 = 0.5620. See the block comment. */
+        const f32 BOUND = 0.5620f;
+        printf("  q8 round-trip: worst |dq(q(x))-x| = %.6g (K, d=%.6g, "
+               "%.4f d) / %.6g (V, d=%.6g, %.4f d); strict d/2 would be "
+               "%.4f d\n",
+               (double)worst_k, (double)dk, (double)(worst_k / dk),
+               (double)worst_v, (double)dv, (double)(worst_v / dv), 0.5);
+        ok("Q8 K round-trips within the f16-scale-adjusted bound",
+           worst_k <= BOUND * dk);
+        ok("Q8 V round-trips within the f16-scale-adjusted bound",
+           worst_v <= BOUND * dv);
+        ok("Q8 is lossy -- a bound nothing violates proves nothing",
+           worst_k > 0.0f);
+
+        ok("a Q8 store reports its dtype", kv_dtype(a) == KV_Q8_0);
+        kv_close(a);
+        kv_store_close(st);
+    }
+}
+
 int main(void) {
     const u32 NL = 3, NH = 2, HD = 4;
 
     /* 8 blocks = 128 positions, shared by three sequences of 32 each. */
-    KvStore* st = kv_store_open(NL, 8, NH, HD);
+    KvStore* st = kv_store_open(NL, 8, NH, HD, KV_F32);
     ok("a fresh store is all free", kv_store_free_blocks(st) == 8);
 
     Kv* a = kv_open_in(st, 32);
@@ -296,6 +399,7 @@ int main(void) {
 
     test_token_ids();
     test_prefix_adoption();
+    test_kv_dtype();
 
     /* A caller sizing a shared store has to turn a context length into a
      * block count, and getting it wrong by one block per sequence is
@@ -311,7 +415,7 @@ int main(void) {
         /* Not an arithmetic identity but the property the caller needs: a
          * store sized by this function admits exactly that many sequences. */
         const u32 CTX = 33; /* 3 blocks: deliberately not a multiple of 16 */
-        KvStore*  s2 = kv_store_open(NL, 2u * kv_blocks_for_ctx(CTX), NH, HD);
+        KvStore*  s2 = kv_store_open(NL, 2u * kv_blocks_for_ctx(CTX), NH, HD, KV_F32);
         Kv* x = kv_open_in(s2, CTX);
         Kv* y = kv_open_in(s2, CTX);
         Kv* z = kv_open_in(s2, CTX);

@@ -52,6 +52,19 @@ typedef struct {
 typedef struct KvStore KvStore;
 typedef struct BlockPool BlockPool;
 
+/* ---- the KV representation (M4 gate item 4) --------------------------
+ * KV_F32 is M2's representation and stays the default: exact, and the one
+ * every parity artifact was produced against. KV_Q8_0 stores each head
+ * vector as ggml Q8_0 blocks (32 elements in 34 bytes -- an f16 scale plus
+ * 32 int8), which is 136 bytes against 512 for head_dim 128.
+ *
+ * The default is Kabir's call at M5, not this layer's; M4's job is to make
+ * the option exist and to measure what it costs in divergence.
+ *
+ * ▶ Q8 requires head_dim % 32 == 0 (fatal otherwise) -- the block size is
+ * the quantizer's, and a partial block has no defined encoding. */
+typedef enum { KV_F32 = 0, KV_Q8_0 = 1 } KvDtype;
+
 /* The store's pool, for admission decisions, prefix lookups and the sim.
  * Exposed because the pool IS the shared resource -- hiding it would mean
  * re-exporting each of its operations through kv.h one at a time. */
@@ -94,8 +107,35 @@ u32 kv_blocks_for_ctx(u32 max_ctx);
 u32 kv_adopt_prefix(Kv* kv, const u32* ids, u32 n_ids);
 
 KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
-                       u32 head_dim);
+                       u32 head_dim, KvDtype dtype);
 void     kv_store_close(KvStore* st);
+KvDtype  kv_dtype(const Kv* kv);
+
+/* ---- the representation-independent accessor pair --------------------
+ * ▶ WHY THIS EXISTS BESIDE kv_view, AND WHAT IT AMENDS.
+ * kv_view hands back WRITABLE f32 POINTERS, and a pointer is a promise about
+ * representation. A quantized store has no f32 address to give: the bytes
+ * are int8 and a scale. M2 could make that promise because there was one
+ * representation; the paged body swap kept it because paging changes WHERE
+ * an f32 vector lives, not WHAT it is. Q8 changes what it is.
+ *
+ * So the engine reads and writes through this pair, and kv_view remains the
+ * f32-mode accessor (tests use it; it is fatal on a Q8 store). M2's actual
+ * rule -- ONE place owns KV address arithmetic -- is untouched: these live
+ * in kv.c beside kv_view and share its translation. The signature moved,
+ * the ownership did not. Design note:
+ * docs/superpowers/design-notes/2026-08-12-m4-q8-kv.md section 3.
+ *
+ * kv_write writes this position's K and V for one (layer, kv_head), each
+ * head_dim floats. kv_read reads them back: the returned pointers are
+ * DIRECTLY INTO STORAGE in f32 mode (zero copy -- f32 stays exactly as fast
+ * and exactly as exact as it was) and into `scratch` in Q8 mode, where they
+ * stay valid until the next kv_read using the same scratch. `scratch` must
+ * hold 2*head_dim floats: k at [0, head_dim), v at [head_dim, 2*head_dim).
+ * It may be NULL only on an f32 store. */
+void   kv_write(Kv* kv, u32 layer, u32 kv_head, u32 pos, const f32* k,
+                const f32* v);
+KvSlot kv_read(Kv* kv, u32 layer, u32 kv_head, u32 pos, f32* scratch);
 
 /* One sequence's view onto a shared store. Admission is full-reservation
  * (I8), so this returns NULL when the store cannot guarantee max_ctx -- the
@@ -116,7 +156,9 @@ u32  kv_len(const Kv* kv);
 /* Allocates (xcalloc, zero-initialized) both the K and V backing arrays,
  * sized n_layer*max_ctx*n_head_kv*head_dim floats each. All four
  * dimensions must be > 0 (fatal otherwise -- a degenerate KV cache can
- * never be validly indexed). Never returns NULL. */
+ * never be validly indexed). Never returns NULL. Always KV_F32: every
+ * existing caller of this is a single-sequence path whose output is
+ * compared byte-for-byte against artifacts made at f32. */
 Kv* kv_open(u32 n_layer, u32 max_ctx, u32 n_head_kv, u32 head_dim);
 
 /* Frees both backing arrays and `kv` itself. `kv` may be NULL (no-op). */

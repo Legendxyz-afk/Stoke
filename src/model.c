@@ -78,6 +78,14 @@ typedef struct {
      * the token loop still allocates nothing. */
     u8* s_aq;
     u64 s_aq_bytes;
+
+    /* M4 Q8 KV: where kv_read dequantizes one (K,V) pair to. [2*head_dim].
+     * PER SEQUENCE, like everything else here -- a shared one would be the
+     * scratch-aliasing bug the interleaved-identity test exists to catch,
+     * except silent, since attention would read another sequence's KV and
+     * still produce a plausible number. Unused at f32, where kv_read hands
+     * back the storage pointer and copies nothing. */
+    f32* s_kv;
 } SeqScratch;
 
 /* Pointer views over the N scratch sets a batch is stepping.
@@ -226,6 +234,7 @@ static void scratch_alloc(Model* m, SeqScratch* sc) {
     sc->s_logits   = (f32*)xmalloc((size_t)m->n_vocab * sizeof(f32));
     sc->s_aq_bytes = m->scratch.s_aq_bytes;
     sc->s_aq       = (u8*)xmalloc((size_t)sc->s_aq_bytes);
+    sc->s_kv       = (f32*)xmalloc((size_t)m->head_dim * 2u * sizeof(f32));
 }
 
 /* Sizes the view arrays for at least `n` sequences and points them at `scs`.
@@ -274,6 +283,7 @@ static void scratch_free(SeqScratch* sc) {
     free(sc->s_attn_out); free(sc->s_scores); free(sc->s_aq);
     free(sc->s_proj); free(sc->s_f); free(sc->s_gate); free(sc->s_up);
     free(sc->s_x); free(sc->s_h); free(sc->s_xout); free(sc->s_logits);
+    free(sc->s_kv);
 }
 
 Model* model_open(const char* path) {
@@ -476,6 +486,7 @@ Model* model_open(const char* path) {
     m->scratch.s_h = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
     m->scratch.s_xout = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
     m->scratch.s_logits = (f32*)xmalloc((size_t)n_vocab * sizeof(f32));
+    m->scratch.s_kv = (f32*)xmalloc((size_t)head_dim * 2u * sizeof(f32));
 
     return m;
 }
@@ -507,6 +518,7 @@ void model_close(Model* m) {
     free(m->scratch.s_h);
     free(m->scratch.s_xout);
     free(m->scratch.s_logits);
+    free(m->scratch.s_kv);
     gguf_close(m->f);
     free(m);
 }
@@ -806,13 +818,20 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
              * layer only because the answer does not vary by layer. */
             if (L == 0) kv_note_token(kvs, pos, token_ids[s]);
 
-            /* kv append via kv_view -- the ONLY place K/V ever get written */
+            /* kv append -- the ONLY place K/V ever get written.
+             *
+             * ▶ THROUGH kv_write/kv_read RATHER THAN kv_view SINCE M4's Q8
+             * option. kv_view hands back a WRITABLE f32 POINTER, and a
+             * pointer is a promise about representation that a quantized
+             * store cannot keep. At f32 these are the same memcpy and the
+             * same zero-copy read as before -- byte-identical, checked
+             * against the archived m3 gate binary -- and at Q8 they are
+             * where quantization happens. sc->s_kv is this SEQUENCE's
+             * dequantization buffer; sharing one across the batch would be
+             * the scratch-aliasing failure, silent, in attention. */
             for (u32 h = 0; h < m->n_head_kv; h++) {
-                KvSlot slot = kv_view(kvs, L, h, pos);
-                memcpy(slot.k, sc->s_k + (u64)h * m->head_dim,
-                       (size_t)m->head_dim * sizeof(f32));
-                memcpy(slot.v, sc->s_v + (u64)h * m->head_dim,
-                       (size_t)m->head_dim * sizeof(f32));
+                kv_write(kvs, L, h, pos, sc->s_k + (u64)h * m->head_dim,
+                         sc->s_v + (u64)h * m->head_dim);
             }
 
             /* causal GQA attention: q-head h reads kv-head h/gqa_group */
@@ -821,7 +840,7 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
                 const f32* qh = sc->s_q + (u64)h * m->head_dim;
 
                 for (u32 j = 0; j <= pos; j++) {
-                    KvSlot slot = kv_view(kvs, L, kvh, j);
+                    KvSlot slot = kv_read(kvs, L, kvh, j, sc->s_kv);
                     sc->s_scores[j] =
                         vec_dot_f32(qh, slot.k, m->head_dim) * scale;
                 }
@@ -830,7 +849,7 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
                 f32* out_h = sc->s_attn_out + (u64)h * m->head_dim;
                 for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
                 for (u32 j = 0; j <= pos; j++) {
-                    KvSlot slot = kv_view(kvs, L, kvh, j);
+                    KvSlot slot = kv_read(kvs, L, kvh, j, sc->s_kv);
                     f32    wgt = sc->s_scores[j];
                     for (u32 d = 0; d < m->head_dim; d++) {
                         out_h[d] += wgt * slot.v[d];
