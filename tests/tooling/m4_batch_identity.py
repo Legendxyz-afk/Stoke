@@ -49,25 +49,34 @@ def run(cmd):
 
 
 def split_seq_blocks(stdout, n_seq):
-    """Blocks in order, header lines removed.
+    """Blocks in order, header lines removed, BY BYTE OFFSET.
 
-    Split on EXACT expected headers rather than on a substring: decoded model
-    output is arbitrary text and could contain anything, including something
-    that looks like a header.
+    Deliberately not a line split-and-rejoin. The first version of this did
+    that and dropped the newline the following header line had consumed, so
+    every block except the LAST came up one byte short -- which presented as
+    "N-1 of N slots differ at every width", i.e. exactly like a real batching
+    bug, and cost a full gate run to diagnose. Slicing the original bytes
+    cannot lose or invent a byte.
+
+    Headers are matched only at a line boundary: decoded model output is
+    arbitrary text and could contain anything, including a header lookalike.
     """
-    lines = stdout.split(b"\n")
-    blocks, cur, want = [], None, 0
-    for line in lines:
-        if line == b"== seq %d ==" % want:
-            if cur is not None:
-                blocks.append(b"\n".join(cur))
-            cur, want = [], want + 1
-        elif cur is not None:
-            cur.append(line)
-    if cur is not None:
-        blocks.append(b"\n".join(cur))
-    if len(blocks) != n_seq:
-        raise SystemExit(f"expected {n_seq} seq blocks, parsed {len(blocks)}")
+    spans = []
+    pos = 0
+    for i in range(n_seq):
+        hdr = b"== seq %d ==\n" % i
+        idx = stdout.find(hdr, pos)
+        while idx > 0 and stdout[idx - 1:idx] != b"\n":
+            idx = stdout.find(hdr, idx + 1)
+        if idx < 0:
+            raise SystemExit(f"no `== seq {i} ==` header at a line boundary")
+        spans.append((idx, idx + len(hdr)))
+        pos = idx + len(hdr)
+
+    blocks = []
+    for i in range(n_seq):
+        end = spans[i + 1][0] if i + 1 < n_seq else len(stdout)
+        blocks.append(stdout[spans[i][1]:end])
     return blocks
 
 
@@ -130,9 +139,14 @@ def main():
             # Show the first divergence concretely -- a gate that only counts
             # is a gate nobody can act on.
             s, name = bad[0]
-            got = blocks[s].split(b"\n")
-            want = solo[name].split(b"\n")
-            for i, (g, e) in enumerate(zip(got, want)):
+            got, want = blocks[s], solo[name]
+            if len(got) != len(want):
+                print(f"       slot {s}: {len(got)} bytes vs {len(want)} "
+                      f"in the solo reference")
+            gl, wl = got.split(b"\n"), want.split(b"\n")
+            for i in range(max(len(gl), len(wl))):
+                g = gl[i] if i < len(gl) else b"<missing>"
+                e = wl[i] if i < len(wl) else b"<missing>"
                 if g != e:
                     print(f"       first difference at line {i}: "
                           f"got {g!r} want {e!r}")

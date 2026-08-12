@@ -72,6 +72,27 @@ void kv_note_token(Kv* kv, u32 pos, u32 token_id);
  * it itself has to know BP_BLOCK_TOKENS, and gets to be wrong about it. */
 u32 kv_blocks_for_ctx(u32 max_ctx);
 
+/* ---- prefix dedup (M4 gate item 3) -----------------------------------
+ * Adopts the longest run of leading WHOLE blocks of `ids[0..n_ids)` that the
+ * store already holds with exactly those ids, sharing them by refcount, and
+ * returns how many POSITIONS are now backed. The caller must not recompute
+ * those positions -- their K/V is already resident and identical, because a
+ * chained hash match means the entire preceding prefix matched too, so the
+ * shared block covers the same absolute positions in both sequences and
+ * carries K/V rope'd at the same positions.
+ *
+ * ▶ NEVER RETURNS n_ids. When every prompt token is already cached there is
+ * still no logits vector until SOMETHING runs forward, so a fully-cached
+ * prompt gives its last block back (vLLM caps a hit at prompt_len - 1 for
+ * the same reason).
+ *
+ * ▶ ADMISSION-TIME ONLY: returns 0 for a sequence that has already been
+ * written. Adoption splices shared blocks in from ordinal 0 upward; there is
+ * no meaningful way to do that underneath positions a sequence already owns.
+ *
+ * The result is always a multiple of the block size. */
+u32 kv_adopt_prefix(Kv* kv, const u32* ids, u32 n_ids);
+
 KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
                        u32 head_dim);
 void     kv_store_close(KvStore* st);
@@ -84,6 +105,13 @@ Kv*  kv_open_in(KvStore* st, u32 max_ctx);
 /* Blocks currently free in the store's pool -- for admission decisions and
  * for tests that need to see sharing actually happen. */
 u32  kv_store_free_blocks(const KvStore* st);
+
+/* Positions this sequence currently has storage for. Exposed so a caller
+ * that was TOLD a prefix is resident can check that it actually is: the
+ * failure mode of prefix dedup is skipping work over KV that was never
+ * written, and unlike most bugs here it leaves the run alive and the output
+ * merely wrong. */
+u32  kv_len(const Kv* kv);
 
 /* Allocates (xcalloc, zero-initialized) both the K and V backing arrays,
  * sized n_layer*max_ctx*n_head_kv*head_dim floats each. All four

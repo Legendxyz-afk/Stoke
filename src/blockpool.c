@@ -404,6 +404,12 @@ u32 bp_block_slot(const BlockPool* bp, u32 block) {
     return bp->b[block].arena_slot;
 }
 
+u64 bp_block_hash(const BlockPool* bp, u32 block) {
+    if (block >= bp->capacity)
+        fatal("bp_block_hash: block %u out of range [0,%u)", block, bp->capacity);
+    return bp->b[block].hash;
+}
+
 u32 bp_capacity(const BlockPool* bp)   { return bp->capacity; }
 u32 bp_free_count(const BlockPool* bp) { return bp->free_n; }
 u32 bp_seq_len(const BpSeq* s)         { return s->len; }

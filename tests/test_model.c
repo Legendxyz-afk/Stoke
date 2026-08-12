@@ -1115,7 +1115,7 @@ TEST(m4_batched_generation_is_token_identical_to_solo_generation) {
         bs[s].n_out      = 0;
     }
 
-    model_generate_batch(m, kv, bs, BATCH_NSEQ, -1, NULL);
+    model_generate_batch(m, kv, bs, BATCH_NSEQ, -1, false, NULL);
 
     for (u32 s = 0; s < BATCH_NSEQ; s++) {
         ASSERT_EQ_U32(bs[s].n_out, N_GEN);
@@ -1175,7 +1175,7 @@ TEST(m4_a_sequence_retiring_early_does_not_disturb_the_rest_of_the_batch) {
         bs[s].n_out      = 0;
     }
 
-    model_generate_batch(m, kv, bs, BATCH_NSEQ, -1, NULL);
+    model_generate_batch(m, kv, bs, BATCH_NSEQ, -1, false, NULL);
 
     for (u32 s = 0; s < BATCH_NSEQ; s++) {
         ASSERT_EQ_U32(bs[s].n_out, n_gen[s]);
@@ -1234,7 +1234,7 @@ TEST(m4_batched_generation_stops_a_sequence_at_eos) {
         bs[s].n_out      = 0;
     }
 
-    model_generate_batch(m, kv, bs, 2u, eos_id, NULL);
+    model_generate_batch(m, kv, bs, 2u, eos_id, false, NULL);
 
     for (u32 s = 0; s < 2; s++) {
         ASSERT_EQ_U32(bs[s].n_out, n_solo[s]);
@@ -1243,6 +1243,99 @@ TEST(m4_batched_generation_stops_a_sequence_at_eos) {
 
     for (u32 s = 0; s < 2; s++) kv_close(kv[s]);
     kv_store_close(st);
+    model_close(m);
+    remove(MODEL_FIXTURE_PATH);
+}
+
+/* ===========================================================================
+ * M4 gate item 3 -- prefix dedup, at the level where it can be wrong about
+ * TOKENS rather than about blocks.
+ *
+ * tests/test_kvshare.c proves the pool half: an adopted span is physically
+ * the same storage, the last-token rule holds, blocks come back. What it
+ * cannot show is the claim that matters here -- that skipping the forward
+ * pass over an adopted prefix changes NOTHING about what comes out.
+ *
+ * The argument is that a chained-hash match certifies the whole preceding
+ * prefix, so the shared block covers the same ABSOLUTE positions in both
+ * sequences, and the forward pass depends only on (token id, position, prior
+ * KV). That is a proof about the design; this is the check on the code.
+ *
+ * THE PROMPTS DIVERGE AFTER THE SHARED BLOCK ON PURPOSE. Two identical
+ * prompts would produce identical streams whether or not dedup did anything,
+ * so the test would pass with kv_adopt_prefix returning garbage.
+ *
+ * ⚠ AND HERE IS WHAT THIS TEST CANNOT DO, MEASURED RATHER THAN GUESSED.
+ * Mutating kv_adopt_prefix to report positions as resident WITHOUT adopting
+ * the block -- so the prefill skips 16 positions whose KV was never written
+ * -- leaves this test at 26/26. The fixture's vocabulary is 5 ids wide and
+ * its attention is dominated by recent positions, so an argmax comparison
+ * simply cannot resolve it. tests/test_kvshare.c DOES catch that mutation
+ * (two of its checks fail), and model_generate_batch now refuses the
+ * inconsistency outright via kv_len. Recorded here so nobody reads this
+ * test as covering more than it does: what it covers is that the dedup path
+ * RUNS, reports what it did, and does not perturb the streams on a model
+ * small enough to test cheaply. The claim on a real model is gate item 3's
+ * spot check, and it is not optional for that reason.
+ * ===========================================================================
+ */
+TEST(m4_prefix_dedup_reproduces_the_undeduped_streams_exactly) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    /* 20 ids: one whole block (16) plus a partial tail. A shares the first
+     * 18 with B and diverges inside the tail, so exactly one block can be
+     * adopted -- and the last-token rule is not what limits it. */
+    u32 pa[20], pb[20];
+    for (u32 i = 0; i < 20; i++) pa[i] = (i * 3u + 1u) % FIX_VOCAB;
+    memcpy(pb, pa, sizeof(pa));
+    pb[18] = (pa[18] + 1u) % FIX_VOCAB;
+    pb[19] = (pa[19] + 2u) % FIX_VOCAB;
+
+    const u32 N_GEN = 4u, CTX = 24u;
+    u32 plain[2][4], dedup[2][4];
+    u32 adopted[2] = {99u, 99u};
+
+    for (u32 pass = 0; pass < 2; pass++) {
+        bool     use_dedup = (pass == 1);
+        KvStore* st = kv_store_open(model_n_layer(m),
+                                    2u * kv_blocks_for_ctx(CTX),
+                                    model_n_head_kv(m), model_head_dim(m));
+        Kv*           kv[2];
+        ModelBatchSeq bs[2];
+        for (u32 s = 0; s < 2; s++) {
+            kv[s] = kv_open_in(st, CTX);
+            ASSERT_TRUE(kv[s] != NULL);
+            bs[s].prompt_ids = (s == 0) ? pa : pb;
+            bs[s].n_prompt   = 20u;
+            bs[s].n_gen      = N_GEN;
+            bs[s].out_ids    = use_dedup ? dedup[s] : plain[s];
+            bs[s].n_out      = 0;
+            bs[s].n_adopted  = 0;
+        }
+        model_generate_batch(m, kv, bs, 2u, -1, use_dedup, NULL);
+        for (u32 s = 0; s < 2; s++) {
+            ASSERT_EQ_U32(bs[s].n_out, N_GEN);
+            if (use_dedup) adopted[s] = bs[s].n_adopted;
+            kv_close(kv[s]);
+        }
+        kv_store_close(st);
+    }
+
+    /* Dedup FIRED -- asserted, not assumed. A run that silently adopted
+     * nothing would satisfy every equality below while testing nothing, which
+     * is exactly how the op storm reported dedup_hit=0 for a while. */
+    ASSERT_EQ_U32(adopted[0], 0u);   /* nothing resident yet for the first */
+    ASSERT_EQ_U32(adopted[1], 16u);  /* one whole block, and only one */
+
+    /* And the streams are the ones it was supposed to reproduce. */
+    ASSERT_TRUE(memcmp(dedup[0], plain[0], N_GEN * sizeof(u32)) == 0);
+    ASSERT_TRUE(memcmp(dedup[1], plain[1], N_GEN * sizeof(u32)) == 0);
+
+    /* Guard: if the two prompts happened to generate the same stream, the
+     * comparison above would hold even with the sequences confused. */
+    ASSERT_TRUE(memcmp(plain[0], plain[1], N_GEN * sizeof(u32)) != 0);
+
     model_close(m);
     remove(MODEL_FIXTURE_PATH);
 }

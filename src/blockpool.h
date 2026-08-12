@@ -135,6 +135,13 @@ void bp_test_force_hash(BlockPool* bp, u32 block, u64 hash);
 u32  bp_seq_block(const BpSeq* seq, u32 ordinal);
 u32  bp_block_slot(const BlockPool* bp, u32 block);
 
+/* A block's chained hash, 0 if its ids were never fully recorded. This is
+ * what a caller walking a prefix passes as the NEXT lookup's parent_hash, so
+ * that each match certifies the whole prefix before it rather than just its
+ * own 16 ids. Reading it back beats recomputing: the value here is the one
+ * bp_dedup_find matched against. */
+u64  bp_block_hash(const BlockPool* bp, u32 block);
+
 u32  bp_capacity(const BlockPool* bp);
 u32  bp_free_count(const BlockPool* bp);
 u32  bp_seq_len(const BpSeq* seq);

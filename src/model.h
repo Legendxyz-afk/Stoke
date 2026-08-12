@@ -42,6 +42,8 @@
 #include "gguf.h"
 #include "kv.h"
 
+#include <stdbool.h>
+
 typedef struct Model Model;
 
 /* Opens `path`, validates the full qwen3 config + tensor shape table, and
@@ -181,6 +183,12 @@ typedef struct {
     u32        n_gen;       /* this sequence's own cap, > 0 */
     u32*       out_ids;     /* caller-owned, capacity >= n_gen */
     u32        n_out;       /* OUT: ids actually written */
+    u32        n_adopted;   /* OUT: prompt positions taken from the prefix
+                             * cache instead of being recomputed. Reported
+                             * rather than inferred, because "dedup was
+                             * enabled" and "dedup fired" are different
+                             * claims and only the second is worth anything.
+                             * 0 whenever dedup_prefix is false. */
 } ModelBatchSeq;
 
 /* Runs `n_seq` sequences to completion against one Kv handle each (which may
@@ -200,12 +208,21 @@ typedef struct {
  * the lower slots. Composition independence is what makes that safe: the slot
  * a sequence occupies changes nothing about its arithmetic.
  *
+ * ▶ `dedup_prefix` turns on prefix adoption (kv.h's kv_adopt_prefix): before
+ * a sequence is prefilled, whole leading blocks of its prompt whose token ids
+ * are already resident in the SHARED store are adopted by refcount and not
+ * recomputed. It is opt-in rather than default for one reason: it removes
+ * prefill work, so a scaling curve measured with it on would be reporting the
+ * corpus's prompt overlap as though it were batching throughput.
+ *
  * `eos_id` < 0 disables early stop; an emitted eos IS included in out_ids,
  * matching model_generate. `timing`, if given, reports the batch aggregate:
  * n_prefill summed over sequences, n_decode summed over the ids each sequence
  * produced after its first -- the same unit model_generate reports, so an
- * aggregate rate divides by the same denominator at every N. */
+ * aggregate rate divides by the same denominator at every N. n_prefill counts
+ * positions ACTUALLY FORWARDED, so adopted positions are excluded. */
 void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
-                          u32 n_seq, i64 eos_id, ModelTiming* timing);
+                          u32 n_seq, i64 eos_id, bool dedup_prefix,
+                          ModelTiming* timing);
 
 #endif /* STOKE_MODEL_H */

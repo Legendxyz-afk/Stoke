@@ -95,6 +95,8 @@ void kv_store_close(KvStore* st) {
 
 u32 kv_store_free_blocks(const KvStore* st) { return bp_free_count(st->pool); }
 
+u32 kv_len(const Kv* kv) { return bp_seq_len(kv->seq); }
+
 BlockPool* kv_store_pool(KvStore* st) { return st->pool; }
 
 void kv_note_token(Kv* kv, u32 pos, u32 token_id) {
@@ -106,6 +108,35 @@ void kv_note_token(Kv* kv, u32 pos, u32 token_id) {
         fatal("kv: kv_note_token -- could not back position %u (max_ctx=%u)",
               pos, kv->max_ctx);
     }
+}
+
+u32 kv_adopt_prefix(Kv* kv, const u32* ids, u32 n_ids) {
+    BlockPool* bp = kv->store->pool;
+
+    /* Admission-time only -- see kv.h. Checked on LENGTH rather than on block
+     * alignment: a sequence 16 positions in is block-aligned and adopting
+     * under it would still be wrong. */
+    if (bp_seq_len(kv->seq) != 0) return 0;
+
+    u32 max_blocks = n_ids / BP_BLOCK_TOKENS;
+    /* The last-token rule. An exact multiple has to give back a whole block,
+     * because adoption has no finer grain than one. */
+    if (max_blocks > 0 && n_ids % BP_BLOCK_TOKENS == 0) max_blocks--;
+
+    u64 parent  = 0;
+    u32 adopted = 0;
+    for (u32 k = 0; k < max_blocks; k++) {
+        u32 blk = bp_dedup_find(bp, parent, ids + (size_t)k * BP_BLOCK_TOKENS);
+        if (blk == BP_NIL) break;
+        /* A refusal here is a reservation or aliasing bound, not a miss --
+         * stopping is right either way: a prefix must be adopted CONTIGUOUSLY
+         * from ordinal 0, since block k's positions are only [16k, 16k+16) if
+         * every block before it is in place. */
+        if (!bp_seq_adopt(bp, kv->seq, blk)) break;
+        parent   = bp_block_hash(bp, blk);
+        adopted += BP_BLOCK_TOKENS;
+    }
+    return adopted;
 }
 
 Kv* kv_open_in(KvStore* st, u32 max_ctx) {

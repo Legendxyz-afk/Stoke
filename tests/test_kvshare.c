@@ -117,6 +117,112 @@ static void test_token_ids(void) {
     kv_store_close(st);
 }
 
+/* ===========================================================================
+ * M4 gate item 3 -- PREFIX ADOPTION. The half that makes dedup a feature
+ * rather than a data structure.
+ *
+ * bp_dedup_find has existed since the pool landed and was called by NOTHING
+ * outside its own tests: a sequence's blocks were always allocated fresh, so
+ * the machinery could not fire in real inference no matter how correct it
+ * was. kv_adopt_prefix is the call that closes that, and these are the
+ * properties it has to have.
+ *
+ * THE BYTE-LEVEL CLAIM IS CHECKED AS POINTER IDENTITY, not as equal values.
+ * The plan's wording is "identical physical block ids for the shared span";
+ * comparing what kv_view returns is the same statement made where it bites,
+ * and it cannot be satisfied by a copy that merely happens to agree.
+ *
+ * THE LAST-TOKEN RULE IS A CORRECTNESS BOUND, NOT A POLICY. Adopting every
+ * position of a fully-cached prompt leaves NO position to run forward, and
+ * therefore no logits and no next token. vLLM caps a hit at prompt_len - 1
+ * for exactly this reason; since adoption moves in whole blocks, an
+ * exactly-block-multiple prompt has to give back its entire last block.
+ * ===========================================================================
+ */
+static void test_prefix_adoption(void) {
+    /* 16 blocks. Reservations below total 13 (3+3+3+1+3), so admission is
+     * never the thing under test -- what the count has to show is that
+     * SHARING keeps allocation below reservation. */
+    KvStore*   st   = kv_store_open(2, 16, 2, 4);
+    BlockPool* pool = kv_store_pool(st);
+
+    u32 shared[48];
+    for (u32 i = 0; i < 48; i++) shared[i] = 1000 + i;
+
+    Kv* a = kv_open_in(st, 48);
+    if (!a) { ok("adoption setup: a admitted", false); kv_store_close(st); return; }
+    for (u32 p = 0; p < 48; p++) {
+        write_pos(a, p, 1.0f + (f32)p);
+        kv_note_token(a, p, shared[p]);
+    }
+    u32 free_after_a = kv_store_free_blocks(st);
+    ok("a occupies 3 blocks", free_after_a == 13);
+
+    /* B shares the first 32 ids and then diverges, so adoption must stop at
+     * the block boundary where they part -- not before, and not after. */
+    u32 partly[48];
+    memcpy(partly, shared, sizeof(partly));
+    for (u32 i = 32; i < 48; i++) partly[i] = 5000 + i;
+
+    Kv* b = kv_open_in(st, 48);
+    if (!b) { ok("adoption setup: b admitted", false); kv_close(a); kv_store_close(st); return; }
+    ok("adoption stops at the first block that differs",
+       kv_adopt_prefix(b, partly, 48) == 32);
+    ok("adoption allocated nothing", kv_store_free_blocks(st) == free_after_a);
+
+    bool same = true;
+    for (u32 p = 0; p < 32; p++) {
+        KvSlot sa = kv_view(a, 0, 0, p), sb = kv_view(b, 0, 0, p);
+        if (sa.k != sb.k || sa.v != sb.v) same = false;
+    }
+    ok("the adopted span IS the same storage, not a copy of it", same);
+
+    bool distinct = true;
+    for (u32 p = 32; p < 48; p++) {
+        KvSlot sa = kv_view(a, 0, 0, p), sb = kv_view(b, 0, 0, p);
+        if (sa.k == sb.k || sa.v == sb.v) distinct = false;
+    }
+    ok("past the match each sequence has private storage again", distinct);
+    ok("b's adopted span still reads a's values",
+       check_pos(b, 0, 1.0f) && check_pos(b, 31, 32.0f));
+
+    /* The last-token rule: every block of this 32-id prompt is cached, and
+     * adopting all of it would leave nothing to run forward -- so no logits,
+     * and no next token. The whole last block goes back. */
+    Kv* c = kv_open_in(st, 48);
+    if (!c) ok("adoption setup: c admitted", false);
+    else    ok("a fully cached prompt gives back its last block",
+               kv_adopt_prefix(c, shared, 32) == 16);
+
+    /* A prompt shorter than one block has no full block to match at all. */
+    Kv* d = kv_open_in(st, 16);
+    if (!d) ok("adoption setup: d admitted", false);
+    else    ok("a sub-block prompt adopts nothing",
+               kv_adopt_prefix(d, shared, 15) == 0);
+
+    /* Adoption is an ADMISSION-TIME act: it splices shared blocks in under
+     * ordinal 0, so a sequence that has already written anything cannot do
+     * it. Checked on a sequence whose write is a single position -- the case
+     * a length check catches and a block-alignment check would not. */
+    Kv* e = kv_open_in(st, 48);
+    if (!e) ok("adoption setup: e admitted", false);
+    else {
+        (void)kv_view(e, 0, 0, 0);
+        ok("a sequence that has already started adopts nothing",
+           kv_adopt_prefix(e, shared, 48) == 0);
+    }
+
+    ok("the pool's invariants survive adoption", bp_check(pool) == NULL);
+
+    kv_close(a); kv_close(b);
+    if (c) kv_close(c);
+    if (d) kv_close(d);
+    if (e) kv_close(e);
+    ok("every adopted block comes back once its holders are gone",
+       kv_store_free_blocks(st) == 16);
+    kv_store_close(st);
+}
+
 int main(void) {
     const u32 NL = 3, NH = 2, HD = 4;
 
@@ -184,6 +290,7 @@ int main(void) {
     kv_close(solo);
 
     test_token_ids();
+    test_prefix_adoption();
 
     /* A caller sizing a shared store has to turn a context length into a
      * block count, and getting it wrong by one block per sequence is

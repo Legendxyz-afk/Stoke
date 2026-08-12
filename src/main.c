@@ -625,12 +625,13 @@ static void cmd_batch(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke batch <model.gguf> [--raw] [-n N] "
               "(-p \"text\" | -f file)... [--seqs N] [--ctx N] "
-              "[--threads N] [--timing]");
+              "[--threads N] [--timing] [--dedup]");
     }
     const char* model_path = argv[2];
     bool        raw = false;
     long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
     bool        report_timing = false;
+    bool        dedup = false;
 
     const char* src[BATCH_MAX_PROMPTS];
     bool        src_is_file[BATCH_MAX_PROMPTS];
@@ -641,6 +642,8 @@ static void cmd_batch(int argc, char** argv) {
             raw = true;
         } else if (strcmp(argv[i], "--timing") == 0) {
             report_timing = true;
+        } else if (strcmp(argv[i], "--dedup") == 0) {
+            dedup = true;
         } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--seqs") == 0 ||
                    strcmp(argv[i], "--ctx") == 0 ||
                    strcmp(argv[i], "--threads") == 0) {
@@ -772,11 +775,33 @@ static void cmd_batch(int argc, char** argv) {
         bs[s].n_gen      = n_gen;
         bs[s].out_ids    = (u32*)xcalloc(n_gen, sizeof(u32));
         bs[s].n_out      = 0;
+        bs[s].n_adopted  = 0;
     }
     double load_ms = now_ms() - t_load_start;
 
     ModelTiming timing;
-    model_generate_batch(model, kv, bs, n_seq, (i64)tok_eos(tok), &timing);
+    model_generate_batch(model, kv, bs, n_seq, (i64)tok_eos(tok), dedup,
+                         &timing);
+
+    /* ALWAYS reported when --dedup is on, not only under --timing: "dedup was
+     * enabled" and "dedup fired" are different claims, and a gate that cannot
+     * distinguish them is the one that passes while testing nothing. Sum and
+     * per-sequence both, because a single sequence adopting everything and
+     * every sequence adopting a little are different workloads. */
+    if (dedup) {
+        u64 adopted_total = 0, prompt_total = 0;
+        for (u32 s = 0; s < n_seq; s++) {
+            adopted_total += bs[s].n_adopted;
+            prompt_total  += bs[s].n_prompt;
+        }
+        fprintf(stderr, "dedup: %llu of %llu prompt positions adopted (",
+                (unsigned long long)adopted_total,
+                (unsigned long long)prompt_total);
+        for (u32 s = 0; s < n_seq; s++) {
+            fprintf(stderr, "%s%u", s ? " " : "", bs[s].n_adopted);
+        }
+        fprintf(stderr, ")\n");
+    }
 
     /* stderr, always -- stdout carries the streams the gate compares. */
     if (report_timing) {

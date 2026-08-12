@@ -1057,7 +1057,8 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
  * ===========================================================================
  */
 void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
-                          u32 n_seq, i64 eos_id, ModelTiming* timing) {
+                          u32 n_seq, i64 eos_id, bool dedup_prefix,
+                          ModelTiming* timing) {
     if (n_seq == 0) {
         fatal("model: generate_batch -- n_seq must be positive");
     }
@@ -1108,10 +1109,45 @@ void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
     u64 n_prefill_total = 0;
 
     /* Prefill: each sequence through its own prompt, then its first id. The
-     * per-sequence loop is model_generate's prefill verbatim. */
+     * per-sequence loop is model_generate's prefill verbatim, except that it
+     * may start past 0 when the prefix was already resident.
+     *
+     * ▶ ADOPTION HAPPENS HERE, PER SEQUENCE, IMMEDIATELY BEFORE ITS OWN
+     * PREFILL -- not in a pass up front. A sequence can only adopt blocks
+     * that have already been WRITTEN AND NOTED, so within one batch the
+     * second sequence sharing a prompt is the first that can hit: doing it
+     * up front would find an empty index and silently dedup nothing.
+     *
+     * ▶ WHY SKIPPING THOSE POSITIONS IS SOUND, not an approximation. A
+     * chained-hash match certifies the whole preceding prefix, so an adopted
+     * block covers the SAME absolute positions in both sequences; the forward
+     * pass depends only on (token id, position, prior KV); so by induction the
+     * K/V those positions would have produced is bit-identical to what is
+     * already there. That is why gate item 3 can demand identical streams
+     * rather than a tolerance. */
     for (u32 s = 0; s < n_seq; s++) {
+        u32 start = 0;
+        if (dedup_prefix) {
+            start = kv_adopt_prefix(kv[s], seqs[s].prompt_ids,
+                                    seqs[s].n_prompt);
+            /* ▶ THE DRIVER DOES NOT TAKE ADOPTION'S WORD FOR IT. Skipping
+             * positions that were reported resident but are not backed is
+             * the one failure on this path that leaves the run alive and
+             * merely wrong: attention reads whatever the block holds, the
+             * stream stays fluent, and nothing crashes. A measured mutation
+             * confirmed the fixture-level token comparison CANNOT see it
+             * (5-token vocabulary, argmax dominated by recent positions), so
+             * the check has to be here rather than in a test. */
+            if (kv_len(kv[s]) != start) {
+                fatal("model: generate_batch -- seq %u adoption reported %u "
+                      "resident positions but the sequence is backed to %u",
+                      s, start, kv_len(kv[s]));
+            }
+        }
+        seqs[s].n_adopted = start;
+
         f32* x = xbuf + (size_t)s * m->n_embd;
-        for (u32 t = 0; t < seqs[s].n_prompt; t++) {
+        for (u32 t = start; t < seqs[s].n_prompt; t++) {
             model_forward_position(m, kv[s], seqs[s].prompt_ids[t], t, NULL, x);
         }
         model_compute_logits(m, x, m->scratch.s_logits);
@@ -1120,7 +1156,7 @@ void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
         seqs[s].n_out      = 1;
         next[s]            = id;
         pos[s]             = seqs[s].n_prompt;
-        n_prefill_total   += seqs[s].n_prompt;
+        n_prefill_total   += seqs[s].n_prompt - start;
 
         bool done = (seqs[s].n_out >= seqs[s].n_gen) ||
                     (eos_id >= 0 && (i64)id == eos_id);

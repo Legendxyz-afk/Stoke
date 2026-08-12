@@ -1,0 +1,17 @@
+﻿model   : models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+prompts : p00, p10, p20, p30, p45
+widths  : [1, 2, 4, 8, 16]   n_gen=16
+
+  solo p00: 16 ids in 30.4s
+  solo p10: 16 ids in 13.3s
+  solo p20: 16 ids in 39.9s
+  solo p30: 16 ids in 31.9s
+  solo p45: 16 ids in 6.4s
+
+  N=1   OK   1/1 slots compared in 14.5s
+  N=2   FAIL 1 of 2 slots differ: [(0, 'p00')]
+  N=4   FAIL 3 of 4 slots differ: [(0, 'p00'), (1, 'p10'), (2, 'p20')]
+  N=8   FAIL 7 of 8 slots differ: [(0, 'p00'), (1, 'p10'), (2, 'p20'), (3, 'p30'), (4, 'p45'), (5, 'p00'), (6, 'p10')]
+  N=16  FAIL 15 of 16 slots differ: [(0, 'p00'), (1, 'p10'), (2, 'p20'), (3, 'p30'), (4, 'p45'), (5, 'p00'), (6, 'p10'), (7, 'p20'), (8, 'p30'), (9, 'p45'), (10, 'p00'), (11, 'p10'), (12, 'p20'), (13, 'p30'), (14, 'p45')]
+
+GATE ITEM 2: FAIL -- 4 width(s) diverged
