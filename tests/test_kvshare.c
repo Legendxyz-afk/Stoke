@@ -24,6 +24,11 @@
 #include "blockpool.h"
 
 #include <stdbool.h>
+#include <string.h>  /* memcpy -- MSYS2 gcc pulls it in transitively and WSL
+                      * gcc 13.3 does not, so this file built on Windows and
+                      * failed the Linux leg with -Werror=implicit-function-
+                      * declaration. That asymmetry is the whole reason the
+                      * WSL leg is not optional. */
 
 static int checks = 0, failures = 0;
 
