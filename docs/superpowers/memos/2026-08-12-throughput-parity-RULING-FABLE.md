@@ -212,7 +212,172 @@ message.
 - M5's scheduler work remains as locked by the forward note. This ruling
   changes the FLOOR it schedules on, nothing about its structure.
 
-## 6. Direction check
+## 7. APPENDIX — EXECUTION SPEC AND EVERY BRANCH, PRE-RULED
+
+*Written at Kabir's request so no step of M4.5 needs another summons. Every
+outcome below has its disposition ruled NOW. If a situation arises that
+genuinely fits none of these branches, that is Opus deciding under the 08-07
+governance (decide, record, direction-check) — not a reason to stop work.*
+
+### 7.1 B — the batch hoist, exactly
+
+**Implementation.** Add per-type batched row workers (`rows_q4_k_batch`,
+`rows_q6_k_batch`, `rows_q8_0_batch`): for each ROW, unpack the weight once
+(nibbles + scales, in registers), then loop the N sequences' activations
+against that unpacked row — row-outer/seq-inner at the KERNEL level.
+`rows_delegate_batch` currently does seq-outer/row-chunk-inner; this inverts
+the two innermost loops and nothing else. **The per-(row, sequence) dot's
+arithmetic is IDENTICAL — only loop order changes, no regrouping — so
+bit-exactness is by definition, and `test_matvec_batch`'s existing identity
+checks are the proof.** Keep the 64-row chunking for L2 residency.
+
+**Measure.** Quiesced protocol, curve re-run 3 interleaved cycles, commit to
+`bench/history.jsonl` + the raw JSON.
+
+**Branches.**
+- **B-PASS** (curve lifts at N≥4): proceed to C. Any lift is a pass; record
+  the number, no bar here.
+- **B-FLAT** (<3% at every N): the unpack was not the binding term at those
+  N. Do NOT iterate B — C is justified by N=1 alone. Record, proceed to C.
+- **B-BREAKS** (`test_matvec_batch` fails): the hoist regrouped arithmetic,
+  which contradicts its definition. Fix or revert; NEVER retune the test.
+- **B-REGRESSES N=1** (>2% down on the solo path): the batch workers must not
+  be on the N=1 path at all (n_seq==1 dispatches to the existing single-row
+  workers). If they are, that is a dispatch bug; fix.
+
+### 7.2 C — CONTRACT v2, exactly
+
+**The scalar rewrite (the definition).** Per row, per superblock `b` in file
+order, with `S_b` = the superblock's total integer dot (Σ scale_j · Σ q4·q8
+over sub-blocks) and `M_b` = the mins integer term (Σ bsums·mins):
+
+```
+acc  = acc + (f16_to_f32(d_b)    * ad_b) * (f32)S_b;   /* one f32 mul, one fma-free add */
+acc  = acc - (f16_to_f32(dmin_b) * ad_b) * (f32)M_b;
+```
+
+Sequential, one `acc`, ops in exactly this order, `-ffp-contract=off` as
+pinned. This replaces `aux32[8]`/`sums[8]`. **Mark it `/* CONTRACT */` in the
+source per the new standing rule.** Q6_K identically (no mins term; its own
+S_b shape). The fold's dependency chain is ~4 cyc × n/256 per row — noise.
+
+**The AVX2 twin.** llama-shaped inner loop, adapted to stoke's layout:
+32-byte loads of q4; `q4l/q4h` by mask/shift; `_mm256_maddubs_epi16(q4, q8)`
+(SAFE for Q4_K: 15·127·2 = 3,810 < 32,767 — state this bound in a comment);
+`_mm256_madd_epi16(scale, p16)` fusing scales into the widening; integer
+accumulate into 8 i32 lanes; **then REDUCE the 8 lanes to the single S_b
+(exact integer adds) and execute the scalar's two f32 ops verbatim.** For
+Q6_K keep quants UNSIGNED 0..63 through maddubs (63·127·2 = 16,002 < 32,767
+— safe) and subtract the 32-offset exactly via `32 · Σq8` from bsums — an
+integer regrouping, legal under v2. `dpbusd` (AVX-VNNI) may replace
+maddubs+madd pairs where profitable; same reduction, same fold.
+
+**THE DECISIVE DEBUG ORACLE, stated so no bisection ever flounders: old
+scalar and new scalar must produce BIT-IDENTICAL per-superblock integer
+totals** (Σ of old `aux32[]` == new `S_b`; old `sumi` == new `M_b`) — the
+change is only in the f32 fold. Any C bug therefore bisects in minutes: dump
+integer totals per superblock on one row; if they differ old-vs-new, the new
+integer core is wrong (fix against the old); if they match but streams grade
+BUG, the fold sequence differs from the CONTRACT lines (fix the fold).
+Twin-vs-scalar likewise: totals must match exactly at every superblock.
+
+**Verification sequence, in order.** (1) `test_kquant`/`test_simd` per-kernel
+equality re-anchored: twins vs NEW scalar bit-exact over the existing 1e4
+corpora — this now passes BY CONSTRUCTION or the reduction is wrong. (2)
+Mutation: break the fold order in the twin (swap the two f32 ops) — the twin
+test must fail; restore. (3) **Q8_0-file anchor: p00 + p41 streams
+byte-identical to the m3 archive** (Q8_0/F32 kernels untouched). (4) The
+graded old-vs-new run (§3): `m4_q8kv_gate.py` pattern with OLD binary vs NEW
+binary at `--kv f32` both sides; τ(old↔new) frozen from agreeing positions
+first; 50-corpus; §6 grading. (5) Matrix + WSL legs. (6) Archive new gate
+binary; ledger the referent change.
+
+**Branches.**
+- **C-PASS** (zero BUG, ≤19/50, ≤0.5%/tok): adopt. Re-anchor K6 and budget-N
+  (§8.2/§8.3, interleaved, quiesced). Proceed to A′.
+- **C-GRAY** (zero BUG, ≤19/50, flip rate in (0.5%, 3.10%]/tok): **PASS WITH
+  MEMO, ruled now.** 3.10%/tok is the file's measured full-class distance
+  (M3 record); a fold-rounding-only change exceeding 0.5% is "more than
+  expected, within the class ceiling". Sample ≥3 ESCALATEs through the
+  ladder to confirm no STEP, then adopt; memo to Kabir tagged [FYI], not
+  blocking.
+- **C-FAIL-RATE** (flip rate > 3.10%/tok or first-divergence > 19/50): a
+  fold-only change CANNOT legitimately exceed the full-class distance —
+  something else moved. STOP; run the integer-totals oracle; if totals are
+  clean it is a results-vs-physics memo to Kabir with C parked on a branch.
+- **C-BUG** (any BUG verdict): run the oracle above; integer mismatch ⇒ fix
+  the kernel; fold mismatch ⇒ fix the fold; if both clean, run the L2/L3
+  ladder at that position — a STEP means the new scalar has a real arithmetic
+  error; no-STEP ≤1e-3 means the §6 grade was a top-5-probe artifact
+  (token outside top-5) — reclassify via the ladder result, record.
+- **C-ANCHOR-BREAKS** (Q8_0 file stream differs): hard stop, full bug. Only
+  shared code (dispatch, pool, model.c) can cause it; bisect the commit,
+  fix, restart C's verification from (1).
+- **C-SLOW** (N=1 < 11 tok/s after C): do not tune blind. One `bench --ops`
+  comparison of per-matvec cost old-vs-new isolates kernel vs elsewhere;
+  then proceed to A′ regardless — row-tiling is the designed next lever.
+
+### 7.3 A′ — row-tiling under v2
+
+x2/x4 rows per pass sharing the activation loads (the Q8_0 x4 shape).
+Under v2 each row's S_b reduction and fold are independent — exact by
+construction. Measure; **keep whichever variant is fastest, including
+keeping none** (if <5% gain, single-row stays; record). No ruling needed at
+any outcome. After A′: **evaluate P-BAR** (llama-bench re-measured
+interleaved, same threads).
+
+- **P-BAR MET (≥0.85×):** M4.5 CLOSES. D is SKIPPED (record why: bar met
+  without the RAM cost). Stamp per §7.5 shape, tag `m4.5`, local.
+- **P-BAR MISSED:** proceed to D.
+
+### 7.4 D — repack, only on P-BAR miss
+
+Prototype 8-row interleave (`block_q4_Kx8` shape) at LOAD into malloc'd
+buffers for the two largest weight classes only (ffn_down/ffn_up). Gates, in
+order: **(1) RESIDENCY — `Page Reads/sec` < 5 sustained during N=8/ctx1024
+decode with the repacked copy resident; (2) speed — lifts N=1 to ≥0.95×.**
+- **D-RAM-FAIL** (expected on 15.63 GB): reject D, record the counters.
+  Then P-BAR stands missed → §7.5 below.
+- **D-PASS both:** adopt; P-BAR tightens to 0.95× and is met by construction
+  of the gate; M4.5 closes.
+- **D-PASS-RAM, FAIL-SPEED:** reject (complexity without the bar); §7.5.
+
+### 7.5 P-BAR missed after the full ladder — the terminal branch
+
+Pre-ruled attribution ladder, run in this order, ≤1 day: (1) thread sweep
+(budget-N re-measure — the bottleneck moved, §8.3); (2) attention share
+profile (if ≥15%, execute L4 THEN re-measure P-BAR); (3) activation-quantize
+cost (`quantize_row_q8_k` per call — expected ~1%, confirm); (4) translation
+overhead (`kv_vec_offset` — K6 already bounded it ~0.9%, confirm still).
+Whatever remains after (1)–(4) goes to Kabir as ONE results-vs-physics memo
+with exactly two priced options: accept a lower bar (state the number), or
+authorize deeper kernel work (state the estimate and its basis). **M5 entry
+blocks only on that choice; nothing else in M4.5 blocks M5's design work.**
+
+### 7.6 L4 — attention, and its OWN contract note
+
+`vec_dot_f32` is a SEQUENTIAL f32 chain — v2's trick (exact integer
+regrouping) does not apply to pure-f32 dots, so a true SIMD twin CANNOT
+match it. Ruled: if L4 triggers (profile ≥15% of decode at ctx 1024–2048),
+**redefine the f32 scalar to an 8-lane partitioned canonical fold** (lane l
+accumulates elements ≡ l mod 8 — contiguous-load friendly; one pinned final
+8-fold), twin mirrors it exactly — the shape the old K-quant kernels proved
+workable for years. That is a forward-pass arithmetic change ⇒ graded
+old-vs-new by §6 exactly like C (same instrument, same bounds, same
+branches as §7.2). If the profile says <15%, skip and re-profile at M5
+entry with the agentic trace's context lengths.
+
+### 7.7 Standing constraints across every step
+
+One step per commit; measurements in the message. No tree edits while any
+sweep/matrix builds from it. Perf numbers only on the quiesced protocol
+(ISLC stopped→restored, cache warmed, standby ≈ model size, Page Reads
+healthy). Estimates in this memo are ESTIMATES; the gates are the
+measurements. Task Scheduler for anything > 10 min unattended; delete spent
+tasks. Every re-anchor updates: archive binary, ledger, ROADMAP row, and
+the K6/budget-N constants — never just the code.
+
+## 8. Direction check
 
 Kabir: the one genuinely irreversible piece is C — after it, K-quant token
 streams differ from M2/M3's at near-ties (graded, bounded, zero-BUG-gated),
