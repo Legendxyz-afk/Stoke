@@ -72,8 +72,9 @@ benchmark report.
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
 | M3 | AVX2+VNNI kernels + pool | ✅ 2026-08-11 tag `m3` | **[2v2] ZERO BUG-CLASS: 9/9 divergences ARITHMETIC-CLASS on the Q4_K_M grid (worst margin 0.555672 vs τ 1.023739 = 54% of threshold, no ESCALATE); τ_Q4KM frozen BEFORE grading under key `f32_intcore_q4_k_m` = 1.023739 / 1.178094 / 0.811432; 290 covered positions, per-prompt stated; p41 clean 64/64. Q8_0 discharged by the 08-06 ruling.** [1] test_simd 12/12 ✅; [3] re-anchored 8.08–8.46 both legs ✅; [4] matrix green at `5051878` ✅; [5] ✅. **⚠ FLAGGED, NOT QUIET — the flip tripwire FIRED (9 ≥ 8).** Its λ inherited a ~0.5%/token base measured on **Q8_0**; Q4_K_M measures **3.10%/token**, so the threshold fires by construction on this file. Kept at ≥8 rather than recalibrated from the data it polices (circular); the mismatch was committed in `6b484b9` at 5 flips, before the count could be known. Disposition: `superpowers/memos/2026-08-11-m3-tripwire-anomaly-memo.md`. Report: `superpowers/gate-reports/2026-08-11-m3-q4km-grid-gate-report.md` |
-| **M4** | **Paged KV + static batch** | **← NOW** | invariant sim ×1e6 ASan — **the set is ENUMERATED in `superpowers/design-notes/2026-08-11-m4-invariants.md`; cite the set, never a bare count**; batch-of-N token-identity; prefix-dedup; monotone N∈{1..16} curve |
-| M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02) |
+| **M4** | **Paged KV + static batch** | **← NOW** | **THE GATE LIST IS RULING §8.4's FIVE — cite it, never a summary (a four-item paraphrase of this row cost a session):** [1] invariant sim ×1e6 ASan (set ENUMERATED in `superpowers/design-notes/2026-08-11-m4-invariants.md`); [2] batch identity N∈{1,2,4,8,16} real model ✅ 08-12; [3] prefix-dedup ✅ 08-12; [4] Q8-KV ON/OFF per §8.1; [5] monotone N∈{1..16} curve ✅ 08-12 **PASS at 1.116× — see M4.5** |
+| **M4.5** | **Kernel ladder → llama-band** | queued next | **Authority: `superpowers/memos/2026-08-12-throughput-parity-RULING-FABLE.md`.** Order B → C → A′ → D(conditional) → L4(profiled). **P-BAR: N=1 decode ≥0.85× llama-bench tg** (same box/file/threads, referent re-anchored per §8.2; 0.95× iff D lands). C = CONTRACT v2 re-anchor (canonical f32 fold; integer core freely regroupable), graded old-vs-new by §6, zero BUG-class, **Q8_0 file streams BYTE-IDENTICAL through C or it is a bug** |
+| M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02). **Bars are reachable through M4.5's kernels, not batching — measured 08-12 (curve flat at 8.7, compute-bound at ~64 GFLOP/s)** |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
 | M7 | Harden + launch-ready | queued | Llama-3.2 parity incl. long-ctx; unsloth-file run; 24h soak; reproducible report; Kabir sign-offs |
 
@@ -494,9 +495,16 @@ watermark W=max(8, 2·|RUNNING|); preempt-youngest, push-front, and
 **replay recorded ids, never re-sample**); the sim harness is built FIRST
 (virtual clock, fake model, trace catalogue incl. the memory-pressure
 trace; reference run = same trace with infinite pool); bar-miss
-attribution starts from M4's static curve (if static N=8 already missed,
-the scheduler was never the problem). Soak uses the detached-runner ops
-lesson. If llamacpp-tuned parity is cleared but the 16.8@16
+attribution starts from M4's static curve — **RESOLVED 2026-08-12: static
+N=8 DID miss (plateau 8.7 vs 17.7), attribution is COMPLETE, and the gap
+is per-core kernel arithmetic, not the scheduler — M4.5 closes it before
+M5 opens; authority
+`superpowers/memos/2026-08-12-throughput-parity-RULING-FABLE.md`.** M5's
+design note MUST record the chunk-alignment invariant (chunk ends
+block-aligned or the prefix cache cannot register the entry — vLLM v1
+scheduler, mined 08-12; chunk 128 / block 16 satisfies it by
+construction, a future chunk change must re-check). Soak uses the
+detached-runner ops lesson. If llamacpp-tuned parity is cleared but the 16.8@16
 inversion-derived bar is not: that is a results-vs-physics memo to Kabir,
 not a grind.
 **Fable 2026-08-02 additions (Kabir-approved; tightenings):** the trace
