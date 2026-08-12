@@ -592,6 +592,234 @@ static void cmd_run(int argc, char** argv) {
     free(file_buf);
 }
 
+/* ===========================================================================
+ * `stoke batch` -- M4's static-batch driver.
+ *
+ *   stoke batch <model.gguf> [--raw] [-n N] (-p "text" | -f file)...
+ *               [--seqs N] [--ctx N] [--threads N] [--timing]
+ *
+ * WHY A SUBCOMMAND AND NOT A TEST. Gate items 2, 3 and 5 (ruling section 8.4)
+ * all need N sequences driven to completion against the REAL model: token
+ * identity across batch widths, prefix dedup firing, and the aggregate curve.
+ * None of that belongs in the per-commit matrix -- a real-model batch at N=16
+ * costs minutes, and under ASan far more -- so the harness has to be a
+ * command the gate scripts run once and record.
+ *
+ * OUTPUT SHAPE IS THE COMPARISON. Each sequence prints a `== seq i ==` header
+ * followed by EXACTLY what `stoke run` prints for that prompt: the ids one per
+ * line, `---`, then the decoded text. So the identity gate is a byte-compare
+ * of a block against a whole `stoke run` stdout, with no reformatting step in
+ * between that could paper over a difference.
+ *
+ * `--seqs N` beyond the number of prompts given cycles through them, which is
+ * how the curve reaches N=16 from a five-prompt corpus. Every sequence gets
+ * the SAME per-slot ctx (playbook LOCK 2: "all N same ctx") so the pool is
+ * sized by one multiplication and the curve's memory footprint is exactly
+ * N x ctx.
+ * ===========================================================================
+ */
+#define BATCH_MAX_PROMPTS 64
+#define BATCH_MAX_SEQS    256
+
+static void cmd_batch(int argc, char** argv) {
+    if (argc < 3) {
+        fatal("usage: stoke batch <model.gguf> [--raw] [-n N] "
+              "(-p \"text\" | -f file)... [--seqs N] [--ctx N] "
+              "[--threads N] [--timing]");
+    }
+    const char* model_path = argv[2];
+    bool        raw = false;
+    long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
+    bool        report_timing = false;
+
+    const char* src[BATCH_MAX_PROMPTS];
+    bool        src_is_file[BATCH_MAX_PROMPTS];
+    u32         n_src = 0;
+
+    for (int i = 3; i < argc; i++) {
+        if (strcmp(argv[i], "--raw") == 0) {
+            raw = true;
+        } else if (strcmp(argv[i], "--timing") == 0) {
+            report_timing = true;
+        } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--seqs") == 0 ||
+                   strcmp(argv[i], "--ctx") == 0 ||
+                   strcmp(argv[i], "--threads") == 0) {
+            const char* flag = argv[i];
+            if (i + 1 >= argc) fatal("stoke batch: %s needs an argument", flag);
+            long long v = strtoll(argv[++i], NULL, 10);
+            if (strcmp(flag, "-n") == 0)             n_long = v;
+            else if (strcmp(flag, "--seqs") == 0)    seqs_long = v;
+            else if (strcmp(flag, "--ctx") == 0)     ctx_long = v;
+            else                                     threads_long = v;
+        } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "-f") == 0) {
+            bool is_file = (argv[i][1] == 'f');
+            if (i + 1 >= argc) {
+                fatal("stoke batch: %s needs an argument", argv[i]);
+            }
+            if (n_src == BATCH_MAX_PROMPTS) {
+                fatal("stoke batch: at most %d prompts", BATCH_MAX_PROMPTS);
+            }
+            src[n_src] = argv[++i];
+            src_is_file[n_src] = is_file;
+            n_src++;
+        } else {
+            fatal("stoke batch: unknown argument '%s'", argv[i]);
+        }
+    }
+
+    if (n_src == 0) {
+        fatal("stoke batch: at least one -p \"text\" or -f file is required");
+    }
+    if (n_long <= 0 || n_long > (long long)UINT32_MAX) {
+        fatal("stoke batch: -n %lld must be a positive integer", n_long);
+    }
+    if (threads_long < 0 || threads_long > 1024) {
+        fatal("stoke batch: --threads %lld out of range [0,1024] "
+              "(0 = the measured default)", threads_long);
+    }
+    if (seqs_long < 0 || seqs_long > BATCH_MAX_SEQS) {
+        fatal("stoke batch: --seqs %lld out of range [0,%d] (0 = one per "
+              "prompt given)", seqs_long, BATCH_MAX_SEQS);
+    }
+    if (ctx_long < 0 || ctx_long > (long long)UINT32_MAX) {
+        fatal("stoke batch: --ctx %lld out of range", ctx_long);
+    }
+    u32 n_gen = (u32)n_long;
+    u32 n_seq = (seqs_long > 0) ? (u32)seqs_long : n_src;
+
+    double t_load_start = now_ms();
+    GgufFile* gf = gguf_open(model_path);
+    Tok*      tok = tok_from_gguf(gf);
+    gguf_close(gf);
+
+    /* Tokenize each distinct prompt once. Sequences that share a prompt share
+     * the id array too -- it is borrowed and read-only, and two slots running
+     * the same prompt is exactly the workload prefix dedup exists for. */
+    u32* ids[BATCH_MAX_PROMPTS];
+    u32  n_ids[BATCH_MAX_PROMPTS];
+    u32  longest = 0;
+    for (u32 p = 0; p < n_src; p++) {
+        char*       file_buf = NULL;
+        const char* text;
+        u64         text_len;
+        if (src_is_file[p]) {
+            file_buf = read_whole_file(src[p], "stoke batch", &text_len);
+            text = file_buf;
+        } else {
+            text = src[p];
+            text_len = (u64)strlen(src[p]);
+        }
+        if (text_len > (u64)UINT32_MAX / 3) {
+            fatal("stoke batch: prompt %u is %llu bytes -- too large", p,
+                  (unsigned long long)text_len);
+        }
+        u32 cap = (u32)(text_len * 3) + 64;
+        ids[p] = (u32*)xcalloc(cap, sizeof(u32));
+        if (raw) {
+            n_ids[p] = tok_encode(tok, text, text_len, ids[p], cap,
+                                  /*add_special=*/false);
+        } else {
+            StokeMsg msg;
+            msg.role = "user";
+            msg.role_len = 4;
+            msg.content = text;
+            msg.content_len = text_len;
+            n_ids[p] = tok_apply_chatml(tok, &msg, 1, ids[p], cap);
+        }
+        if (n_ids[p] == 0) {
+            fatal("stoke batch: prompt %u tokenized to zero ids", p);
+        }
+        if (n_ids[p] > longest) longest = n_ids[p];
+        free(file_buf);
+    }
+
+    pool_start((u32)threads_long);
+    Model* model = model_open(model_path);
+
+    /* One ctx for every slot. The default is the smallest that fits the
+     * longest prompt plus the full generation, so a run that does not pass
+     * --ctx cannot be refused admission for a reason it never chose. */
+    u64 need_ctx = (u64)longest + (u64)n_gen;
+    u32 ctx = (ctx_long > 0) ? (u32)ctx_long : (u32)need_ctx;
+    if ((u64)ctx < need_ctx) {
+        fatal("stoke batch: --ctx %u is too small for the longest prompt "
+              "(%u) plus -n %u = %llu", ctx, longest, n_gen,
+              (unsigned long long)need_ctx);
+    }
+    if (ctx > model_max_ctx(model)) {
+        fatal("stoke batch: --ctx %u exceeds the model's max_ctx %u", ctx,
+              model_max_ctx(model));
+    }
+
+    u32      capacity = n_seq * kv_blocks_for_ctx(ctx);
+    KvStore* store = kv_store_open(model_n_layer(model), capacity,
+                                   model_n_head_kv(model),
+                                   model_head_dim(model));
+
+    Kv**           kv = (Kv**)xcalloc(n_seq, sizeof(Kv*));
+    ModelBatchSeq* bs = (ModelBatchSeq*)xcalloc(n_seq, sizeof(ModelBatchSeq));
+    for (u32 s = 0; s < n_seq; s++) {
+        kv[s] = kv_open_in(store, ctx);
+        if (kv[s] == NULL) {
+            fatal("stoke batch: seq %u refused admission (pool has %u blocks, "
+                  "%u free; each of %u sequences reserves %u)",
+                  s, capacity, kv_store_free_blocks(store), n_seq,
+                  kv_blocks_for_ctx(ctx));
+        }
+        u32 p = s % n_src;
+        bs[s].prompt_ids = ids[p];
+        bs[s].n_prompt   = n_ids[p];
+        bs[s].n_gen      = n_gen;
+        bs[s].out_ids    = (u32*)xcalloc(n_gen, sizeof(u32));
+        bs[s].n_out      = 0;
+    }
+    double load_ms = now_ms() - t_load_start;
+
+    ModelTiming timing;
+    model_generate_batch(model, kv, bs, n_seq, (i64)tok_eos(tok), &timing);
+
+    /* stderr, always -- stdout carries the streams the gate compares. */
+    if (report_timing) {
+        double dec_s = timing.decode_ms / 1000.0;
+        fprintf(stderr,
+                "timing: load %.1f ms | %u seqs x ctx %u (%u blocks) | "
+                "prefill %u tok in %.1f ms | decode %u tok in %.1f ms",
+                load_ms, n_seq, ctx, capacity, timing.n_prefill,
+                timing.prefill_ms, timing.n_decode, timing.decode_ms);
+        if (timing.n_decode > 0u && dec_s > 0.0) {
+            fprintf(stderr, " (%.3f tok/s aggregate)",
+                    (double)timing.n_decode / dec_s);
+        } else {
+            fprintf(stderr, " (no decode-loop tokens -- no rate)");
+        }
+        fprintf(stderr, "\n");
+    }
+
+    for (u32 s = 0; s < n_seq; s++) {
+        printf("== seq %u ==\n", s);
+        for (u32 i = 0; i < bs[s].n_out; i++) printf("%u\n", bs[s].out_ids[i]);
+        printf("---\n");
+
+        u32   decode_cap = bs[s].n_out * 256u + 16u;
+        char* decoded = (char*)xcalloc(decode_cap, 1);
+        u32   w = 0;
+        for (u32 i = 0; i < bs[s].n_out; i++) {
+            w += tok_decode(tok, bs[s].out_ids[i], decoded + w, decode_cap - w);
+        }
+        fwrite(decoded, 1, w, stdout);
+        printf("\n");
+        free(decoded);
+    }
+
+    for (u32 s = 0; s < n_seq; s++) { kv_close(kv[s]); free(bs[s].out_ids); }
+    kv_store_close(store);
+    free(kv);
+    free(bs);
+    for (u32 p = 0; p < n_src; p++) free(ids[p]);
+    model_close(model);
+    tok_free(tok);
+}
+
 /* Checked stdout finalization before a successful exit. Every subcommand
  * writes exclusively via stdio's own buffered printf; without this, `stoke
  * info > out.txt` on a full disk (or any other deferred-write failure)
@@ -625,6 +853,8 @@ int main(int argc, char** argv) {
               "tokenize [--special | --roundtrip] <path.gguf> <text-file>, "
               "run <path.gguf> [--raw] [-n N] [-p \"text\" | -f file] "
               "[--dump dir] [--probe-pos N] [--timing], "
+              "batch <path.gguf> [--raw] [-n N] (-p \"text\" | -f file)... "
+              "[--seqs N] [--ctx N] [--threads N] [--timing], "
               "bench --ops <path.gguf> [--reps N] [--jsonl])");
     }
     if (strcmp(argv[1], "bench") == 0) {
@@ -692,6 +922,12 @@ int main(int argc, char** argv) {
         finish_stdout_or_fatal();
         return 0;
     }
-    fatal("unknown command '%s' (commands: info, tokenize, run)", argv[1]);
+    if (strcmp(argv[1], "batch") == 0) {
+        cmd_batch(argc, argv);
+        finish_stdout_or_fatal();
+        return 0;
+    }
+    fatal("unknown command '%s' (commands: info, tokenize, run, batch)",
+          argv[1]);
     return 1; /* unreachable */
 }

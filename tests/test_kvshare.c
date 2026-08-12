@@ -185,6 +185,30 @@ int main(void) {
 
     test_token_ids();
 
+    /* A caller sizing a shared store has to turn a context length into a
+     * block count, and getting it wrong by one block per sequence is
+     * invisible until the LAST sequence of a wide batch is refused admission
+     * -- i.e. at N=16 and not before. Rounding is the whole content of the
+     * function, so the cases are the boundaries. */
+    ok("blocks_for_ctx(1) == 1", kv_blocks_for_ctx(1) == 1);
+    ok("blocks_for_ctx(16) == 1 (exact fit)", kv_blocks_for_ctx(16) == 1);
+    ok("blocks_for_ctx(17) == 2 (the remainder needs a block)",
+       kv_blocks_for_ctx(17) == 2);
+    ok("blocks_for_ctx(1024) == 64", kv_blocks_for_ctx(1024) == 64);
+    {
+        /* Not an arithmetic identity but the property the caller needs: a
+         * store sized by this function admits exactly that many sequences. */
+        const u32 CTX = 33; /* 3 blocks: deliberately not a multiple of 16 */
+        KvStore*  s2 = kv_store_open(NL, 2u * kv_blocks_for_ctx(CTX), NH, HD);
+        Kv* x = kv_open_in(s2, CTX);
+        Kv* y = kv_open_in(s2, CTX);
+        Kv* z = kv_open_in(s2, CTX);
+        ok("a store sized for 2 admits 2", x != NULL && y != NULL);
+        ok("a store sized for 2 refuses the 3rd", z == NULL);
+        kv_close(x); kv_close(y);
+        kv_store_close(s2);
+    }
+
     printf("test_kvshare: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

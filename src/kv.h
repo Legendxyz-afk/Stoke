@@ -66,6 +66,12 @@ BlockPool* kv_store_pool(KvStore* st);
  * Fatal if pos >= max_ctx, matching kv_view's bound exactly. */
 void kv_note_token(Kv* kv, u32 pos, u32 token_id);
 
+/* Blocks a sequence of `max_ctx` positions reserves -- what a caller sizing a
+ * shared store multiplies by the batch width. Here rather than at the call
+ * site so the block size stays this layer's business: a caller that computes
+ * it itself has to know BP_BLOCK_TOKENS, and gets to be wrong about it. */
+u32 kv_blocks_for_ctx(u32 max_ctx);
+
 KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
                        u32 head_dim);
 void     kv_store_close(KvStore* st);

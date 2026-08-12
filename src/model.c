@@ -1044,3 +1044,132 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
     }
     return count;
 }
+
+/* ===========================================================================
+ * model_generate_batch -- the static batch driver
+ *
+ * Structure mirrors model_generate deliberately: same prefill, same
+ * first-id-ends-prefill boundary, same eos rule, same argmax. What differs is
+ * only that N sequences step together during decode. Keeping the two loops
+ * side by side is what makes a divergence between them visible to a reader;
+ * what makes it visible to the BUILD is gate item 2, which compares their
+ * token streams directly (tests/test_model.c, and the real-model gate).
+ * ===========================================================================
+ */
+void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
+                          u32 n_seq, i64 eos_id, ModelTiming* timing) {
+    if (n_seq == 0) {
+        fatal("model: generate_batch -- n_seq must be positive");
+    }
+    for (u32 s = 0; s < n_seq; s++) {
+        if (seqs[s].n_prompt == 0) {
+            fatal("model: generate_batch -- seq %u prompt_ids must be "
+                  "non-empty", s);
+        }
+        if (seqs[s].n_gen == 0) {
+            fatal("model: generate_batch -- seq %u n_gen must be positive", s);
+        }
+        u64 total_cap = (u64)seqs[s].n_prompt + (u64)seqs[s].n_gen;
+        if (total_cap > (u64)kv_max_ctx(kv[s])) {
+            fatal("model: generate_batch -- seq %u prompt(%u)+n_gen(%u)=%llu "
+                  "exceeds kv max_ctx %u",
+                  s, seqs[s].n_prompt, seqs[s].n_gen,
+                  (unsigned long long)total_cap, kv_max_ctx(kv[s]));
+        }
+        /* Two slots sharing one handle is not a batch of two sequences -- it
+         * is one sequence written twice, and every position after the first
+         * step is overwritten by whichever slot ran last. Cheap to check once
+         * here (n_seq is 16 at M4's widest) and impossible to see later: the
+         * output stays plausible. */
+        for (u32 t = 0; t < s; t++) {
+            if (kv[t] == kv[s]) {
+                fatal("model: generate_batch -- seqs %u and %u share one Kv "
+                      "handle; each sequence needs its own", t, s);
+            }
+        }
+    }
+
+    double t_start = now_ms();
+
+    /* Allocated ONCE per call, never inside the token loop -- M2's rule is
+     * about the per-token loop, and the batch width is the caller's, so
+     * model_open cannot have sized this. One contiguous block for the hidden
+     * states, indexed by sequence. */
+    f32* xbuf = (f32*)xmalloc((size_t)n_seq * m->n_embd * sizeof(f32));
+    u32* pos  = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
+    u32* next = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
+    u32* act  = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
+    Kv**  kv_act  = (Kv**)xmalloc((size_t)n_seq * sizeof(Kv*));
+    u32*  tok_act = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
+    u32*  pos_act = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
+    f32** x_act   = (f32**)xmalloc((size_t)n_seq * sizeof(f32*));
+
+    u32 n_act = 0;
+    u64 n_prefill_total = 0;
+
+    /* Prefill: each sequence through its own prompt, then its first id. The
+     * per-sequence loop is model_generate's prefill verbatim. */
+    for (u32 s = 0; s < n_seq; s++) {
+        f32* x = xbuf + (size_t)s * m->n_embd;
+        for (u32 t = 0; t < seqs[s].n_prompt; t++) {
+            model_forward_position(m, kv[s], seqs[s].prompt_ids[t], t, NULL, x);
+        }
+        model_compute_logits(m, x, m->scratch.s_logits);
+        u32 id = model_argmax(m->scratch.s_logits, m->n_vocab);
+        seqs[s].out_ids[0] = id;
+        seqs[s].n_out      = 1;
+        next[s]            = id;
+        pos[s]             = seqs[s].n_prompt;
+        n_prefill_total   += seqs[s].n_prompt;
+
+        bool done = (seqs[s].n_out >= seqs[s].n_gen) ||
+                    (eos_id >= 0 && (i64)id == eos_id);
+        if (!done) act[n_act++] = s;
+    }
+
+    /* Prefill ends with every sequence's first id in hand -- the same
+     * boundary ModelTiming documents for model_generate. */
+    double t_decode_start = now_ms();
+
+    while (n_act > 0) {
+        for (u32 i = 0; i < n_act; i++) {
+            u32 s      = act[i];
+            kv_act[i]  = kv[s];
+            tok_act[i] = next[s];
+            pos_act[i] = pos[s];
+            x_act[i]   = xbuf + (size_t)s * m->n_embd;
+        }
+        model_forward_batch(m, kv_act, tok_act, pos_act, n_act, x_act);
+
+        /* Compacting in place while walking it: `keep` never overtakes `i`,
+         * so a survivor is only ever written to a slot already read. */
+        u32 keep = 0;
+        for (u32 i = 0; i < n_act; i++) {
+            u32 s = act[i];
+            pos[s]++;
+            model_compute_logits(m, xbuf + (size_t)s * m->n_embd,
+                                 m->scratch.s_logits);
+            u32 id = model_argmax(m->scratch.s_logits, m->n_vocab);
+            seqs[s].out_ids[seqs[s].n_out++] = id;
+            next[s] = id;
+
+            bool done = (seqs[s].n_out >= seqs[s].n_gen) ||
+                        (eos_id >= 0 && (i64)id == eos_id);
+            if (!done) act[keep++] = s;
+        }
+        n_act = keep;
+    }
+
+    if (timing != NULL) {
+        double t_end = now_ms();
+        u64 n_dec = 0;
+        for (u32 s = 0; s < n_seq; s++) n_dec += seqs[s].n_out - 1u;
+        timing->prefill_ms = t_decode_start - t_start;
+        timing->decode_ms  = t_end - t_decode_start;
+        timing->n_prefill  = (u32)n_prefill_total;
+        timing->n_decode   = (u32)n_dec;
+    }
+
+    free(xbuf); free(pos); free(next); free(act);
+    free(kv_act); free(tok_act); free(pos_act); free(x_act);
+}

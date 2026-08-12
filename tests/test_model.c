@@ -1053,6 +1053,200 @@ TEST(m4_a_sequence_is_bit_identical_across_batch_widths_including_growth) {
     model_close(m);
 }
 
+/* ===========================================================================
+ * M4 gate item 2 (ruling section 8.4): a sequence's GENERATED TOKEN STREAM
+ * must not depend on the batch it ran in.
+ *
+ * The two tests above compare HIDDEN STATES for a fixed number of hand-driven
+ * positions. That is the arithmetic half. This is the orchestration half, and
+ * it is a different failure surface: position bookkeeping per sequence, where
+ * prefill ends and decode begins, which sequence's logits feed which argmax,
+ * and -- once a sequence retires -- which batch slot everyone else moves to.
+ * None of that is reachable by driving model_forward_batch by hand, because
+ * the harness supplies the positions itself.
+ *
+ * PROMPT LENGTHS DELIBERATELY DIFFER (2 / 5 / 3). Equal-length prompts make
+ * every sequence cross the prefill/decode boundary on the same step, which is
+ * exactly the case a shared "are we still prefilling" flag would survive.
+ * ===========================================================================
+ */
+static u32 gen_solo(Model* m, const u32* prompt, u32 n_prompt, u32 n_gen,
+                    i64 eos_id, u32* out) {
+    Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m), model_n_head_kv(m),
+                     model_head_dim(m));
+    u32 n = model_generate(m, kv, prompt, n_prompt, n_gen, eos_id, out, NULL,
+                           -1, NULL, NULL);
+    kv_close(kv);
+    return n;
+}
+
+#define BATCH_NSEQ 3u
+
+TEST(m4_batched_generation_is_token_identical_to_solo_generation) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 p0[2] = {0, 3};
+    const u32 p1[5] = {4, 1, 1, 2, 0};
+    const u32 p2[3] = {2, 2, 4};
+    const u32* prompts[BATCH_NSEQ]  = {p0, p1, p2};
+    const u32  n_prompt[BATCH_NSEQ] = {2u, 5u, 3u};
+    const u32  N_GEN = 6u;
+
+    u32 solo[BATCH_NSEQ][6];
+    for (u32 s = 0; s < BATCH_NSEQ; s++) {
+        u32 n = gen_solo(m, prompts[s], n_prompt[s], N_GEN, -1, solo[s]);
+        ASSERT_EQ_U32(n, N_GEN);
+    }
+
+    KvStore* st = kv_store_open(model_n_layer(m),
+                                BATCH_NSEQ * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
+                                model_n_head_kv(m), model_head_dim(m));
+    Kv*           kv[BATCH_NSEQ];
+    u32           got[BATCH_NSEQ][6];
+    ModelBatchSeq bs[BATCH_NSEQ];
+    for (u32 s = 0; s < BATCH_NSEQ; s++) {
+        kv[s] = kv_open_in(st, model_max_ctx(m));
+        ASSERT_TRUE(kv[s] != NULL);
+        bs[s].prompt_ids = prompts[s];
+        bs[s].n_prompt   = n_prompt[s];
+        bs[s].n_gen      = N_GEN;
+        bs[s].out_ids    = got[s];
+        bs[s].n_out      = 0;
+    }
+
+    model_generate_batch(m, kv, bs, BATCH_NSEQ, -1, NULL);
+
+    for (u32 s = 0; s < BATCH_NSEQ; s++) {
+        ASSERT_EQ_U32(bs[s].n_out, N_GEN);
+        ASSERT_TRUE(memcmp(got[s], solo[s], N_GEN * sizeof(u32)) == 0);
+    }
+
+    for (u32 s = 0; s < BATCH_NSEQ; s++) kv_close(kv[s]);
+    kv_store_close(st);
+    model_close(m);
+    remove(MODEL_FIXTURE_PATH);
+}
+
+/* ===========================================================================
+ * M4: a sequence that finishes while others are still running must not
+ * disturb them.
+ *
+ * The batch is COMPACTED when a sequence retires -- the survivors move to
+ * different slots, and a slot is what indexes the per-sequence scratch. A
+ * driver that kept stepping a finished sequence, or that mixed up who moved
+ * where, produces a plausible stream for the survivors rather than a crash.
+ *
+ * n_gen differs per sequence rather than using eos, so retirement order is
+ * FIXED (0, then 2, then 1) instead of depending on what the fixture happens
+ * to generate. Slot 0 retiring first is the case that shifts everyone.
+ * ===========================================================================
+ */
+TEST(m4_a_sequence_retiring_early_does_not_disturb_the_rest_of_the_batch) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 p0[2] = {0, 3};
+    const u32 p1[5] = {4, 1, 1, 2, 0};
+    const u32 p2[3] = {2, 2, 4};
+    const u32* prompts[BATCH_NSEQ]  = {p0, p1, p2};
+    const u32  n_prompt[BATCH_NSEQ] = {2u, 5u, 3u};
+    const u32  n_gen[BATCH_NSEQ]    = {2u, 7u, 4u};
+
+    u32 solo[BATCH_NSEQ][7];
+    for (u32 s = 0; s < BATCH_NSEQ; s++) {
+        u32 n = gen_solo(m, prompts[s], n_prompt[s], n_gen[s], -1, solo[s]);
+        ASSERT_EQ_U32(n, n_gen[s]);
+    }
+
+    KvStore* st = kv_store_open(model_n_layer(m),
+                                BATCH_NSEQ * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
+                                model_n_head_kv(m), model_head_dim(m));
+    Kv*           kv[BATCH_NSEQ];
+    u32           got[BATCH_NSEQ][7];
+    ModelBatchSeq bs[BATCH_NSEQ];
+    for (u32 s = 0; s < BATCH_NSEQ; s++) {
+        kv[s] = kv_open_in(st, model_max_ctx(m));
+        ASSERT_TRUE(kv[s] != NULL);
+        bs[s].prompt_ids = prompts[s];
+        bs[s].n_prompt   = n_prompt[s];
+        bs[s].n_gen      = n_gen[s];
+        bs[s].out_ids    = got[s];
+        bs[s].n_out      = 0;
+    }
+
+    model_generate_batch(m, kv, bs, BATCH_NSEQ, -1, NULL);
+
+    for (u32 s = 0; s < BATCH_NSEQ; s++) {
+        ASSERT_EQ_U32(bs[s].n_out, n_gen[s]);
+        ASSERT_TRUE(memcmp(got[s], solo[s], n_gen[s] * sizeof(u32)) == 0);
+    }
+
+    for (u32 s = 0; s < BATCH_NSEQ; s++) kv_close(kv[s]);
+    kv_store_close(st);
+    model_close(m);
+    remove(MODEL_FIXTURE_PATH);
+}
+
+/* ===========================================================================
+ * M4: eos stops a sequence inside a batch exactly where it stops it alone.
+ *
+ * The reference runs are made with the SAME eos_id, so the comparison holds
+ * whichever sequences happen to emit it -- the fixture's vocabulary is 5 ids
+ * wide and collisions are likely, and a test that depended on only ONE
+ * sequence hitting eos would be testing the fixture, not the driver.
+ * ===========================================================================
+ */
+TEST(m4_batched_generation_stops_a_sequence_at_eos) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 p0[2] = {0, 3};
+    const u32 p1[5] = {4, 1, 1, 2, 0};
+    const u32* prompts[2]  = {p0, p1};
+    const u32  n_prompt[2] = {2u, 5u};
+    const u32  N_GEN = 6u;
+
+    /* Learn an id the first sequence actually emits, then make it eos. */
+    u32 probe[6];
+    ASSERT_EQ_U32(gen_solo(m, p0, 2u, N_GEN, -1, probe), N_GEN);
+    const i64 eos_id = (i64)probe[2];
+
+    u32 solo[2][6], n_solo[2];
+    for (u32 s = 0; s < 2; s++) {
+        n_solo[s] = gen_solo(m, prompts[s], n_prompt[s], N_GEN, eos_id, solo[s]);
+    }
+    ASSERT_TRUE(n_solo[0] < N_GEN); /* the eos id is reachable, or this is vacuous */
+
+    KvStore* st = kv_store_open(model_n_layer(m),
+                                2u * (model_max_ctx(m) / BP_BLOCK_TOKENS + 1u),
+                                model_n_head_kv(m), model_head_dim(m));
+    Kv*           kv[2];
+    u32           got[2][6];
+    ModelBatchSeq bs[2];
+    for (u32 s = 0; s < 2; s++) {
+        kv[s] = kv_open_in(st, model_max_ctx(m));
+        ASSERT_TRUE(kv[s] != NULL);
+        bs[s].prompt_ids = prompts[s];
+        bs[s].n_prompt   = n_prompt[s];
+        bs[s].n_gen      = N_GEN;
+        bs[s].out_ids    = got[s];
+        bs[s].n_out      = 0;
+    }
+
+    model_generate_batch(m, kv, bs, 2u, eos_id, NULL);
+
+    for (u32 s = 0; s < 2; s++) {
+        ASSERT_EQ_U32(bs[s].n_out, n_solo[s]);
+        ASSERT_TRUE(memcmp(got[s], solo[s], n_solo[s] * sizeof(u32)) == 0);
+    }
+
+    for (u32 s = 0; s < 2; s++) kv_close(kv[s]);
+    kv_store_close(st);
+    model_close(m);
+    remove(MODEL_FIXTURE_PATH);
+}
+
 TEST(model_open_real_q8_0_file_matches_probed_config) {
     if (!require_real_model_or_skip(
             REAL_Q8_0_MODEL, "model_open_real_q8_0_file_matches_probed_config")) {

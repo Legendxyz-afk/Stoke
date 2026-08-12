@@ -174,4 +174,38 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     i32 probe_pos, ModelProbeEntry probe_out[5],
                     ModelTiming* timing);
 
+/* One sequence's slot in a static batch. */
+typedef struct {
+    const u32* prompt_ids;  /* borrowed; >= n_prompt entries, n_prompt > 0 */
+    u32        n_prompt;
+    u32        n_gen;       /* this sequence's own cap, > 0 */
+    u32*       out_ids;     /* caller-owned, capacity >= n_gen */
+    u32        n_out;       /* OUT: ids actually written */
+} ModelBatchSeq;
+
+/* Runs `n_seq` sequences to completion against one Kv handle each (which may
+ * share a KvStore), greedily, and writes each one's ids into its own out_ids.
+ *
+ * THE BAR (ROADMAP section M4, ruling section 8.4 gate item 2): every
+ * sequence's token stream must be EXACTLY what model_generate would have
+ * produced for it alone, at any n_seq and wherever it sits in the batch.
+ *
+ * ▶ PREFILL IS PER-SEQUENCE, DECODE IS LOCKSTEP. That is what "static batch"
+ * means at M4: the batch is fixed at entry, every member steps once per
+ * decode step, and nothing is admitted mid-flight. Interleaving prefill
+ * positions with other sequences' decode steps is chunked prefill, which is
+ * M5's deliverable and needs the scheduler M4 does not have.
+ *
+ * ▶ A SEQUENCE THAT FINISHES LEAVES THE BATCH, and the survivors compact into
+ * the lower slots. Composition independence is what makes that safe: the slot
+ * a sequence occupies changes nothing about its arithmetic.
+ *
+ * `eos_id` < 0 disables early stop; an emitted eos IS included in out_ids,
+ * matching model_generate. `timing`, if given, reports the batch aggregate:
+ * n_prefill summed over sequences, n_decode summed over the ids each sequence
+ * produced after its first -- the same unit model_generate reports, so an
+ * aggregate rate divides by the same denominator at every N. */
+void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
+                          u32 n_seq, i64 eos_id, ModelTiming* timing);
+
 #endif /* STOKE_MODEL_H */
