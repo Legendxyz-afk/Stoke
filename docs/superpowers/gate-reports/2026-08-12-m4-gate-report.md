@@ -102,7 +102,7 @@ vocabulary is 5 ids wide and its attention is dominated by recent positions.
 `model_generate_batch` now refuses the inconsistency outright via `kv_len`,
 and re-running the mutation fires that fatal by name.
 
-## 5. Item [4] — Q8-KV ON/OFF divergence count — *pending*
+## 5. Item [4] — Q8-KV ON/OFF divergence count — **ZERO BUG-CLASS; class-rate bound MISSED, dispositioned per §8.1**
 
 Criterion §8.1: KV-ON vs KV-OFF within-stoke, graded by §6 with its own τ
 frozen from an M4 entry probe **before it grades anything**, zero BUG-class,
@@ -123,8 +123,48 @@ it.*
 1.28 GB. ⚠ **"Q8-KV halves it" is an f16-era statement** surviving from the
 bandwidth note that `346e0d0` corrected for dtype but not for that language.
 
-**Sweep status:** running as Task Scheduler task `stoke-m4-g4`. Append the
-verdict here, then stamp.
+**The sweep — completed 2026-08-13**, binary `build/win/stoke.exe` sha256
+`F4F9B667…` (archived `build/stoke-m4-gate-f4f9b667.exe`; it DIFFERS from the
+[2]/[3] binary because item [4] needs `e2a20d9`'s `--kv`). τ frozen
+04:46:44Z from 9 agreeing of 15 probe positions — **1.0103 / 1.2617 /
+0.7259** — before grading anything; all three bands drew real samples, none
+fell back to the 0.10 floor.
+
+| | result | bound | |
+|---|---|---|---|
+| BUG-class | **0** | 0 | ✅ |
+| first-divergence prompts | **38/50** | ≤19/50 | ❌ |
+| flip rate | **1.1875 %/token** | ≤0.5 %/token | ❌ |
+| classified | **38 ARITHMETIC-CLASS** (31 direct + 7 laddered) | — | complete |
+
+**All seven ESCALATEs were resolved, not sampled** —
+`2026-08-13-m4-g4-escalate-resolution.md`. Every one escalated on §6's *set*
+clause, never on margin (largest 0.7652 = 76% of τ), and in all seven the
+symmetric difference consists solely of tokens **both sides rank in their
+top-5** — none is "a candidate the other implementation never ranked", §6's own
+BUG language. The ladder returned **no STEP** at any of the seven or at three
+controls, and the divergent positions' layer curves sit *below the
+second-lowest control*, i.e. they are not elevated at all — which runs against
+the selection confound rather than with it.
+
+⚠ **The ladder's `1e-3` magnitude leg reported `L2: FAIL` on every pair
+including the controls, and carries no information here** — the M3 p41
+resolution predicted exactly this for any M4+ escalation, because that constant
+was calibrated on C-f32-vs-numpy-f32 and this pair differs by construction.
+The STEP leg carries the verdict, as §6 specifies.
+
+**The class-rate miss is dispositioned, not ground green** —
+`memos/2026-08-13-m4-q8kv-results-vs-physics.md`. In short: §8.1 calibrates
+"the arithmetic-class noise this project already accepts" against the M2
+census, a pair differing only in **f32 reduction order** (~1.2×10⁻⁷); Q8-KV
+requantises the KV cache to 8 bits (**~2.3×10⁻³ RMS**, four orders larger, and
+its measured 0.4836·d beats the guarantee). That perturbation lands ≈0.04–0.08
+in absolute logit terms — the same order as the observed margins (0.013–0.566)
+— so it flips near-ties often and decided tokens never, which is precisely what
+was measured. The metric is also near saturation: one first-divergence per
+prompt over 3,200 tokens caps it at 50/3200 = 1.5625%, so 1.1875% is 76% of the
+largest value it can report. **Zero-BUG-class and the margin distribution are
+what carry information at this perturbation size, and both are healthy.**
 
 ## 6. Item [5] — the static N∈{1..16} curve — **PASS**
 

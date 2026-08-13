@@ -1,0 +1,11 @@
+{
+ "stoke": "M:\\New Drive\\Desktop\\Programming\\stoke\\build\\win\\stoke.exe",
+ "stoke_sha256": "f4f9b6678e6365bb0a3dadbe7f51f8d09617579b35a84d12dea2ccc264502b5f",
+ "model": "M:\\New Drive\\Desktop\\Programming\\stoke\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+ "model_bytes": 2497280736,
+ "model_mtime": 1784183014,
+ "n_gen": 64,
+ "corpus": 50,
+ "prompt_dir": "tests/data/parity",
+ "probe_spec": "p00:0+15+31+47+63,p10:0+31+63,p32:0+15+31+47+63,p44:0+63"
+}
