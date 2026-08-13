@@ -145,7 +145,16 @@ def fingerprint(args):
             "model": str(args.model), "model_bytes": st.st_size,
             "model_mtime": int(st.st_mtime), "n_gen": args.n_gen,
             "corpus": args.corpus, "prompt_dir": str(args.prompt_dir),
-            "probe_spec": args.probe_spec}
+            "probe_spec": args.probe_spec, "threads": args.threads}
+
+
+# What a resume compares. `threads` is recorded but deliberately NOT here:
+# the ids are byte-identical across default/4/6/10 threads (checked before
+# --threads was plumbed through), so the thread count buys duration and
+# cannot reach the verdict. Refusing a resume over it would block exactly the
+# duration tuning it is there for.
+IDENTITY_KEYS = ("stoke", "stoke_sha256", "model", "model_bytes",
+                 "model_mtime", "n_gen", "corpus", "prompt_dir", "probe_spec")
 
 
 def run(cmd):
@@ -183,9 +192,11 @@ def prompt_len(stoke, model, path):
     return 0 if not body else len(body.split(","))
 
 
-def gen(stoke, model, prompt, n, kv, probe_pos=None):
+def gen(stoke, model, prompt, n, kv, probe_pos=None, threads=None):
     cmd = [stoke, "run", model, "--raw", "-n", str(n), "-f", prompt,
            "--kv", kv]
+    if threads:
+        cmd += ["--threads", str(threads)]
     if probe_pos is not None:
         cmd += ["--probe-pos", str(probe_pos)]
     so, se = run(cmd)
@@ -212,6 +223,11 @@ def main():
                     default="p00:0+15+31+47+63,p10:0+31+63,"
                             "p32:0+15+31+47+63,p44:0+63")
     ap.add_argument("--out", required=True, help="path prefix for the artifacts")
+    ap.add_argument("--threads", type=int, default=0,
+                    help="forwarded to every `stoke run`; 0 leaves the "
+                         "engine default. Duration only -- ids are "
+                         "thread-invariant, so this is outside the resume "
+                         "identity")
     ap.add_argument("--resume", action="store_true",
                     help="continue from the banked .jsonl units of an "
                          "interrupted run with the SAME configuration")
@@ -244,7 +260,7 @@ def main():
                 f"--resume: no {run_path.name}; there is no banked run to "
                 f"continue under this --out prefix.")
         old = json.loads(run_path.read_text(encoding="utf-8"))
-        differ = sorted(k for k in set(old) | set(fp) if old.get(k) != fp.get(k))
+        differ = sorted(k for k in IDENTITY_KEYS if old.get(k) != fp.get(k))
         if differ:
             raise SystemExit(
                 "REFUSING to resume: the bank was produced by a different "
@@ -297,9 +313,9 @@ def main():
                     plen = prompt_len(args.stoke, args.model, path)
                 t0 = time.time()
                 a_ids, a_top = gen(args.stoke, args.model, path, args.n_gen,
-                                   "f32", gp)
+                                   "f32", gp, args.threads)
                 b_ids, b_top = gen(args.stoke, args.model, path, args.n_gen,
-                                   "q8", gp)
+                                   "q8", gp, args.threads)
                 covered = gp < len(a_ids) and gp < len(b_ids)
                 rec = {"prompt": name, "gp": gp, "plen": plen,
                        "covered": covered,
@@ -362,8 +378,10 @@ def main():
         if row is None:
             path = str(pdir / f"{name}.txt")
             t0 = time.time()
-            a_ids, _ = gen(args.stoke, args.model, path, args.n_gen, "f32")
-            b_ids, _ = gen(args.stoke, args.model, path, args.n_gen, "q8")
+            a_ids, _ = gen(args.stoke, args.model, path, args.n_gen, "f32",
+                           threads=args.threads)
+            b_ids, _ = gen(args.stoke, args.model, path, args.n_gen, "q8",
+                           threads=args.threads)
             first = None
             for i in range(min(len(a_ids), len(b_ids))):
                 if a_ids[i] != b_ids[i]:
@@ -406,8 +424,10 @@ def main():
             continue
         gp = r["first_divergence"]
         path = str(pdir / f"{r['prompt']}.txt")
-        _, a_top = gen(args.stoke, args.model, path, args.n_gen, "f32", gp)
-        _, b_top = gen(args.stoke, args.model, path, args.n_gen, "q8", gp)
+        _, a_top = gen(args.stoke, args.model, path, args.n_gen, "f32", gp,
+                       args.threads)
+        _, b_top = gen(args.stoke, args.model, path, args.n_gen, "q8", gp,
+                       args.threads)
         band = band_of(prompt_len(args.stoke, args.model, path) + gp)
         t = tau[band]
 
