@@ -334,9 +334,7 @@ f32 vec_dot_q4_k_q8_k(const void* wrow, const void* arow, u64 n) {
     i8 aux8[KERNELS_Q4_K_BLOCK_ELEMS];
     i16 aux16[8];
     i32 aux32[8];
-    f32 sums[8];
     u8 scales8[8], mins8[8];
-    memset(sums, 0, sizeof(sums));
 
     f32 sumf = 0.0f;
     for (u64 i = 0; i < nb; ++i) {
@@ -381,12 +379,29 @@ f32 vec_dot_q4_k_q8_k(const void* wrow, const void* arow, u64 n) {
             }
         }
 
-        f32 d = f16_to_f32(kq_read_u16_le(blk)) * ad;
-        for (int l = 0; l < 8; ++l) sums[l] += d * (f32)aux32[l];
-        f32 dmin = f16_to_f32(kq_read_u16_le(blk + 2)) * ad;
-        sumf -= dmin * (f32)sumi;
+        /* ── CONTRACT v2 (ruling 2026-08-12 §3), and the eight lanes above are
+         * now an IMPLEMENTATION DETAIL rather than the contract.
+         *
+         * S_b is this super-block's exact integer total. Summing the eight
+         * accumulators is exact and freely regroupable BECAUSE IT IS INTEGER
+         * -- that is the whole re-anchor: any implementation, at any SIMD
+         * width, may reach S_b however it likes and must then execute the two
+         * f32 operations below verbatim. Bit-exactness across widths follows
+         * by construction instead of by pinning every twin to this file's
+         * eight-lane partition, which was an ACCIDENT of transcribing ggml's
+         * scalar and not a design value.
+         *
+         * Bound, computed not assumed: 256 elements x scale<=63 x q4<=15 x
+         * |q8|<=127 = 30,723,840, three orders inside i32. */
+        i32 S_b = 0;                                          /* CONTRACT */
+        for (int l = 0; l < 8; ++l) S_b += aux32[l];          /* CONTRACT */
+        const i32 M_b = sumi;                                 /* CONTRACT */
+
+        const f32 d = f16_to_f32(kq_read_u16_le(blk)) * ad;
+        const f32 dmin = f16_to_f32(kq_read_u16_le(blk + 2)) * ad;
+        sumf = sumf + d * (f32)S_b;                           /* CONTRACT */
+        sumf = sumf - dmin * (f32)M_b;                        /* CONTRACT */
     }
-    for (int l = 0; l < 8; ++l) sumf += sums[l];
     return sumf;
 }
 

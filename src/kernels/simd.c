@@ -396,6 +396,18 @@ static inline __m256 kq_accum_sums(__m256 sums, __m256i acc, f32 d) {
 }
 
 /* sumf += sums[0] + sums[1] + ... + sums[7], IN THAT ORDER. */
+/* CONTRACT v2: reduce the eight i32 lanes to the super-block's single exact
+ * total. Integer adds are associative, so ANY order gives the same bits --
+ * that associativity is precisely what lets a twin of any width meet the
+ * scalar's fold without inheriting its lane partition. */
+static inline i32 kq_hsum_i32(__m256i v) {
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(v),
+                              _mm256_extracti128_si256(v, 1));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(1, 0, 3, 2)));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(2, 3, 0, 1)));
+    return _mm_cvtsi128_si32(s);
+}
+
 static inline f32 kq_finish(f32 sumf, __m256 sums) {
     f32 tmp[8];
     _mm256_storeu_ps(tmp, sums);
@@ -414,7 +426,6 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
     const __m256i lownib = _mm256_set1_epi32(0xF);
-    __m256 sums = _mm256_setzero_ps();
     f32 sumf = 0.0f;
 
     for (u64 i = 0; i < nb; ++i) {
@@ -465,10 +476,14 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
         u16 draw, dmraw;
         memcpy(&draw, blk, sizeof draw);
         memcpy(&dmraw, blk + 2, sizeof dmraw);
-        sums = kq_accum_sums(sums, acc, f16_to_f32(draw) * ad);
-        sumf -= (f16_to_f32(dmraw) * ad) * (f32)sumi;
+        /* The two CONTRACT lines, verbatim from the scalar. */
+        const i32 S_b = kq_hsum_i32(acc);
+        const f32 d = f16_to_f32(draw) * ad;
+        const f32 dmin = f16_to_f32(dmraw) * ad;
+        sumf = sumf + d * (f32)S_b;
+        sumf = sumf - dmin * (f32)sumi;
     }
-    return kq_finish(sumf, sums);
+    return sumf;
 }
 
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
@@ -486,12 +501,8 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
     const __m256i lownib = _mm256_set1_epi32(0xF);
-    __m256 sums[KERNELS_BATCH_TILE];
     f32 sumf[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) {
-        sums[s] = _mm256_setzero_ps();
-        sumf[s] = 0.0f;
-    }
+    for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
 
     /* The widened nibbles for one super-block: 8 sub-blocks x 4 groups of 8
      * elements. 1 KiB, so it lives in L1 for the whole sequence loop -- the
@@ -549,12 +560,13 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                     acc, _mm256_mullo_epi32(
                              sub, _mm256_set1_epi32((int)scales8[j])));
             }
-            sums[s] = kq_accum_sums(sums[s], acc, dw * ad);
-            sumf[s] -= (dm * ad) * (f32)sumi;
+            const i32 S_b = kq_hsum_i32(acc);
+            sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
+            sumf[s] = sumf[s] - (dm * ad) * (f32)sumi;
         }
     }
 
-    for (u32 s = 0; s < n_seq; ++s) out[s] = kq_finish(sumf[s], sums[s]);
+    for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
 }
 
 f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
