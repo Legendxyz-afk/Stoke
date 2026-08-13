@@ -459,9 +459,17 @@ f32 vec_dot_q6_k_q8_k(const void* wrow, const void* arow, u64 n) {
             }
         }
 
-        f32 d = f16_to_f32(kq_read_u16_le(blk + 208)) * ad;
-        for (int l = 0; l < 8; ++l) sums[l] += d * (f32)aux32[l];
+        /* ── CONTRACT v2, the Q6_K shape: no mins term, so the canonical
+         * fold is a single f32 operation per super-block against the exact
+         * integer total. Same re-anchor as Q4_K -- the eight lanes are an
+         * implementation detail, S_b is the contract.
+         *
+         * Bound, computed: 256 elements x |scale|<=127 x |q6|<=32 x |q8|<=127
+         * = 132,120,576, still an order inside i32. */
+        i32 S_b = 0;                                          /* CONTRACT */
+        for (int l = 0; l < 8; ++l) S_b += aux32[l];          /* CONTRACT */
+        const f32 d = f16_to_f32(kq_read_u16_le(blk + 208)) * ad;
+        sumf = sumf + d * (f32)S_b;                           /* CONTRACT */
     }
-    for (int l = 0; l < 8; ++l) sumf += sums[l];
     return sumf;
 }

@@ -579,7 +579,6 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     const u8* ab = (const u8*)arow;
     u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
-    __m256 sums = _mm256_setzero_ps();
     f32 sumf = 0.0f;
 
     for (u64 i = 0; i < nb; ++i) {
@@ -625,9 +624,11 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
 
         u16 draw;
         memcpy(&draw, blk + 208, sizeof draw);
-        sums = kq_accum_sums(sums, acc, f16_to_f32(draw) * ad);
+        /* The CONTRACT line, verbatim from the scalar. */
+        const i32 S_b = kq_hsum_i32(acc);
+        sumf = sumf + (f16_to_f32(draw) * ad) * (f32)S_b;
     }
-    return kq_finish(sumf, sums);
+    return sumf;
 }
 
 void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
@@ -644,12 +645,8 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     const u8* wb = (const u8*)wrow;
     u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
-    __m256 sums[KERNELS_BATCH_TILE];
     f32 sumf[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) {
-        sums[s] = _mm256_setzero_ps();
-        sumf[s] = 0.0f;
-    }
+    for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
 
     /* ⚠ MEASURED, NOT ASSUMED: hoisting the WIDENING too (a __m256i wv[32]
      * alongside this) made N=16 SLOWER -- 13.565 -> 11.207 tok/s. Q4_K's
@@ -703,11 +700,12 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                 acc = _mm256_add_epi32(
                     acc, _mm256_mullo_epi32(sub, _mm256_set1_epi32((int)sc[j])));
             }
-            sums[s] = kq_accum_sums(sums[s], acc, dw * ad);
+            const i32 S_b = kq_hsum_i32(acc);
+            sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
         }
     }
 
-    for (u32 s = 0; s < n_seq; ++s) out[s] = kq_finish(sumf[s], sums[s]);
+    for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
 }
 
 #else /* !x86-64 */
