@@ -136,12 +136,17 @@ def fingerprint(args):
     a correctness question but does decide whether the sweep takes 2.6 hours
     or fifteen.
     """
-    h = hashlib.sha256()
-    with open(args.stoke, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
+    def sha(path):
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
     st = pathlib.Path(args.model).stat()
-    return {"stoke": str(args.stoke), "stoke_sha256": h.hexdigest(),
+    return {"stoke": str(args.stoke), "stoke_sha256": sha(args.stoke),
+            "stoke_b": str(args.stoke_b), "stoke_b_sha256": sha(args.stoke_b),
+            "kv_a": args.kv_a, "kv_b": args.kv_b,
             "model": str(args.model), "model_bytes": st.st_size,
             "model_mtime": int(st.st_mtime), "n_gen": args.n_gen,
             "corpus": args.corpus, "prompt_dir": str(args.prompt_dir),
@@ -153,7 +158,8 @@ def fingerprint(args):
 # --threads was plumbed through), so the thread count buys duration and
 # cannot reach the verdict. Refusing a resume over it would block exactly the
 # duration tuning it is there for.
-IDENTITY_KEYS = ("stoke", "stoke_sha256", "model", "model_bytes",
+IDENTITY_KEYS = ("stoke", "stoke_sha256", "stoke_b", "stoke_b_sha256",
+                 "kv_a", "kv_b", "model", "model_bytes",
                  "model_mtime", "n_gen", "corpus", "prompt_dir", "probe_spec")
 
 
@@ -207,7 +213,13 @@ def gen(stoke, model, prompt, n, kv, probe_pos=None, threads=None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stoke", required=True)
+    ap.add_argument("--stoke", required=True, help="side A engine")
+    ap.add_argument("--stoke-b", default=None,
+                    help="side B engine; defaults to --stoke. Give a second "
+                         "binary to grade OLD-vs-NEW (M4.5 rung C) instead of "
+                         "two KV modes inside one build.")
+    ap.add_argument("--kv-a", default="f32")
+    ap.add_argument("--kv-b", default="q8")
     ap.add_argument("--model", required=True)
     ap.add_argument("--prompt-dir", default="tests/data/parity")
     ap.add_argument("-n", "--n-gen", type=int, default=64)
@@ -232,6 +244,9 @@ def main():
                     help="continue from the banked .jsonl units of an "
                          "interrupted run with the SAME configuration")
     args = ap.parse_args()
+
+    if args.stoke_b is None:
+        args.stoke_b = args.stoke
 
     pdir = pathlib.Path(args.prompt_dir)
     corpus = [f"p{i:02d}" for i in range(args.corpus)]
@@ -313,9 +328,9 @@ def main():
                     plen = prompt_len(args.stoke, args.model, path)
                 t0 = time.time()
                 a_ids, a_top = gen(args.stoke, args.model, path, args.n_gen,
-                                   "f32", gp, args.threads)
-                b_ids, b_top = gen(args.stoke, args.model, path, args.n_gen,
-                                   "q8", gp, args.threads)
+                                   args.kv_a, gp, args.threads)
+                b_ids, b_top = gen(args.stoke_b, args.model, path, args.n_gen,
+                                   args.kv_b, gp, args.threads)
                 covered = gp < len(a_ids) and gp < len(b_ids)
                 rec = {"prompt": name, "gp": gp, "plen": plen,
                        "covered": covered,
@@ -362,7 +377,8 @@ def main():
 
         frozen = {"frozen_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                               time.gmtime()),
-                  "pair": "kv_f32 <-> kv_q8_0", "model": args.model,
+                  "pair": f"{args.stoke}:{args.kv_a} <-> {args.stoke_b}:{args.kv_b}",
+              "model": args.model,
                   "tau": tau, "n_probe_positions": n_seen,
                   "n_agreeing": n_agree,
                   "rule": "max(0.10, 2 x band p95) -- ruling 9.4-2"}
@@ -378,10 +394,10 @@ def main():
         if row is None:
             path = str(pdir / f"{name}.txt")
             t0 = time.time()
-            a_ids, _ = gen(args.stoke, args.model, path, args.n_gen, "f32",
-                           threads=args.threads)
-            b_ids, _ = gen(args.stoke, args.model, path, args.n_gen, "q8",
-                           threads=args.threads)
+            a_ids, _ = gen(args.stoke, args.model, path, args.n_gen,
+                           args.kv_a, threads=args.threads)
+            b_ids, _ = gen(args.stoke_b, args.model, path, args.n_gen,
+                           args.kv_b, threads=args.threads)
             first = None
             for i in range(min(len(a_ids), len(b_ids))):
                 if a_ids[i] != b_ids[i]:
@@ -424,10 +440,10 @@ def main():
             continue
         gp = r["first_divergence"]
         path = str(pdir / f"{r['prompt']}.txt")
-        _, a_top = gen(args.stoke, args.model, path, args.n_gen, "f32", gp,
+        _, a_top = gen(args.stoke, args.model, path, args.n_gen, args.kv_a, gp,
                        args.threads)
-        _, b_top = gen(args.stoke, args.model, path, args.n_gen, "q8", gp,
-                       args.threads)
+        _, b_top = gen(args.stoke_b, args.model, path, args.n_gen, args.kv_b,
+                       gp, args.threads)
         band = band_of(prompt_len(args.stoke, args.model, path) + gp)
         t = tau[band]
 
