@@ -150,4 +150,26 @@ u32 argmax_avx2(const f32* logits, u64 n);
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 
+/* M4.5 rung B (ruling 2026-08-12 §7.1): ONE weight row against N activations,
+ * unpacking the row's weight-only work once instead of once per sequence.
+ *
+ * WHAT IS HOISTED, and it is exactly the work that does not depend on the
+ * activation: the scale/min unpack, the 256 nibble widenings, and the two
+ * f16→f32 conversions. WHAT IS NOT TOUCHED is every operation that touches
+ * an activation, in the order it already ran.
+ *
+ * BIT-EXACTNESS IS BY CONSTRUCTION, NOT BY ARGUMENT. Each sequence keeps its
+ * own (sums, sumf) pair across the super-block loop and the per-sequence
+ * arithmetic executes in the same sequence, over the same values, as
+ * vec_dot_q4_k_q8_k_avx2 would execute alone. Only the LOOP ORDER changes;
+ * nothing sums across sequences and no grouping is regrouped. `out[s]` must
+ * equal the solo kernel's return for every s, which tests/test_simd.c
+ * asserts directly rather than trusting this comment.
+ *
+ * n_seq is tiled by the caller at KERNELS_BATCH_TILE so the per-sequence
+ * accumulators stay a small stack array. */
+#define KERNELS_BATCH_TILE 16u
+void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
+                               u32 n_seq, u64 n, f32* out);
+
 #endif /* STOKE_KERNELS_SIMD_H */
