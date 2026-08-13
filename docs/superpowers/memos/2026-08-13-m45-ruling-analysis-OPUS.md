@@ -161,16 +161,32 @@ before attributing anything.
 
 ### A4 — P-BAR needs ~1.90×, and C's own estimate spans a miss
 
-- llama-bench Q4_K_M **17.45 tok/s** @6T (2026-08-11 budget note); stoke N=1 =
-  **7.811** (item [5] curve median). Gap **2.234×**.
-- P-BAR = 0.85 × 17.45 = **14.83 tok/s** ⇒ stoke must gain **1.90×**.
-- §4's estimate for C is "8 → ~12–15 tok/s" = **1.54–1.92×**. The midpoint
-  misses the bar; only the top edge meets it.
+**▶ RE-ANCHORED BY MEASUREMENT 2026-08-13 — both sides pinned to the P-cores
+at 6 threads, which is what §8.2 asks for and what the numbers below were
+missing. The gap is smaller than the record says.**
 
-**Consequence:** A′ is on P-BAR's critical path, not polish. The ruling already
-orders A′ before D, so nothing re-orders — but C's result must be read against
-14.83, not against "did it improve", and a C landing at 12–13 is *on plan*,
-not a failure.
+| | pinned, 6T, same model | previously recorded |
+|---|---|---|
+| llama.cpp b10037 `tg128` | **18.05 ± 0.10** (`-r 3`) | 17.45 |
+| stoke N=1 (`batch --seqs 1`) | **10.01** (10.086/9.994/10.006) | 7.811 |
+| ratio | **0.555× — llama is 1.80× faster** | 2.23× |
+| P-BAR = 0.85× | **15.34 tok/s ⇒ stoke needs 1.53×** | 14.83 ⇒ 1.90× |
+
+**Pinning is worth +28% to stoke and +3% to llama.cpp** — stoke was losing far
+more to E-core migration, which is why the recorded gap was overstated. The
+item [5] curve's absolute numbers are all unpinned and understate the engine by
+about that much; its verdict (monotone within spread) is a shape test taken
+under uniform conditions and is unaffected.
+
+- §4's estimate for C is "8 → ~12–15 tok/s" = **1.54–1.92× on its own
+  anchor**. Applied to the re-anchored 10.01 baseline that is **15.4–19.2
+  tok/s against a 15.34 bar** — so C alone now plausibly *meets* P-BAR, where
+  against the stale numbers it plausibly missed.
+
+**Consequence:** C's result must be read against **15.34**, not against "did it
+improve". A′ remains ordered before D and is still the designed lever if C
+lands low, but it is no longer *required* to reach the bar on these numbers —
+which is a better position than the pre-measurement reading, not a worse one.
 
 ⚠ **P-BAR's referent path needs pinning before it is measured.** "stoke N=1
 decode" does not name a harness, and `stoke run` (via `model_forward_position`,
