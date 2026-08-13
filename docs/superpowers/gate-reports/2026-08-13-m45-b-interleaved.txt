@@ -1,0 +1,11 @@
+﻿=== interleaved A/B/C, N=16 ctx2048 -n 64, P-cores, 6 threads, 2026-08-13T13:07:11 ===
+cycle 1  preb  9.228 tok/s
+cycle 1  q4k  13.008 tok/s
+cycle 1  q6k  12.798 tok/s
+cycle 2  preb  9.301 tok/s
+cycle 2  q4k  12.328 tok/s
+cycle 2  q6k  12.108 tok/s
+cycle 3  preb  9.323 tok/s
+cycle 3  q4k  11.841 tok/s
+cycle 3  q6k  12.866 tok/s
+=== done 2026-08-13T13:26:48 ===

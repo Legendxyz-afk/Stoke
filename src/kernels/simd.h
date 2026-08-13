@@ -171,5 +171,7 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 #define KERNELS_BATCH_TILE 16u
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                                u32 n_seq, u64 n, f32* out);
+void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
+                               u32 n_seq, u64 n, f32* out);
 
 #endif /* STOKE_KERNELS_SIMD_H */

@@ -143,8 +143,10 @@ static void rows_q8_0_avx2(void* vctx, u64 begin, u64 end) {
  * type that has not been converted yet. A type with no batched worker is not
  * broken, only unfused -- which is exactly the state every type was in
  * before this commit. */
-static void rows_q4_k_batch_avx2(void* vctx, u64 begin, u64 end) {
-    const BatchRowJob* j = (const BatchRowJob*)vctx;
+static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
+                                   void (*dot_xn)(const void*,
+                                                  const void* const*,
+                                                  u32, u64, f32*)) {
     for (u64 r0 = begin; r0 < end; r0 += BATCH_ROW_CHUNK) {
         u64 r1 = r0 + BATCH_ROW_CHUNK;
         if (r1 > end) r1 = end;
@@ -156,12 +158,21 @@ static void rows_q4_k_batch_avx2(void* vctx, u64 begin, u64 end) {
                 u32 cnt = j->n_seq - s0;
                 if (cnt > KERNELS_BATCH_TILE) cnt = KERNELS_BATCH_TILE;
                 f32 out[KERNELS_BATCH_TILE];
-                vec_dot_q4_k_q8_k_xn_avx2(row, (const void* const*)&j->aq[s0],
-                                          cnt, j->n_in, out);
+                dot_xn(row, (const void* const*)&j->aq[s0], cnt, j->n_in, out);
                 for (u32 k = 0; k < cnt; k++) j->y[s0 + k][r] = out[k];
             }
         }
     }
+}
+
+static void rows_q4_k_batch_avx2(void* vctx, u64 begin, u64 end) {
+    rows_kquant_batch_avx2((const BatchRowJob*)vctx, begin, end,
+                           vec_dot_q4_k_q8_k_xn_avx2);
+}
+
+static void rows_q6_k_batch_avx2(void* vctx, u64 begin, u64 end) {
+    rows_kquant_batch_avx2((const BatchRowJob*)vctx, begin, end,
+                           vec_dot_q6_k_q8_k_xn_avx2);
 }
 
 static void rows_q4_k_scalar(void* vctx, u64 begin, u64 end) {
@@ -293,14 +304,15 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
                          aq_scratch,
                          is_q4 ? (simd ? rows_q4_k_avx2 : rows_q4_k_scalar)
                                : (simd ? rows_q6_k_avx2 : rows_q6_k_scalar)};
-        /* Rung B is fused for Q4_K under AVX2 only. Every other type keeps
-         * the delegating path, and n_seq==1 keeps it too: with one sequence
+        /* Rung B is fused for both K-quants under AVX2. The scalar paths keep
+         * the delegating worker, and n_seq==1 keeps it too: with one sequence
          * there is nothing to amortize and the solo worker is the kernel the
          * archive byte-compare and gate [1] already cover. The step model
          * predicts N=1 cannot move, so routing it here would risk a change
          * that could only be a bug. */
-        if (is_q4 && simd && n_seq > 1u) {
-            pool_for_rows(n_out, rows_q4_k_batch_avx2, &j);
+        if (simd && n_seq > 1u) {
+            pool_for_rows(n_out, is_q4 ? rows_q4_k_batch_avx2
+                                       : rows_q6_k_batch_avx2, &j);
         } else {
             pool_for_rows(n_out, rows_delegate_batch, &j);
         }

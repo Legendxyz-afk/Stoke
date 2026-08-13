@@ -618,6 +618,86 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     return kq_finish(sumf, sums);
 }
 
+void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
+                               u32 n_seq, u64 n, f32* out) {
+    if (n % KERNELS_Q6_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 -- n=%llu is not a multiple "
+              "of %u",
+              (unsigned long long)n, KERNELS_Q6_K_BLOCK_ELEMS);
+    }
+    if (n_seq == 0u || n_seq > KERNELS_BATCH_TILE) {
+        fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 -- n_seq=%u outside 1..%u; "
+              "the caller tiles", n_seq, KERNELS_BATCH_TILE);
+    }
+    const u8* wb = (const u8*)wrow;
+    u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
+
+    __m256 sums[KERNELS_BATCH_TILE];
+    f32 sumf[KERNELS_BATCH_TILE];
+    for (u32 s = 0; s < n_seq; ++s) {
+        sums[s] = _mm256_setzero_ps();
+        sumf[s] = 0.0f;
+    }
+
+    /* ⚠ MEASURED, NOT ASSUMED: hoisting the WIDENING too (a __m256i wv[32]
+     * alongside this) made N=16 SLOWER -- 13.565 -> 11.207 tok/s. Q4_K's
+     * widening masks and shifts nibbles, which is arithmetic worth hoisting;
+     * Q6_K's aux8 already holds ready i8 values, so `kq_load_i8x8_to_i32` is
+     * a load-and-convert and materialising it quadruples the bytes re-read
+     * per sequence (256 -> 1024) to save nothing. Only the interleaved
+     * rebuild is hoisted here. The two K-quants do NOT want the same hoist. */
+    i8 aux8[KERNELS_Q6_K_BLOCK_ELEMS];
+
+    for (u64 i = 0; i < nb; ++i) {
+        const u8* blk = wb + i * KERNELS_Q6_K_BLOCK_BYTES;
+        const u8* ql = blk;
+        const u8* qh = blk + 128;
+        const i8* sc = (const i8*)(blk + 192);
+
+        /* ── WEIGHT-ONLY WORK, ONCE PER ROW. Q6_K gains more from the hoist
+         * than Q4_K does: the whole interleaved aux8 rebuild below used to
+         * run once per sequence, and it is the reason the scalar K-quant
+         * path was 3.6x slower than Q8_0 on a smaller file. */
+        for (u32 h = 0; h < 2u; ++h) {
+            const u8* q4h = ql + h * 64u;
+            const u8* qhh = qh + h * 32u;
+            i8* a = aux8 + h * 128u;
+            for (int l = 0; l < 32; ++l) {
+                a[l + 0] = (i8)((q4h[l + 0] & 0xF) | (((qhh[l] >> 0) & 3) << 4)) - 32;
+                a[l + 32] = (i8)((q4h[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4)) - 32;
+                a[l + 64] = (i8)((q4h[l + 0] >> 4) | (((qhh[l] >> 4) & 3) << 4)) - 32;
+                a[l + 96] = (i8)((q4h[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4)) - 32;
+            }
+        }
+        u16 draw;
+        memcpy(&draw, blk + 208, sizeof draw);
+        const f32 dw = f16_to_f32(draw);
+
+        /* ── PER-SEQUENCE WORK, the solo kernel's operations in its order. */
+        for (u32 s = 0; s < n_seq; ++s) {
+            const u8* ablk = (const u8*)arows[s] + i * KERNELS_Q8_K_BLOCK_BYTES;
+            const i8* q8 = (const i8*)(ablk + 4);
+            f32 ad;
+            memcpy(&ad, ablk, sizeof ad);
+
+            __m256i acc = _mm256_setzero_si256();
+            for (u32 j = 0; j < 16u; ++j) {
+                __m256i sub = _mm256_setzero_si256();
+                for (u32 g = 0; g < 2u; ++g) {
+                    __m256i wv = kq_load_i8x8_to_i32(aux8 + j * 16u + g * 8u);
+                    __m256i av = kq_load_i8x8_to_i32(q8 + j * 16u + g * 8u);
+                    sub = kq_mac8(sub, wv, av);
+                }
+                acc = _mm256_add_epi32(
+                    acc, _mm256_mullo_epi32(sub, _mm256_set1_epi32((int)sc[j])));
+            }
+            sums[s] = kq_accum_sums(sums[s], acc, dw * ad);
+        }
+    }
+
+    for (u32 s = 0; s < n_seq; ++s) out[s] = kq_finish(sumf[s], sums[s]);
+}
+
 #else /* !x86-64 */
 
 bool kernels_cpu_has_avx_vnni(void) { return false; }
@@ -680,6 +760,17 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     (void)n;
     (void)out;
     fatal("kernels: vec_dot_q4_k_q8_k_xn_avx2 on a non-x86-64 build -- "
+          "callers must check kernels_cpu_has_avx_vnni() first");
+}
+
+void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
+                               u32 n_seq, u64 n, f32* out) {
+    (void)wrow;
+    (void)arows;
+    (void)n_seq;
+    (void)n;
+    (void)out;
+    fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 on a non-x86-64 build -- "
           "callers must check kernels_cpu_has_avx_vnni() first");
 }
 
