@@ -72,8 +72,8 @@ benchmark report.
 | M1 | gguf.c + tok.c | ✅ 2026-07-19 tag `m1` = `cbf1e20` | Byte-exact vs llama-tokenize: fuzz corpus, specials both modes, 22,848-line unicode sweep |
 | M2 | Scalar forward pass | ✅ 2026-08-02 tag `m2` | **PASS both legs: 24/24 token-exact (1,536 greedy decisions, 0 diverged, 0 of 2 waivers drawn, 0 tooling errors) + L2 36/36 ≤1e-3, worst L34 6.104e-04, no STEP.** Re-scoped 07-28 (Kabir, memo option 3) to C-vs-ref on a stratified subset + the 36-layer ladder; definition fixed beforehand by the Fable ruling. Report: `superpowers/gate-reports/2026-08-02-m2-parity.md` |
 | M3 | AVX2+VNNI kernels + pool | ✅ 2026-08-11 tag `m3` | **[2v2] ZERO BUG-CLASS: 9/9 divergences ARITHMETIC-CLASS on the Q4_K_M grid (worst margin 0.555672 vs τ 1.023739 = 54% of threshold, no ESCALATE); τ_Q4KM frozen BEFORE grading under key `f32_intcore_q4_k_m` = 1.023739 / 1.178094 / 0.811432; 290 covered positions, per-prompt stated; p41 clean 64/64. Q8_0 discharged by the 08-06 ruling.** [1] test_simd 12/12 ✅; [3] re-anchored 8.08–8.46 both legs ✅; [4] matrix green at `5051878` ✅; [5] ✅. **⚠ FLAGGED, NOT QUIET — the flip tripwire FIRED (9 ≥ 8).** Its λ inherited a ~0.5%/token base measured on **Q8_0**; Q4_K_M measures **3.10%/token**, so the threshold fires by construction on this file. Kept at ≥8 rather than recalibrated from the data it polices (circular); the mismatch was committed in `6b484b9` at 5 flips, before the count could be known. Disposition: `superpowers/memos/2026-08-11-m3-tripwire-anomaly-memo.md`. Report: `superpowers/gate-reports/2026-08-11-m3-q4km-grid-gate-report.md` |
-| **M4** | **Paged KV + static batch** | **← NOW** | **THE GATE LIST IS RULING §8.4's FIVE — cite it, never a summary (a four-item paraphrase of this row cost a session):** [1] invariant sim ×1e6 ASan (set ENUMERATED in `superpowers/design-notes/2026-08-11-m4-invariants.md`); [2] batch identity N∈{1,2,4,8,16} real model ✅ 08-12; [3] prefix-dedup ✅ 08-12; [4] Q8-KV ON/OFF per §8.1; [5] monotone N∈{1..16} curve ✅ 08-12 **PASS at 1.116× — see M4.5** |
-| **M4.5** | **Kernel ladder → llama-band** | queued next | **Authority: `superpowers/memos/2026-08-12-throughput-parity-RULING-FABLE.md`.** Order B → C → A′ → D(conditional) → L4(profiled). **P-BAR: N=1 decode ≥0.85× llama-bench tg** (same box/file/threads, referent re-anchored per §8.2; 0.95× iff D lands). C = CONTRACT v2 re-anchor (canonical f32 fold; integer core freely regroupable), graded old-vs-new by §6, zero BUG-class, **Q8_0 file streams BYTE-IDENTICAL through C or it is a bug** |
+| **M4** | **Paged KV + static batch** | **✅ 2026-08-13 tag `m4`** | **THE GATE LIST IS RULING §8.4's FIVE — cite it, never a summary (a four-item paraphrase of this row cost a session):** [1] invariant sim ×1e6 ASan ✅ (set ENUMERATED in `superpowers/design-notes/2026-08-11-m4-invariants.md`); [2] batch identity N∈{1,2,4,8,16} real model ✅ 08-12; [3] prefix-dedup ✅ 08-12; [4] Q8-KV ON/OFF per §8.1 — **zero BUG-class ✅, class-rate bound MISSED (38/50, 1.1875%/token) and DISPOSITIONED per §8.1 as a results-vs-physics memo, not ground green**; [5] monotone N∈{1..16} curve ✅ 08-12 **PASS at 1.116× — see M4.5** |
+| **M4.5** | **Kernel ladder → llama-band** | **← NOW** | **Authority: `superpowers/memos/2026-08-12-throughput-parity-RULING-FABLE.md`.** Order B → C → A′ → D(conditional) → L4(profiled). **P-BAR: N=1 decode ≥0.85× llama-bench tg** (same box/file/threads, referent re-anchored per §8.2; 0.95× iff D lands). C = CONTRACT v2 re-anchor (canonical f32 fold; integer core freely regroupable), graded old-vs-new by §6, zero BUG-class, **Q8_0 file streams BYTE-IDENTICAL through C or it is a bug** |
 | M5 | Continuous batching | queued | **THE bars: ≥17.7 @8 / ≥14.2 @16 AND ≥10.8 @8 / ≥16.8 @16**; ITL <250ms; S3 ≥13.3; 1h soak; cancel-safe sim (Fable 08-02). **Bars are reachable through M4.5's kernels, not batching — measured 08-12 (curve flat at 8.7, compute-bound at ~64 GFLOP/s)** |
 | M6 | `stoke.h` freeze + server | queued | openai-python suite; M0 harness drives stoke unmodified; ABI checklist; C++ TU |
 | M7 | Harden + launch-ready | queued | Llama-3.2 parity incl. long-ctx; unsloth-file run; 24h soak; reproducible report; Kabir sign-offs |
@@ -160,6 +160,31 @@ over); (2) L2 ladder re-run after it; (3) adjudication per the ruling §3;
 ruling, the rest stand. FREEZES until the report is stamped: no `stoke.exe`
 rebuild, no `ref_forward.py` edit (both hash-pinned into the evidence
 chain). The ledger NEXT-SESSION block has the exact resume point.
+
+**M4 — ✅ CLOSED 2026-08-13, tag `m4`.** All five §8.4 gate items measured.
+Four pass outright; **item [4] passes the bound that gates correctness (zero
+BUG-class over 50 prompts, all 38 divergences classified ARITHMETIC-CLASS,
+all seven ESCALATEs laddered rather than sampled — no STEP anywhere) and
+misses the class-rate bound (38/50, 1.1875%/token against ≤19/50 and
+≤0.5%/token).** §8.1 pre-ruled that disposition: a results-vs-physics memo,
+never a grind-until-green — `superpowers/memos/2026-08-13-m4-q8kv-results-vs-
+physics.md`. The finding is that the bound calibrates against the M2 census, a
+pair differing only in **f32 reduction order (~1.2×10⁻⁷)**, while Q8-KV
+requantises the KV cache to 8 bits (**~2.3×10⁻³ RMS**) — four orders apart,
+and the resulting logit perturbation (≈0.04–0.08) is the same order as the
+observed margins (0.013–0.566), which is why near-ties flip and decided tokens
+never do. **f32 KV remains the default; M5's design note carries the dtype
+call**, where the footprint argument is independent and load-bearing (the f32
+pool at N=16/ctx2048 commits 9.04 GB, measured 2026-08-13).
+
+Four entries ride into M4.5/M5 as carried headroom: **(a)** τ for item [4] is
+frozen from agreeing positions of the same pair it grades — same shape as M3's
+(a), restated not newly found; **(b)** the curve's pool is reserved but barely
+touched, so it measured SCALING, not residency at depth; **(c)** `kv_view` is
+now a partial function (fatal on a Q8 store), the f32-mode accessor for tests
+while the engine uses `kv_write`/`kv_read`; **(d)** the class-rate bound and
+`l2_diff.py`'s `1e-3` are both constants inherited across perturbation classes
+and both now want τ's per-pair form — M3 raised the shape, M4 met it twice.
 
 **M3 — ✅ CLOSED 2026-08-11, tag `m3`.** Closed on the classified-divergence
 criterion: 9/9 ARITHMETIC-CLASS, zero BUG, τ_Q4KM frozen before grading.

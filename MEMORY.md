@@ -572,6 +572,57 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   a sample floor counting values where the ruling meant positions (20 → about
   4), and continuation divergences recorded in no manifest at all.
 
+- **2026-08-13 — M4 COMPLETE (tag `m4`) — paged KV and static batching are
+  in, sequences share one block pool, and the batch path is byte-identical to
+  solo generation at every width.** Gate report:
+  `docs/superpowers/gate-reports/2026-08-12-m4-gate-report.md`. All five §8.4
+  items measured. **[1]** invariant sim ×1e6 clean under ASan+UBSan, the set
+  enumerated (not counted) in the invariants note, with `dedup_hit=16633
+  adopt=1187` proving the dedup half is exercised rather than merely present.
+  **[2]** 31 sequence streams over N∈{1,2,4,8,16}, every one byte-identical
+  to its solo `stoke run` reference. **[3]** prefix dedup fires in real
+  inference: 192 of 287 prompt positions served from cache, prefill 287→95,
+  streams unchanged. **[5]** the N∈{1..16} curve monotone within spread —
+  **and its finding, not its verdict, is why M4.5 exists: batching buys
+  1.116×, because the engine is compute-bound (~64 GFLOP/s flat) and the
+  quant unpack repeats per sequence.**
+  **[4] IS THE ONE THAT NEEDS READING IN FULL.** It passes the bound that
+  gates correctness — **zero BUG-class over the frozen 50-corpus, all 38
+  divergences classified ARITHMETIC-CLASS, and all seven ESCALATEs laddered
+  rather than sampled, with no STEP in ten 36-layer curves** — and misses the
+  class-rate bound at 38/50 and 1.1875 %/token against ≤19/50 and ≤0.5 %/token.
+  τ frozen from 9 agreeing of 15 probes before grading (1.0103 / 1.2617 /
+  0.7259, all three bands drawing real samples). Every ESCALATE turned out to
+  be churn at the `rank5+τ` cut among tokens **both sides rank in their
+  top-5** — none was "a candidate the other implementation never ranked",
+  §6's own BUG language — and the divergent positions' layer curves sit
+  *below the second-lowest control*, i.e. not elevated at all, which runs
+  against the selection confound rather than with it.
+  **§8.1 pre-ruled the disposition and it was followed: a results-vs-physics
+  memo, not a grind-until-green** (`docs/superpowers/memos/2026-08-13-m4-q8kv-
+  results-vs-physics.md`). The bound calibrates "arithmetic-class noise this
+  project already accepts" against the M2 census — a pair differing only in
+  **f32 reduction order, ~1.2×10⁻⁷** — while Q8-KV requantises the KV cache to
+  8 bits, **~2.3×10⁻³ RMS, four orders larger** (measured 0.4836·d, better
+  than its own 0.562·d guarantee). That lands ≈0.04–0.08 in absolute logit
+  terms, the same order as the observed margins 0.013–0.566, so near-ties flip
+  and decided tokens never do — exactly the measured pattern. The metric is
+  near saturation too: one first-divergence per prompt over 3,200 tokens caps
+  it at 1.5625 %/token, so 1.1875 % is 76 % of the largest value it can
+  report. **f32 KV stays the default; M5's design note carries the dtype call**,
+  where the footprint argument is independent — the f32 pool at N=16/ctx2048
+  commits **9.04 GB, measured 2026-08-13** on a 15.63 GB box.
+  Binary `stoke.exe f4f9b667…` archived as `build/stoke-m4-gate-f4f9b667.exe`;
+  it differs from the [2]/[3] archive because item [4] needs `e2a20d9`'s
+  `--kv`. **Two process lessons paid for themselves this milestone:** the G4
+  harness banked nothing until a phase completed and lost 76 minutes when
+  stopped, so it was made resumable *before* re-running (every unit fsync'd,
+  `--resume`, cross-config resume refused) — and the smoke test then caught
+  the fix's own defect, an append fusing onto a truncated tail. And **the
+  E-cores were the measurement noise**: pinning to the P-cores took probe
+  pairs from 95–146 s to a stable 29.4–30.1 s and collapsed a 5.8× run-to-run
+  spread to ±0.5 s.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
