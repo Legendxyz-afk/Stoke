@@ -94,7 +94,15 @@ BUILDDIR := build/$(PLAT)$(SAN_SUFFIX)
 
 TEST_SRC := $(wildcard tests/test_*.c)
 TEST_BIN := $(patsubst tests/%.c,$(BUILDDIR)/%$(EXE),$(TEST_SRC))
-HEADERS  := $(wildcard src/*.h) $(wildcard tests/*.h)
+# src/kernels/*.h WAS MISSING HERE until 2026-08-14, and its absence is the
+# stale-.o hazard this Makefile warns about elsewhere: editing simd.h or
+# kernels.h left every object in place and relinked them unchanged, so `make`
+# reported "up to date" for a tree that had changed. Comment-only edits got
+# away with it; a struct layout, an inline function or a constant such as
+# KERNELS_BATCH_TILE would have linked stale objects against a new header and
+# the failure would have looked like a code bug, not a build one. Caught by
+# noticing that a header edit produced no compilation.
+HEADERS  := $(wildcard src/*.h) $(wildcard src/kernels/*.h) $(wildcard tests/*.h)
 
 # src/main.c holds `stoke`'s own main() -- it must NOT be linked into test
 # binaries (test.h's main() would collide with it), so it's built/linked

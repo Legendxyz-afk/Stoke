@@ -137,16 +137,30 @@ u32 argmax_avx2(const f32* logits, u64 n);
  * twins are load-bearing for it rather than an optimization layered on a
  * working path.
  *
- * BIT-EXACTNESS COMES FROM THE SCALAR'S OWN SHAPE, which is a happier
- * accident than Q8_0's was. The scalar K-quant kernels already keep eight
- * independent accumulators (aux32[0..7] in i32, sums[0..7] in f32) where
- * lane l collects the elements at indices congruent to l mod 8 -- that IS a
- * 256-bit register's lane layout, so the twins inherit the assignment rather
- * than having to reconstruct it. Integer reordering is then free (exact and
- * associative, bounds checked in simd.c), and the f32 side is left strictly
- * alone: multiply and add stay two separate roundings rather than an FMA,
- * and the final horizontal sum runs lane 0..7 in order because that is the
- * scalar's order. */
+ * ▶▶ BIT-EXACTNESS COMES FROM CONTRACT v2 (ruling 2026-08-12 §3), NOT from
+ * the scalar's lane layout. This paragraph described the opposite until
+ * 2026-08-14 and was wrong from `1f78ebe` onward -- recorded because the
+ * distinction is exactly what the maddubs kernel depends on.
+ *
+ * The OLD contract was an accident of transcribing ggml: the scalar kept
+ * eight accumulators where lane l collected elements congruent to l mod 8,
+ * the twins inherited that assignment, and the eight f32 lanes were summed
+ * 0..7 in a pinned order. Inheriting it made the twins exact -- and forbade
+ * every wide-ISA kernel, because a kernel that partitions the elements
+ * differently cannot reproduce a per-lane f32 partition. That is why the
+ * original 8-lane x4 port was cancelled rather than written.
+ *
+ * Under v2 the contract is the super-block's exact INTEGER total S_b, plus
+ * two f32 operations executed verbatim. Any implementation may reach S_b
+ * however it likes -- integer addition is associative, so every partition
+ * gives the same bits -- and only then runs the pinned f32 lines. So
+ * `vec_dot_q4_k_q8_k_avx2`'s `vpmaddubsw` inner loop, which sums ADJACENT
+ * PAIRS and therefore partitions the elements completely differently from
+ * the scalar, is bit-exact by construction. tests/test_simd.c asserts it
+ * against the scalar over 1e4 tensors rather than trusting this note.
+ *
+ * The f32 side is still left strictly alone: multiply and add stay two
+ * separate roundings rather than an FMA. */
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 

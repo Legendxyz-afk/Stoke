@@ -425,7 +425,10 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     const u8* ab = (const u8*)arow;
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
-    const __m256i lownib = _mm256_set1_epi32(0xF);
+    /* BYTE-wise mask, not the epi32 one the widening kernel used: the whole
+     * point below is that nothing is widened to i32 before the multiply. */
+    const __m256i lownib8 = _mm256_set1_epi8(0xF);
+    const __m256i ones16 = _mm256_set1_epi16(1);
     f32 sumf = 0.0f;
 
     for (u64 i = 0; i < nb; ++i) {
@@ -451,23 +454,55 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
         }
 
         __m256i acc = _mm256_setzero_si256();
-        /* Sub-block j takes its 32 quants from q4[(j/2)*32 ...]: the LOW
-         * nibbles when j is even, the HIGH nibbles when j is odd. That is
-         * exactly the order the scalar's aux8 is filled in, so `is` still
-         * runs 0..7 straight down the scale array. */
+        /* ── M4.5 rung C, step 3: the maddubs inner loop. THIS is where C's
+         * throughput lives; the contract re-anchor exists to permit it.
+         *
+         * ONE `vpmaddubsw` retires 32 products. The kernel it replaces widened
+         * every quant to an i32 lane first and got 8 per `vpmulld` -- the 4x
+         * inner-loop deficit the attribution ladder measured against llama.
+         *
+         * ▶▶ WHY THIS IS BIT-EXACT AND WHY IT WAS ILLEGAL BEFORE CONTRACT v2.
+         * maddubs sums ADJACENT PAIRS, so lane l here holds elements
+         * {4l..4l+3} of the sub-block where the widening kernel's lane l held
+         * {l, l+8, l+16, l+24}. Under the OLD contract those eight lanes WERE
+         * the contract -- they fed eight f32 accumulators in a pinned order --
+         * so a kernel that partitioned them differently could not be
+         * bit-exact, and that is precisely why A-as-originally-scoped was
+         * cancelled. Under v2 the contract is the exact integer total S_b, and
+         * integer addition is associative, so ANY partition reaching the same
+         * S_b is exact BY CONSTRUCTION. Same value, fewer instructions.
+         *
+         * Sub-block j takes its 32 quants from q4[(j/2)*32 ...]: the LOW
+         * nibbles when j is even, the HIGH nibbles when j is odd -- exactly
+         * the order the scalar's aux8 is filled in, so scales8 still runs
+         * 0..7 straight down.
+         *
+         * NO SATURATION, computed not assumed: `vpmaddubsw` saturates its i16
+         * result, and the largest pair here is 2 x 15 x 127 = 3,810 against an
+         * i16 ceiling of 32,767. (This is why the same trick needs care for
+         * Q8_0, where a pair reaches 2 x 127 x 127 and does saturate.) The
+         * `vpmaddwd` widening then tops out at 7,620 per i32 lane, and after
+         * the scale (<=63) and eight sub-blocks the lane holds at most
+         * 3,840,480 -- three orders inside i32. */
         for (u32 j = 0; j < 8u; ++j) {
             const u8* qsrc = q4 + (j / 2u) * 32u;
-            int high = (int)(j & 1u);
-            __m256i sub = _mm256_setzero_si256();
-            for (u32 g = 0; g < 4u; ++g) {
-                __m256i wv = kq_load_u8x8_to_i32(qsrc + g * 8u);
-                wv = high ? _mm256_srli_epi32(wv, 4)
-                          : _mm256_and_si256(wv, lownib);
-                __m256i av = kq_load_i8x8_to_i32(q8 + j * 32u + g * 8u);
-                sub = kq_mac8(sub, wv, av);
-            }
-            /* scale*sum == sum of scale*x exactly in integers, so folding
-             * the four groups before scaling matches the scalar's value. */
+            __m256i qb =
+                _mm256_loadu_si256((const __m256i*)(const void*)qsrc);
+            /* No byte-granular shift exists, so shift 16-bit lanes and mask:
+             * for each byte pair the low byte becomes b0>>4 with b1's low
+             * nibble above it, and the mask discards exactly that. */
+            __m256i wv = (j & 1u)
+                             ? _mm256_and_si256(_mm256_srli_epi16(qb, 4),
+                                                lownib8)
+                             : _mm256_and_si256(qb, lownib8);
+            __m256i av = _mm256_loadu_si256(
+                (const __m256i*)(const void*)(q8 + j * 32u));
+            /* Unsigned nibbles x signed quants -- the argument order is load
+             * bearing, maddubs treats its FIRST operand as unsigned. */
+            __m256i sub = _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av),
+                                            ones16);
+            /* scale*sum == sum of scale*x exactly in integers, so scaling the
+             * folded sub-block matches the scalar's value. */
             acc = _mm256_add_epi32(
                 acc, _mm256_mullo_epi32(sub,
                                         _mm256_set1_epi32((int)scales8[j])));
