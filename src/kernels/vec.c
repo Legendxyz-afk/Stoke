@@ -183,9 +183,24 @@ static void rows_q4_k_scalar(void* vctx, u64 begin, u64 end) {
     }
 }
 
+/* ▶ M4.5 RUNG A' (ruling §7.3): four rows per pass, the same shape
+ * rows_q8_0_avx2 has used since K3. The tail is handled here rather than left
+ * to another chunk, since chunk bounds are row bounds.
+ *
+ * Exact per row by construction -- see the note on vec_dot_q4_k_q8_k_x4_avx2.
+ * If the measurement says under 5%, revert this function to the solo loop and
+ * record it; §7.3 explicitly permits keeping neither variant. */
 static void rows_q4_k_avx2(void* vctx, u64 begin, u64 end) {
     const RowJob* j = (const RowJob*)vctx;
-    for (u64 r = begin; r < end; r++) {
+    u64 r = begin;
+    for (; r + 4u <= end; r += 4u) {
+        const void* rows[4] = {j->base + (r + 0u) * j->row_bytes,
+                               j->base + (r + 1u) * j->row_bytes,
+                               j->base + (r + 2u) * j->row_bytes,
+                               j->base + (r + 3u) * j->row_bytes};
+        vec_dot_q4_k_q8_k_x4_avx2(rows, j->aq, j->n_in, &j->y[r]);
+    }
+    for (; r < end; r++) {
         j->y[r] = vec_dot_q4_k_q8_k_avx2(j->base + r * j->row_bytes, j->aq,
                                          j->n_in);
     }
