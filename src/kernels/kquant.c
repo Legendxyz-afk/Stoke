@@ -417,8 +417,9 @@ f32 vec_dot_q6_k_q8_k(const void* wrow, const void* arow, u64 n) {
     i8 aux8[KERNELS_Q6_K_BLOCK_ELEMS];
     i16 aux16[8];
     i32 aux32[8];
-    f32 sums[8];
-    memset(sums, 0, sizeof(sums));
+    /* The old fold's `f32 sums[8]` lived here. CONTRACT v2 stopped reading it
+     * in bf13034 but left the declaration and its memset behind, and the
+     * memset is exactly why -Wunused-variable never fired. Removed. */
 
     f32 sumf = 0.0f;
     for (u64 i = 0; i < nb; ++i) {

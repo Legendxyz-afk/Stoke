@@ -383,19 +383,17 @@ static inline __m256i kq_load_i8x8_to_i32(const i8* p) {
         _mm_loadl_epi64((const __m128i*)(const void*)p));
 }
 
-static inline __m256i kq_load_u8x8_to_i32(const u8* p) {
-    return _mm256_cvtepu8_epi32(
-        _mm_loadl_epi64((const __m128i*)(const void*)p));
-}
+/* ▶ THREE HELPERS WERE DELETED HERE, and what they were is the point.
+ * `kq_accum_sums` and `kq_finish` implemented the OLD contract's f32 fold --
+ * eight lanes multiplied and summed 0..7 in a pinned order -- and lost their
+ * last call site when CONTRACT v2 landed in 1f78ebe. `kq_load_u8x8_to_i32`
+ * widened Q4_K's nibbles to i32 lanes and lost its last call site when the
+ * maddubs kernels started consuming them as bytes. They survived -Werror only
+ * because `static inline` is exempt from -Wunused-function, so nothing
+ * complained; they were removed rather than left because code describing an
+ * abandoned contract is worse than no code -- simd.h's note describing that
+ * same contract had already misled for three days. */
 
-/* sums += d * (f32)acc, lane-wise, two roundings -- see the header note. */
-static inline __m256 kq_accum_sums(__m256 sums, __m256i acc, f32 d) {
-    return _mm256_add_ps(sums,
-                         _mm256_mul_ps(_mm256_set1_ps(d),
-                                       _mm256_cvtepi32_ps(acc)));
-}
-
-/* sumf += sums[0] + sums[1] + ... + sums[7], IN THAT ORDER. */
 /* CONTRACT v2: reduce the eight i32 lanes to the super-block's single exact
  * total. Integer adds are associative, so ANY order gives the same bits --
  * that associativity is precisely what lets a twin of any width meet the
@@ -406,13 +404,6 @@ static inline i32 kq_hsum_i32(__m256i v) {
     s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(1, 0, 3, 2)));
     s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(2, 3, 0, 1)));
     return _mm_cvtsi128_si32(s);
-}
-
-static inline f32 kq_finish(f32 sumf, __m256 sums) {
-    f32 tmp[8];
-    _mm256_storeu_ps(tmp, sums);
-    for (int l = 0; l < 8; ++l) sumf += tmp[l];
-    return sumf;
 }
 
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
@@ -633,32 +624,36 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     const u8* wb = (const u8*)wrow;
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
-    const __m256i lownib = _mm256_set1_epi32(0xF);
+    const __m256i lownib8 = _mm256_set1_epi8(0xF);
+    const __m256i ones16 = _mm256_set1_epi16(1);
     f32 sumf[KERNELS_BATCH_TILE];
     for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
 
-    /* The widened nibbles for one super-block: 8 sub-blocks x 4 groups of 8
-     * elements. 1 KiB, so it lives in L1 for the whole sequence loop -- the
-     * register-resident ideal is not reachable for 256 elements, and L1 is
-     * what the hoist actually buys. */
-    __m256i wv[32];
+    /* ▶ THE HOIST GOT FOUR TIMES SMALLER WHEN THE INNER LOOP BECAME MADDUBS.
+     * Rung B hoisted the nibbles WIDENED to i32 -- 8 sub-blocks x 4 groups x
+     * 32 B = 1 KiB. maddubs consumes the nibbles as BYTES, so the same hoist
+     * is now 8 x 32 B = 256 B. That direction matters: rung B measured that
+     * over-hoisting Q6_K (materialising a 1 KiB __m256i wv[32] whose values
+     * were already ready) made N=16 SLOWER, 13.565 -> 11.207, because it
+     * quadrupled the bytes re-read per sequence. Here the bytes re-read per
+     * sequence drop by the same factor. */
+    __m256i wnib[8];
 
     for (u64 i = 0; i < nb; ++i) {
         const u8* blk = wb + i * KERNELS_Q4_K_BLOCK_BYTES;
         const u8* q4 = blk + 16;
 
         /* ── WEIGHT-ONLY WORK, ONCE PER ROW instead of once per sequence.
-         * This is the whole of rung B. */
+         * This is the whole of rung B, now carrying rung C's byte layout. */
         u8 scales8[8], mins8[8];
         kernels_q4_k_unpack_scales(blk + 4, scales8, mins8);
         for (u32 j = 0; j < 8u; ++j) {
             const u8* qsrc = q4 + (j / 2u) * 32u;
-            int high = (int)(j & 1u);
-            for (u32 g = 0; g < 4u; ++g) {
-                __m256i v = kq_load_u8x8_to_i32(qsrc + g * 8u);
-                wv[j * 4u + g] = high ? _mm256_srli_epi32(v, 4)
-                                      : _mm256_and_si256(v, lownib);
-            }
+            __m256i qb =
+                _mm256_loadu_si256((const __m256i*)(const void*)qsrc);
+            wnib[j] = (j & 1u)
+                          ? _mm256_and_si256(_mm256_srli_epi16(qb, 4), lownib8)
+                          : _mm256_and_si256(qb, lownib8);
         }
         u16 draw, dmraw;
         memcpy(&draw, blk, sizeof draw);
@@ -684,11 +679,10 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
 
             __m256i acc = _mm256_setzero_si256();
             for (u32 j = 0; j < 8u; ++j) {
-                __m256i sub = _mm256_setzero_si256();
-                for (u32 g = 0; g < 4u; ++g) {
-                    __m256i av = kq_load_i8x8_to_i32(q8 + j * 32u + g * 8u);
-                    sub = kq_mac8(sub, wv[j * 4u + g], av);
-                }
+                __m256i av = _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(q8 + j * 32u));
+                __m256i sub = _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(wnib[j], av), ones16);
                 acc = _mm256_add_epi32(
                     acc, _mm256_mullo_epi32(
                              sub, _mm256_set1_epi32((int)scales8[j])));
