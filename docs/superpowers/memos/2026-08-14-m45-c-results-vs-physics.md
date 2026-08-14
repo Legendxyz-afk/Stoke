@@ -140,11 +140,48 @@ and a threshold imported from a file where it sat at 19 is not a discriminator
 here. (It also caps at 50/3200 = 1.5625 %/token, so C-FAIL-RATE's flip trigger
 was unreachable by construction — analysis memo §A2, already recorded.)
 
+**⚠⚠ AND THE INSTRUMENT RESPONDS TO THE PROMPT, NOT TO THE PERTURBATION.** The
+count was suggestive; the *shape* is decisive. Both runs used the same 50
+prompts, the same `-n 64`, the same model, and differ only in what was
+perturbed. Recomputed from the two banked sweeps:
+
+| | rung C (~1e-7) | item [4] Q8-KV (2.3e-3) |
+|---|---|---|
+| diverging prompts | 34/50 | 38/50 |
+| first-divergence position — mean | **18.4** | **19.0** |
+| — median | 12 | 17 |
+| — range | 1 – 58 | 0 – 60 |
+| — buckets [0,8)/[8,16)/[16,32)/[32,64) | 10/9/7/8 | 13/6/10/9 |
+
+A **3% difference in mean first-divergence position** across four orders of
+perturbation, with near-identical bucket shapes. And the prompts themselves
+coincide:
+
+| | prompts |
+|---|---|
+| diverge under **both** | **31** |
+| expected if independent | 25.8 (σ = 1.42, hypergeometric) |
+| C only | 3 — p06, p41, p43 |
+| item [4] only | 7 |
+| diverge under **neither** | 9 |
+
+**Observed overlap is 3.6σ above chance.** Nine prompts resist both a 2.3e-3
+KV requantisation and a 1e-7 fold reordering; thirty-one succumb to both.
+
+⇒ **What this instrument measures is the corpus's near-tie density, not the
+size of the perturbation.** Once a perturbation exceeds the near-tie margin
+scale — which 1e-7 does after 36 layers of compounding — *which* prompt flips
+first is decided by the model's own near-tie statistics, i.e. by the prompt.
+That is exactly why a bound calibrated on one file cannot transfer to another:
+M3 measured the per-position divergence rate at 3.10% on Q4_K_M against 0.74%
+on Q8_0, so the near-tie density differs between the very files the bound is
+being carried between.
+
 **No Q4_K_M base rate for this instrument exists.** M3's Q4_K_M work was a
 *probe grid* (per-position), not a 50-prompt sweep, and the only Q4_K_M number
 from this instrument is item [4]'s, at a perturbation four orders too large.
 Establishing one needs a deliberately-constructed f32-reordering pair on
-Q4_K_M — a real experiment, named here, not run.
+Q4_K_M — which is the NULL-1 run, pre-registered and executed 2026-08-14.
 
 ## 5. Corrections to recorded constants, computed not asserted
 
