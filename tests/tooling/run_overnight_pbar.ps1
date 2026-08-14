@@ -63,6 +63,7 @@ $bank  = "$gr\$stamp-bank.jsonl"
 $log   = "$gr\$stamp-raw.txt"
 $rep   = "$gr\$stamp-report.md"
 $tmp   = "$env:TEMP\stoke-overnight-err.txt"
+$tmpOut = "$env:TEMP\stoke-overnight-out.txt"
 
 $Q4    = "$root\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 $Q8    = "$root\models\Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf"
@@ -100,28 +101,63 @@ function Banked() {
     return $out
 }
 
+# A rate unit that failed to PARSE is not done -- it must re-run, or a
+# transient capture bug becomes a permanent hole in the night's data.
 function HasUnit($id) {
-    foreach ($b in (Banked)) { if ($b.id -eq $id) { return $true } }
+    foreach ($b in (Banked)) {
+        if ($b.id -eq $id) {
+            if ($b.kind -eq "rate") {
+                if ($null -ne $b.tok_s) { return $true }
+            } else {
+                return $true
+            }
+        }
+    }
     return $false
+}
+
+# ▶▶ WHY Start-Process AND NOT `& $exe ... 2> $tmp`, learned the hard way at
+# 23:26 on 2026-08-14. PowerShell renders a native command's stderr as a
+# NativeCommandError record and WRAPS IT AT CONSOLE WIDTH when it lands in a
+# file. Arm A's binary name is 29 characters against arm B's 9, so the
+# "<name> : " prefix shifted the text and the wrap fell INSIDE
+# "(5.238 tok/s aggregate)" -- the regex missed, arm A logged PARSE-FAIL, and
+# arm B on the identical code path parsed fine. Every arm-A measurement for
+# the whole night would have been lost to a cosmetic difference in a file name.
+#
+# Start-Process writes the child's raw stderr bytes with no PowerShell
+# decoration and no wrapping, so the capture no longer depends on how wide a
+# console someone imagined.
+function RunCapture($exe, $argList, $errPath, $outPath) {
+    Start-Process -FilePath $exe -ArgumentList $argList `
+                  -RedirectStandardError $errPath `
+                  -RedirectStandardOutput $outPath `
+                  -NoNewWindow -Wait
 }
 
 # tok/s from `stoke batch --timing`; the format is
 #   "decode 128 tok in 11637.2 ms (11.000 tok/s aggregate)"
 function StokeRate($exe, $model, $prompt, $kv) {
-    $a = @("batch", $model, "--raw", "-n", "$N_GEN", "-f", $prompt,
-           "--seqs", "1", "--threads", "6", "--timing")
+    $a = @("batch", ('"' + $model + '"'), "--raw", "-n", "$N_GEN",
+           "-f", ('"' + $prompt + '"'), "--seqs", "1", "--threads", "6",
+           "--timing")
     if ($kv) { $a += @("--kv", $kv) }
-    & $exe @a 2> $tmp 1> $null
+    RunCapture $exe $a $tmp $tmpOut
     $t = (Get-Content $tmp -Raw)
-    $m = [regex]::Match($t, '\(([\d.]+) tok/s aggregate\)')
+    if (-not $t) { return $null }
+    $m = [regex]::Match($t, '\(([\d.]+)\s+tok/s\s+aggregate\)')
     if ($m.Success) { return [double]$m.Groups[1].Value }
     return $null
 }
 
 # t/s from llama-bench's markdown row: "| ... | tg128 | 18.05 ± 0.10 |"
+# (llama-bench puts the table on STDOUT, so that is the file we parse.)
 function LlamaRate($model) {
-    & $LB -m $model -p 0 -n $N_GEN -r 3 -t 6 > $tmp 2>&1
-    $t = (Get-Content $tmp -Raw)
+    $a = @("-m", ('"' + $model + '"'), "-p", "0", "-n", "$N_GEN",
+           "-r", "3", "-t", "6")
+    RunCapture $LB $a $tmp $tmpOut
+    $t = (Get-Content $tmpOut -Raw)
+    if (-not $t) { return $null }
     $m = [regex]::Match($t, 'tg\d+\s*\|\s*([\d.]+)')
     if ($m.Success) { return [double]$m.Groups[1].Value }
     return $null
@@ -180,11 +216,27 @@ try {
     $null = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32"   # warm
     Say ("  standby cache {0} GB (model 2.33 GB)" -f (StandbyGB))
 
+    # ▶ THREE CONSECUTIVE SAMPLES, not one. The single-sample version passed at
+    # 23:25:56 on an 11% reading and block 1 started seconds later at 22% --
+    # a bouncing signal (16-33%, Windows' own idle-triggered maintenance) dips
+    # under any threshold eventually if you keep asking. A gate on a noisy
+    # signal has to see the quiet persist.
     $tries = 0
+    $consec = 0
     while ($tries -lt $QUIET_TRIES) {
         $busy = CpuBusy
-        if ($busy -le $QUIET_CPU) { Say "  box quiet at $busy% after $tries min"; break }
-        Say "  waiting: cpu $busy% > $QUIET_CPU%"
+        if ($busy -le $QUIET_CPU) {
+            $consec++
+            if ($consec -ge 3) {
+                Say "  box quiet at $busy% ($consec consecutive) after $tries min"
+                break
+            }
+            Say "  quiet sample $consec/3 at $busy%"
+        } else {
+            if ($consec -gt 0) { Say "  quiet streak broken at $busy%" }
+            $consec = 0
+            Say "  waiting: cpu $busy% > $QUIET_CPU%"
+        }
         Start-Sleep -Seconds 60
         $tries++
     }
