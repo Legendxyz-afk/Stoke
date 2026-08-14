@@ -81,6 +81,27 @@ condemns it. The oracle already settled the integer core; this settles what the
 *bound* means. Adoption remains Kabir's park-vs-revert call (memo §6a), and a
 re-derived bound would be a criterion change requiring its own record.
 
+## ⚠ The comparison is τ-free — recorded before the number, not after
+
+An obvious later objection: *each run freezes its own τ from its own agreeing
+positions, so comparing null-1's N against C's 34 and item [4]'s 38 compares
+runs with different thresholds.* It does not, and this is checkable in the
+harness rather than argued:
+
+`m4_q8kv_gate.py:423` computes `n_div` in **phase 2**, by comparing the two
+generated id streams (`first_divergence`), and phase 2 never reads τ. τ is
+frozen in phase 1 and consulted only in **phase 3**, where it decides
+BUG / ARITHMETIC-CLASS / ESCALATE for divergences already counted.
+
+So **N is a stream-divergence count, independent of τ**, and the three runs are
+directly comparable on it. What τ's size *does* affect is the classification
+mix — and null-1's τ should come out **smaller** than C's, since a smaller
+perturbation produces smaller logit deltas among agreeing positions, and τ is
+`max(0.10, 2 × band p95)` of exactly those deltas. A smaller τ makes
+ARITHMETIC-CLASS harder and ESCALATE likelier for whatever divergences occur.
+**That is expected and does not touch the pre-registered reading**, which is
+stated entirely in terms of N.
+
 ## Cost and disposition
 
 One graded run, ~2.5–3 h of banked box time (the C run's shape), fully
