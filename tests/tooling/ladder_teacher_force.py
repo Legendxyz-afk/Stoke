@@ -14,21 +14,38 @@ on first use: the captured continuation carried the print's trailing newline
 (id 198), so every prompt was one token long and would have dumped the
 position AFTER the one under adjudication.
 
-⚠ PATHS AND THE SWEEP FILENAME ARE PINNED to the M4 item-[4] gate on this box.
-M3's p41 resolution predicted M7 would need ladders again on Llama-3.2; when
-that happens these become parameters, not constants.
+⚠ THE PINS BECAME PARAMETERS ON 2026-08-14, exactly as this note predicted --
+M4.5 rung C needed ladders on a second pair, sooner than M7's Llama-3.2. The
+OLD DEFAULTS ARE PRESERVED so item [4]'s invocation
+(`ladder_teacher_force.py OUT p12 p03`) still resolves to the same binary,
+sweep file and KV mode it did then; the record stays reproducible. Anything
+else is passed with --stoke / --sweep / --kv.
 """
+import argparse
 import json
 import pathlib
 import re
 import subprocess
 import sys
 
-STOKE = r"M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe"
 MODEL = r"M:\New Drive\Desktop\Programming\stoke\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 PDIR = pathlib.Path(r"M:\New Drive\Desktop\Programming\stoke\tests\data\parity")
 GR = pathlib.Path(r"M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports")
-OUT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
+
+DEFAULT_STOKE = r"M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe"
+DEFAULT_SWEEP = "2026-08-12-m4-g4-sweep.jsonl"
+
+_ap = argparse.ArgumentParser()
+_ap.add_argument("out", nargs="?", default=".")
+_ap.add_argument("targets", nargs="*", default=None)
+_ap.add_argument("--stoke", default=DEFAULT_STOKE)
+_ap.add_argument("--sweep", default=DEFAULT_SWEEP)
+_ap.add_argument("--kv", default="f32")
+_ap.add_argument("--threads", default="6")
+ARGS = _ap.parse_args()
+
+STOKE = ARGS.stoke
+OUT = pathlib.Path(ARGS.out)
 
 
 def sh(cmd):
@@ -47,8 +64,8 @@ def tokenize(path):
 
 def main():
     rows = {json.loads(l)["prompt"]: json.loads(l)
-            for l in (GR / "2026-08-12-m4-g4-sweep.jsonl").open(encoding="utf-8")}
-    targets = sys.argv[2:] or ["p12", "p03"]
+            for l in (GR / ARGS.sweep).open(encoding="utf-8")}
+    targets = ARGS.targets or ["p12", "p03"]
     for name in targets:
         row = rows[name]
         gp = row["first_divergence"]
@@ -58,7 +75,7 @@ def main():
 
         # stoke prints ids, then "---", then the detokenised continuation
         so, rc = sh([STOKE, "run", MODEL, "--raw", "-n", str(gp), "-f", str(src),
-                     "--kv", "f32", "--threads", "6"])
+                     "--kv", ARGS.kv, "--threads", ARGS.threads])
         if rc != 0 or "---" not in so:
             raise SystemExit(f"{name}: could not read a continuation")
         cont = so.split("---", 1)[1]

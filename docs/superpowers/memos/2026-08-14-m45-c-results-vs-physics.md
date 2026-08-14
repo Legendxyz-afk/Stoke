@@ -199,10 +199,17 @@ mis-calibrated bound mean the ladder pauses until a Q4_K_M base rate exists?*
 - **(b)** Why Q6_K does not cross over at 38 super-blocks while Q4_K does is
   unexplained; the mins-term hypothesis is untested. §2.
 - **(c)** The 10 ESCALATEs from the C grading are **still owed their ladders**
-  and are not resolved by this memo. They include genuine [τ, 2τ) margin
-  breaches (worst 0.6621 vs τ 0.5389 = 123%), unlike item [4]'s, which were
-  top-5-set churn. If C is reverted they become moot; if C is parked pending a
-  later decision they remain owed.
+  and are not resolved by this memo.
+
+  ⚠ **Correction to the 08-13 end-state note, which said these "include genuine
+  [τ, 2τ) margin breaches, not the top-5-set churn that dismissed all seven of
+  item [4]'s".** Recomputed from the banked verdict against §6's actual rule
+  (`ESCALATE ⟺ max(g_X,g_Y) ≥ τ OR the discarded top-5 sets differ`): **exactly
+  one of the ten is a margin breach** — p40 gp=22, max(g)=0.6621 against
+  τ=0.5389, 123% of threshold and 61% of the way to the 2τ BUG line. **The
+  other nine all have max(g) < τ** (largest 0.5301 against τ=0.7939, 67%) and
+  escalated on the *set* clause alone — which is exactly item [4]'s churn
+  class. The plural overstated it.
 - **(d)** `stoke-m45-c-grade` is still registered as a scheduled task, kept
   only because deleting it discards the resume state while C is unresolved.
   Seventh recording of "spent helper outliving its job".
