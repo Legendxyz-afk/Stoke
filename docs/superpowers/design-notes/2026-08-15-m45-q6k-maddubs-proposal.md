@@ -70,11 +70,48 @@ verbatim.
 - Q6_K's existing reachable worst case for `S_b` is **133,169,152** (measured
   by `test_c_oracle`), unchanged by this rewrite since the value is identical.
 
+## How big, from exact figures
+
+The share is no longer a recollection. Read from **GGUF metadata only** (no
+tensor data touched, so this costs nothing and cannot be wrong about the file):
+
+| type | bytes | share | tensors |
+|---|---|---|---|
+| Q4_K | 1.644 GiB | 70.85% | 216 |
+| Q6_K | **0.676 GiB** | **29.12%** | 37 |
+| F32 | 0.001 GiB | 0.03% | 145 |
+
+But **bytes are the wrong unit** — the inner loop costs per *element*, and the
+two formats pack differently (144 B per 256 elements against 210 B). Converted:
+
+    Q4_K  3.138e9 elements  78.0%
+    Q6_K  0.885e9 elements  22.0%
+
+So Q6_K is 22% of the work by element count, and it runs the slow path. What
+that costs depends on the throughput ratio between the two inner loops, which
+is **assumed, not measured** — so here is the sensitivity rather than a single
+number:
+
+| Q4_K inner loop faster by | Q6_K's share of inner-loop time | gain from porting it |
+|---|---|---|
+| 4× (32 vs 8 products/uop) | 53% | **1.66×** |
+| 3× | 46% | **1.44×** |
+| 2× | 36% | **1.22×** |
+
+**P-BAR needs 1.23×.** Even the pessimistic end of that range lands on it, and
+the middle clears it comfortably. That is why this outranks A′ as the next
+lever: A′ reorganises how rows are fed, while this fixes a quarter of the work
+still running at a quarter of the speed.
+
+⚠ The ratio is the load-bearing assumption and it is an *upper* bound —
+products-per-instruction only translates to time if the loop is compute-bound,
+and this box's Q4_K_M matvec tops out at 44.8 GB/s, so bandwidth may bind
+first. That is exactly what the sizing run below settles.
+
 ## Size it BEFORE writing it
 
-The Amdahl case is suggestive but **not measured**: if Q6_K is ~25% of weight
-bytes running a ~4× slower inner loop, it plausibly dominates what remains —
-but "plausibly" is exactly the reasoning this project keeps having to retract.
+The Amdahl case above is arithmetic on top of one assumed ratio, and
+"plausibly" is exactly the reasoning this project keeps having to retract.
 
 The instrument already exists and the ruling already points at it: §7.2's
 C-SLOW branch prescribes *"one `bench --ops` comparison of per-matvec cost"* to
