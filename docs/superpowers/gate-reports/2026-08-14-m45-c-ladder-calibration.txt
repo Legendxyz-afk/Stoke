@@ -1,0 +1,211 @@
+﻿M4.5 rung C ladder -- CALIBRATION OF THE STEP LEG, run 2026-08-14 before the
+full ladder, on the two archived binaries (m4 f4f9b667 vs graded HEAD bc9dd3d6,
+both --kv f32).
+
+WHY: l2_diff.py flags a STEP when a layer exceeds JUMP_FACTOR (10x) the running
+trend. At L01 that trend is ONE sample -- L00 -- and for a pair differing only
+by an f32 fold, L00 sits on the rounding floor. So the first compounding layer
+clears 10x it by construction.
+
+THE TEST: run the same ladder on a CONTROL, a prompt where the two binaries
+produced BYTE-IDENTICAL token streams. If the flag fires there too, it carries
+no information about disagreement.
+
+RESULT: it fires there too.
+  p23 (divergent) L00 4.768e-07 -> L01 6.103e-03  STEP    L35 max 6.332e+00 mean 2.398e-01
+  p15 (CONTROL)   L00 2.384e-07 -> L01 7.665e-04  STEP    L35 max 9.454e+00 mean 1.161e+00
+Both then compound smoothly to L35 with no further jump. Note the CONTROL is
+LARGER than the divergent position on both L35 statistics -- the same direction
+item [4] found, and it runs against the selection confound rather than with it.
+
+=> The verdict leg is read as a STEP at L02 OR LATER, present in divergent
+curves and absent from controls. l2_diff.py is NOT changed -- it is the
+instrument behind closed gate items; c_ladder_run.py carries the calibration.
+This is the SECOND l2_diff constant to need per-pair restatement, after the
+1e-3 threshold that M3 predicted and item [4] hit.
+===== p23-1 (divergent) =====
+layer   max_abs_diff  mean_abs_diff
+
+L00        4.768e-07      2.486e-08
+
+L01        6.103e-03      7.043e-04  <-- STEP
+
+L02        7.057e-03      1.427e-03
+
+L03        1.386e-02      2.241e-03
+
+L04        5.771e-02      4.271e-03
+
+L05        5.725e-02      6.368e-03
+
+L06        5.908e-02      8.707e-03
+
+L07        6.963e-02      1.109e-02
+
+L08        6.602e-02      1.249e-02
+
+L09        7.743e-02      1.357e-02
+
+L10        8.799e-02      1.295e-02
+
+L11        7.690e-02      1.353e-02
+
+L12        8.755e-02      1.562e-02
+
+L13        9.428e-02      1.673e-02
+
+L14        9.016e-02      1.753e-02
+
+L15        9.345e-02      1.831e-02
+
+L16        9.389e-02      1.871e-02
+
+L17        1.580e-01      2.087e-02
+
+L18        1.083e-01      2.196e-02
+
+L19        2.226e-01      2.457e-02
+
+L20        2.152e-01      2.736e-02
+
+L21        1.626e-01      2.971e-02
+
+L22        1.902e-01      3.207e-02
+
+L23        2.107e-01      4.113e-02
+
+L24        3.662e-01      4.775e-02
+
+L25        4.106e-01      5.269e-02
+
+L26        4.321e-01      5.777e-02
+
+L27        4.805e-01      6.934e-02
+
+L28        5.086e-01      8.247e-02
+
+L29        4.987e-01      9.300e-02
+
+L30        5.699e-01      1.121e-01
+
+L31        7.183e-01      1.289e-01
+
+L32        6.276e-01      1.417e-01
+
+L33        7.398e-01      1.607e-01
+
+L34        2.532e+00      2.013e-01
+
+L35        6.332e+00      2.398e-01
+
+
+
+layers compared : 36 x 2560 values
+
+worst layer     : L35 at 6.332e+00
+
+threshold       : 0.001
+
+OVER THRESHOLD  : 35 layer(s) -- L01=6.103e-03, L02=7.057e-03, L03=1.386e-02, L04=5.771e-02, L05=5.725e-02, L06=5.908e-02
+
+STEP DETECTED   : 1 layer(s) jumped >10x the running trend -- L01 (6.103e-03 vs 4.768e-07)
+
+                  A step is the signature of a STRUCTURAL bug in one op, not float32 drift. Bisect that layer before reading anything else.
+
+
+
+L2: FAIL
+
+===== p15-ctl (control) =====
+layer   max_abs_diff  mean_abs_diff
+
+L00        2.384e-07      2.013e-08
+
+L01        7.665e-04      8.452e-05  <-- STEP
+
+L02        5.124e-03      1.033e-03
+
+L03        1.137e-02      1.971e-03
+
+L04        1.725e-02      3.129e-03
+
+L05        2.457e-02      4.633e-03
+
+L06        3.885e-02      8.097e-03
+
+L07        5.523e-02      1.029e-02
+
+L08        6.596e-02      1.228e-02
+
+L09        6.251e-02      1.344e-02
+
+L10        7.066e-02      1.357e-02
+
+L11        7.654e-02      1.495e-02
+
+L12        9.316e-02      1.679e-02
+
+L13        1.095e-01      2.002e-02
+
+L14        1.355e-01      2.632e-02
+
+L15        2.212e-01      3.189e-02
+
+L16        2.323e-01      3.901e-02
+
+L17        2.082e-01      4.278e-02
+
+L18        2.670e-01      4.921e-02
+
+L19        3.369e-01      5.382e-02
+
+L20        3.937e-01      5.938e-02
+
+L21        5.530e-01      6.693e-02
+
+L22        5.764e-01      8.204e-02
+
+L23        7.804e-01      1.150e-01
+
+L24        1.202e+00      1.753e-01
+
+L25        1.426e+00      2.392e-01
+
+L26        2.513e+00      3.316e-01
+
+L27        3.328e+00      4.168e-01
+
+L28        5.814e+00      4.908e-01
+
+L29        7.385e+00      5.495e-01
+
+L30        9.717e+00      6.345e-01
+
+L31        9.601e+00      7.429e-01
+
+L32        9.039e+00      8.569e-01
+
+L33        1.615e+01      9.830e-01
+
+L34        1.593e+01      1.073e+00
+
+L35        9.454e+00      1.161e+00
+
+
+
+layers compared : 36 x 2560 values
+
+worst layer     : L33 at 1.615e+01
+
+threshold       : 0.001
+
+OVER THRESHOLD  : 34 layer(s) -- L02=5.124e-03, L03=1.137e-02, L04=1.725e-02, L05=2.457e-02, L06=3.885e-02, L07=5.523e-02
+
+STEP DETECTED   : 1 layer(s) jumped >10x the running trend -- L01 (7.665e-04 vs 2.384e-07)
+
+                  A step is the signature of a STRUCTURAL bug in one op, not float32 drift. Bisect that layer before reading anything else.
+
+
+
+L2: FAIL
+

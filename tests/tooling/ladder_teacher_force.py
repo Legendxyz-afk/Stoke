@@ -46,6 +46,10 @@ ARGS = _ap.parse_args()
 
 STOKE = ARGS.stoke
 OUT = pathlib.Path(ARGS.out)
+# Item [4] happened to run into a directory that already existed; a fresh
+# workdir made this fail at the FIRST write with a bare FileNotFoundError,
+# after the engine work for that position had already been spent.
+OUT.mkdir(parents=True, exist_ok=True)
 
 
 def sh(cmd):

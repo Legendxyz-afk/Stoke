@@ -35,6 +35,27 @@ MODEL = ROOT / "models" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 PDIR = ROOT / "tests" / "data" / "parity"
 L2 = ROOT / "tests" / "tooling" / "l2_diff.py"
 L35_RE = re.compile(r"^L35\s+([\d.e+-]+)\s+([\d.e+-]+)", re.M)
+ROW_RE = re.compile(r"^L(\d\d)\s+([\d.e+-]+)\s+([\d.e+-]+)(\s+<-- STEP)?", re.M)
+
+# ▶ CALIBRATED BEFORE THE RUN, 2026-08-14 — AN L01 STEP IS AN ARTIFACT HERE.
+#
+# l2_diff.py flags a STEP when a layer's diff exceeds JUMP_FACTOR x the running
+# trend, and at L01 that "trend" is exactly one sample: L00. For a pair that
+# differs only by an f32 fold, L00 sits on the rounding FLOOR (measured:
+# 2.4e-07 to 4.8e-07), so the first layer that compounds anything at all clears
+# 10x it by construction. The smaller the perturbation, the more certain the
+# false STEP -- which is why item [4]'s pair (2.3e-3, KV requantised to 8 bits)
+# never tripped it and this one always does.
+#
+# MEASURED, NOT ARGUED: p15 -- a CONTROL, where both binaries produced
+# byte-identical token streams -- STEPs at L01 exactly like the divergent p23
+# does (7.665e-04 vs a 2.384e-07 floor). A flag that fires where the engines
+# fully agree carries no information about where they disagree.
+#
+# So the verdict leg is read as: a STEP at L02 OR LATER, present in divergent
+# curves and absent from controls. l2_diff.py is left alone -- it is the
+# instrument behind closed gate items -- and the calibration lives here.
+STEP_ARTIFACT_LAYER = 1
 
 
 def run(cmd):
@@ -96,23 +117,42 @@ def main():
         step = "STEP DETECTED" in so
         m = L35_RE.search(so)
         l35 = (float(m.group(1)), float(m.group(2))) if m else (None, None)
+        curve = [{"layer": int(g[0]), "max": float(g[1]), "mean": float(g[2]),
+                  "step": bool(g[3])} for g in ROW_RE.findall(so)]
+        if len(curve) != 36:
+            raise SystemExit(f"{tag}: parsed {len(curve)} layer rows, expected 36")
+        step_layers = [c["layer"] for c in curve if c["step"]]
+        real = [l for l in step_layers if l > STEP_ARTIFACT_LAYER]
         rows.append({"prompt": name, "gp": gp, "kind": kind,
                      "L35_max_abs_diff": l35[0], "L35_mean_abs_diff": l35[1],
-                     "step": step, "l2_exit": rc})
+                     "step_any": step, "step_layers": step_layers,
+                     "step_beyond_artifact": real, "curve": curve,
+                     "l2_exit": rc})
+        if real:
+            verdict = f"STEP@L{real[0]:02d}"
+        elif step_layers:
+            verdict = "L01 only (artifact)"
+        else:
+            verdict = "none"
         print(f"{tag:14s} {kind:9s} L35 max={l35[0]:.3e} mean={l35[1]:.3e}  "
-              f"STEP={'YES' if step else 'none'}")
+              f"STEP={verdict}")
         lines.append(f"===== {tag} ({kind}) =====\n{so}")
 
     pathlib.Path(args.out).write_text("\n".join(lines), encoding="utf-8")
     pathlib.Path(args.out).with_suffix(".json").write_text(
         json.dumps(rows, indent=1), encoding="utf-8")
 
-    steps = [r for r in rows if r["step"]]
+    real = [r for r in rows if r["step_beyond_artifact"]]
+    art = [r for r in rows if r["step_layers"] and not r["step_beyond_artifact"]]
     div = [r for r in rows if r["kind"] == "divergent"]
     ctl = [r for r in rows if r["kind"] == "control"]
     print(f"\n{len(rows)} curves: {len(div)} divergent, {len(ctl)} control")
-    print(f"STEP detected in {len(steps)} -- "
-          f"{', '.join(r['prompt'] for r in steps) if steps else 'NONE'}")
+    print(f"L01-only STEPs (artifact, expected on both kinds): {len(art)}")
+    print(f"STEP AT L02+ : {len(real)} -- "
+          f"{', '.join(r['prompt'] for r in real) if real else 'NONE'}")
+    if real:
+        print("  ^ this is the leg that carries the verdict. A STEP here in a "
+              "divergent curve that controls do NOT show is a defect signal.")
     if ctl:
         cm = [r["L35_mean_abs_diff"] for r in ctl]
         dm = [r["L35_mean_abs_diff"] for r in div]
