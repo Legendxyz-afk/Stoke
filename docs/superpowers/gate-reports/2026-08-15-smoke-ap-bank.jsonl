@@ -1,0 +1,5 @@
+﻿{"id":"quiesce","standby_gb":7.55,"utc":"2026-08-15T01:17:30","waited_min":0,"kind":"quiesce","cpu_busy":12}
+{"id":"b1-state","standby_gb":7.54,"block":1,"utc":"2026-08-15T01:17:37","kind":"blockstate","cpu_busy":23}
+{"tok_s":14.98,"cycle":1,"id":"b1-c1-A","utc":"2026-08-15T01:17:41","kind":"rate","block":1,"cpu_busy":11,"arm":"A"}
+{"tok_s":13.518,"cycle":1,"id":"b1-c1-B","utc":"2026-08-15T01:17:46","kind":"rate","block":1,"cpu_busy":29,"arm":"B"}
+{"tok_s":18.48,"cycle":1,"id":"b1-c1-L","utc":"2026-08-15T01:17:51","kind":"rate","block":1,"cpu_busy":13,"arm":"L"}

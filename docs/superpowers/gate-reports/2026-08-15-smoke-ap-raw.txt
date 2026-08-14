@@ -1,0 +1,13 @@
+﻿2026-08-15T01:17:24  START  islc_was_running=False  blocks=1 cycles=1 n=16
+2026-08-15T01:17:24  PHASE 1: the owed correctness re-runs
+2026-08-15T01:17:24    skipped by request (already discharged)
+2026-08-15T01:17:24  PHASE 2: stopping ISLC, waiting for quiet
+2026-08-15T01:17:28    standby cache 7.55 GB before the wait
+2026-08-15T01:17:28    NEVER WENT QUIET -- measuring anyway and flagging it in the report
+2026-08-15T01:17:37  BLOCK 1 starting (cpu 24%, standby 7.54 GB)
+2026-08-15T01:17:41    b1-c1-A  14.98
+2026-08-15T01:17:46    b1-c1-B  13.518
+2026-08-15T01:17:51    b1-c1-L  18.48
+2026-08-15T01:17:51  ISLC was not running at start -- not started
+2026-08-15T01:17:51  REPORT written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-15-smoke-ap-report.md
+2026-08-15T01:17:51  DONE

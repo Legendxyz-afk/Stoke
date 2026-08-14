@@ -50,7 +50,23 @@ param(
     [int]$QuietTries  = 40,
     [int]$NGen        = 128,
     [string]$Stamp    = "2026-08-15-m45-overnight-pbar",
-    [string]$CorrPrompt = "p41"
+    [string]$CorrPrompt = "p41",
+    # The two engine arms, so the SAME fixed machinery can measure a different
+    # pair (e.g. maddubs vs A') instead of a second script drifting from this
+    # one. Empty means the defaults below.
+    [string]$ArmAExe  = "",
+    [string]$ArmBExe  = "",
+    [string]$ArmALabel = "A pre-maddubs",
+    [string]$ArmBLabel = "B maddubs",
+    [double]$AnchorA  = 10.01,
+    # Poll until this scheduled task is no longer Running before measuring, so
+    # a follow-on measurement cannot overlap the one in front of it.
+    [string]$WaitForTask = "",
+    [switch]$SkipCorrectness,
+    # A follow-on run starts while the run in front of it has ISLC stopped, so
+    # it records islc_was_running=False and would leave Kabir's tool off for
+    # good. This forces the restore regardless.
+    [switch]$AlwaysRestoreISLC
 )
 
 $ErrorActionPreference = 'Continue'   # a failed unit must not kill the night
@@ -69,6 +85,8 @@ $Q4    = "$root\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 $Q8    = "$root\models\Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf"
 $PRE   = "$root\build\stoke-m45-c-head-bc9dd3d6.exe"   # pre-maddubs
 $NEW   = "$root\build\win\stoke.exe"                    # maddubs
+if ($ArmAExe) { $PRE = $ArmAExe }
+if ($ArmBExe) { $NEW = $ArmBExe }
 $M3    = "$root\build\stoke-m3-gate-876ce53f.exe"
 $LB    = "$root\bench\vendor\llama-b10037\llama-bench.exe"
 $ISLC  = "M:\New Drive\Downloads\ISLC v1.0.4.5\Intelligent standby list cleaner ISLC.exe"
@@ -77,7 +95,7 @@ $N_GEN        = $NGen
 $BLOCKS       = $Blocks
 $CYCLES       = $Cycles
 $BLOCK_GAP_M  = $BlockGapM   # minutes between block STARTS
-$ANCHOR_A     = 10.01        # arm A's quiesced N=1 rate, for the guard
+$ANCHOR_A     = $AnchorA     # arm A's quiesced N=1 rate, for the guard
 $QUIET_CPU    = 12           # percent; box must be at or under this to start
 $QUIET_TRIES  = $QuietTries  # x 60s -- how long to wait for the box to settle
 $CORR         = $CorrPrompt
@@ -193,8 +211,27 @@ $islcWasRunning = [bool](Get-Process -Name "*ISLC*" -ErrorAction SilentlyContinu
 Say "START  islc_was_running=$islcWasRunning  blocks=$BLOCKS cycles=$CYCLES n=$N_GEN"
 
 try {
+    # ------------------------------------------------------- PHASE 0
+    # Never measure on top of another measurement. A follow-on run waits for
+    # the one in front of it to finish rather than trusting a start time.
+    if ($WaitForTask) {
+        $waited = 0
+        while ($waited -lt 480) {
+            $st = (Get-ScheduledTask -TaskName $WaitForTask -ErrorAction SilentlyContinue)
+            if (-not $st -or $st.State -ne "Running") {
+                Say "PHASE 0: '$WaitForTask' is not running (waited $waited min) -- proceeding"
+                break
+            }
+            if ($waited % 15 -eq 0) { Say "PHASE 0: waiting for '$WaitForTask' ($waited min)" }
+            Start-Sleep -Seconds 60
+            $waited++
+        }
+        Start-Sleep -Seconds 120   # let the box settle after the previous run
+    }
+
     # ------------------------------------------------------- PHASE 1
     Say "PHASE 1: the owed correctness re-runs"
+    if ($SkipCorrectness) { Say "  skipped by request (already discharged)" }
     $checks = @(
         @{ id = "corr-q4km-p41"; desc = "Q4_K_M p41 relinked vs pre-maddubs";
            a = $PRE; b = $NEW; model = $Q4; prompt = "$root\tests\data\parity\$CORR.txt"; kv = "f32" },
@@ -202,6 +239,7 @@ try {
            a = $M3;  b = $NEW; model = $Q8; prompt = "$root\tests\data\parity\$CORR.txt"; kv = $null }
     )
     foreach ($c in $checks) {
+        if ($SkipCorrectness) { continue }
         if (HasUnit $c.id) { Say "  $($c.id) [banked]"; continue }
         $ok = StreamsMatch $c.a $c.b $c.model $c.prompt $c.kv
         Bank @{ id = $c.id; kind = "correctness"; desc = $c.desc;
@@ -296,11 +334,13 @@ try {
 }
 finally {
     # ------------------------------------------------------- PHASE 4
-    if ($islcWasRunning) {
-        Start-Process -FilePath $ISLC
-        Start-Sleep -Seconds 3
+    if ($islcWasRunning -or $AlwaysRestoreISLC) {
+        if (-not (Get-Process -Name "*ISLC*" -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $ISLC
+            Start-Sleep -Seconds 3
+        }
         $back = [bool](Get-Process -Name "*ISLC*" -ErrorAction SilentlyContinue)
-        Say "ISLC restore attempted: running=$back"
+        Say ("ISLC restore attempted (was_running={0}, forced={1}): running={2}" -f $islcWasRunning, [bool]$AlwaysRestoreISLC, $back)
     } else {
         Say "ISLC was not running at start -- not started"
     }
@@ -310,7 +350,10 @@ finally {
     $lines = @()
     $lines += "# M4.5 overnight P-BAR evaluation"
     $lines += ""
-    $lines += "Run $stamp. Arms: A = pre-maddubs (``bc9dd3d6``), B = maddubs (HEAD), L = llama-bench b10037."
+    $lines += "Run $stamp. Arms: A = $ArmALabel, B = $ArmBLabel, L = llama-bench b10037."
+    $lines += ""
+    $lines += "- A: ``$PRE``"
+    $lines += "- B: ``$NEW``"
     $lines += "N=1 via ``batch --seqs 1``, p00, -n $N_GEN, 6 threads, P-cores. Arm order rotates per cycle."
     $lines += ""
     $lines += "## Correctness (owed re-runs)"
