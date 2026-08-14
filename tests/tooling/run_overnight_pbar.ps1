@@ -210,11 +210,10 @@ try {
     }
 
     # ------------------------------------------------------- PHASE 2
-    Say "PHASE 2: stopping ISLC, warming cache, waiting for quiet"
+    Say "PHASE 2: stopping ISLC, waiting for quiet"
     Get-Process -Name "*ISLC*" -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 3
-    $null = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32"   # warm
-    Say ("  standby cache {0} GB (model 2.33 GB)" -f (StandbyGB))
+    Say ("  standby cache {0} GB before the wait" -f (StandbyGB))
 
     # ▶ THREE CONSECUTIVE SAMPLES, not one. The single-sample version passed at
     # 23:25:56 on an 11% reading and block 1 started seconds later at 22% --
@@ -256,7 +255,29 @@ try {
             if ($wait -le 0) { break }
             Start-Sleep -Seconds ([math]::Min($wait, 300))
         }
-        Say "BLOCK $blk starting (cpu $(CpuBusy)%, standby $(StandbyGB) GB)"
+        # ▶ WARM IMMEDIATELY BEFORE EACH BLOCK, NOT ONCE AT THE START. The
+        # first version warmed the cache and THEN waited up to 40 minutes for
+        # the box to go quiet, by which time Windows had evicted the model:
+        # block 1 began with standby at 0.21 GB against a 2.33 GB model, i.e.
+        # measuring the DISK. The 80-minute gaps between blocks have the same
+        # effect, so every block re-warms and the result is CHECKED rather
+        # than assumed -- free RAM reads healthy while the model is entirely
+        # absent from cache, which is the trap that produced a 1.4 tok/s
+        # "result" once before.
+        for ($wtry = 1; $wtry -le 3; $wtry++) {
+            $null = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32"
+            $sb = StandbyGB
+            if ($sb -ge 2.0) { break }
+            Say "  warm $wtry/3 left standby at $sb GB -- warming again"
+        }
+        $sbNow = StandbyGB
+        if ($sbNow -lt 2.0) {
+            Say "  ⚠ standby only $sbNow GB after 3 warms -- block $blk MAY BE DISK-BOUND"
+        }
+        Say "BLOCK $blk starting (cpu $(CpuBusy)%, standby $sbNow GB)"
+        Bank @{ id = "b$blk-state"; kind = "blockstate"; block = $blk;
+                cpu_busy = (CpuBusy); standby_gb = $sbNow;
+                utc = (Get-Date -Format s) }
         for ($cyc = 1; $cyc -le $CYCLES; $cyc++) {
             foreach ($arm in $orders[($cyc - 1) % $orders.Count]) {
                 $id = "b$blk-c$cyc-$arm"
@@ -300,8 +321,9 @@ finally {
     $lines += ""
     $lines += "## Rates by block"
     $lines += ""
-    $lines += "| block | A pre-maddubs | B maddubs | L llama | B/A | B/L |"
-    $lines += "|---|---|---|---|---|---|"
+    $lines += "| block | A pre-maddubs | B maddubs | L llama | B/A | B/L | standby GB | cpu % |"
+    $lines += "|---|---|---|---|---|---|---|---|"
+    $states = @($rows | Where-Object { $_.kind -eq "blockstate" })
     $blockMed = @{}
     for ($b = 1; $b -le $BLOCKS; $b++) {
         $ma = Median @($rate | Where-Object { $_.block -eq $b -and $_.arm -eq "A" } | ForEach-Object { $_.tok_s })
@@ -311,8 +333,18 @@ finally {
         $ba = "n/a"; $bl = "n/a"
         if ($ma -and $mb) { $ba = "{0:n3}x" -f ($mb / $ma) }
         if ($ml -and $mb) { $bl = "{0:n3}x" -f ($mb / $ml) }
-        $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} |" -f $b, $ma, $mb, $ml, $ba, $bl)
+        $st = @($states | Where-Object { $_.block -eq $b })
+        $sbv = "?"; $cpv = "?"
+        if ($st.Count -gt 0) {
+            $sbv = $st[$st.Count - 1].standby_gb
+            $cpv = $st[$st.Count - 1].cpu_busy
+        }
+        $flag = ""
+        if ($sbv -ne "?" -and [double]$sbv -lt 2.0) { $flag = " ⚠ disk-bound" }
+        $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} | {6}{7} | {8} |" -f $b, $ma, $mb, $ml, $ba, $bl, $sbv, $flag, $cpv)
     }
+    $lines += ""
+    $lines += "A block whose standby cache is under 2.0 GB against a 2.33 GB model was reading the model from DISK and its rates are not comparable -- free RAM reads healthy while the model is entirely absent from cache. Drop such a block and say so rather than averaging it in."
     $lines += ""
     $allA = Median @($rate | Where-Object { $_.arm -eq "A" } | ForEach-Object { $_.tok_s })
     $allB = Median @($rate | Where-Object { $_.arm -eq "B" } | ForEach-Object { $_.tok_s })

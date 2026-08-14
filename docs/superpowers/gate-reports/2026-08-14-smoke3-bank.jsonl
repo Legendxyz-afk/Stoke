@@ -1,0 +1,11 @@
+﻿{"desc":"Q4_K_M p41 relinked vs pre-maddubs","utc":"2026-08-14T23:39:56","identical":true,"id":"corr-q4km-p41","kind":"correctness"}
+{"desc":"Q8_0 p41 anchor vs m3 archive","utc":"2026-08-14T23:40:27","identical":true,"id":"corr-q8-p41","kind":"correctness"}
+{"id":"quiesce","standby_gb":4.09,"utc":"2026-08-14T23:40:34","waited_min":0,"kind":"quiesce","cpu_busy":17}
+{"id":"b1-state","standby_gb":6.42,"block":1,"utc":"2026-08-14T23:40:44","kind":"blockstate","cpu_busy":22}
+{"tok_s":9.737,"cycle":1,"id":"b1-c1-A","utc":"2026-08-14T23:40:50","kind":"rate","block":1,"cpu_busy":15,"arm":"A"}
+{"tok_s":14.91,"cycle":1,"id":"b1-c1-B","utc":"2026-08-14T23:40:54","kind":"rate","block":1,"cpu_busy":10,"arm":"B"}
+{"tok_s":16.67,"cycle":1,"id":"b1-c1-L","utc":"2026-08-14T23:41:00","kind":"rate","block":1,"cpu_busy":13,"arm":"L"}
+{"id":"b2-state","standby_gb":6.43,"block":2,"utc":"2026-08-14T23:41:07","kind":"blockstate","cpu_busy":0}
+{"tok_s":9.7,"cycle":1,"id":"b2-c1-A","utc":"2026-08-14T23:41:12","kind":"rate","block":2,"cpu_busy":25,"arm":"A"}
+{"tok_s":14.584,"cycle":1,"id":"b2-c1-B","utc":"2026-08-14T23:41:17","kind":"rate","block":2,"cpu_busy":7,"arm":"B"}
+{"tok_s":18.36,"cycle":1,"id":"b2-c1-L","utc":"2026-08-14T23:41:22","kind":"rate","block":2,"cpu_busy":11,"arm":"L"}
