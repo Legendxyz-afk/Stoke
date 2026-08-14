@@ -61,6 +61,35 @@ The smoke put B/L at 0.822 against 0.85, so this is the likelier branch.
    gate is residency, not speed — model + repacked copy + KV pool must hold
    with `Page Reads/sec` < 5. Measure that before writing it.
 
+## If A′ also falls short — D's residency gate, costed in advance
+
+§7.3 sends a post-A′ miss to **D (repack), and D's gate is RESIDENCY, not
+speed**: model + repacked copy + KV pool must hold with `Page Reads/sec` < 5.
+That is measurable before a line of D is written, and the arithmetic is
+already available from figures this project has measured rather than guessed:
+
+| item | size | source |
+|---|---|---|
+| Q4_K_M model | **2.326 GiB** | `model_bytes` = 2,497,280,736, from the gate run.json |
+| repacked copy | **≈ 2.33 GiB** | an 8-row interleave is a re-layout, not a re-encode, so it is the same byte count |
+| KV pool, N=1 ctx 2048 | **0.28 GiB** | 147,456 B/token measured from the GGUF geometry (36 layers, 8 KV heads GQA 4:1, head_dim 128) × 2048 |
+| KV pool, N=16 ctx 2048 | **4.50 GiB** | the same × 16 |
+| box total | **15.63 GiB** | measured |
+
+So N=1 needs ≈ **4.9 GiB** resident and N=16 needs ≈ **9.2 GiB**, against
+15.63 GiB total — and the M4 record already showed the f32 KV pool at
+N=16/ctx2048 committing and running on this box at 9.05 GB private with
+`Page Reads/sec` flat at 0.0. **D is therefore RAM-feasible at both ends of
+the envelope on paper**, and the gate is a measurement of occupancy rather
+than a question of whether it fits.
+
+⚠ Two caveats that belong with that number. The mmap'd original and the
+repacked copy are only both resident during load, so the steady-state figure
+is lower than the table implies — but the load-time peak is the one the gate
+must survive. And the M4 note's own honest caveat still stands: commit is not
+occupancy, and full occupancy at N=16 has never been driven (carried headroom
+(b), still open).
+
 ## What is already settled, and should not be re-litigated
 
 - **Rung C is not a defect.** Integer oracle clean over 108,000 super-blocks
