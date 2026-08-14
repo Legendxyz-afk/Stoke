@@ -1,0 +1,6 @@
+﻿{"desc":"Q4_K_M p41 relinked vs pre-maddubs","utc":"2026-08-14T23:09:25","identical":true,"id":"corr-q4km-p41","kind":"correctness"}
+{"desc":"Q8_0 p41 anchor vs m3 archive","utc":"2026-08-14T23:09:57","identical":true,"id":"corr-q8-p41","kind":"correctness"}
+{"id":"quiesce","standby_gb":6.41,"utc":"2026-08-14T23:10:11","waited_min":0,"kind":"quiesce","cpu_busy":16}
+{"tok_s":9.722,"cycle":1,"id":"b1-c1-A","utc":"2026-08-14T23:10:17","kind":"rate","block":1,"cpu_busy":16,"arm":"A"}
+{"tok_s":14.76,"cycle":1,"id":"b1-c1-B","utc":"2026-08-14T23:10:20","kind":"rate","block":1,"cpu_busy":10,"arm":"B"}
+{"tok_s":17.95,"cycle":1,"id":"b1-c1-L","utc":"2026-08-14T23:10:25","kind":"rate","block":1,"cpu_busy":15,"arm":"L"}

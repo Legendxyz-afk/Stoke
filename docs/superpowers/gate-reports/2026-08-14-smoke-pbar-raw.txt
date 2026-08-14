@@ -1,0 +1,14 @@
+﻿2026-08-14T23:09:07  START  islc_was_running=True  blocks=1 cycles=1 n=16
+2026-08-14T23:09:07  PHASE 1: the owed correctness re-runs
+2026-08-14T23:09:25    corr-q4km-p41: IDENTICAL
+2026-08-14T23:09:57    corr-q8-p41: IDENTICAL
+2026-08-14T23:09:57  PHASE 2: stopping ISLC, warming cache, waiting for quiet
+2026-08-14T23:10:09    standby cache 6.41 GB (model 2.33 GB)
+2026-08-14T23:10:09    NEVER WENT QUIET -- measuring anyway and flagging it in the report
+2026-08-14T23:10:12  BLOCK 1 starting (cpu 14%, standby 6.41 GB)
+2026-08-14T23:10:17    b1-c1-A  9.722
+2026-08-14T23:10:20    b1-c1-B  14.76
+2026-08-14T23:10:25    b1-c1-L  17.95
+2026-08-14T23:10:28  ISLC restore attempted: running=True
+2026-08-14T23:10:29  REPORT written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-14-smoke-pbar-report.md
+2026-08-14T23:10:29  DONE
