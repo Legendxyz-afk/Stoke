@@ -1,0 +1,33 @@
+﻿=== 2026-08-14T15:47:26 ladder launch
+p08 gp=54: prompt=21 + 54 forced = 75 ids; round-trip EXACT (got 75)
+p11 gp=12: prompt=22 + 12 forced = 34 ids; round-trip EXACT (got 34)
+p18 gp=24: prompt=49 + 24 forced = 73 ids; round-trip EXACT (got 73)
+p23 gp=1: prompt=39 + 1 forced = 40 ids; round-trip EXACT (got 40)
+p25 gp=9: prompt=16 + 9 forced = 25 ids; round-trip EXACT (got 25)
+p30 gp=10: prompt=53 + 10 forced = 63 ids; round-trip EXACT (got 63)
+p35 gp=18: prompt=53 + 18 forced = 71 ids; round-trip EXACT (got 71)
+p40 gp=22: prompt=490 + 22 forced = 512 ids; round-trip EXACT (got 512)
+p42 gp=22: prompt=462 + 22 forced = 484 ids; round-trip EXACT (got 484)
+p49 gp=30: prompt=18 + 30 forced = 48 ids; round-trip EXACT (got 48)
+=== 2026-08-14T15:52:43 teacher-force exit=0
+p08-54         divergent L35 max=5.178e+00 mean=3.022e-01  STEP=L01 only (artifact)
+p11-12         divergent L35 max=2.489e+00 mean=2.192e-01  STEP=L01 only (artifact)
+p18-24         divergent L35 max=4.795e+00 mean=2.732e-01  STEP=L01 only (artifact)
+p23-1          divergent L35 max=6.332e+00 mean=2.398e-01  STEP=L01 only (artifact)
+p25-9          divergent L35 max=1.206e+00 mean=2.249e-01  STEP=L01 only (artifact)
+p30-10         divergent L35 max=5.394e+00 mean=2.662e-01  STEP=L01 only (artifact)
+p35-18         divergent L35 max=5.462e+00 mean=2.378e-01  STEP=L01 only (artifact)
+p40-22         divergent L35 max=9.652e-01 mean=1.916e-01  STEP=L01 only (artifact)
+p42-22         divergent L35 max=3.447e+00 mean=2.977e-01  STEP=L01 only (artifact)
+p49-30         divergent L35 max=1.936e+00 mean=2.547e-01  STEP=L01 only (artifact)
+p15-ctl        control   L35 max=9.454e+00 mean=1.161e+00  STEP=L01 only (artifact)
+p16-ctl        control   L35 max=1.797e+00 mean=2.475e-01  STEP=L01 only (artifact)
+p32-ctl        control   L35 max=2.316e+00 mean=3.231e-01  STEP=L01 only (artifact)
+
+13 curves: 10 divergent, 3 control
+L01-only STEPs (artifact, expected on both kinds): 13
+STEP AT L02+ : 0 -- NONE
+control mean_abs_diff  : 0.2475 - 1.1610
+divergent mean_abs_diff: 0.1916 - 0.3022
+written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-14-m45-c-ladder.txt
+=== 2026-08-14T16:06:40 ladder exit=0

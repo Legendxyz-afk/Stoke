@@ -198,8 +198,16 @@ mis-calibrated bound mean the ladder pauses until a Q4_K_M base rate exists?*
   number until one exists. §4.
 - **(b)** Why Q6_K does not cross over at 38 super-blocks while Q4_K does is
   unexplained; the mins-term hypothesis is untested. §2.
-- **(c)** The 10 ESCALATEs from the C grading are **still owed their ladders**
-  and are not resolved by this memo.
+- **(c)** ~~The 10 ESCALATEs from the C grading are still owed their ladders.~~
+  **DISCHARGED 2026-08-14** — `gate-reports/2026-08-14-m45-c-escalate-resolution.md`.
+  All ten laddered, none refused: **`STEP AT L02+ : 0 — NONE`** across 13 curves,
+  and every divergent position sits below the second-lowest control. **All ten
+  are ARITHMETIC-CLASS ⇒ C's grading is 34 ARITHMETIC-CLASS, 0 BUG-class, and
+  nothing in it is a defect signal.** ⚠ The STEP leg needed calibrating first:
+  an L01 flag fires on *controls* where the two binaries produced byte-identical
+  streams, because `JUMP_FACTOR` judges L01 against a one-sample floor. Without
+  that, this run would have reported "STEP DETECTED" thirteen times and pointed
+  at a defect that isn't there.
 
   ⚠ **Correction to the 08-13 end-state note, which said these "include genuine
   [τ, 2τ) margin breaches, not the top-5-set churn that dismissed all seven of
