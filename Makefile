@@ -166,6 +166,20 @@ $(BUILDDIR)/kernels/simd.o: src/kernels/simd.c $(HEADERS) Makefile | $(BUILDDIR)
 $(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
 
+# tests/test_c_oracle.c is the ONE test that carries AVX2 intrinsics of its
+# own: it holds instrumented copies of BOTH the m4 and the HEAD K-quant twins
+# so rung C's integer totals can be compared old-against-new. It therefore
+# needs simd.c's ISA flags, and this explicit rule overrides the pattern rule
+# above for that single target.
+#
+# The scalar copies in the same file are then also compiled with -mavx2. That
+# is safe for what this test asserts -- the integer totals are i32 adds and
+# multiplies, exact and associative under any vectorization, and the bounds
+# are three orders inside i32 -- and the f32 self-checks against the library
+# kernels would catch it if anything else moved.
+$(BUILDDIR)/test_c_oracle$(EXE): tests/test_c_oracle.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(SIMD_CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
+
 $(STOKE_BIN): $(MAIN_OBJ) $(LIB_OBJ) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(MAIN_OBJ) $(LIB_OBJ) $(LIBS)
 

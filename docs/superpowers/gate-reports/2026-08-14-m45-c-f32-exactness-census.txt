@@ -1,0 +1,265 @@
+﻿M:\New Drive\Desktop\Programming\stoke\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+253 K-quant tensors, 2^24 = 16777216
+
+selfcheck:
+  Q4_K  scales [63, 56, 30, 41, 25, 30, 26, 18] agree with gguf_reader; bound 8748522 agrees with a per-element loop
+  Q6_K  centred quants in [-32,31]; bound 29732478 agrees with a per-element loop
+
+  blk.0.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16050768 over=0
+  blk.0.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16284702 over=0
+  blk.0.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16644112 over=0
+  blk.0.attn_v.weight                          Q6_K  blocks=    10240 max_bound=    47844837 over=10221  <-- CROSSES 2^24
+  blk.0.ffn_down.weight                        Q6_K  blocks=    97280 max_bound=    53091207 over=96790  <-- CROSSES 2^24
+  blk.0.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16883507 over=2  <-- CROSSES 2^24
+  blk.0.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16987012 over=1  <-- CROSSES 2^24
+  blk.1.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16269843 over=0
+  blk.1.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16641953 over=0
+  blk.1.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16391509 over=0
+  blk.1.attn_v.weight                          Q6_K  blocks=    10240 max_bound=    49374679 over=10237  <-- CROSSES 2^24
+  blk.1.ffn_down.weight                        Q6_K  blocks=    97280 max_bound=   110199678 over=90964  <-- CROSSES 2^24
+  blk.1.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16325215 over=0
+  blk.1.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16292449 over=0
+  blk.10.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15735808 over=0
+  blk.10.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16424529 over=0
+  blk.10.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16183483 over=0
+  blk.10.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16685260 over=0
+  blk.10.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16626459 over=0
+  blk.10.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16387953 over=0
+  blk.10.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    17123918 over=1  <-- CROSSES 2^24
+  blk.11.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16674084 over=0
+  blk.11.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    15935960 over=0
+  blk.11.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16006953 over=0
+  blk.11.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16061944 over=0
+  blk.11.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16179165 over=0
+  blk.11.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16625824 over=0
+  blk.11.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16536162 over=0
+  blk.12.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16221710 over=0
+  blk.12.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16758158 over=0
+  blk.12.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16755618 over=0
+  blk.12.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    50994310 over=10142  <-- CROSSES 2^24
+  blk.12.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50777267 over=96590  <-- CROSSES 2^24
+  blk.12.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16472154 over=0
+  blk.12.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16521049 over=0
+  blk.13.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16392525 over=0
+  blk.13.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16576802 over=0
+  blk.13.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16479139 over=0
+  blk.13.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16717137 over=0
+  blk.13.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16886936 over=1  <-- CROSSES 2^24
+  blk.13.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16773398 over=0
+  blk.13.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16531717 over=0
+  blk.14.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15827883 over=0
+  blk.14.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16360648 over=0
+  blk.14.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16279749 over=0
+  blk.14.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    15894558 over=0
+  blk.14.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16492601 over=0
+  blk.14.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16485489 over=0
+  blk.14.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16390747 over=0
+  blk.15.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15996793 over=0
+  blk.15.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16150463 over=0
+  blk.15.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16519525 over=0
+  blk.15.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    48745013 over=10213  <-- CROSSES 2^24
+  blk.15.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50075465 over=95979  <-- CROSSES 2^24
+  blk.15.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16457041 over=0
+  blk.15.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16689324 over=0
+  blk.16.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15902305 over=0
+  blk.16.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16396589 over=0
+  blk.16.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16667607 over=0
+  blk.16.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16030448 over=0
+  blk.16.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16984472 over=1  <-- CROSSES 2^24
+  blk.16.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16742410 over=0
+  blk.16.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16798925 over=1  <-- CROSSES 2^24
+  blk.17.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15738221 over=0
+  blk.17.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16092805 over=0
+  blk.17.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16713200 over=0
+  blk.17.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16237204 over=0
+  blk.17.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16555720 over=0
+  blk.17.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16775557 over=0
+  blk.17.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16888079 over=1  <-- CROSSES 2^24
+  blk.18.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15960598 over=0
+  blk.18.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16118459 over=0
+  blk.18.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16204438 over=0
+  blk.18.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    48723042 over=10231  <-- CROSSES 2^24
+  blk.18.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    49209706 over=95882  <-- CROSSES 2^24
+  blk.18.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16517239 over=0
+  blk.18.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16411321 over=0
+  blk.19.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16312896 over=0
+  blk.19.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    15897860 over=0
+  blk.19.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    17198975 over=1  <-- CROSSES 2^24
+  blk.19.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16090646 over=0
+  blk.19.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16543274 over=0
+  blk.19.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16901414 over=1  <-- CROSSES 2^24
+  blk.19.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    17076039 over=2  <-- CROSSES 2^24
+  blk.2.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16218662 over=0
+  blk.2.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16230600 over=0
+  blk.2.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16145637 over=0
+  blk.2.attn_v.weight                          Q6_K  blocks=    10240 max_bound=    50288190 over=10226  <-- CROSSES 2^24
+  blk.2.ffn_down.weight                        Q6_K  blocks=    97280 max_bound=    67289934 over=74168  <-- CROSSES 2^24
+  blk.2.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16169386 over=0
+  blk.2.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16800576 over=1  <-- CROSSES 2^24
+  blk.20.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15907004 over=0
+  blk.20.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    15918434 over=0
+  blk.20.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16794226 over=1  <-- CROSSES 2^24
+  blk.20.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    15758541 over=0
+  blk.20.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16652367 over=0
+  blk.20.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16738600 over=0
+  blk.20.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16446246 over=0
+  blk.21.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16420211 over=0
+  blk.21.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16586454 over=0
+  blk.21.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16237966 over=0
+  blk.21.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    47567342 over=10199  <-- CROSSES 2^24
+  blk.21.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    49188624 over=96288  <-- CROSSES 2^24
+  blk.21.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16526637 over=0
+  blk.21.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16618585 over=0
+  blk.22.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16721328 over=0
+  blk.22.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    15987776 over=0
+  blk.22.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16194532 over=0
+  blk.22.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16110077 over=0
+  blk.22.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16364585 over=0
+  blk.22.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16432403 over=0
+  blk.22.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16585946 over=0
+  blk.23.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16177133 over=0
+  blk.23.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16096488 over=0
+  blk.23.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16789527 over=1  <-- CROSSES 2^24
+  blk.23.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16088360 over=0
+  blk.23.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16366236 over=0
+  blk.23.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16502888 over=0
+  blk.23.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16427958 over=0
+  blk.24.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16054705 over=0
+  blk.24.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16935704 over=1  <-- CROSSES 2^24
+  blk.24.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16775684 over=0
+  blk.24.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    48215169 over=10050  <-- CROSSES 2^24
+  blk.24.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50267870 over=96319  <-- CROSSES 2^24
+  blk.24.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16950436 over=1  <-- CROSSES 2^24
+  blk.24.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16640048 over=0
+  blk.25.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16125317 over=0
+  blk.25.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16068040 over=0
+  blk.25.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16238220 over=0
+  blk.25.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16170275 over=0
+  blk.25.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16710152 over=0
+  blk.25.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16406876 over=0
+  blk.25.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16927576 over=1  <-- CROSSES 2^24
+  blk.26.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16688435 over=0
+  blk.26.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16863441 over=1  <-- CROSSES 2^24
+  blk.26.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16766032 over=0
+  blk.26.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16073247 over=0
+  blk.26.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    17482312 over=1  <-- CROSSES 2^24
+  blk.26.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16766032 over=0
+  blk.26.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16346551 over=0
+  blk.27.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15862554 over=0
+  blk.27.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16523843 over=0
+  blk.27.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16757650 over=0
+  blk.27.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    48729392 over=10135  <-- CROSSES 2^24
+  blk.27.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    52171346 over=96411  <-- CROSSES 2^24
+  blk.27.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    17527143 over=2  <-- CROSSES 2^24
+  blk.27.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    17115028 over=1  <-- CROSSES 2^24
+  blk.28.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16270224 over=0
+  blk.28.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16734917 over=0
+  blk.28.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16559784 over=0
+  blk.28.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    16200374 over=0
+  blk.28.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16482949 over=0
+  blk.28.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16632809 over=0
+  blk.28.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16689578 over=0
+  blk.29.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15982696 over=0
+  blk.29.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    15997174 over=0
+  blk.29.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16605758 over=0
+  blk.29.attn_v.weight                         Q4_K  blocks=    10240 max_bound=    15906242 over=0
+  blk.29.ffn_down.weight                       Q4_K  blocks=    97280 max_bound=    16690467 over=0
+  blk.29.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16443198 over=0
+  blk.29.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16307054 over=0
+  blk.3.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16331184 over=0
+  blk.3.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16080232 over=0
+  blk.3.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16315563 over=0
+  blk.3.attn_v.weight                          Q6_K  blocks=    10240 max_bound=    49402873 over=10235  <-- CROSSES 2^24
+  blk.3.ffn_down.weight                        Q6_K  blocks=    97280 max_bound=   108891578 over=78871  <-- CROSSES 2^24
+  blk.3.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16432022 over=0
+  blk.3.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16908907 over=1  <-- CROSSES 2^24
+  blk.30.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16591026 over=0
+  blk.30.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16432149 over=0
+  blk.30.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16067532 over=0
+  blk.30.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    47524924 over=10107  <-- CROSSES 2^24
+  blk.30.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50739167 over=96776  <-- CROSSES 2^24
+  blk.30.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16912717 over=1  <-- CROSSES 2^24
+  blk.30.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16855694 over=1  <-- CROSSES 2^24
+  blk.31.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16084804 over=0
+  blk.31.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16352774 over=0
+  blk.31.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16455644 over=0
+  blk.31.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    48774350 over=10148  <-- CROSSES 2^24
+  blk.31.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    51583209 over=96900  <-- CROSSES 2^24
+  blk.31.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16915257 over=1  <-- CROSSES 2^24
+  blk.31.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16608425 over=0
+  blk.32.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15923133 over=0
+  blk.32.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16364458 over=0
+  blk.32.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16451199 over=0
+  blk.32.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    49626012 over=10155  <-- CROSSES 2^24
+  blk.32.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50386996 over=96812  <-- CROSSES 2^24
+  blk.32.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16661257 over=0
+  blk.32.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16303244 over=0
+  blk.33.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16360775 over=0
+  blk.33.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16225393 over=0
+  blk.33.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16416274 over=0
+  blk.33.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    49161319 over=10120  <-- CROSSES 2^24
+  blk.33.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50169191 over=96763  <-- CROSSES 2^24
+  blk.33.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16466820 over=0
+  blk.33.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16600297 over=0
+  blk.34.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    15999587 over=0
+  blk.34.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16730091 over=0
+  blk.34.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16248761 over=0
+  blk.34.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    47655099 over=10026  <-- CROSSES 2^24
+  blk.34.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    50430684 over=96652  <-- CROSSES 2^24
+  blk.34.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16423640 over=0
+  blk.34.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16608806 over=0
+  blk.35.attn_k.weight                         Q4_K  blocks=    10240 max_bound=    16270351 over=0
+  blk.35.attn_output.weight                    Q4_K  blocks=    40960 max_bound=    16207994 over=0
+  blk.35.attn_q.weight                         Q4_K  blocks=    40960 max_bound=    16169640 over=0
+  blk.35.attn_v.weight                         Q6_K  blocks=    10240 max_bound=    50376455 over=10204  <-- CROSSES 2^24
+  blk.35.ffn_down.weight                       Q6_K  blocks=    97280 max_bound=    52251864 over=96314  <-- CROSSES 2^24
+  blk.35.ffn_gate.weight                       Q4_K  blocks=    97280 max_bound=    16313023 over=0
+  blk.35.ffn_up.weight                         Q4_K  blocks=    97280 max_bound=    16520922 over=0
+  blk.4.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    15774289 over=0
+  blk.4.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16621252 over=0
+  blk.4.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16181197 over=0
+  blk.4.attn_v.weight                          Q4_K  blocks=    10240 max_bound=    16188182 over=0
+  blk.4.ffn_down.weight                        Q4_K  blocks=    97280 max_bound=    17270603 over=1  <-- CROSSES 2^24
+  blk.4.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    17102963 over=1  <-- CROSSES 2^24
+  blk.4.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16447516 over=0
+  blk.5.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16257524 over=0
+  blk.5.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16409035 over=0
+  blk.5.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16745966 over=0
+  blk.5.attn_v.weight                          Q4_K  blocks=    10240 max_bound=    15906242 over=0
+  blk.5.ffn_down.weight                        Q4_K  blocks=    97280 max_bound=    16621633 over=0
+  blk.5.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16255111 over=0
+  blk.5.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16929227 over=1  <-- CROSSES 2^24
+  blk.6.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    15937738 over=0
+  blk.6.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16172942 over=0
+  blk.6.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16342868 over=0
+  blk.6.attn_v.weight                          Q6_K  blocks=    10240 max_bound=    48445420 over=10186  <-- CROSSES 2^24
+  blk.6.ffn_down.weight                        Q6_K  blocks=    97280 max_bound=    50301144 over=95844  <-- CROSSES 2^24
+  blk.6.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16593312 over=0
+  blk.6.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16584930 over=0
+  blk.7.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16229584 over=0
+  blk.7.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16620236 over=0
+  blk.7.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16411321 over=0
+  blk.7.attn_v.weight                          Q4_K  blocks=    10240 max_bound=    16154654 over=0
+  blk.7.ffn_down.weight                        Q4_K  blocks=    97280 max_bound=    16659225 over=0
+  blk.7.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16270478 over=0
+  blk.7.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16482060 over=0
+  blk.8.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    15754985 over=0
+  blk.8.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16371697 over=0
+  blk.8.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16329787 over=0
+  blk.8.attn_v.weight                          Q4_K  blocks=    10240 max_bound=    15758414 over=0
+  blk.8.ffn_down.weight                        Q4_K  blocks=    97280 max_bound=    16638016 over=0
+  blk.8.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16478377 over=0
+  blk.8.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16665956 over=0
+  blk.9.attn_k.weight                          Q4_K  blocks=    10240 max_bound=    16574008 over=0
+  blk.9.attn_output.weight                     Q4_K  blocks=    40960 max_bound=    16256762 over=0
+  blk.9.attn_q.weight                          Q4_K  blocks=    40960 max_bound=    16706723 over=0
+  blk.9.attn_v.weight                          Q6_K  blocks=    10240 max_bound=    47089314 over=10121  <-- CROSSES 2^24
+  blk.9.ffn_down.weight                        Q6_K  blocks=    97280 max_bound=    50426747 over=96002  <-- CROSSES 2^24
+  blk.9.ffn_gate.weight                        Q4_K  blocks=    97280 max_bound=    16412845 over=0
+  blk.9.ffn_up.weight                          Q4_K  blocks=    97280 max_bound=    16615283 over=0
+  token_embd.weight                            Q6_K  blocks=  1519360 max_bound=    59510549 over=1506615  <-- CROSSES 2^24
+
+Q4_K: 12257280 super-blocks, worst possible |S_b| = 17527143 (104.47% of 2^24), super-blocks that could reach 2^24: 30
+Q6_K: 3454720 super-blocks, worst possible |S_b| = 110199678 (656.84% of 2^24), super-blocks that could reach 2^24: 3379896
+
+VERDICT: 3379926 super-blocks can exceed 2^24 -- the conversion CAN round on this model; measure how often it does on real activations before concluding anything.

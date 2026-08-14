@@ -1,0 +1,29 @@
+﻿M4.5 rung C -- INTEGER-TOTALS ORACLE (ruling 2026-08-12 section 7.2)
+run 2026-08-14, Opus 5 max effort, tree at a53ee34 (clean apart from this session's tests/ + Makefile)
+binary   build/win/test_c_oracle.exe, sha256 6c87dd7a6378cfe18956aa07135f2df0a455dd07fb63199d7989e34438afe8b1
+built    -O3 -ffp-contract=off -mavx2 -mfma -mf16c -mavxvnni (SIMD_CFLAGS, explicit Makefile rule)
+corpus   tests/test_simd.c's fixed-seed generator, lengths {256,512,768,2560,9728}, 10000 iters per quant type
+compares m4 (git ed2aa32) scalar + twin against HEAD scalar + twin, per super-block S_b/M_b
+  extremes: q4_k S_b=-30723840  q6_k(+31) S_b=129007616  q6_k(-32) S_b=-133169152  (2^24 = 16777216)
+  inexact case: S_b=-30722895 -> (f32) -30722896.0, rel err 3.25e-08
+ok c_oracle_contract_worst_case_bounds_are_reproducible
+ok c_oracle_totals_are_sensitive_to_the_integer_core
+  fold accuracy q4_k: mean |rel err| m4 3.21e-07 vs HEAD 3.86e-07; HEAD closer 978, m4 closer 456, tied 566 (of 2000)
+      n=256   blocks=1   m4 1.71e-07  HEAD 3.02e-08
+      n=512   blocks=2   m4 2.94e-07  HEAD 5.55e-08
+      n=768   blocks=3   m4 1.33e-07  HEAD 6.82e-08
+      n=2560  blocks=10  m4 2e-07  HEAD 1.52e-07
+      n=9728  blocks=38  m4 8.07e-07  HEAD 1.62e-06
+  fold accuracy q6_k: mean |rel err| m4 3.05e-07 vs HEAD 8.73e-08; HEAD closer 1095, m4 closer 306, tied 599 (of 2000)
+      n=256   blocks=1   m4 1.27e-07  HEAD 2.12e-08
+      n=512   blocks=2   m4 2.82e-07  HEAD 5.36e-08
+      n=768   blocks=3   m4 2.97e-07  HEAD 4.62e-08
+      n=2560  blocks=10  m4 2.65e-07  HEAD 9.34e-08
+      n=9728  blocks=38  m4 5.53e-07  HEAD 2.22e-07
+ok c_oracle_the_head_fold_is_not_less_accurate_than_m4s
+  census q6_k random corpus blocks=108000  max|S_b|=6460000  >=2^24: 0  inexact (f32)S_b: 0
+ok c_oracle_q6k_integer_totals_are_identical_m4_vs_head
+  census q4_k random corpus blocks=108000  max|S_b|=1587199  >=2^24: 0  inexact (f32)S_b: 0
+ok c_oracle_q4k_integer_totals_are_identical_m4_vs_head
+ok c_oracle_requires_the_simd_feature_this_box_reports
+6/6 tests passed
