@@ -1,0 +1,16 @@
+{
+ "stoke": "M:\\New Drive\\Desktop\\Programming\\stoke\\build\\stoke-null0.exe",
+ "stoke_sha256": "45ad5855e72cb6229a37e1f31b5a9598aa8eb3d66f611adaf32ded1e6fa45581",
+ "stoke_b": "M:\\New Drive\\Desktop\\Programming\\stoke\\build\\stoke-null1.exe",
+ "stoke_b_sha256": "a1eb6d26c9af3cfba03bc98c1a12b536c8aacb8b5c752c766588f1c4da1d1726",
+ "kv_a": "f32",
+ "kv_b": "f32",
+ "model": "M:\\New Drive\\Desktop\\Programming\\stoke\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+ "model_bytes": 2497280736,
+ "model_mtime": 1784183014,
+ "n_gen": 64,
+ "corpus": 50,
+ "prompt_dir": "tests/data/parity",
+ "probe_spec": "p00:0+15+31+47+63,p10:0+31+63,p32:0+15+31+47+63,p44:0+63",
+ "threads": 6
+}

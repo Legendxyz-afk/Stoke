@@ -1,0 +1,13 @@
+{
+ "frozen_utc": "2026-08-14T10:55:54Z",
+ "pair": "M:\\New Drive\\Desktop\\Programming\\stoke\\build\\stoke-null0.exe:f32 <-> M:\\New Drive\\Desktop\\Programming\\stoke\\build\\stoke-null1.exe:f32",
+ "model": "M:\\New Drive\\Desktop\\Programming\\stoke\\models\\Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+ "tau": {
+  "[0,100)": 0.6389039999999966,
+  "[100,300)": 0.7337420000000066,
+  "[300,inf)": 0.6423300000000012
+ },
+ "n_probe_positions": 15,
+ "n_agreeing": 12,
+ "rule": "max(0.10, 2 x band p95) -- ruling 9.4-2"
+}

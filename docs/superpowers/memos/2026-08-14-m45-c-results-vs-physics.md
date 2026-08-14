@@ -177,11 +177,35 @@ M3 measured the per-position divergence rate at 3.10% on Q4_K_M against 0.74%
 on Q8_0, so the near-tie density differs between the very files the bound is
 being carried between.
 
-**No Q4_K_M base rate for this instrument exists.** M3's Q4_K_M work was a
-*probe grid* (per-position), not a 50-prompt sweep, and the only Q4_K_M number
-from this instrument is item [4]'s, at a perturbation four orders too large.
-Establishing one needs a deliberately-constructed f32-reordering pair on
-Q4_K_M — which is the NULL-1 run, pre-registered and executed 2026-08-14.
+**⚠⚠⚠ MEASURED 2026-08-14 — THE BOUND IS DISPROVEN.** No Q4_K_M base rate for
+this instrument existed, so one was built: two binaries from one worktree at
+`ed2aa32` differing only by **summing the same eight f32 addends in reverse
+order** — zero semantic content, the smallest arithmetic-class change possible
+in this kernel. Reading pre-registered before the run (`3def4aa`).
+
+**N = 35/50.** Full record: `gate-reports/2026-08-14-m45-null1-baserate-result.md`.
+
+| run | perturbation | file | N | flip rate |
+|---|---|---|---|---|
+| M2 census — **the bound's source** | f32 reduction order | **Q8_0** | **19/50** | 0.5938 %/tok |
+| **NULL-1** | **zero semantic content** | Q4_K_M | **35/50** | 1.0938 %/tok |
+| rung C | ~1e-7 fold restructure | Q4_K_M | 34/50 | 1.0625 %/tok |
+| item [4] | 2.3e-3 KV requantisation | Q4_K_M | 38/50 | 1.1875 %/tok |
+
+A change that means **nothing** fails the ≤19/50 bound by nearly 2×, and lands
+one prompt above the change the bound stopped. (35 vs 34 is noise at n=50 —
+the reading is that the three are *indistinguishable*, not that null-1 is
+worse.) All three Q4_K_M runs sit within four prompts of each other across four
+orders of perturbation.
+
+And the sets coincide: **null-1 ∩ C = 32 prompts against 23.8 expected if
+independent, z = 5.37** — stronger than the C ∩ item [4] overlap above. Phase 1
+corroborates from a third angle: both runs froze τ from **identically many
+agreeing positions (12 of 15)**, and a pure lane reversal perturbs the logits
+to within 24 % of what C's whole fold restructure does — more, in one band.
+
+⇒ **C-FAIL-RATE fired on a constant imported from another model file. C's
+34/50 is not a defect signal; it sits at or below the Q4_K_M null floor.**
 
 ## 5. Corrections to recorded constants, computed not asserted
 
@@ -230,9 +254,15 @@ mis-calibrated bound mean the ladder pauses until a Q4_K_M base rate exists?*
 
 ## 7. Carried headroom
 
-- **(a)** No Q4_K_M-measured base rate for the 50-prompt first-divergence
-  instrument. Every C/item-[4] verdict on that file is graded against a Q8_0
-  number until one exists. §4.
+- **(a)** ~~No Q4_K_M-measured base rate for the 50-prompt first-divergence
+  instrument.~~ **MEASURED 2026-08-14: 35/50 for a zero-semantic-content
+  change** (§4). The gap is now the opposite one — **a re-derived bound is
+  owed, and it is a criterion change needing its own record.** The obvious
+  candidate is this run's own number, but taking a bound from the measurement
+  it will police is the circularity the M3 tripwire memo already paid for.
+  Until that is settled, **no fold change on Q4_K_M can be judged by a
+  first-divergence count**, which is what gates the maddubs twin and therefore
+  P-BAR.
 - **(b)** Why Q6_K does not cross over at 38 super-blocks while Q4_K does is
   unexplained; the mins-term hypothesis is untested. §2.
 - **(c)** ~~The 10 ESCALATEs from the C grading are still owed their ladders.~~
