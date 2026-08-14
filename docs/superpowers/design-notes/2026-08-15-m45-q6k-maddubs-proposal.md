@@ -108,6 +108,55 @@ products-per-instruction only translates to time if the loop is compute-bound,
 and this box's Q4_K_M matvec tops out at 44.8 GB/s, so bandwidth may bind
 first. That is exactly what the sizing run below settles.
 
+## ▶▶ SIZED, 2026-08-15 04:1x — AND THE ANSWER IS SOBERER THAN THE ESTIMATE
+
+The sizing run below was attempted and **`bench --ops` crashed with
+STATUS_HEAP_CORRUPTION**. Bisecting the archived binaries put the fault back to
+the m3 gate archive: the harness sized its activation scratch with Q8_0
+constants while a K-quant matvec quantizes to Q8_K, overflowing by 200 bytes
+per call at n_in=2560. **The instrument the ruling prescribes had been broken
+for two milestones**, unnoticed because `bench --ops` is not in the test matrix.
+Fixed in `src/bench.c` (size for the larger of the two formats).
+
+With the instrument working, measured on the Q4_K_M model:
+
+| projection | type | GB/s | %ref |
+|---|---|---|---|
+| attn_q | Q4_K | 9.62 | 41.5% |
+| attn_k | Q4_K | 9.71 | 41.9% |
+| attn_out | Q4_K | 9.92 | 42.8% |
+| ffn_gate | Q4_K | 9.36 | 40.4% |
+| ffn_up | Q4_K | 7.57 | 32.6% |
+| **attn_v** | **Q6_K** | **7.24** | 31.2% |
+| **ffn_down** | **Q6_K** | **7.06** | 30.5% |
+| **LOGITS** | **Q6_K** | **6.78** | 29.2% |
+
+GB/s is the wrong unit again — Q6_K carries more bits per element. Converted at
+0.5625 and 0.8203 B/element:
+
+    Q4_K  9.24 GB/s  ->  16.42 G elements/s
+    Q6_K  7.03 GB/s  ->   8.57 G elements/s
+    measured inner-loop ratio: 1.92x
+
+**Not 4×. 1.92×.** Feeding that back through the same table:
+
+    Q6_K share of inner-loop time:  35%   (estimated 53%)
+    gain from porting Q6_K:        1.20x  (estimated 1.66x)
+    P-BAR needs:                   1.23x
+
+⇒ **Q6_K-on-maddubs lands just SHORT of P-BAR on its own.** It is still the
+largest single lever identified, and combined with any real A′ gain it would
+clear the bar — but the earlier 1.66× was optimism, and the reason is visible
+in the %ref column: every projection runs at **29–43% of the reference
+stream**, so these matvecs are partly memory-bound and instruction throughput
+does not convert one-for-one into time.
+
+⚠ Note `ffn_up` (Q4_K, 7.57) sits with the Q6_K group despite being the same
+shape as `ffn_gate` (9.36). Unexplained; one run, not investigated. It drags
+the Q4_K mean down and therefore makes the 1.92× ratio, if anything, an
+UNDER-estimate of the gap — so treat 1.20× as a floor rather than a point
+estimate.
+
 ## Size it BEFORE writing it
 
 The Amdahl case above is arithmetic on top of one assumed ratio, and

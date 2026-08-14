@@ -1,0 +1,39 @@
+﻿stoke bench --ops
+  model    : models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+  n_embd   : 2560
+  n_ff     : 9728
+  n_vocab  : 151936
+
+  REFERENCE STREAMS (this run, this box -- 256 MB buffer)
+    split8_f32  (8 indep. f32 chains) : 20.45 GB/s  (med 13.12 ms, min 12.59, max 19.28)
+    xor_u64     (load-port bound)     : 21.42 GB/s  (med 12.53 ms, min 11.32, max 16.24)
+    -> %ref DENOMINATOR = max of those : 21.42 GB/s
+
+    serial_f32  (DIAGNOSTIC, NOT the denominator) : 8.68 GB/s
+      f32-add LATENCY, not bandwidth -- it cannot vectorize at any
+      -O level. It WAS the denominator until 2026-08-03, so every
+      %ref recorded before that date is ~2.47x too high a ratio.
+    forward-note spec ceiling : 60.0 GB/s -- CONTEXT ONLY, and ~4x
+      wrong for this box, which is why the denominator is measured.
+    read the %ref column, not GB/s, when the box is not quiesced.
+    %ref is share of READ BANDWIDTH, not of what the op could reach:
+      llama.cpp's own VNNI decode reaches ~68% of it, 1 thread pinned;
+      stoke's scalar -O3 ~32%. Re-measure that referent in THIS
+      session before citing it -- it read 1.26 and 2.46 tok/s hours
+      apart on 2026-08-03 under an identical command.
+
+  PROJECTIONS (bandwidth-bound -- read GB/s and %ref)
+  op                     shape                  med us    min us    max us     GB/s     %ref    reps
+  ---------------------- ------------------ ---------- --------- --------- -------- --------  ------
+  matvec attn_q          2560 x 4096             607.8     582.8    1267.9     9.75    45.5%    1560
+  matvec attn_k          2560 x 1024             154.2     148.0     968.7     9.66    45.1%    4835
+  matvec attn_v          2560 x 1024             304.2     291.5     654.4     7.12    33.2%    2940
+  matvec attn_out        4096 x 2560             614.3     578.6    1286.3     9.64    45.0%    1434
+  matvec ffn_gate        2560 x 9728            1682.4    1565.9    3209.0     8.36    39.0%     377
+  matvec ffn_up          2560 x 9728            1658.7    1558.0    2991.9     8.47    39.6%     243
+  matvec ffn_down        9728 x 2560            3218.6    3142.3    4156.9     6.36    29.7%     290
+  matvec LOGITS          2560 x 151936         55176.4   52663.6   64942.6     5.79    27.0%      18
+
+  PRIMITIVES
+  op                     shape                  med us    min us    max us     GB/s     %ref    reps
+  ---------------------- ------------------ ---------- --------- --------- -------- --------  ------

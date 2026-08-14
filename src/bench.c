@@ -671,7 +671,27 @@ static void bench_proj(const GgufFile* f, const char* tensor_name,
      * that cost is measured here rather than hidden -- it is genuinely part
      * of what a token pays. Allocated per projection because n_in varies and
      * this is setup code, not a timed region. */
-    u64   aq_bytes = (n_in / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
+    /* ▶▶ THIS BUFFER WAS SIZED FOR Q8_0 ONLY AND OVERFLOWED ON EVERY K-QUANT
+     * PROJECTION, crashing `bench --ops` with STATUS_HEAP_CORRUPTION on the
+     * Q4_K_M model. Found 2026-08-15; bisecting the archived binaries shows it
+     * back to the m3 gate archive, so it has been broken for two milestones.
+     *
+     * A K-quant matvec quantizes the activation to Q8_K (256 elements -> 292
+     * bytes), not Q8_0 (32 -> 34). At n_in=2560 that is 2,920 bytes written
+     * into a 2,720-byte allocation -- a 200-byte overflow every call.
+     *
+     * It survived because `bench --ops` is not in the test matrix: `make test`
+     * runs tests/test_*.c, and test_bench.c exercises this file's internals
+     * rather than the end-to-end mode against a real model. A harness nobody
+     * runs is a harness nobody notices is broken -- and this one is the
+     * instrument the ruling's C-SLOW branch prescribes for attribution.
+     *
+     * Sized for the LARGER of the two formats rather than dispatched on the
+     * weight type: the cost is a few hundred bytes of setup allocation, and it
+     * cannot go stale the next time a quant format is added. */
+    u64 aq_q8_0 = (n_in / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES;
+    u64 aq_q8_k = (n_in / KERNELS_Q8_K_BLOCK_ELEMS) * KERNELS_Q8_K_BLOCK_BYTES;
+    u64 aq_bytes = aq_q8_0 > aq_q8_k ? aq_q8_0 : aq_q8_k;
     void* aq = xmalloc((size_t)aq_bytes);
 
     MatvecCtx c = { w, x_pool, y_pool, n_in, n_out, aq };
