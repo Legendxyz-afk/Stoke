@@ -1,3 +1,5 @@
 ﻿=== 2026-08-14T15:47:26 leg1-ladder START
 === 2026-08-14T16:06:40 leg1-ladder END exit=0
 === 2026-08-14T16:06:40 leg2-baserate START
+=== 2026-08-14T18:37:38 leg2-baserate END exit=1
+=== 2026-08-14T18:37:38 QUEUE DONE ladder=0 baserate=1

@@ -1,0 +1,131 @@
+﻿=== 2026-08-14T16:06:40 launch: -u M:\New Drive\Desktop\Programming\stoke\tests\tooling\m4_q8kv_gate.py --stoke M:\New Drive\Desktop\Programming\stoke\build\stoke-null0.exe --stoke-b M:\New Drive\Desktop\Programming\stoke\build\stoke-null1.exe --kv-a f32 --kv-b f32 --model M:\New Drive\Desktop\Programming\stoke\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf -n 64 --corpus 50 --threads 6 --out M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-14-m45-null1-baserate
+=== PHASE 1: entry probe, freezing tau ===
+  p00 gp=0 probed (59.2s)
+  p00 gp=15 probed (41.7s)
+  p00 gp=31 probed (43.8s)
+  p00 gp=47 probed (57.0s)
+  p00 gp=63 probed (42.0s)
+  p10 gp=0 probed (42.4s)
+  p10 gp=31 probed (28.0s)
+  p10 gp=63 probed (28.2s)
+  p32 gp=0 probed (78.2s)
+  p32 gp=15 probed (81.5s)
+  p32 gp=31 probed (85.8s)
+  p32 gp=47 probed (61.0s)
+  p32 gp=63 probed (57.9s)
+  p44 gp=0 probed (209.0s)
+  p44 gp=63 probed (236.2s)
+  p00 gp=0 band=[0,100) agree (5 shared top-5)
+  p00 gp=15 band=[0,100) agree (5 shared top-5)
+  p00 gp=31 band=[0,100) agree (5 shared top-5)
+  p00 gp=47 band=[0,100) agree (5 shared top-5)
+  p00 gp=63 band=[0,100) agree (5 shared top-5)
+  p10 gp=0 band=[0,100) agree (5 shared top-5)
+  p32 gp=0 band=[100,300) agree (5 shared top-5)
+  p32 gp=15 band=[100,300) agree (5 shared top-5)
+  p32 gp=31 band=[100,300) agree (4 shared top-5)
+  p32 gp=47 band=[100,300) agree (5 shared top-5)
+  p32 gp=63 band=[100,300) agree (5 shared top-5)
+  p44 gp=0 band=[300,inf) agree (4 shared top-5)
+  band [0,100): n=30 p95=0.319452 -> tau=0.638904
+  band [100,300): n=24 p95=0.366871 -> tau=0.733742
+  band [300,inf): n=4 p95=0.321165 -> tau=0.642330
+  tau FROZEN -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-14-m45-null1-baserate-tau.json
+
+=== PHASE 2: 50-corpus sweep, 64 tokens ===
+  p00: SAME  (27.9s)
+  p01: diverges at 4  (42.5s)
+  p02: diverges at 12  (48.7s)
+  p03: diverges at 2  (53.9s)
+  p04: diverges at 10  (52.9s)
+  p05: diverges at 21  (42.8s)
+  p06: diverges at 5  (30.4s)
+  p07: SAME  (47.7s)
+  p08: diverges at 54  (29.8s)
+  p09: diverges at 33  (42.1s)
+  p10: diverges at 19  (56.3s)
+  p11: diverges at 35  (41.7s)
+  p12: diverges at 7  (53.4s)
+  p13: diverges at 5  (56.0s)
+  p14: diverges at 17  (57.8s)
+  p15: SAME  (48.4s)
+  p16: SAME  (50.5s)
+  p17: diverges at 9  (310.3s)
+  p18: diverges at 53  (86.0s)
+  p19: SAME  (78.5s)
+  p20: diverges at 24  (84.3s)
+  p21: diverges at 22  (90.0s)
+  p22: diverges at 20  (101.6s)
+  p23: diverges at 34  (60.6s)
+  p24: SAME  (84.7s)
+  p25: diverges at 9  (52.7s)
+  p26: SAME  (44.1s)
+  p27: diverges at 11  (55.9s)
+  p28: SAME  (82.7s)
+  p29: diverges at 60  (63.4s)
+  p30: diverges at 24  (57.9s)
+  p31: diverges at 4  (70.9s)
+  p32: SAME  (109.0s)
+  p33: SAME  (64.2s)
+  p34: diverges at 28  (70.4s)
+  p35: diverges at 0  (68.9s)
+  p36: SAME  (77.4s)
+  p37: SAME  (68.6s)
+  p38: SAME  (77.7s)
+  p39: SAME  (63.3s)
+  p40: diverges at 49  (336.5s)
+  p41: diverges at 8  (327.5s)
+  p42: diverges at 19  (316.6s)
+  p43: diverges at 40  (328.9s)
+  p44: diverges at 3  (316.8s)
+  p45: diverges at 0  (56.5s)
+  p46: SAME  (63.0s)
+  p47: diverges at 3  (63.6s)
+  p48: diverges at 2  (43.7s)
+  p49: diverges at 1  (68.3s)
+
+=== PHASE 3: grading 35 first divergences (ruling S6) ===
+  p01 gp=4 band=[0,100) tau=0.6389 g=(0.2136,0.1492) -> ARITHMETIC-CLASS
+  p02 gp=12 band=[0,100) tau=0.6389 g=(0.0943,0.0115) -> ESCALATE
+  p03 gp=2 band=[0,100) tau=0.6389 g=(0.6142,0.0548) -> ARITHMETIC-CLASS
+  p04 gp=10 band=[0,100) tau=0.6389 g=(0.125,0.138) -> ARITHMETIC-CLASS
+  p05 gp=21 band=[0,100) tau=0.6389 g=(0.0132,0.2556) -> ARITHMETIC-CLASS
+  p06 gp=5 band=[0,100) tau=0.6389 g=(0.1287,0.0379) -> ARITHMETIC-CLASS
+  p08 gp=54 band=[0,100) tau=0.6389 g=(1.0643,0.141) -> ESCALATE
+  p09 gp=33 band=[0,100) tau=0.6389 g=(0.0574,0.0215) -> ARITHMETIC-CLASS
+  p10 gp=19 band=[0,100) tau=0.6389 g=(0.0364,0.1244) -> ARITHMETIC-CLASS
+  p11 gp=35 band=[0,100) tau=0.6389 g=(0.0025,0.3679) -> ARITHMETIC-CLASS
+  p12 gp=7 band=[0,100) tau=0.6389 g=(0.2626,0.0768) -> ARITHMETIC-CLASS
+  p13 gp=5 band=[0,100) tau=0.6389 g=(0.0245,0.2151) -> ARITHMETIC-CLASS
+  p14 gp=17 band=[0,100) tau=0.6389 g=(0.0444,0.1383) -> ARITHMETIC-CLASS
+  p17 gp=9 band=[0,100) tau=0.6389 g=(0.0235,0.3601) -> ARITHMETIC-CLASS
+  p18 gp=53 band=[100,300) tau=0.7337 g=(0.0532,0.3565) -> ARITHMETIC-CLASS
+  p20 gp=24 band=[0,100) tau=0.6389 g=(0.0868,0.0142) -> ARITHMETIC-CLASS
+  p21 gp=22 band=[0,100) tau=0.6389 g=(0.2109,0.0759) -> ESCALATE
+  p22 gp=20 band=[100,300) tau=0.7337 g=(0.111,0.3193) -> ARITHMETIC-CLASS
+  p23 gp=34 band=[0,100) tau=0.6389 g=(0.0662,0.0412) -> ARITHMETIC-CLASS
+  p25 gp=9 band=[0,100) tau=0.6389 g=(0.0704,0.0533) -> ESCALATE
+  p27 gp=11 band=[0,100) tau=0.6389 g=(0.15,0.1591) -> ARITHMETIC-CLASS
+  p29 gp=60 band=[0,100) tau=0.6389 g=(0.2616,0.0989) -> ESCALATE
+  p30 gp=24 band=[0,100) tau=0.6389 g=(0.0408,0.2563) -> ESCALATE
+  p31 gp=4 band=[0,100) tau=0.6389 g=(0.0563,0.268) -> ESCALATE
+  p34 gp=28 band=[0,100) tau=0.6389 g=(0.1238,0.0922) -> ARITHMETIC-CLASS
+  p35 gp=0 band=[0,100) tau=0.6389 g=(0.3489,0.0079) -> ARITHMETIC-CLASS
+  p40 gp=49 band=[300,inf) tau=0.6423 g=(0.0969,0.2594) -> ARITHMETIC-CLASS
+  p41 gp=8 band=[300,inf) tau=0.6423 g=(0.0013,0.0166) -> ARITHMETIC-CLASS
+  p42 gp=19 band=[300,inf) tau=0.6423 g=(0.2516,0.0965) -> ARITHMETIC-CLASS
+  p43 gp=40 band=[300,inf) tau=0.6423 g=(0.1785,0.0405) -> ARITHMETIC-CLASS
+  p44 gp=3 band=[300,inf) tau=0.6423 g=(0.1649,0.1329) -> ESCALATE
+  p45 gp=0 band=[0,100) tau=0.6389 g=(0.1253,0.2725) -> ESCALATE
+  p47 gp=3 band=[0,100) tau=0.6389 g=(0.2732,0.2232) -> ARITHMETIC-CLASS
+  p48 gp=2 band=[0,100) tau=0.6389 g=(0.0759,0.0956) -> ARITHMETIC-CLASS
+  p49 gp=1 band=[0,100) tau=0.6389 g=(0.0596,0.1657) -> ARITHMETIC-CLASS
+
+=== GATE ITEM 4 ===
+  first-divergence prompts : 35/50   (bound: <= 19/50)
+  flip rate                : 1.094%/token  (bound: <= 0.5)
+  BUG-class                : 0              (bound: 0)
+  ESCALATE (ladder owed)   : 9
+  -> NOT a verdict yet: every ESCALATE needs its L2/L3 ladder run.
+GATE ITEM 4: NOT PASSED
+=== 2026-08-14T18:37:38 python exit=1

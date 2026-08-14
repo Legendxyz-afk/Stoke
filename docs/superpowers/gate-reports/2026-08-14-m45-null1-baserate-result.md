@@ -95,15 +95,41 @@ The obvious form is this run's own number — a Q4_K_M null floor — but choosi
 a bound from the measurement it will police is the circularity the M3 tripwire
 memo already paid for, and it should be reasoned about rather than assumed.
 
-## Phase 3
+## Phase 3 — the verdict profiles are indistinguishable too
 
-Grading of the 35 divergences was still running when this was written; it
-classifies them BUG / ARITHMETIC-CLASS / ESCALATE and **cannot change N**,
-which is fixed at the end of phase 2. Appended when it lands.
+Completed 18:37:38. The classification cannot change N, which was fixed at the
+end of phase 2, but it turns out to say the same thing again:
 
-⚠ Expect null-1's classification to look *worse* than C's despite being a
-smaller perturbation: its τ is smaller in the two well-populated bands (0.639 /
-0.734 vs 0.794 / 0.794), because τ is `max(0.10, 2 × band p95)` of the deltas a
-smaller perturbation produces. Smaller τ makes ARITHMETIC-CLASS harder and
-ESCALATE likelier. That is an instrument property, predicted in the
-pre-registration before the run, not a property of the code.
+| | N | BUG-class | ARITHMETIC-CLASS | ESCALATE |
+|---|---|---|---|---|
+| **NULL-1** — zero semantic content | 35/50 | **0** | 26 | 9 |
+| rung C — ~1e-7 fold restructure | 34/50 | **0** | 24 | 10 |
+
+**A pair of binaries with no mathematical difference between them produces a
+verdict profile indistinguishable from C's on every axis.** Zero BUG-class
+either way, and the ARITHMETIC/ESCALATE split matches within two.
+
+The harness's own summary is the disproof stated in its own words:
+
+    === GATE ITEM 4 ===
+    first-divergence prompts : 35/50   (bound: <= 19/50)
+    flip rate                : 1.094%/token  (bound: <= 0.5)
+    BUG-class                : 0              (bound: 0)
+    GATE ITEM 4: NOT PASSED
+
+**The instrument reports NOT PASSED for a binary pair that computes the same
+values in a different order.** The `exit=1` that followed is the harness
+applying the inherited bound correctly; it is not a malfunction, and the queue
+recorded `ladder=0 baserate=1` for exactly that reason.
+
+⚠ **A prediction recorded before the run came out wrong.** The
+pre-registration expected null-1's classification to look *worse* than C's —
+its τ is smaller in both well-populated bands (0.639 / 0.734 vs 0.794 / 0.794),
+and a smaller τ makes ARITHMETIC-CLASS harder and ESCALATE likelier. It
+produced **9 ESCALATEs against C's 10**, marginally fewer. At ~9–10 of ~35 the
+two are indistinguishable, so the reasoning was not refuted so much as swamped;
+but the directional prediction was not borne out and is recorded as such.
+
+The nine ESCALATEs are **not** laddered here. Unlike C's, they adjudicate
+nothing: this pair is a throwaway calibration instrument, not a candidate for
+adoption, and no decision depends on their classification.
