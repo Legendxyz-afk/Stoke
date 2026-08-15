@@ -462,64 +462,6 @@ TEST(simd_vec_dot_q4_k_q8_k_is_bit_exact_vs_scalar_over_1e4_tensors) {
     ASSERT_EQ_U32(mismatches, 0u);
 }
 
-/* M4.5 rung A': four rows per pass must give, per row, exactly what the solo
- * kernel gives. The rows of a matvec are independent dot products, so this is
- * exact by construction rather than by tolerance -- which is precisely why it
- * is asserted against the solo kernel over the same corpus the twins use,
- * instead of being argued in a comment. A regression here would be a sharing
- * bug: an activation load, a scale, or an accumulator crossing between rows. */
-TEST(simd_vec_dot_q4_k_q8_k_x4_is_bit_exact_vs_solo_over_1e4_groups) {
-    if (!kernels_cpu_has_avx_vnni()) {
-        fprintf(stderr, "FAIL %s:%d: no AVX-VNNI -- the A' exact-diff gate "
-                        "cannot run on this box\n", __FILE__, __LINE__);
-        g_test_case_failed = 1;
-        return;
-    }
-    static const u64 lens[] = {256, 512, 768, 2560, 9728};
-    const u32 n_lens = (u32)(sizeof lens / sizeof lens[0]);
-    const u32 iters = 10000;
-    const u64 max_blocks = 9728u / QK_ELEMS;
-
-    rng_reset();
-    u8* w = (u8*)xmalloc((size_t)4u * max_blocks * Q4K_BYTES);
-    u8* aq = (u8*)xmalloc((size_t)max_blocks * KERNELS_Q8_K_BLOCK_BYTES);
-    f32* x = (f32*)xmalloc((size_t)9728u * sizeof(f32));
-
-    u32 mismatches = 0;
-    for (u32 it = 0; it < iters; it++) {
-        u64 n = lens[it % n_lens];
-        u64 blocks = n / QK_ELEMS;
-        size_t stride = (size_t)blocks * Q4K_BYTES;
-        for (u32 k = 0; k < 4u; k++) {
-            for (u64 b = 0; b < blocks; b++) {
-                fill_q4_k_block(w + (size_t)k * stride + (size_t)b * Q4K_BYTES);
-            }
-        }
-        fill_q8_k_activation(x, aq, n);
-
-        const void* rows[4] = {w + 0u * stride, w + 1u * stride,
-                               w + 2u * stride, w + 3u * stride};
-        f32 got[4];
-        vec_dot_q4_k_q8_k_x4_avx2(rows, aq, n, got);
-        for (u32 k = 0; k < 4u; k++) {
-            f32 want = vec_dot_q4_k_q8_k_avx2(rows[k], aq, n);
-            if (!bit_identical(got[k], want)) {
-                if (mismatches == 0) {
-                    fprintf(stderr, "  iter %u row %u n=%llu: solo %.9g "
-                                    "(0x%08X) vs x4 %.9g (0x%08X)\n",
-                            it, k, (unsigned long long)n, (double)want,
-                            f32_bits(want), (double)got[k], f32_bits(got[k]));
-                }
-                mismatches++;
-            }
-        }
-    }
-    free(w);
-    free(aq);
-    free(x);
-    ASSERT_EQ_U32(mismatches, 0u);
-}
-
 TEST(simd_vec_dot_q6_k_q8_k_is_bit_exact_vs_scalar_over_1e4_tensors) {
     if (!kernels_cpu_has_avx_vnni()) {
         fprintf(stderr, "FAIL %s:%d: no AVX-VNNI -- the K4 exact-diff gate "

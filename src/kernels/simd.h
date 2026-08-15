@@ -164,19 +164,11 @@ u32 argmax_avx2(const f32* logits, u64 n);
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 
-/* M4.5 rung A' (ruling §7.3): FOUR Q4_K rows against one shared Q8_K
- * activation. out[k] is BIT-IDENTICAL to vec_dot_q4_k_q8_k_avx2(wrows[k],
- * arow, n) -- the rows of a matvec are independent dot products, nothing
- * reduces across them, so each row runs exactly the solo kernel's operations
- * in its order. What is shared is the ACTIVATION LOAD (once per sub-block
- * instead of once per row) and the memory-level parallelism of four
- * independent accumulator chains, which is the same argument that justified
- * the Q8_0 x4 kernel above.
- *
- * §7.3 keeps whichever variant measures fastest, INCLUDING NEITHER: under a
- * 5% gain the single-row path stays and this is recorded as tried. */
-void vec_dot_q4_k_q8_k_x4_avx2(const void* const wrows[4], const void* arow,
-                               u64 n, f32 out[4]);
+/* NOTE: a Q4_K x4 twin (rung A') was written and MEASURED at 0.907x -- a 9.3%
+ * regression -- and removed on 2026-08-15. It was bit-exact; it was simply
+ * slower, because maddubs had already removed the latency-bound regime the
+ * Q8_0 x4 kernel above exploits. Preserved at 01184eb if anyone wants to
+ * re-measure it on different hardware. */
 
 /* M4.5 rung B (ruling 2026-08-12 §7.1): ONE weight row against N activations,
  * unpacking the row's weight-only work once instead of once per sequence.

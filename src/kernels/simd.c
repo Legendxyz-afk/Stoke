@@ -512,104 +512,6 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     return sumf;
 }
 
-/* ▶ M4.5 RUNG A' (ruling §7.3): FOUR weight rows against one shared
- * activation, the Q8_0 x4 shape ported to Q4_K on top of the maddubs kernel.
- *
- * WHAT IT BUYS, and it is not arithmetic. The per-row work is unchanged; what
- * changes is that the activation's 32-byte chunk is loaded ONCE per sub-block
- * instead of once per row, and four independent accumulator chains are in
- * flight at a time. A single row is one load stream feeding one serial
- * dependency chain, so the core spends most of its time waiting -- the same
- * memory-level-parallelism argument that made vec_dot_q8_0_q8_0_x4_avx2 worth
- * having, and the reason §7.3 orders A' straight after C.
- *
- * ▶▶ AND IT COSTS NO GATE. The rows of a matvec are INDEPENDENT dot products
- * -- nothing reduces across them -- so out[k] executes exactly the operations
- * vec_dot_q4_k_q8_k_avx2 executes for row k, in the same order, against the
- * same values. Bit-exactness is preserved PER ROW by construction rather than
- * by tolerance, and tests/test_simd.c asserts it against the solo kernel
- * rather than trusting this paragraph.
- *
- * ⚠ UNMEASURED AT THE TIME OF WRITING. §7.3 says to keep whichever variant is
- * fastest, INCLUDING KEEPING NONE: under a 5% gain the single-row path stays
- * and this is recorded as tried. The dispatch in vec.c is one line either way. */
-void vec_dot_q4_k_q8_k_x4_avx2(const void* const wrows[4], const void* arow,
-                               u64 n, f32 out[4]) {
-    if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
-        fatal("kernels: vec_dot_q4_k_q8_k_x4_avx2 -- n=%llu is not a multiple "
-              "of %u",
-              (unsigned long long)n, KERNELS_Q4_K_BLOCK_ELEMS);
-    }
-    const u8* ab = (const u8*)arow;
-    u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
-
-    const __m256i lownib8 = _mm256_set1_epi8(0xF);
-    const __m256i ones16 = _mm256_set1_epi16(1);
-    f32 sumf[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-
-    for (u64 i = 0; i < nb; ++i) {
-        const u8* ablk = ab + i * KERNELS_Q8_K_BLOCK_BYTES;
-        const i8* q8 = (const i8*)(ablk + 4);
-        const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
-        f32 ad;
-        memcpy(&ad, ablk, sizeof ad);
-
-        /* The activation's per-16 sums are shared, but each row has its own
-         * mins, so the min term stays four separate integer reductions. */
-        const u8* blk[4];
-        u8 scales8[4][8], mins8[4][8];
-        i32 sumi[4];
-        for (u32 k = 0; k < 4u; ++k) {
-            blk[k] = (const u8*)wrows[k] + i * KERNELS_Q4_K_BLOCK_BYTES;
-            kernels_q4_k_unpack_scales(blk[k] + 4, scales8[k], mins8[k]);
-            i32 s = 0;
-            for (u32 jj = 0; jj < KERNELS_Q8_K_BLOCK_ELEMS / 16u; ++jj) {
-                i16 bs;
-                memcpy(&bs, bsums + 2u * jj, sizeof bs);
-                s += (i32)bs * (i32)mins8[k][jj / 2u];
-            }
-            sumi[k] = s;
-        }
-
-        __m256i acc[4];
-        for (u32 k = 0; k < 4u; ++k) acc[k] = _mm256_setzero_si256();
-
-        for (u32 j = 0; j < 8u; ++j) {
-            /* ONE activation load for four rows -- this is the whole point. */
-            __m256i av = _mm256_loadu_si256(
-                (const __m256i*)(const void*)(q8 + j * 32u));
-            for (u32 k = 0; k < 4u; ++k) {
-                const u8* qsrc = blk[k] + 16 + (j / 2u) * 32u;
-                __m256i qb =
-                    _mm256_loadu_si256((const __m256i*)(const void*)qsrc);
-                __m256i wv = (j & 1u)
-                                 ? _mm256_and_si256(_mm256_srli_epi16(qb, 4),
-                                                    lownib8)
-                                 : _mm256_and_si256(qb, lownib8);
-                __m256i sub = _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av),
-                                                ones16);
-                acc[k] = _mm256_add_epi32(
-                    acc[k],
-                    _mm256_mullo_epi32(
-                        sub, _mm256_set1_epi32((int)scales8[k][j])));
-            }
-        }
-
-        for (u32 k = 0; k < 4u; ++k) {
-            u16 draw, dmraw;
-            memcpy(&draw, blk[k], sizeof draw);
-            memcpy(&dmraw, blk[k] + 2, sizeof dmraw);
-            /* The two CONTRACT lines, per row, verbatim from the scalar. */
-            const i32 S_b = kq_hsum_i32(acc[k]);
-            const f32 d = f16_to_f32(draw) * ad;
-            const f32 dmin = f16_to_f32(dmraw) * ad;
-            sumf[k] = sumf[k] + d * (f32)S_b;
-            sumf[k] = sumf[k] - dmin * (f32)sumi[k];
-        }
-    }
-    for (u32 k = 0; k < 4u; ++k) out[k] = sumf[k];
-}
-
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                                u32 n_seq, u64 n, f32* out) {
     if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
@@ -887,15 +789,6 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     fatal("kernels: vec_dot_q6_k_q8_k_avx2 on a non-x86-64 build -- callers "
           "must check kernels_cpu_has_avx_vnni() first");
     return 0.0f;
-}
-
-void vec_dot_q4_k_q8_k_x4_avx2(const void* const wrows[4], const void* arow,
-                               u64 n, f32 out[4]) {
-    (void)wrows;
-    (void)arow;
-    (void)n;
-    (void)out;
-    fatal("kernels: vec_dot_q4_k_q8_k_x4_avx2 on a non-x86-64 build");
 }
 
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,

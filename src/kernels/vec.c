@@ -183,24 +183,26 @@ static void rows_q4_k_scalar(void* vctx, u64 begin, u64 end) {
     }
 }
 
-/* ▶ M4.5 RUNG A' (ruling §7.3): four rows per pass, the same shape
- * rows_q8_0_avx2 has used since K3. The tail is handled here rather than left
- * to another chunk, since chunk bounds are row bounds.
+/* ▶ M4.5 RUNG A' WAS TRIED HERE AND REJECTED ON MEASUREMENT (2026-08-15).
+ * Four rows per pass, sharing one activation load -- the Q8_0 x4 shape -- came
+ * back at 0.907x, a 9.3% SLOWDOWN, consistent across three blocks with no
+ * overlap in the arms' ranges, and with the anchor guard passing at +0.3% so
+ * the measurement is sound. §7.3 permits keeping neither variant; the
+ * single-row path stays.
  *
- * Exact per row by construction -- see the note on vec_dot_q4_k_q8_k_x4_avx2.
- * If the measurement says under 5%, revert this function to the solo loop and
- * record it; §7.3 explicitly permits keeping neither variant. */
+ * WHY IT LOST, hypothesis and unmeasured: the Q8_0 x4 win came when the inner
+ * loop ran 8 products/uop and was latency-bound. maddubs changed the regime --
+ * four concurrent weight streams, four accumulators and per-super-block
+ * scale/min setup add register and cache pressure to a kernel that is already
+ * dense. Row tiling solved a problem maddubs had already removed.
+ *
+ * The kernel, its bit-exactness test and the full reasoning are preserved in
+ * history at 01184eb and in
+ * gate-reports/2026-08-15-m45-aprime-measure-report.md. Not left in place
+ * unused: dead code describing an abandoned approach is worse than no code. */
 static void rows_q4_k_avx2(void* vctx, u64 begin, u64 end) {
     const RowJob* j = (const RowJob*)vctx;
-    u64 r = begin;
-    for (; r + 4u <= end; r += 4u) {
-        const void* rows[4] = {j->base + (r + 0u) * j->row_bytes,
-                               j->base + (r + 1u) * j->row_bytes,
-                               j->base + (r + 2u) * j->row_bytes,
-                               j->base + (r + 3u) * j->row_bytes};
-        vec_dot_q4_k_q8_k_x4_avx2(rows, j->aq, j->n_in, &j->y[r]);
-    }
-    for (; r < end; r++) {
+    for (u64 r = begin; r < end; r++) {
         j->y[r] = vec_dot_q4_k_q8_k_avx2(j->base + r * j->row_bytes, j->aq,
                                          j->n_in);
     }
