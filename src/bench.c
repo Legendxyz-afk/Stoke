@@ -846,8 +846,35 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
 
     printf("  PRIMITIVES\n");
     header();
+    /* ▶▶ THE Q8_0 PRIMITIVES GET A SYNTHESISED ROW, NOT A BORROWED TENSOR.
+     * They used to be handed `q->data` -- blk.0.attn_q.weight -- which is
+     * Q8_0 only if the loaded model happens to be Q8_0. Point the bench at
+     * Q4_K_M and the kernel correctly refuses its own input:
+     *
+     *   fatal: vec_dot_q8_0_f32 -- block 34 scale decodes to inf/nan
+     *
+     * and that fatal took the ENTIRE ELEMENTWISE SECTION down with it -- the
+     * rmsnorm/rope/softmax/swiglu numbers, which are exactly the non-matvec
+     * attribution this instrument exists to provide. Same root cause as the
+     * activation-scratch overflow fixed above: a harness written in M3
+     * against a Q8_0 model, never revisited when K-quants arrived.
+     *
+     * A primitive benchmark measures the KERNEL. Its cost must not depend on
+     * which quant mix the loaded model happens to carry, so the row is built
+     * here with a sane f16 scale and quants spanning the i8 range. */
+    u64 q80_blocks = n_embd / KERNELS_Q8_0_BLOCK_ELEMS;
+    u8* q80_row = (u8*)xmalloc((size_t)q80_blocks * KERNELS_Q8_0_BLOCK_BYTES);
+    for (u64 b = 0; b < q80_blocks; b++) {
+        u8* blk = q80_row + b * KERNELS_Q8_0_BLOCK_BYTES;
+        u16 h = f32_to_f16(0.0078125f); /* 1/128 -- a sane block scale */
+        memcpy(blk, &h, sizeof h);
+        for (u32 k = 0; k < KERNELS_Q8_0_BLOCK_ELEMS; k++) {
+            blk[2 + k] =
+                (u8)(i8)((i32)((b * 31u + k * 17u) % 255u) - 127);
+        }
+    }
     {
-        DotCtx c = { q->data, x, n_embd };
+        DotCtx c = { q80_row, x, n_embd };
         Timing t = time_op(run_dot_q8_0, &c, reps_override);
         char s[32];
         snprintf(s, sizeof(s), "n=%llu", (unsigned long long)n_embd);
@@ -856,7 +883,7 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
                 + n_embd * sizeof(f32), t);
     }
     {
-        DequantCtx c = { q->data, y, n_embd };
+        DequantCtx c = { q80_row, y, n_embd };
         Timing     t = time_op(run_dequant_q8_0, &c, reps_override);
         char       s[32];
         snprintf(s, sizeof(s), "n=%llu", (unsigned long long)n_embd);
@@ -864,6 +891,7 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
             (n_embd / KERNELS_Q8_0_BLOCK_ELEMS) * KERNELS_Q8_0_BLOCK_BYTES
                 + n_embd * sizeof(f32), t);
     }
+    free(q80_row);
     printf("\n");
 
     printf("  ELEMENTWISE (cache-resident -- read us, NOT GB/s)\n");
