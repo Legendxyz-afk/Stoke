@@ -608,6 +608,7 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     const u8* ab = (const u8*)arow;
     u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
+    const __m256i ones16 = _mm256_set1_epi16(1);
     f32 sumf = 0.0f;
 
     for (u64 i = 0; i < nb; ++i) {
@@ -617,44 +618,85 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
         const i8* sc = (const i8*)(blk + 192);
         const u8* ablk = ab + i * KERNELS_Q8_K_BLOCK_BYTES;
         const i8* q8 = (const i8*)(ablk + 4);
+        const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
         f32 ad;
         memcpy(&ad, ablk, sizeof ad);
 
-        /* Q6_K's quants are INTERLEAVED across the 128-element half (l+0,
-         * l+32, l+64, l+96 from one l), so unlike Q4_K there is no
-         * contiguous sub-block to read straight out of the packed bytes.
-         * The twin materialises the same aux8 the scalar builds -- that is
-         * where the layout lives -- and vectorises the consumption. */
-        i8 aux8[KERNELS_Q6_K_BLOCK_ELEMS];
+        /* ▶▶ Q6_K ON MADDUBS (2026-08-15). `vpmaddubsw` needs UNSIGNED bytes
+         * against signed ones, and Q6_K's quants are CENTRED to -32..+31,
+         * which is why this port was deferred when Q4_K got one. But the
+         * centring is a subtraction, and subtraction distributes:
+         *
+         *   S_b = sum_j sc_j * sum_k (q6_k - 32) * q8_k
+         *       = sum_j sc_j * [ sum_k q6_k*q8_k  -  32 * sum_k q8_k ]
+         *
+         * with q6_k the RAW UNSIGNED 0..63 value. The first term is exactly
+         * what maddubs computes; the second is 32 times the sub-block's
+         * activation sum.
+         *
+         * ▶ AND THAT SUM IS ALREADY COMPUTED AND CURRENTLY THROWN AWAY.
+         * Q6_K has 16 sub-blocks of 16 elements; Q8_K's bsums has 16 entries
+         * each summing 16 elements. IDENTICAL granularity, no regrouping --
+         * and until now this kernel never touched bsums at all.
+         *
+         * ⚠ NOT A STREAM CHANGE. S_b is an exact INTEGER total, so reaching
+         * it by this identity gives the same VALUE, and the f32 fold below is
+         * untouched. Bit-exactness holds by the same CONTRACT v2 argument the
+         * Q4_K maddubs port used, and test_simd asserts it against the scalar
+         * rather than trusting this note. The scalar is deliberately NOT
+         * ported: it already computes the exact S_b, and a twin reaching it
+         * differently is precisely what v2 exists to permit.
+         *
+         * NO SATURATION, computed: a maddubs pair is at most 2*63*127 =
+         * 16,002 against an i16 ceiling of 32,767 -- tighter than Q4_K's
+         * 3,810, and still half the headroom spare. */
+        u8 raw6[KERNELS_Q6_K_BLOCK_ELEMS];
         for (u32 h = 0; h < 2u; ++h) {
             const u8* q4h = ql + h * 64u;
             const u8* qhh = qh + h * 32u;
-            i8* a = aux8 + h * 128u;
+            u8* a = raw6 + h * 128u;
             for (int l = 0; l < 32; ++l) {
-                a[l + 0] = (i8)((q4h[l + 0] & 0xF) | (((qhh[l] >> 0) & 3) << 4)) - 32;
-                a[l + 32] = (i8)((q4h[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4)) - 32;
-                a[l + 64] = (i8)((q4h[l + 0] >> 4) | (((qhh[l] >> 4) & 3) << 4)) - 32;
-                a[l + 96] = (i8)((q4h[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4)) - 32;
+                a[l + 0] = (u8)((q4h[l + 0] & 0xF) | (((qhh[l] >> 0) & 3) << 4));
+                a[l + 32] = (u8)((q4h[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4));
+                a[l + 64] = (u8)((q4h[l + 0] >> 4) | (((qhh[l] >> 4) & 3) << 4));
+                a[l + 96] = (u8)((q4h[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4));
             }
         }
 
-        __m256i acc = _mm256_setzero_si256();
-        /* 16 sub-blocks of 16 elements, one i8 scale each. */
+        /* The centring correction, sixteen integer terms at exactly the
+         * sub-block granularity bsums already uses. */
+        i32 corr = 0;
         for (u32 j = 0; j < 16u; ++j) {
-            __m256i sub = _mm256_setzero_si256();
-            for (u32 g = 0; g < 2u; ++g) {
-                __m256i wv = kq_load_i8x8_to_i32(aux8 + j * 16u + g * 8u);
-                __m256i av = kq_load_i8x8_to_i32(q8 + j * 16u + g * 8u);
-                sub = kq_mac8(sub, wv, av);
-            }
-            acc = _mm256_add_epi32(
-                acc, _mm256_mullo_epi32(sub, _mm256_set1_epi32((int)sc[j])));
+            i16 bs;
+            memcpy(&bs, bsums + 2u * j, sizeof bs);
+            corr += (i32)sc[j] * (i32)bs;
+        }
+
+        __m256i acc = _mm256_setzero_si256();
+        /* TWO sub-blocks per pass: 16 elements is half a ymm, so pairing them
+         * fills the register and one maddubs retires 32 products. The two
+         * halves carry different scales, which is why the multiplier is a
+         * built vector rather than a broadcast: vpmaddwd keeps i32 lanes 0..3
+         * over bytes 0..15 (sub-block j) and 4..7 over bytes 16..31 (j+1). */
+        for (u32 j = 0; j < 16u; j += 2u) {
+            __m256i wv = _mm256_loadu_si256(
+                (const __m256i*)(const void*)(raw6 + j * 16u));
+            __m256i av = _mm256_loadu_si256(
+                (const __m256i*)(const void*)(q8 + j * 16u));
+            __m256i sub = _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av),
+                                            ones16);
+            __m256i sv = _mm256_set_epi32((int)sc[j + 1], (int)sc[j + 1],
+                                          (int)sc[j + 1], (int)sc[j + 1],
+                                          (int)sc[j], (int)sc[j],
+                                          (int)sc[j], (int)sc[j]);
+            acc = _mm256_add_epi32(acc, _mm256_mullo_epi32(sub, sv));
         }
 
         u16 draw;
         memcpy(&draw, blk + 208, sizeof draw);
-        /* The CONTRACT line, verbatim from the scalar. */
-        const i32 S_b = kq_hsum_i32(acc);
+        /* The CONTRACT line, verbatim from the scalar -- with the centring
+         * folded back in as exact integer arithmetic before it. */
+        const i32 S_b = kq_hsum_i32(acc) - 32 * corr;
         sumf = sumf + (f16_to_f32(draw) * ad) * (f32)S_b;
     }
     return sumf;

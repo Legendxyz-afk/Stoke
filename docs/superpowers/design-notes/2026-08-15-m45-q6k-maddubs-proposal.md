@@ -168,16 +168,27 @@ separate kernel from elsewhere. **Run `bench --ops` split by weight type
 first.** If Q6_K is not a large share of matvec time, this proposal is worth
 nothing and should be dropped rather than written.
 
-## If it is written
+## ▶ WRITTEN 2026-08-15, and two claims above were wrong
 
-Same verification chain as A′, no shortcuts: `test_simd`'s twin-vs-scalar case
-over 1e4 tensors (the scalar must be ported too, or the twin has nothing exact
-to agree with), `test_kquant`, batch identity, and byte-compare — **but note
-this one WILL move the streams**, because it changes the integer core's
-grouping for Q6_K. Unlike A′ and the Q4_K maddubs port, it is a stream-changing
-change and needs grading.
+**1. "The scalar must be ported too" — no.** The scalar already computes the
+exact integer `S_b`; a twin reaching the same value by a different route is
+precisely what CONTRACT v2 exists to permit. Only the twin changed.
 
-⚠ And grading now means the **decided** criterion, not the retired one: zero
-BUG-class plus full §6 classification plus laddered ESCALATEs, with the
-first-divergence count reported and not bounded
-(`memos/2026-08-14-m45-first-divergence-criterion-DECISION-OPUS.md`).
+**2. "This one WILL move the streams" — no, and this is the important one.**
+`S_b` is an exact INTEGER total. Reaching it via the offset identity produces
+the same VALUE, not a nearby one, and the f32 fold is untouched. So the port is
+bit-exact for the same reason the Q4_K maddubs port was — which also regrouped
+the integer core and moved zero bits. **No grading run is needed.** The earlier
+claim confused "different grouping" with "different result", which is exactly
+the distinction CONTRACT v2 was re-anchored to make.
+
+Confirmed rather than argued: `test_simd` **12/12**, including
+`simd_vec_dot_q6_k_q8_k_is_bit_exact_vs_scalar_over_1e4_tensors` (1e4 tensors ×
+5 lengths) and the saturating-extremes case; `test_kquant` 8/8. Built in a
+third isolated directory (`SAN_SUFFIX=-q6`) so neither arm of a measurement
+running at the time was touched.
+
+Still owed before it is kept: batch identity, the full matrix, a byte-compare
+proving the streams do not move, and — the only thing that decides it — an
+interleaved measurement. A′ has just demonstrated that a correct, plausible,
+bit-exact kernel can still be a regression.

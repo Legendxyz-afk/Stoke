@@ -49,6 +49,9 @@ param(
     [int]$BlockGapM   = 75,
     [int]$QuietTries  = 40,
     [int]$NGen        = 128,
+    # N=1 is M4.5's bar; N>1 exercises the batched _xn path, which is a
+    # different kernel and needs its own measurement.
+    [int]$Seqs        = 1,
     [string]$Stamp    = "2026-08-15-m45-overnight-pbar",
     [string]$CorrPrompt = "p41",
     # The two engine arms, so the SAME fixed machinery can measure a different
@@ -157,7 +160,7 @@ function RunCapture($exe, $argList, $errPath, $outPath) {
 #   "decode 128 tok in 11637.2 ms (11.000 tok/s aggregate)"
 function StokeRate($exe, $model, $prompt, $kv) {
     $a = @("batch", ('"' + $model + '"'), "--raw", "-n", "$N_GEN",
-           "-f", ('"' + $prompt + '"'), "--seqs", "1", "--threads", "6",
+           "-f", ('"' + $prompt + '"'), "--seqs", "$Seqs", "--threads", "6",
            "--timing")
     if ($kv) { $a += @("--kv", $kv) }
     RunCapture $exe $a $tmp $tmpOut
