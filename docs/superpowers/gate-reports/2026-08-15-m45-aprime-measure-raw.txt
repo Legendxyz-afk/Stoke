@@ -1,0 +1,83 @@
+﻿2026-08-15T01:18:20  START  islc_was_running=False  blocks=3 cycles=3 n=128
+2026-08-15T01:18:21  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (0 min)
+2026-08-15T01:19:11  START  islc_was_running=False  blocks=3 cycles=3 n=128
+2026-08-15T01:19:13  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (0 min)
+2026-08-15T01:34:30  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (15 min)
+2026-08-15T01:49:47  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (30 min)
+2026-08-15T02:05:05  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (45 min)
+2026-08-15T02:20:23  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (60 min)
+2026-08-15T02:35:41  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (75 min)
+2026-08-15T02:50:59  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (90 min)
+2026-08-15T03:06:17  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (105 min)
+2026-08-15T03:21:35  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (120 min)
+2026-08-15T03:36:52  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (135 min)
+2026-08-15T03:52:10  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (150 min)
+2026-08-15T04:07:28  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (165 min)
+2026-08-15T04:22:45  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (180 min)
+2026-08-15T04:38:04  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (195 min)
+2026-08-15T04:53:21  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (210 min)
+2026-08-15T05:08:40  PHASE 0: waiting for 'stoke-m45-overnight-pbar' (225 min)
+2026-08-15T05:10:43  PHASE 0: 'stoke-m45-overnight-pbar' is not running (waited 227 min) -- proceeding
+2026-08-15T05:12:43  PHASE 1: the owed correctness re-runs
+2026-08-15T05:12:43    skipped by request (already discharged)
+2026-08-15T05:12:43  PHASE 2: stopping ISLC, waiting for quiet
+2026-08-15T05:12:48    standby cache 0.18 GB before the wait
+2026-08-15T05:12:49    quiet sample 1/3 at 0%
+2026-08-15T05:13:49    quiet sample 2/3 at 10%
+2026-08-15T05:14:49    quiet streak broken at 16%
+2026-08-15T05:14:49    waiting: cpu 16% > 12%
+2026-08-15T05:15:50    quiet sample 1/3 at 8%
+2026-08-15T05:16:50    quiet streak broken at 17%
+2026-08-15T05:16:50    waiting: cpu 17% > 12%
+2026-08-15T05:17:50    quiet sample 1/3 at 6%
+2026-08-15T05:18:50    quiet sample 2/3 at 9%
+2026-08-15T05:19:51    quiet streak broken at 14%
+2026-08-15T05:19:51    waiting: cpu 14% > 12%
+2026-08-15T05:20:51    quiet sample 1/3 at 5%
+2026-08-15T05:21:51    quiet sample 2/3 at 4%
+2026-08-15T05:22:52    box quiet at 10% (3 consecutive) after 10 min
+2026-08-15T05:23:19    warm 1/3 left standby at 0.22 GB -- warming again
+2026-08-15T05:23:34    warm 2/3 left standby at 0.38 GB -- warming again
+2026-08-15T05:23:49    warm 3/3 left standby at 0.5 GB -- warming again
+2026-08-15T05:23:50    âš  standby only 0.51 GB after 3 warms -- block 1 MAY BE DISK-BOUND
+2026-08-15T05:23:51  BLOCK 1 starting (cpu 23%, standby 0.51 GB)
+2026-08-15T05:24:04    b1-c1-A  12.848
+2026-08-15T05:24:19    b1-c1-B  11.435
+2026-08-15T05:24:43    b1-c1-L  18.39
+2026-08-15T05:24:57    b1-c2-B  11.586
+2026-08-15T05:25:21    b1-c2-L  18.35
+2026-08-15T05:25:34    b1-c2-A  12.072
+2026-08-15T05:25:57    b1-c3-L  18.46
+2026-08-15T05:26:11    b1-c3-A  12.375
+2026-08-15T05:26:25    b1-c3-B  11.589
+2026-08-15T05:48:07    warm 1/3 left standby at 0.67 GB -- warming again
+2026-08-15T05:48:21    warm 2/3 left standby at 0.66 GB -- warming again
+2026-08-15T05:48:36    warm 3/3 left standby at 0.67 GB -- warming again
+2026-08-15T05:48:37    âš  standby only 0.67 GB after 3 warms -- block 2 MAY BE DISK-BOUND
+2026-08-15T05:48:39  BLOCK 2 starting (cpu 18%, standby 0.67 GB)
+2026-08-15T05:48:52    b2-c1-A  13.161
+2026-08-15T05:49:06    b2-c1-B  11.048
+2026-08-15T05:49:30    b2-c1-L  18.1
+2026-08-15T05:49:45    b2-c2-B  11.413
+2026-08-15T05:50:08    b2-c2-L  18.46
+2026-08-15T05:50:22    b2-c2-A  12.605
+2026-08-15T05:50:45    b2-c3-L  18.29
+2026-08-15T05:50:58    b2-c3-A  12.573
+2026-08-15T05:51:13    b2-c3-B  11.381
+2026-08-15T06:13:07    warm 1/3 left standby at 0.7 GB -- warming again
+2026-08-15T06:13:23    warm 2/3 left standby at 0.7 GB -- warming again
+2026-08-15T06:13:38    warm 3/3 left standby at 0.7 GB -- warming again
+2026-08-15T06:13:39    âš  standby only 0.7 GB after 3 warms -- block 3 MAY BE DISK-BOUND
+2026-08-15T06:13:41  BLOCK 3 starting (cpu 23%, standby 0.7 GB)
+2026-08-15T06:13:53    b3-c1-A  13.15
+2026-08-15T06:14:08    b3-c1-B  11.389
+2026-08-15T06:14:31    b3-c1-L  18.37
+2026-08-15T06:14:46    b3-c2-B  11.519
+2026-08-15T06:15:09    b3-c2-L  18.37
+2026-08-15T06:15:22    b3-c2-A  12.612
+2026-08-15T06:15:46    b3-c3-L  18.26
+2026-08-15T06:15:59    b3-c3-A  12.611
+2026-08-15T06:16:14    b3-c3-B  11.602
+2026-08-15T06:16:17  ISLC restore attempted (was_running=False, forced=True): running=True
+2026-08-15T06:16:17  REPORT written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-15-m45-aprime-measure-report.md
+2026-08-15T06:16:17  DONE
