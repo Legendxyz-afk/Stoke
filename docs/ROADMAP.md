@@ -222,7 +222,13 @@ paths (exact-diff gate depends on it; re-run parity after the activation
 switch); AVX-VNNI VEX intrinsic (`_mm256_dpbusd_avx_epi32`, NOT the
 AVX-512 name) + dpbusd sign trick — probe idiom from fetched ggml source;
 K-quant layouts python-verified before C; work-stealing 64-row chunks
-(P/E-proof); miss-the-bar attribution ladder runs on the mandated
+(P/E-proof) **[⚠ 2026-08-17: "P/E-proof" IS FALSE AS WRITTEN. K5's
+atomic-counter chunking was in place and stoke still lost up to 10.9x to
+the E-cores, because Windows EcoQoS parked the whole pool there — chunking
+cannot rescue work if every worker is on a slow core. Dynamic chunking is
+necessary and was never sufficient; the scheduler had to be told these are
+performance threads. See the §M2 bandwidth row and `76dee7f`.]**;
+miss-the-bar attribution ladder runs on the mandated
 `stoke bench --ops` microbench.
 
 **Fable 2026-08-02 — three M3 amendments (strategic review; all
@@ -333,7 +339,29 @@ that — hypothesis, not finding. THE LOCKED DECISION SURVIVES, ITS CITED
 EVIDENCE DOES NOT: 4 extra cores (+67% count) buy only +6.7%, which is
 still straggling, just the non-negative kind, and static equal
 partitioning across heterogeneous cores strands work either way. Stop
-quoting a 15% penalty.]** (c) 1T→6T is
+quoting a 15% penalty.]**
+**[⚠⚠ AMENDED AGAIN 2026-08-17, AND THIS TIME THE PENALTY IS REAL — BUT IT
+IS STOKE'S, NOT THE HARDWARE'S, AND NEITHER EARLIER ENTRY COULD HAVE SEEN
+IT. Both the original claim and its 08-11 retraction were measured on
+LLAMA, whose ggml workers spin and therefore keep the P-cores; llama
+cannot exhibit this defect, so no llama number is evidence either way.
+Measured on STOKE (`76dee7f`, gate-report `2026-08-17-m45-spin-probe` and
+`tests/tooling/run_ecoqos_repro.ps1`): Windows EcoQoS classified stoke's
+pool as background work — helpers slept on a condvar ~250x per token —
+and parked it on the E-cores, costing **up to 10.9x**, intermittently,
+for stretches of tens of minutes. Deterministic reproduction via
+process-level EcoQoS: 16.13-16.21 tok/s baseline, **1.40-1.50 throttled**,
+15.84-16.16 with the per-thread opt-out. It corrupted P-BAR block 2 on
+2026-08-17 and is the likeliest cause of the 08-15 ladder's arm A reading
+8.262 where the same binary now gives 9.989 at 0.7% spread.
+⇒ THE LOCKED DECISION'S *EVIDENCE* IS RESTORED, BUT ITS *REMEDY* WAS
+MISDIAGNOSED: work-stealing was never the missing piece — `pool.c` has
+chunked dynamically via an atomic counter since K5 and still collapsed.
+THE WAIT WAS THE PROBLEM, and the fix is
+`SetThreadInformation(ThreadPowerThrottling, StateMask=0)` per worker.
+⇒ AND THE STANDING RULE FOR THIS FILE: a claim about how STOKE behaves on
+heterogeneous cores can only be tested on STOKE. Twice now this row has
+been rewritten from llama data.]** (c) 1T→6T is
 **3.54× on six cores (59% of linear)**: sublinear, but the game-window
 2.49× understated it. **Projection, recorded before the work so it
 cannot be fitted afterwards:** stoke 1.716 → ×2 (K3) → ×3.54 (K5, 6T)
