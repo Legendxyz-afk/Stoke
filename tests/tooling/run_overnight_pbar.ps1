@@ -69,11 +69,30 @@ param(
     # A follow-on run starts while the run in front of it has ISLC stopped, so
     # it records islc_was_running=False and would leave Kabir's tool off for
     # good. This forces the restore regardless.
-    [switch]$AlwaysRestoreISLC
+    [switch]$AlwaysRestoreISLC,
+    # ▶ PER-ARM THREAD COUNTS, added 2026-08-17. The 08-15 ladder measured
+    # every arm at 6 threads because that was the standing default; the
+    # thread-scaling curve then showed stoke peaks at 8 and llama at 10, so a
+    # bar that runs both at 6 grades stoke against a HANDICAPPED reference.
+    # Each arm now runs where that engine is fastest. Ints, one per arm, and
+    # deliberately NOT an array: under `powershell -File` an [int[]] parameter
+    # given `8,10` binds through a culture-aware numeric parse that reads the
+    # comma as a thousands separator and silently becomes @(810).
+    [int]$ThreadsA = 6,
+    [int]$ThreadsB = 6,
+    [int]$ThreadsL = 6,
+    # ▶ UNPINNED BY DEFAULT, reversing the old hardcoded 0xFFF. That mask is
+    # the 6 P-cores' TWELVE hyperthread siblings: at t=8 or t=10 it stacks
+    # threads onto three physical cores and measures contention, and it hides
+    # the 4 E-cores entirely. It is also N-dependent -- 3-7% at N=1 but ~1.7x
+    # at N=16 -- so it was never the neutral choice it was treated as.
+    [switch]$Pin
 )
 
 $ErrorActionPreference = 'Continue'   # a failed unit must not kill the night
-(Get-Process -Id $PID).ProcessorAffinity = [IntPtr]0xFFF   # P-cores
+$nlog = [int](Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+$affMask = if ($Pin) { [IntPtr]0xFFF } else { [IntPtr]([int64][math]::Pow(2, $nlog) - 1) }
+(Get-Process -Id $PID).ProcessorAffinity = $affMask
 
 $root  = "M:\New Drive\Desktop\Programming\stoke"
 $gr    = "$root\docs\superpowers\gate-reports"
@@ -158,9 +177,10 @@ function RunCapture($exe, $argList, $errPath, $outPath) {
 
 # tok/s from `stoke batch --timing`; the format is
 #   "decode 128 tok in 11637.2 ms (11.000 tok/s aggregate)"
-function StokeRate($exe, $model, $prompt, $kv) {
+function StokeRate($exe, $model, $prompt, $kv, $threads) {
+    if (-not $threads) { $threads = 6 }
     $a = @("batch", ('"' + $model + '"'), "--raw", "-n", "$N_GEN",
-           "-f", ('"' + $prompt + '"'), "--seqs", "$Seqs", "--threads", "6",
+           "-f", ('"' + $prompt + '"'), "--seqs", "$Seqs", "--threads", "$threads",
            "--timing")
     if ($kv) { $a += @("--kv", $kv) }
     RunCapture $exe $a $tmp $tmpOut
@@ -173,9 +193,10 @@ function StokeRate($exe, $model, $prompt, $kv) {
 
 # t/s from llama-bench's markdown row: "| ... | tg128 | 18.05 ± 0.10 |"
 # (llama-bench puts the table on STDOUT, so that is the file we parse.)
-function LlamaRate($model) {
+function LlamaRate($model, $threads) {
+    if (-not $threads) { $threads = 6 }
     $a = @("-m", ('"' + $model + '"'), "-p", "0", "-n", "$N_GEN",
-           "-r", "3", "-t", "6")
+           "-r", "3", "-t", "$threads")
     RunCapture $LB $a $tmp $tmpOut
     $t = (Get-Content $tmpOut -Raw)
     if (-not $t) { return $null }
@@ -203,15 +224,24 @@ function StandbyGB() {
     return [math]::Round($s / 1GB, 2)
 }
 
+# ▶ FIXED 2026-08-17. The previous body was `$s[[int](($n-1)/2)]`, and for an
+# EVEN count that index is x.5, which PowerShell's [int] cast rounds half to
+# EVEN -- n=4 returned the second-HIGHEST of four and n=12 the seventh of
+# twelve. Every median this file has ever published over an even count read
+# high by one position. Found by recomputing a report's medians by hand.
 function Median($xs) {
     $s = @($xs | Sort-Object)
-    if ($s.Count -eq 0) { return $null }
-    return $s[[int](($s.Count - 1) / 2)]
+    $n = $s.Count
+    if ($n -eq 0) { return $null }
+    if ($n % 2 -eq 1) { return $s[[int](($n - 1) / 2)] }
+    return [math]::Round(($s[$n / 2 - 1] + $s[$n / 2]) / 2.0, 3)
 }
 
 # ---------------------------------------------------------------- run
 $islcWasRunning = [bool](Get-Process -Name "*ISLC*" -ErrorAction SilentlyContinue)
 Say "START  islc_was_running=$islcWasRunning  blocks=$BLOCKS cycles=$CYCLES n=$N_GEN"
+Say ("  threads A={0} B={1} L={2}; affinity 0x{3:X} over {4} logical ({5})" -f `
+     $ThreadsA, $ThreadsB, $ThreadsL, [int64]$affMask, $nlog, $(if ($Pin) { "PINNED to P-cores" } else { "unpinned" }))
 
 try {
     # ------------------------------------------------------- PHASE 0
@@ -306,7 +336,7 @@ try {
         # absent from cache, which is the trap that produced a 1.4 tok/s
         # "result" once before.
         for ($wtry = 1; $wtry -le 3; $wtry++) {
-            $null = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32"
+            $null = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32" $ThreadsB
             $sb = StandbyGB
             if ($sb -ge 2.0) { break }
             Say "  warm $wtry/3 left standby at $sb GB -- warming again"
@@ -324,11 +354,12 @@ try {
                 $id = "b$blk-c$cyc-$arm"
                 if (HasUnit $id) { Say "  $id [banked]"; continue }
                 $v = $null
-                if ($arm -eq "A") { $v = StokeRate $PRE $Q4 "$root\tests\data\parity\p00.txt" "f32" }
-                if ($arm -eq "B") { $v = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32" }
-                if ($arm -eq "L") { $v = LlamaRate $Q4 }
+                $th = 6
+                if ($arm -eq "A") { $th = $ThreadsA; $v = StokeRate $PRE $Q4 "$root\tests\data\parity\p00.txt" "f32" $th }
+                if ($arm -eq "B") { $th = $ThreadsB; $v = StokeRate $NEW $Q4 "$root\tests\data\parity\p00.txt" "f32" $th }
+                if ($arm -eq "L") { $th = $ThreadsL; $v = LlamaRate $Q4 $th }
                 Bank @{ id = $id; kind = "rate"; block = $blk; cycle = $cyc;
-                        arm = $arm; tok_s = $v; cpu_busy = (CpuBusy);
+                        arm = $arm; threads = $th; tok_s = $v; cpu_busy = (CpuBusy);
                         utc = (Get-Date -Format s) }
                 Say ("  {0}  {1}" -f $id, $(if ($null -eq $v) { "PARSE-FAIL" } else { $v }))
             }
@@ -357,7 +388,7 @@ finally {
     $lines += ""
     $lines += "- A: ``$PRE``"
     $lines += "- B: ``$NEW``"
-    $lines += "N=1 via ``batch --seqs 1``, p00, -n $N_GEN, 6 threads, P-cores. Arm order rotates per cycle."
+    $lines += ("N=$Seqs via ``batch --seqs $Seqs``, p00, -n $N_GEN. Threads: **A=$ThreadsA, B=$ThreadsB, L=$ThreadsL** -- each arm at the count where that engine is fastest, per the 2026-08-17 thread-scaling curve. Affinity {0} over $nlog logical processors. Arm order rotates per cycle." -f $(if ($Pin) { "PINNED 0xFFF (P-core siblings)" } else { "unpinned" }))
     $lines += ""
     $lines += "## Correctness (owed re-runs)"
     $lines += ""
@@ -419,14 +450,20 @@ finally {
     $lines += ""
     if ($allB -and $allL) {
         $bar = 0.85 * $allL
-        $lines += ("P-BAR is 0.85x llama measured in the same sitting: **{0:n2} tok/s**. B measured **{1}**." -f $bar, $allB)
+        $lines += ("P-BAR is 0.85x llama measured in the same sitting: **{0:n2} tok/s**. B measured **{1}** at $ThreadsB threads against llama's **{2}** at $ThreadsL, giving **{3:n3}x**." -f $bar, $allB, $allL, ($allB / $allL))
+        $lines += ""
+        $lines += "Both engines run at their own fastest thread count, so neither side is handicapped. Grading stoke at 8 against a llama held at 6 would clear the bar by arithmetic rather than by speed."
         if ($allB -ge $bar) {
             $lines += ""
             $lines += "**P-BAR MET.**"
         } else {
             $lines += ""
-            $lines += ("**P-BAR NOT MET** -- short by {0:n3}x. A' (row tiling) is the next lever and is not optional." -f ($bar / $allB))
+            $lines += ("**P-BAR NOT MET** -- short by {0:n3}x. Remaining sized levers: Q6_K is already landed, so what is left is D (repack, gate is occupancy) and the per-thread deficit the curve located at low t." -f ($bar / $allB))
         }
+    }
+    if ($ThreadsA -ne $ThreadsB) {
+        $lines += ""
+        $lines += "⚠ **B/A IS NOT A KERNEL RATIO IN THIS RUN.** A ran at $ThreadsA threads and B at $ThreadsB, so that column mixes the kernel change with the thread-count change. Read it as an end-to-end ladder figure and nothing narrower."
     }
     $lines += ""
     $lines += "## Stability across blocks"

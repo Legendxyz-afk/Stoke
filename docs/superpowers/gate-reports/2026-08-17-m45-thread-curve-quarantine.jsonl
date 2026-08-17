@@ -1,0 +1,16 @@
+﻿{"cpu_busy":17,"id":"c3-t10-S","kind":"rate","n":64,"utc":"2026-08-17T09:43:50","engine":"S","threads":10,"cycle":3,"tok_s":3.278}
+{"cpu_busy":6,"id":"c3-bridge","kind":"bridge","n":128,"utc":"2026-08-17T09:44:01","engine":"S","threads":6,"cycle":3,"tok_s":15.542}
+{"id":"c4-state","standby_gb":3.28,"utc":"2026-08-17T09:44:07","cycle":4,"kind":"cyclestate","cpu_busy":25}
+{"cpu_busy":8,"id":"c4-t10-L","kind":"rate","n":64,"utc":"2026-08-17T09:44:19","engine":"L","threads":10,"cycle":4,"tok_s":19}
+{"cpu_busy":12,"id":"c4-t10-S","kind":"rate","n":64,"utc":"2026-08-17T09:44:26","engine":"S","threads":10,"cycle":4,"tok_s":15.976}
+{"cpu_busy":11,"id":"c4-t8-L","kind":"rate","n":64,"utc":"2026-08-17T09:44:38","engine":"L","threads":8,"cycle":4,"tok_s":18.96}
+{"cpu_busy":12,"id":"c4-t8-S","kind":"rate","n":64,"utc":"2026-08-17T09:44:44","engine":"S","threads":8,"cycle":4,"tok_s":16.613}
+{"cpu_busy":12,"id":"c4-t6-L","kind":"rate","n":64,"utc":"2026-08-17T09:44:57","engine":"L","threads":6,"cycle":4,"tok_s":18.98}
+{"cpu_busy":27,"id":"c4-t6-S","kind":"rate","n":64,"utc":"2026-08-17T09:45:03","engine":"S","threads":6,"cycle":4,"tok_s":16.41}
+{"cpu_busy":14,"id":"c4-t4-L","kind":"rate","n":64,"utc":"2026-08-17T09:45:19","engine":"L","threads":4,"cycle":4,"tok_s":15.26}
+{"cpu_busy":17,"id":"c4-t4-S","kind":"rate","n":64,"utc":"2026-08-17T09:45:47","engine":"S","threads":4,"cycle":4,"tok_s":2.585}
+{"cpu_busy":37,"id":"c4-t2-L","kind":"rate","n":64,"utc":"2026-08-17T09:46:08","engine":"L","threads":2,"cycle":4,"tok_s":10.94}
+{"cpu_busy":7,"id":"c4-t2-S","kind":"rate","n":64,"utc":"2026-08-17T09:47:05","engine":"S","threads":2,"cycle":4,"tok_s":1.21}
+{"cpu_busy":64,"id":"c4-t1-L","kind":"rate","n":64,"utc":"2026-08-17T09:49:11","engine":"L","threads":1,"cycle":4,"tok_s":1.79}
+{"cpu_busy":16,"id":"c4-t1-S","kind":"rate","n":64,"utc":"2026-08-17T09:50:47","engine":"S","threads":1,"cycle":4,"tok_s":0.873}
+{"cpu_busy":0,"id":"c4-bridge","kind":"bridge","n":128,"utc":"2026-08-17T09:52:02","engine":"S","threads":6,"cycle":4,"tok_s":1.799}

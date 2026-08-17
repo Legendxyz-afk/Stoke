@@ -1,0 +1,160 @@
+﻿2026-08-17T09:29:07  START  cycles=4 n=64 bridge_n=128 threads=1|2|4|6|8|10 (from '1,2,4,6,8,10')
+2026-08-17T09:29:07    affinity mask 0xFFFF over 16 logical processors (UNPINNED by design)
+2026-08-17T09:29:07    islc_was_running=False
+2026-08-17T09:29:08    quiet sample 1/3 at 10%
+2026-08-17T09:30:08    quiet sample 2/3 at 3%
+2026-08-17T09:31:08    quiet streak broken at 17%
+2026-08-17T09:31:08    waiting: cpu 17% > 12%
+2026-08-17T09:32:08    quiet sample 1/3 at 4%
+2026-08-17T09:33:09    quiet sample 2/3 at 4%
+2026-08-17T09:34:09    box quiet at 4% (3 consecutive) after 5 min
+2026-08-17T09:34:16  CYCLE 1 starting (cpu 7%, standby 2.99 GB)
+2026-08-17T09:34:40    c1-t1-S  3.844
+2026-08-17T09:35:14    c1-t1-L  6.17
+2026-08-17T09:35:27    c1-t2-S  7.228
+2026-08-17T09:35:46    c1-t2-L  11.15
+2026-08-17T09:35:55    c1-t4-S  12.945
+2026-08-17T09:36:09    c1-t4-L  16.92
+2026-08-17T09:36:16    c1-t6-S  16.338
+2026-08-17T09:36:29    c1-t6-L  18.33
+2026-08-17T09:36:35    c1-t8-S  16.591
+2026-08-17T09:36:48    c1-t8-L  18.76
+2026-08-17T09:36:54    c1-t10-S  16.285
+2026-08-17T09:37:07    c1-t10-L  19.05
+2026-08-17T09:37:17    c1-bridge  15.858
+2026-08-17T09:37:22  CYCLE 2 starting (cpu 12%, standby 3.03 GB)
+2026-08-17T09:37:29    c2-t10-S  16.326
+2026-08-17T09:37:42    c2-t10-L  19.42
+2026-08-17T09:37:48    c2-t8-S  17.065
+2026-08-17T09:38:00    c2-t8-L  18.76
+2026-08-17T09:38:07    c2-t6-S  16.377
+2026-08-17T09:38:19    c2-t6-L  19.22
+2026-08-17T09:38:27    c2-t4-S  13.4
+2026-08-17T09:38:40    c2-t4-L  17.11
+2026-08-17T09:38:53    c2-t2-S  7.82
+2026-08-17T09:39:13    c2-t2-L  11.07
+2026-08-17T09:39:46    c2-t1-S  2.513
+2026-08-17T09:40:20    c2-t1-L  6.06
+2026-08-17T09:40:31    c2-bridge  15.77
+2026-08-17T09:40:36  CYCLE 3 starting (cpu 12%, standby 3.05 GB)
+2026-08-17T09:41:13    c3-t1-L  5.7
+2026-08-17T09:41:37    c3-t1-S  3.764
+2026-08-17T09:41:58    c3-t2-L  10.23
+2026-08-17T09:42:14    c3-t2-S  6.048
+2026-08-17T09:42:28    c3-t4-L  16.63
+2026-08-17T09:42:37    c3-t4-S  12.976
+2026-08-17T09:42:49    c3-t6-L  19.1
+2026-08-17T09:42:56    c3-t6-S  16.405
+2026-08-17T09:43:09    c3-t8-L  18.7
+2026-08-17T09:43:15    c3-t8-S  16.628
+2026-08-17T09:43:28    c3-t10-L  19.45
+2026-08-17T09:43:50    c3-t10-S  3.278
+2026-08-17T09:44:01    c3-bridge  15.542
+2026-08-17T09:44:06  CYCLE 4 starting (cpu 6%, standby 3.28 GB)
+2026-08-17T09:44:19    c4-t10-L  19
+2026-08-17T09:44:26    c4-t10-S  15.976
+2026-08-17T09:44:38    c4-t8-L  18.96
+2026-08-17T09:44:44    c4-t8-S  16.613
+2026-08-17T09:44:57    c4-t6-L  18.98
+2026-08-17T09:45:03    c4-t6-S  16.41
+2026-08-17T09:45:19    c4-t4-L  15.26
+2026-08-17T09:45:47    c4-t4-S  2.585
+2026-08-17T09:46:08    c4-t2-L  10.94
+2026-08-17T09:47:05    c4-t2-S  1.21
+2026-08-17T09:49:11    c4-t1-L  1.79
+2026-08-17T09:50:47    c4-t1-S  0.873
+2026-08-17T09:52:02    c4-bridge  1.799
+2026-08-17T09:52:02  ISLC was not running at start -- not started
+2026-08-17T09:52:02  REPORT written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-17-m45-thread-curve-report.md
+2026-08-17T09:52:02  DONE
+2026-08-17T09:54:51  START  cycles=4 n=64 bridge_n=128 threads=1|2|4|6|8|10 (from '1,2,4,6,8,10')
+2026-08-17T09:54:51    affinity mask 0xFFFF over 16 logical processors (UNPINNED by design)
+2026-08-17T09:54:51    islc_was_running=False
+2026-08-17T09:54:51    quiet sample 1/3 at 8%
+2026-08-17T09:55:51    quiet streak broken at 19%
+2026-08-17T09:55:51    waiting: cpu 19% > 12%
+2026-08-17T09:56:52    waiting: cpu 15% > 12%
+2026-08-17T09:57:52    waiting: cpu 15% > 12%
+2026-08-17T09:58:52    quiet sample 1/3 at 10%
+2026-08-17T09:59:53    quiet streak broken at 34%
+2026-08-17T09:59:53    waiting: cpu 34% > 12%
+2026-08-17T10:00:53    waiting: cpu 24% > 12%
+2026-08-17T10:01:53    waiting: cpu 29% > 12%
+2026-08-17T10:02:53    waiting: cpu 16% > 12%
+2026-08-17T10:03:54    quiet sample 1/3 at 11%
+2026-08-17T10:04:54    quiet streak broken at 15%
+2026-08-17T10:04:54    waiting: cpu 15% > 12%
+2026-08-17T10:05:54    waiting: cpu 14% > 12%
+2026-08-17T10:06:55    waiting: cpu 30% > 12%
+2026-08-17T10:07:55    quiet sample 1/3 at 9%
+2026-08-17T10:08:57    quiet streak broken at 23%
+2026-08-17T10:08:57    waiting: cpu 23% > 12%
+2026-08-17T10:09:57    waiting: cpu 17% > 12%
+2026-08-17T10:10:57    quiet sample 1/3 at 11%
+2026-08-17T10:11:57    quiet streak broken at 29%
+2026-08-17T10:11:57    waiting: cpu 29% > 12%
+2026-08-17T10:12:58    waiting: cpu 37% > 12%
+2026-08-17T10:13:58    quiet sample 1/3 at 10%
+2026-08-17T10:14:58    quiet sample 2/3 at 12%
+2026-08-17T10:15:59    quiet streak broken at 31%
+2026-08-17T10:15:59    waiting: cpu 31% > 12%
+2026-08-17T10:16:59    quiet sample 1/3 at 10%
+2026-08-17T10:17:59    quiet sample 2/3 at 9%
+2026-08-17T10:19:00    box quiet at 5% (3 consecutive) after 24 min
+2026-08-17T10:19:10  CYCLE 1 starting (cpu 19%, standby 7.5 GB)
+2026-08-17T10:19:10    c1-t1-S [banked]
+2026-08-17T10:19:10    c1-t1-L [banked]
+2026-08-17T10:19:10    c1-t2-S [banked]
+2026-08-17T10:19:10    c1-t2-L [banked]
+2026-08-17T10:19:10    c1-t4-S [banked]
+2026-08-17T10:19:10    c1-t4-L [banked]
+2026-08-17T10:19:10    c1-t6-S [banked]
+2026-08-17T10:19:10    c1-t6-L [banked]
+2026-08-17T10:19:10    c1-t8-S [banked]
+2026-08-17T10:19:10    c1-t8-L [banked]
+2026-08-17T10:19:10    c1-t10-S [banked]
+2026-08-17T10:19:10    c1-t10-L [banked]
+2026-08-17T10:19:15  CYCLE 2 starting (cpu 6%, standby 7.5 GB)
+2026-08-17T10:19:16    c2-t10-S [banked]
+2026-08-17T10:19:16    c2-t10-L [banked]
+2026-08-17T10:19:16    c2-t8-S [banked]
+2026-08-17T10:19:16    c2-t8-L [banked]
+2026-08-17T10:19:16    c2-t6-S [banked]
+2026-08-17T10:19:16    c2-t6-L [banked]
+2026-08-17T10:19:16    c2-t4-S [banked]
+2026-08-17T10:19:16    c2-t4-L [banked]
+2026-08-17T10:19:16    c2-t2-S [banked]
+2026-08-17T10:19:16    c2-t2-L [banked]
+2026-08-17T10:19:16    c2-t1-S [banked]
+2026-08-17T10:19:16    c2-t1-L [banked]
+2026-08-17T10:19:21  CYCLE 3 starting (cpu 8%, standby 7.5 GB)
+2026-08-17T10:19:21    c3-t1-L [banked]
+2026-08-17T10:19:21    c3-t1-S [banked]
+2026-08-17T10:19:21    c3-t2-L [banked]
+2026-08-17T10:19:21    c3-t2-S [banked]
+2026-08-17T10:19:21    c3-t4-L [banked]
+2026-08-17T10:19:21    c3-t4-S [banked]
+2026-08-17T10:19:21    c3-t6-L [banked]
+2026-08-17T10:19:21    c3-t6-S [banked]
+2026-08-17T10:19:21    c3-t8-L [banked]
+2026-08-17T10:19:21    c3-t8-S [banked]
+2026-08-17T10:19:21    c3-t10-L [banked]
+2026-08-17T10:19:28    c3-t10-S  16.268
+2026-08-17T10:19:39    c3-bridge  15.535
+2026-08-17T10:19:44  CYCLE 4 starting (cpu 7%, standby 7.5 GB)
+2026-08-17T10:19:58    c4-t10-L  19.21
+2026-08-17T10:20:05    c4-t10-S  16.147
+2026-08-17T10:20:18    c4-t8-L  18.5
+2026-08-17T10:20:24    c4-t8-S  16.805
+2026-08-17T10:20:38    c4-t6-L  18.49
+2026-08-17T10:20:44    c4-t6-S  16.546
+2026-08-17T10:20:59    c4-t4-L  16.47
+2026-08-17T10:21:07    c4-t4-S  13.103
+2026-08-17T10:21:29    c4-t2-L  10.49
+2026-08-17T10:21:42    c4-t2-S  7.086
+2026-08-17T10:22:19    c4-t1-L  5.64
+2026-08-17T10:22:44    c4-t1-S  3.624
+2026-08-17T10:22:55    c4-bridge  15.6
+2026-08-17T10:22:55  ISLC was not running at start -- not started
+2026-08-17T10:22:55  REPORT written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-17-m45-thread-curve-report.md
+2026-08-17T10:22:55  DONE
