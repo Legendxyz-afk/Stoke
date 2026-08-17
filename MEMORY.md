@@ -623,6 +623,60 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   pairs from 95–146 s to a stable 29.4–30.1 s and collapsed a 5.8× run-to-run
   spread to ±0.5 s.
 
+- **2026-08-17 — M4.5 catch-up, and L4.** This entry fills a gap: the M4.5
+  ladder ran across several sessions that recorded themselves in
+  `docs/superpowers/gate-reports/` and in the agent's own memory but never in
+  this log. Ladder outcome to date: **rung B landed** (per-type batched row
+  workers); **rung C / maddubs landed and is graded**, with **Q6_K on maddubs
+  a 1.108× win that moves not one bit** (`cf0d8eb`); **rung A′ was tried and
+  REJECTED ON MEASUREMENT at 0.907×** (`0ffee94`, removed in `3d39ae9`) —
+  the whole ladder is **B/A = 1.54× in one interleaved sitting**. **Rung D was
+  never run and is now ruled out on evidence, not on cost:** it repacks matvec,
+  and matvec was measured at parity.
+  **P-BAR was graded three times and missed all three at the same value —
+  0.833 t=6 pinned, 0.827 re-graded post-EcoQoS, 0.828 at t=8 unpinned — short
+  by ~2.7%, which discharges §7.5 step (1) (thread count) as a NEGATIVE.**
+  Two findings dominate the milestone. **(1) A 10.9× intermittent collapse was
+  Windows EcoQoS parking the pool on the E-cores** — helpers slept on a condvar
+  ~250×/token, which is what background work looks like — **fixed by a
+  per-thread `ThreadPowerThrottling` opt-out (`76dee7f`), with
+  `tests/tooling/run_ecoqos_repro.ps1` kept as a regression test. Every stoke
+  perf number taken before that commit may be depressed; llama's are not.**
+  **(2) The remaining gap is attention over the KV cache, and matvec is
+  already at parity** — fitted in one interleaved sitting, the two engines'
+  context-independent intercepts agree (stoke 48.76 vs llama 52.51 ms/token)
+  while stoke's slope is ~12× worse, and attention is 84.6% of decode at
+  ctx 1500 (`774d625`, `db85e0f`).
+  **▶▶ L4 THEN FOUND THE CAUSE, AND IT WAS NOT ARITHMETIC: ATTENTION HAD NEVER
+  RUN ON THE POOL.** `pool_for_rows` is called from `src/kernels/vec.c` only —
+  seven times, all matvec — so the per-head loop ran on the calling thread from
+  K5 onward, i.e. ~6/7 of a long-context token on one core out of eight. The
+  2026-08-12 ruling's §7.6 had framed L4 purely as SIMD and priced it as a
+  graded arithmetic change; **parallelising over heads is parallelism over
+  INDEPENDENT OUTPUTS, so the arithmetic inside a head is untouched — no twin,
+  no grading run, no re-anchor, and §7.6's 8-lane canonical fold is not
+  needed** (`ba4e140` pool, `755a43b` attention). Two pool additions were
+  forced: `pool_for_units` (the old entry point had chunk 64 and a two-chunk
+  floor, so **any parallel-for under 128 units silently ran inline** — matvec
+  never noticed at ≥1024 rows, attention has 32) and `pool_worker_index`, since
+  the scores row and KV scratch had to move from per-sequence to **per-worker**.
+  **A real heap overrun was found and fixed on the way in** — `s_kv` had two
+  allocation sites and the lane loop's raise from 1 to 4 (K,V) pairs reached
+  only one, so `run` and all prefill overran by 3072 B at `--kv q8`; the
+  f32-only check that preceded it could not have caught it, because at f32
+  `kv_read` is zero-copy and never touches that buffer. **And the per-worker
+  scratch is now one allocation PER WORKER rather than one block sliced by
+  worker, because mutating the bug back in and running ASan on the real model
+  returned CLEAN: a sliced arena has no boundary for a sanitizer to trip.**
+  Correctness green on every leg — Windows 13/13, WSL plain 13/13, **WSL TSan
+  13/13 with zero reports, which also discharges the TSan leg owed since
+  `76dee7f`**, ASan clean at `--kv q8`, byte-compare 6/10 cases with all four
+  arms identical (4 cases owed). The new test is mutation-verified twice.
+  **SPEED IS NOT YET MEASURED and is the only open item in M4.5**; both changes
+  are env-gated (`STOKE_ATT_PAR`, `STOKE_ATT_LANES`) so all four arms
+  interleave from one binary. Design note:
+  `docs/superpowers/design-notes/2026-08-17-m45-l4-attention-on-the-pool.md`.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
