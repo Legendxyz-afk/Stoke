@@ -1,11 +1,11 @@
 # M4.5 -- is stoke's collapse RESIDENCY? Measure the mechanism, not the rate.
 #
-# ▶ WHERE THIS CAME FROM. The affinity probe killed its own hypothesis: 0x555
+# > WHERE THIS CAME FROM. The affinity probe killed its own hypothesis: 0x555
 # forbids hyperthread stacking and collapsed anyway (9.058, 9.53), while rep 2
 # was healthy on ALL THREE masks (15.35-15.45). So the variable is time, not
 # placement. llama stayed inside +/-5% throughout.
 #
-# ▶ WHAT THE RATES IMPLY, since the model is streamed once per token and its
+# > WHAT THE RATES IMPLY, since the model is streamed once per token and its
 # size is known (2.33 GiB of weights):
 #     15.4 tok/s -> ~35.8 GB/s   plausible RAM, near this box's 44.8 GB/s ceiling
 #      9.5 tok/s -> ~22.1 GB/s   half of RAM speed
@@ -13,12 +13,12 @@
 # So the hypothesis is that the model is not resident and decode is reading it
 # from storage, every token.
 #
-# ▶ THE INSTRUMENT IS THE RULING'S OWN. `Page Reads/sec` is what the ruling
+# > THE INSTRUMENT IS THE RULING'S OWN. `Page Reads/sec` is what the ruling
 # already specifies for D's residency gate ("< 5 sustained"). A HARD fault is a
 # disk read; a soft fault is not. Counting them during decode separates
 # "stoke is slow" from "the box is feeding stoke from a disk".
 #
-# ▶ WHY STOKE AND NOT LLAMA -- the asymmetry to test. `llama-bench -r 3` loads
+# > WHY STOKE AND NOT LLAMA -- the asymmetry to test. `llama-bench -r 3` loads
 # the model ONCE and runs three repetitions inside one process, so it pays
 # first-touch once and is measured warm. stoke is launched fresh for every
 # single measurement and pays process-fresh costs every time. If residency is

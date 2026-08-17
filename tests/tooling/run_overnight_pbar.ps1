@@ -17,19 +17,19 @@
 #   PHASE 4  restore ISLC (in `finally`, so it happens even on a crash) and
 #            write the report.
 #
-# ▶ WHY BLOCKS SPACED WITH IDLE GAPS, rather than one long run. This box drifts
+# > WHY BLOCKS SPACED WITH IDLE GAPS, rather than one long run. This box drifts
 # 15-20% over hours of sustained load, and every perf number this project has
 # had to retract came from a single block. Four blocks separated by idle gaps
 # start from different thermal states, so drift shows up as disagreement
 # BETWEEN blocks instead of hiding inside one median.
 #
-# ▶ WHY THE ARM ORDER ROTATES. On 2026-08-14 the A arm ran first in every cycle
+# > WHY THE ARM ORDER ROTATES. On 2026-08-14 the A arm ran first in every cycle
 # and came back 4.971 / 7.445 / 8.387 -- a 1.69x spread, monotonically
 # declining, well under its own 10.01 anchor. Fixed position and interference
 # are confounded when the order never changes. Rotating A,B,L -> B,L,A -> L,A,B
 # separates them.
 #
-# ▶ THE ANCHOR CHECK IS THE GUARD. Arm A is the archived pre-maddubs binary,
+# > THE ANCHOR CHECK IS THE GUARD. Arm A is the archived pre-maddubs binary,
 # whose N=1 rate was measured at 10.01 tok/s on a quiesced box. If A does not
 # reproduce that, the box was not ready and every ratio computed against it is
 # inflated. The report states A's deviation on its face; it does NOT silently
@@ -70,7 +70,7 @@ param(
     # it records islc_was_running=False and would leave Kabir's tool off for
     # good. This forces the restore regardless.
     [switch]$AlwaysRestoreISLC,
-    # ▶ PER-ARM THREAD COUNTS, added 2026-08-17. The 08-15 ladder measured
+    # > PER-ARM THREAD COUNTS, added 2026-08-17. The 08-15 ladder measured
     # every arm at 6 threads because that was the standing default; the
     # thread-scaling curve then showed stoke peaks at 8 and llama at 10, so a
     # bar that runs both at 6 grades stoke against a HANDICAPPED reference.
@@ -81,7 +81,7 @@ param(
     [int]$ThreadsA = 6,
     [int]$ThreadsB = 6,
     [int]$ThreadsL = 6,
-    # ▶ UNPINNED BY DEFAULT, reversing the old hardcoded 0xFFF. That mask is
+    # > UNPINNED BY DEFAULT, reversing the old hardcoded 0xFFF. That mask is
     # the 6 P-cores' TWELVE hyperthread siblings: at t=8 or t=10 it stacks
     # threads onto three physical cores and measures contention, and it hides
     # the 4 E-cores entirely. It is also N-dependent -- 3-7% at N=1 but ~1.7x
@@ -157,7 +157,7 @@ function HasUnit($id) {
     return $false
 }
 
-# ▶▶ WHY Start-Process AND NOT `& $exe ... 2> $tmp`, learned the hard way at
+# >> WHY Start-Process AND NOT `& $exe ... 2> $tmp`, learned the hard way at
 # 23:26 on 2026-08-14. PowerShell renders a native command's stderr as a
 # NativeCommandError record and WRAPS IT AT CONSOLE WIDTH when it lands in a
 # file. Arm A's binary name is 29 characters against arm B's 9, so the
@@ -169,7 +169,7 @@ function HasUnit($id) {
 # Start-Process writes the child's raw stderr bytes with no PowerShell
 # decoration and no wrapping, so the capture no longer depends on how wide a
 # console someone imagined.
-# ▶ ALSO RECORDS CPU-SECONDS, since 2026-08-17. Windows EcoQoS silently parks
+# > ALSO RECORDS CPU-SECONDS, since 2026-08-17. Windows EcoQoS silently parks
 # the pool on the efficiency cores, and the same work costs ~4x more
 # PROCESSOR-time there -- so a depressed unit reads HIGH on CPU-seconds while
 # also finishing later. That makes it a tell INDEPENDENT of the rate: a unit
@@ -208,7 +208,7 @@ function StokeRate($exe, $model, $prompt, $kv, $threads) {
     return $null
 }
 
-# t/s from llama-bench's markdown row: "| ... | tg128 | 18.05 ± 0.10 |"
+# t/s from llama-bench's markdown row: "| ... | tg128 | 18.05 +/- 0.10 |"
 # (llama-bench puts the table on STDOUT, so that is the file we parse.)
 function LlamaRate($model, $threads) {
     if (-not $threads) { $threads = 6 }
@@ -241,7 +241,7 @@ function StandbyGB() {
     return [math]::Round($s / 1GB, 2)
 }
 
-# ▶ FIXED 2026-08-17. The previous body was `$s[[int](($n-1)/2)]`, and for an
+# > FIXED 2026-08-17. The previous body was `$s[[int](($n-1)/2)]`, and for an
 # EVEN count that index is x.5, which PowerShell's [int] cast rounds half to
 # EVEN -- n=4 returned the second-HIGHEST of four and n=12 the seventh of
 # twelve. Every median this file has ever published over an even count read
@@ -303,7 +303,7 @@ try {
     Start-Sleep -Seconds 3
     Say ("  standby cache {0} GB before the wait" -f (StandbyGB))
 
-    # ▶ THREE CONSECUTIVE SAMPLES, not one. The single-sample version passed at
+    # > THREE CONSECUTIVE SAMPLES, not one. The single-sample version passed at
     # 23:25:56 on an 11% reading and block 1 started seconds later at 22% --
     # a bouncing signal (16-33%, Windows' own idle-triggered maintenance) dips
     # under any threshold eventually if you keep asking. A gate on a noisy
@@ -343,7 +343,7 @@ try {
             if ($wait -le 0) { break }
             Start-Sleep -Seconds ([math]::Min($wait, 300))
         }
-        # ▶ WARM IMMEDIATELY BEFORE EACH BLOCK, NOT ONCE AT THE START. The
+        # > WARM IMMEDIATELY BEFORE EACH BLOCK, NOT ONCE AT THE START. The
         # first version warmed the cache and THEN waited up to 40 minutes for
         # the box to go quiet, by which time Windows had evicted the model:
         # block 1 began with standby at 0.21 GB against a 2.33 GB model, i.e.
@@ -360,7 +360,7 @@ try {
         }
         $sbNow = StandbyGB
         if ($sbNow -lt 2.0) {
-            Say "  ⚠ standby only $sbNow GB after 3 warms -- block $blk MAY BE DISK-BOUND"
+            Say "  ! standby only $sbNow GB after 3 warms -- block $blk MAY BE DISK-BOUND"
         }
         Say "BLOCK $blk starting (cpu $(CpuBusy)%, standby $sbNow GB)"
         Bank @{ id = "b$blk-state"; kind = "blockstate"; block = $blk;
@@ -434,7 +434,7 @@ finally {
             $cpv = $st[$st.Count - 1].cpu_busy
         }
         $flag = ""
-        if ($sbv -ne "?" -and [double]$sbv -lt 2.0) { $flag = " ⚠ disk-bound" }
+        if ($sbv -ne "?" -and [double]$sbv -lt 2.0) { $flag = " ! disk-bound" }
         $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} | {6}{7} | {8} |" -f $b, $ma, $mb, $ml, $ba, $bl, $sbv, $flag, $cpv)
     }
     $lines += ""
@@ -456,7 +456,7 @@ finally {
         $lines += ("Arm A measured **{0}** against its quiesced anchor of {1}, a deviation of **{2:n1}%**." -f $allA, $ANCHOR_A, $dev)
         if ([math]::Abs($dev) -gt 10) {
             $lines += ""
-            $lines += "⚠ **A did not reproduce its anchor within 10%.** Every ratio computed against it is suspect: a depressed baseline inflates the speedup. Treat the B/A column as UNRELIABLE and read B/L instead, which does not depend on A."
+            $lines += "! **A did not reproduce its anchor within 10%.** Every ratio computed against it is suspect: a depressed baseline inflates the speedup. Treat the B/A column as UNRELIABLE and read B/L instead, which does not depend on A."
         } else {
             $lines += ""
             $lines += "A reproduced its anchor within 10%, so the B/A ratios rest on a baseline that is behaving as it did when the anchor was frozen."
@@ -480,7 +480,7 @@ finally {
     }
     if ($ThreadsA -ne $ThreadsB) {
         $lines += ""
-        $lines += "⚠ **B/A IS NOT A KERNEL RATIO IN THIS RUN.** A ran at $ThreadsA threads and B at $ThreadsB, so that column mixes the kernel change with the thread-count change. Read it as an end-to-end ladder figure and nothing narrower."
+        $lines += "! **B/A IS NOT A KERNEL RATIO IN THIS RUN.** A ran at $ThreadsA threads and B at $ThreadsB, so that column mixes the kernel change with the thread-count change. Read it as an end-to-end ladder figure and nothing narrower."
     }
     $lines += ""
     $lines += "## Stability across blocks"
@@ -510,7 +510,7 @@ finally {
             # percent) and far inside the ~4x an efficiency core costs.
             $bad = @($cs | Where-Object { $med -and $_ -gt 1.5 * $med }).Count
             $lines += ("| {0} | {1} | {2} | {3}{4} |" -f $a, $med, $mx, $bad,
-                       $(if ($bad -gt 0) { " ⚠ DISCARD THESE UNITS" } else { "" }))
+                       $(if ($bad -gt 0) { " ! DISCARD THESE UNITS" } else { "" }))
         }
     }
     $lines += ""

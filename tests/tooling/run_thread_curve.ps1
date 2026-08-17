@@ -7,13 +7,13 @@
 # attention over the KV cache -- none of which `bench --ops` measures at all.
 # 22 ms is larger than the 4.5% still owed to P-BAR, so this outranks rung D.
 #
-# ▶ WHAT THE CURVE DECIDES, and it is not a matter of taste. If stoke's
+# > WHAT THE CURVE DECIDES, and it is not a matter of taste. If stoke's
 # single-thread rate already sits at the same fraction of llama's as its
 # 6-thread rate does, the gap is PER-THREAD WORK and the parallel story is a
 # red herring. If the fraction DEGRADES with t, the gap is scaling. One
 # measurement separates two very different next moves.
 #
-# ▶ WHY UNPINNED. Every prior perf run pinned to 0xFFF = the 6 P-cores' twelve
+# > WHY UNPINNED. Every prior perf run pinned to 0xFFF = the 6 P-cores' twelve
 # hyperthread siblings. That mask is defensible at t<=6 and MEANINGLESS for a
 # thread-scaling question: at t=8 and t=10 it stacks threads onto three
 # physical cores and measures hyperthread contention rather than scaling, and
@@ -24,14 +24,14 @@
 # inheritance, and logged, because a child process inherits its parent's mask
 # and that is how a pinned number gets published as an unpinned one.
 #
-# ▶ THE ANCHOR IS SIX POINTS, NOT ONE. 2026-08-11, quiesced, llama-bench
+# > THE ANCHOR IS SIX POINTS, NOT ONE. 2026-08-11, quiesced, llama-bench
 # b10037, `-p 0 -n 64 -r 3` on this same Q4_K_M: 4.98 / 9.84 / 16.07 / 17.45 /
 # 17.85 / 17.93 at t = 1/2/4/6/8/10. This run uses THE SAME COMMAND, so every
 # llama cell is independently anchored. A box that has drifted cannot fake six
 # points at once, and if it has drifted the stoke column is read as ratios
 # against the llama column measured minutes earlier rather than as absolutes.
 #
-# ▶ ONE BRIDGE CELL. stoke t=6 at n=128 is the exact configuration of the
+# > ONE BRIDGE CELL. stoke t=6 at n=128 is the exact configuration of the
 # P-BAR ladder (12.523 pre-Q6_K, 14.48 with it), so it ties this curve to the
 # ladder without re-running the ladder.
 
@@ -42,7 +42,7 @@ param(
     [int]$QuietTries = 20,
     [int]$QuietCpu   = 12,
     [string]$Stamp   = "2026-08-17-m45-thread-curve",
-    # ▶ A STRING, DELIBERATELY, NOT [int[]]. Under `powershell -File`, every
+    # > A STRING, DELIBERATELY, NOT [int[]]. Under `powershell -File`, every
     # argument arrives as a string and `-Threads 1,10` binds to int[] by way of
     # PowerShell's culture-aware numeric parse, which reads the comma as a
     # THOUSANDS SEPARATOR: the array becomes @(110) and the run measures a
@@ -105,7 +105,7 @@ function StandbyGB() {
     $s = (Get-Counter '\Memory\Standby Cache Normal Priority Bytes').CounterSamples[0].CookedValue
     return [math]::Round($s / 1GB, 2)
 }
-# ▶ NOT the inherited `$s[[int](($n-1)/2)]`. For an EVEN count that index is
+# > NOT the inherited `$s[[int](($n-1)/2)]`. For an EVEN count that index is
 # (n-1)/2 = x.5 and PowerShell's [int] cast rounds half to EVEN, so n=4 gives
 # index 2 -- the second-HIGHEST of four, not a median. It reads high on a clean
 # cell and, on a cell with one contaminated run, silently lands on the middle
@@ -137,7 +137,7 @@ function StokeRate($threads, $n) {
     if ($m.Success) { return [double]$m.Groups[1].Value }
     return $null
 }
-# llama-bench prints its markdown table on STDOUT: "| ... | tg64 | 17.45 ± 0.10 |"
+# llama-bench prints its markdown table on STDOUT: "| ... | tg64 | 17.45 +/- 0.10 |"
 function LlamaRate($threads, $n) {
     RunCapture $LB @("-m", ('"' + $Q4 + '"'), "-p", "0", "-n", "$n", "-r", "3", "-t", "$threads")
     $t = (Get-Content $tmpO -Raw)
@@ -187,7 +187,7 @@ try {
             Say "  warm $w/3 left standby at $(StandbyGB) GB -- warming again"
         }
         $sb = StandbyGB
-        if ($sb -lt 2.0) { Say "  ⚠ standby only $sb GB -- cycle $cyc MAY BE DISK-BOUND" }
+        if ($sb -lt 2.0) { Say "  ! standby only $sb GB -- cycle $cyc MAY BE DISK-BOUND" }
         Say "CYCLE $cyc starting (cpu $(CpuBusy)%, standby $sb GB)"
         Bank @{ id = "c$cyc-state"; kind = "cyclestate"; cycle = $cyc
                 cpu_busy = (CpuBusy); standby_gb = $sb; utc = (Get-Date -Format s) }

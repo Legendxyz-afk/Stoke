@@ -1,6 +1,6 @@
 # M4.5 -- does spinning before blocking stop the pool drifting onto E-cores?
 #
-# ▶ THE FINDING THIS TESTS (2026-08-17). A forward pass issues ~250 matvec
+# > THE FINDING THIS TESTS (2026-08-17). A forward pass issues ~250 matvec
 # dispatches per token, so with a pure condvar wait each helper slept and woke
 # thousands of times a second. On this 6P+4E box Windows reads a thread that
 # sleeps that often as low-utilisation work and prefers an E-CORE for it, so the
@@ -14,7 +14,7 @@
 # CPU-hungry and keep the P-cores. This probe asks whether giving stoke the same
 # wait shape removes stoke's exposure.
 #
-# ▶ WHAT WOULD FALSIFY IT: spin=0 and spin=2000 measuring the same unpinned.
+# > WHAT WOULD FALSIFY IT: spin=0 and spin=2000 measuring the same unpinned.
 # Then the wait shape is not what places the threads, and the 6.6x has some
 # other cause -- which is the position three earlier hypotheses ended in
 # (hyperthread stacking, disk residency, working-set trimming), each killed by

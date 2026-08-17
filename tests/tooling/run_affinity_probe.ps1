@@ -1,6 +1,6 @@
 # M4.5 -- does the affinity MASK SHAPE, not its size, decide stoke's rate?
 #
-# ▶ WHY. In the 2026-08-17 P-BAR run, block 2 measured BOTH stoke arms at
+# > WHY. In the 2026-08-17 P-BAR run, block 2 measured BOTH stoke arms at
 # roughly 0.55-0.64x of blocks 1 and 3 -- A 10.03 -> 5.39, B 15.44 -> 9.98 --
 # while llama, interleaved between them minutes apart, was UNAFFECTED and in
 # fact at its best of the run (18.66 / 18.75 / 18.73). Within block 2 the
@@ -8,13 +8,13 @@
 # box-level cause (thermal, contention, page cache) cannot hit one engine and
 # spare the other; the cause has to be something stoke does and llama does not.
 #
-# ▶ THE HYPOTHESIS. `src/pool.c` creates workers with bare `pthread_create` and
+# > THE HYPOTHESIS. `src/pool.c` creates workers with bare `pthread_create` and
 # sets NO affinity, so placement is the scheduler's choice. The standing mask
 # 0xFFF is not "the 6 P-cores" -- it is their TWELVE hyperthread siblings.
 # Nothing stops Windows putting 6 threads on 3 physical cores, two to a core,
 # leaving three cores idle. That costs very close to the factor observed.
 #
-# ▶ THE TEST. Same engine, same thread count, three masks that differ only in
+# > THE TEST. Same engine, same thread count, three masks that differ only in
 # SHAPE:
 #     0xFFF   12 siblings of 6 P-cores   -- the standing mask, stacking possible
 #     0x555   CPUs 0,2,4,6,8,10          -- one sibling per P-core, stacking IMPOSSIBLE
@@ -22,7 +22,7 @@
 # If the hypothesis holds, 0x555 is at least as fast as 0xFFF and far steadier,
 # and llama moves much less than stoke across all three.
 #
-# ▶ THE ASSUMPTION, STATED: that logical CPUs are numbered P-cores first with
+# > THE ASSUMPTION, STATED: that logical CPUs are numbered P-cores first with
 # siblings adjacent, so the even CPUs 0..10 are one-per-physical-P-core. That is
 # the standard Windows enumeration for Intel hybrid parts and it is exactly what
 # this probe puts to the test -- if 0x555 behaved like three cores rather than

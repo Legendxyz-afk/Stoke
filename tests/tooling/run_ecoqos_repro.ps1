@@ -1,13 +1,13 @@
 # M4.5 -- the DETERMINISTIC reproducer for the intermittent ~6-11x collapse,
 # and the regression test for its fix.
 #
-# ▶ THE BUG. stoke would intermittently run at 1.4-2.5 tok/s instead of ~16,
+# > THE BUG. stoke would intermittently run at 1.4-2.5 tok/s instead of ~16,
 # for stretches of tens of minutes, while llama-bench measured minutes apart in
 # the same interleave was unaffected. It cost a P-BAR block (2026-08-17 block 2)
 # and it is the likeliest explanation for the 2026-08-15 ladder's depressed
 # arm A (8.262 where the same binary and config later gave 10.03).
 #
-# ▶ WHAT IT IS. Windows EcoQoS. The scheduler throttles work it classifies as
+# > WHAT IT IS. Windows EcoQoS. The scheduler throttles work it classifies as
 # background by placing it on the EFFICIENCY cores, and it applies that
 # classification heuristically -- which is exactly why the state came and went
 # with no correlate in memory pressure, disk, affinity mask or thermals. A
@@ -23,7 +23,7 @@
 # sick rather than waiting for a state that could not be summoned -- pinning to
 # the P-cores recovered 2.4 -> 15.8 on the spot.
 #
-# ▶ WHY THIS SCRIPT EXISTS. The wild state cannot be summoned, so it could not
+# > WHY THIS SCRIPT EXISTS. The wild state cannot be summoned, so it could not
 # be used to verify a fix. Process-level EcoQoS induces the SAME state on
 # demand, and a PER-THREAD opt-out overrides a process-level setting -- so this
 # both proves the diagnosis and tests the fix:
@@ -32,8 +32,8 @@
 # If both arms come back sick, the opt-out in pool.c does not work and must not
 # be trusted.
 #
-# RESULT WHEN LANDED (2026-08-17, two passes): baseline 16.209/16.104 ·
-# throttled+disabled 1.441/1.400 at 102 CPU-seconds · throttled+opt-out
+# RESULT WHEN LANDED (2026-08-17, two passes): baseline 16.209/16.104  / 
+# throttled+disabled 1.441/1.400 at 102 CPU-seconds  /  throttled+opt-out
 # 16.100/15.849 at 27-28 CPU-seconds. An 11.5x recovery. The CPU-seconds are
 # the independent signal: the same work costs ~4x more processor-time on the
 # efficiency cores, so a sick run reads high there AND finishes later.
@@ -100,7 +100,7 @@ foreach ($pass in 1, 2) {
 $ms = ($sick  | Measure-Object -Average).Average
 $mf = ($fixed | Measure-Object -Average).Average
 ""
-# ▶ A GATE THAT CANNOT PASS BY COMPUTING NOTHING. The first version wrapped the
+# > A GATE THAT CANNOT PASS BY COMPUTING NOTHING. The first version wrapped the
 # comparison in `if ($ms -and $mf)` and printed OK when both were null -- which
 # is exactly what happened, because the rates never reached these variables. A
 # missing measurement is a FAILURE, not a pass.
