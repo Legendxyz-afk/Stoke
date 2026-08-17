@@ -225,6 +225,81 @@ TEST(pool_survives_repeated_dispatch) {
     ASSERT_EQ_U32(bad, 0u);
 }
 
+/* L4: pool_for_units at the SMALL sizes attention uses.
+ *
+ * pool_for_rows could never reach this regime -- its chunk is fixed at 64 and
+ * its floor is two chunks, so anything under 128 units ran inline on the
+ * caller and no test noticed, because matvec's smallest output is 1024 rows.
+ * Attention dispatches 32 units at a chunk of 1, which is entirely below what
+ * the old entry point could express. The sizes here bracket the chunk boundary
+ * (n not a multiple of chunk, n smaller than chunk, n exactly one chunk) since
+ * a tail that is dropped or double-claimed is the failure this catches. */
+TEST(pool_for_units_visits_every_unit_exactly_once) {
+    static const u64 sizes[] = {1, 2, 3, 7, 8, 31, 32, 33, 64, 128};
+    static const u32 chunks[] = {1, 2, 4, 8};
+    for (u32 ci = 0; ci < (u32)(sizeof chunks / sizeof chunks[0]); ci++) {
+        for (u32 s = 0; s < (u32)(sizeof sizes / sizeof sizes[0]); s++) {
+            u64 n = sizes[s];
+            memset(g_visits, 0, sizeof g_visits);
+            pool_start(6u);
+            pool_for_units(n, chunks[ci], count_visit, NULL);
+            pool_stop();
+            u32 bad = 0;
+            for (u64 r = 0; r < n; r++) {
+                if (g_visits[r] != 1u) bad++;
+            }
+            for (u64 r = n; r < N_OUT; r++) {
+                if (g_visits[r] != 0u) bad++; /* wrote past the end */
+            }
+            if (bad) {
+                printf("  n=%llu chunk=%u: %u units visited wrongly\n",
+                       (unsigned long long)n, chunks[ci], bad);
+            }
+            ASSERT_EQ_U32(bad, 0u);
+        }
+    }
+}
+
+/* Every worker must see a DISTINCT index inside [0, pool_threads()), because
+ * per-worker scratch is indexed by it: two workers reading the same index
+ * would share one scores row and one KV buffer, which is silent and lands in
+ * the arithmetic. The caller must be 0 -- it runs chunks too. */
+static u32 g_idx_seen[64];
+
+static void record_worker_index(void* ctx, u64 begin, u64 end) {
+    (void)ctx;
+    u32 w = pool_worker_index();
+    if (w < 64u) g_idx_seen[w]++;
+    for (u64 r = begin; r < end; r++) g_visits[r]++;
+}
+
+TEST(pool_worker_index_is_in_range_and_the_caller_is_zero) {
+    ASSERT_EQ_U32(pool_worker_index(), 0u); /* no pool: the caller is worker 0 */
+    memset(g_idx_seen, 0, sizeof g_idx_seen);
+    memset(g_visits, 0, sizeof g_visits);
+    pool_start(6u);
+    ASSERT_EQ_U32(pool_worker_index(), 0u); /* the dispatching thread, always 0 */
+    /* Enough units, finely chunked, that every worker gets several claims --
+     * one dispatch of 6 units could legitimately be swallowed by one fast
+     * worker and prove nothing about the others. */
+    for (u32 round = 0; round < 20u; round++) {
+        pool_for_units(N_OUT, 1u, record_worker_index, NULL);
+    }
+    pool_stop();
+    u32 out_of_range = 0, distinct = 0;
+    for (u32 w = 0; w < 64u; w++) {
+        if (g_idx_seen[w] == 0u) continue;
+        distinct++;
+        if (w >= 6u) out_of_range++;
+    }
+    ASSERT_EQ_U32(out_of_range, 0u);
+    /* Not "exactly 6": the scheduler may leave a worker unclaimed on a busy
+     * box, and asserting on that would make this test flaky for a reason that
+     * has nothing to do with the property. More than one is what proves the
+     * indices are not all colliding at zero. */
+    ASSERT_TRUE(distinct > 1u);
+}
+
 TEST(pool_thread_count_reports_and_defaults) {
     pool_stop();
     ASSERT_EQ_U32(pool_threads(), 1u);

@@ -94,4 +94,35 @@ u32 pool_threads(void);
  * cost more than the work. */
 void pool_for_rows(u64 n_rows, void (*fn)(void*, u64, u64), void* ctx);
 
+/* pool_for_rows with the chunk size chosen by the caller.
+ *
+ * WHY THE CHUNK HAD TO BECOME A PARAMETER. POOL_CHUNK_ROWS is 64 and the
+ * dispatch floor is two chunks, so a parallel-for over anything SMALLER than
+ * 128 units silently ran inline on the caller. Matvec never noticed -- its
+ * smallest output is 1024 rows. Attention has one unit per head, 32 of them,
+ * and asking the old entry point to parallelise it would have handed the whole
+ * loop back to the calling thread and reported nothing. A parallel-for whose
+ * refusal to parallelise is invisible is the failure mode to design out.
+ *
+ * Same contract as pool_for_rows otherwise: `fn` touches only its own slice
+ * and must not call back into the pool. */
+void pool_for_units(u64 n_units, u32 chunk_units,
+                    void (*fn)(void*, u64, u64), void* ctx);
+
+/* Which worker this is, 0 .. pool_threads()-1. The CALLER of pool_for_units is
+ * worker 0 (it runs chunks too), helpers are 1..N-1.
+ *
+ * Exists so a parallel body can index PER-WORKER SCRATCH. Matvec needed none --
+ * it writes only the output rows it was given -- but attention needs a scores
+ * row and a KV dequantization buffer per concurrent head, and "one buffer per
+ * sequence" stops being enough the moment two heads of one sequence run at the
+ * same time. Sizing that by worker rather than by head is what keeps it O(few
+ * threads) instead of O(n_head).
+ *
+ * Valid only inside a pool_for_units body, or on the thread that called
+ * pool_start (which reads 0). Any other thread reads 0, which is why the
+ * pool's one-owner rule -- pool_start and every dispatch from ONE thread --
+ * is a precondition and not a preference. */
+u32 pool_worker_index(void);
+
 #endif /* STOKE_POOL_H */

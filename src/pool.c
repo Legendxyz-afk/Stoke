@@ -30,7 +30,16 @@ typedef struct {
     void (*fn)(void*, u64, u64);
     void* ctx;
     u64 n_rows;
+    u32 chunk; /* units per claim; POOL_CHUNK_ROWS for every matvec */
 } Job;
+
+/* This thread's worker index -- 0 for the dispatching thread, 1..N-1 for the
+ * helpers. Set once when the thread starts and never written again, so it
+ * needs no synchronisation of any kind. See pool_worker_index() in pool.h for
+ * why a parallel body wants this at all. */
+static _Thread_local u32 g_worker_idx = 0u;
+
+u32 pool_worker_index(void) { return g_worker_idx; }
 
 static pthread_t* g_threads;
 static u32 g_n_threads = 1u;      /* total, including the caller */
@@ -153,18 +162,23 @@ static atomic_ullong g_next_chunk;
 
 static void run_chunks(void) {
     u64 n_rows = g_job.n_rows;
+    u64 chunk = (u64)g_job.chunk;
     for (;;) {
         u64 c = atomic_fetch_add(&g_next_chunk, 1ull);
-        u64 begin = c * (u64)POOL_CHUNK_ROWS;
+        u64 begin = c * chunk;
         if (begin >= n_rows) return;
-        u64 end = begin + (u64)POOL_CHUNK_ROWS;
+        u64 end = begin + chunk;
         if (end > n_rows) end = n_rows;
         g_job.fn(g_job.ctx, begin, end);
     }
 }
 
 static void* worker_main(void* arg) {
-    (void)arg;
+    /* The index is passed BY VALUE through the void*, not by pointer into
+     * pool_start's frame: a pointer to a loop variable is the classic
+     * pthread_create race, where the loop advances before the worker reads it
+     * and two workers see the same number. */
+    g_worker_idx = (u32)(uintptr_t)arg;
     thread_prefer_performance();
     u64 served = 0;
     for (;;) {
@@ -212,6 +226,7 @@ void pool_start(u32 n_threads) {
      * treatment as the helpers -- otherwise one of the N workers is still
      * eligible for an efficiency core. */
     thread_prefer_performance();
+    g_worker_idx = 0u; /* the dispatching thread is worker 0 */
     /* Read once here, never in the wait loop: a getenv() per dispatch would
      * cost more than the spin it configures. */
     g_spin = POOL_SPIN_DEFAULT;
@@ -234,7 +249,8 @@ void pool_start(u32 n_threads) {
     u32 helpers = n_threads - 1u;
     g_threads = (pthread_t*)xmalloc((size_t)helpers * sizeof(pthread_t));
     for (u32 i = 0; i < helpers; i++) {
-        if (pthread_create(&g_threads[i], NULL, worker_main, NULL) != 0) {
+        void* idx = (void*)(uintptr_t)(i + 1u);
+        if (pthread_create(&g_threads[i], NULL, worker_main, idx) != 0) {
             fatal("pool: could not create worker thread %u of %u", i + 1u,
                   helpers);
         }
@@ -262,8 +278,14 @@ void pool_stop(void) {
 u32 pool_threads(void) { return g_started ? g_n_threads : 1u; }
 
 void pool_for_rows(u64 n_rows, void (*fn)(void*, u64, u64), void* ctx) {
+    pool_for_units(n_rows, POOL_CHUNK_ROWS, fn, ctx);
+}
+
+void pool_for_units(u64 n_rows, u32 chunk, void (*fn)(void*, u64, u64),
+                    void* ctx) {
     if (n_rows == 0) return;
-    u64 chunks = (n_rows + POOL_CHUNK_ROWS - 1u) / POOL_CHUNK_ROWS;
+    if (chunk == 0u) chunk = POOL_CHUNK_ROWS;
+    u64 chunks = (n_rows + chunk - 1u) / chunk;
     if (!g_started || g_threads == NULL || g_n_threads <= 1u ||
         chunks < (u64)POOL_MIN_CHUNKS) {
         fn(ctx, 0, n_rows);
@@ -274,6 +296,7 @@ void pool_for_rows(u64 n_rows, void (*fn)(void*, u64, u64), void* ctx) {
     g_job.fn = fn;
     g_job.ctx = ctx;
     g_job.n_rows = n_rows;
+    g_job.chunk = chunk;
     atomic_store(&g_next_chunk, 0ull);
     atomic_store_explicit(&g_workers_done, 0u, memory_order_relaxed);
     atomic_fetch_add_explicit(&g_generation, 1ull, memory_order_release);
