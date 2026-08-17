@@ -90,6 +90,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'   # a failed unit must not kill the night
+$script:LastCpuS = 0.0                # set by RunCapture; see the note there
 $nlog = [int](Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
 $affMask = if ($Pin) { [IntPtr]0xFFF } else { [IntPtr]([int64][math]::Pow(2, $nlog) - 1) }
 (Get-Process -Id $PID).ProcessorAffinity = $affMask
@@ -168,11 +169,27 @@ function HasUnit($id) {
 # Start-Process writes the child's raw stderr bytes with no PowerShell
 # decoration and no wrapping, so the capture no longer depends on how wide a
 # console someone imagined.
+# ▶ ALSO RECORDS CPU-SECONDS, since 2026-08-17. Windows EcoQoS silently parks
+# the pool on the efficiency cores, and the same work costs ~4x more
+# PROCESSOR-time there -- so a depressed unit reads HIGH on CPU-seconds while
+# also finishing later. That makes it a tell INDEPENDENT of the rate: a unit
+# can be discarded for running on the wrong cores without having to argue about
+# whether its tok/s "looks low". EcoQoS is fixed in the engine as of `76dee7f`,
+# but the check stays -- the whole point is to catch the NEXT thing that quietly
+# moves work somewhere slower, and block 2 of this very run would have been
+# caught by it.
 function RunCapture($exe, $argList, $errPath, $outPath) {
-    Start-Process -FilePath $exe -ArgumentList $argList `
-                  -RedirectStandardError $errPath `
-                  -RedirectStandardOutput $outPath `
-                  -NoNewWindow -Wait
+    $p = Start-Process -FilePath $exe -ArgumentList $argList `
+                       -RedirectStandardError $errPath `
+                       -RedirectStandardOutput $outPath `
+                       -NoNewWindow -PassThru
+    $cpu = 0.0
+    while (-not $p.HasExited) {
+        try { $p.Refresh(); $cpu = $p.TotalProcessorTime.TotalSeconds } catch {}
+        Start-Sleep -Milliseconds 250
+    }
+    try { $p.Refresh(); $cpu = $p.TotalProcessorTime.TotalSeconds } catch {}
+    $script:LastCpuS = [math]::Round($cpu, 1)
 }
 
 # tok/s from `stoke batch --timing`; the format is
@@ -360,7 +377,7 @@ try {
                 if ($arm -eq "L") { $th = $ThreadsL; $v = LlamaRate $Q4 $th }
                 Bank @{ id = $id; kind = "rate"; block = $blk; cycle = $cyc;
                         arm = $arm; threads = $th; tok_s = $v; cpu_busy = (CpuBusy);
-                        utc = (Get-Date -Format s) }
+                        cpu_s = $script:LastCpuS; utc = (Get-Date -Format s) }
                 Say ("  {0}  {1}" -f $id, $(if ($null -eq $v) { "PARSE-FAIL" } else { $v }))
             }
         }
@@ -475,6 +492,26 @@ finally {
         $lines += ("Arm B across every run: min {0}, max {1}, spread {2:n2}x over {3} runs spanning the night." -f $mn, $mx, ($mx / $mn), $bs.Count)
         $lines += ""
         $lines += "A spread materially wider than a few percent means the box drifted and the medians are the honest summary rather than any single figure."
+    }
+    $lines += ""
+    $lines += "## Wrong-cores check (CPU-seconds per unit)"
+    $lines += ""
+    $lines += "Windows EcoQoS parks the pool on the efficiency cores, where the SAME work costs ~4x more processor-time -- so a depressed unit reads HIGH here while also finishing later. That makes this tell independent of the rate. Fixed in the engine at ``76dee7f``; the check stays to catch the next thing that quietly moves work somewhere slower."
+    $lines += ""
+    $lines += "| arm | median CPU-s | max | flagged |"
+    $lines += "|---|---|---|---|"
+    foreach ($a in @("A", "B", "L")) {
+        $cs = @($rate | Where-Object { $_.arm -eq $a -and $null -ne $_.cpu_s -and $_.cpu_s -gt 0 } |
+                ForEach-Object { [double]$_.cpu_s })
+        if ($cs.Count -gt 0) {
+            $med = Median $cs
+            $mx = ($cs | Measure-Object -Maximum).Maximum
+            # 1.5x the median is far outside normal run-to-run variation (a few
+            # percent) and far inside the ~4x an efficiency core costs.
+            $bad = @($cs | Where-Object { $med -and $_ -gt 1.5 * $med }).Count
+            $lines += ("| {0} | {1} | {2} | {3}{4} |" -f $a, $med, $mx, $bad,
+                       $(if ($bad -gt 0) { " ⚠ DISCARD THESE UNITS" } else { "" }))
+        }
     }
     $lines += ""
     $lines += "Bank: ``$stamp-bank.jsonl``. Raw log: ``$stamp-raw.txt``."

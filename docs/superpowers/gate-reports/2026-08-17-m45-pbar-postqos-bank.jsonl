@@ -1,0 +1,33 @@
+﻿{"desc":"Q4_K_M p41 relinked vs pre-maddubs","utc":"2026-08-17T13:16:59","identical":true,"id":"corr-q4km-p41","kind":"correctness"}
+{"desc":"Q8_0 p41 anchor vs m3 archive","utc":"2026-08-17T13:19:07","identical":true,"id":"corr-q8-p41","kind":"correctness"}
+{"id":"quiesce","standby_gb":7.59,"utc":"2026-08-17T13:21:15","waited_min":2,"kind":"quiesce","cpu_busy":2}
+{"id":"b1-state","standby_gb":7.59,"block":1,"utc":"2026-08-17T13:21:29","kind":"blockstate","cpu_busy":20}
+{"id":"b1-c1-A","kind":"rate","arm":"A","cpu_s":76,"utc":"2026-08-17T13:21:45","cpu_busy":15,"threads":6,"block":1,"tok_s":9.971,"cycle":1}
+{"id":"b1-c1-B","kind":"rate","arm":"B","cpu_s":46.2,"utc":"2026-08-17T13:21:55","cpu_busy":9,"threads":6,"block":1,"tok_s":15.42,"cycle":1}
+{"id":"b1-c1-L","kind":"rate","arm":"L","cpu_s":126.6,"utc":"2026-08-17T13:22:19","cpu_busy":8,"threads":6,"block":1,"tok_s":18.59,"cycle":1}
+{"id":"b1-c2-B","kind":"rate","arm":"B","cpu_s":45,"utc":"2026-08-17T13:22:30","cpu_busy":16,"threads":6,"block":1,"tok_s":15.477,"cycle":2}
+{"id":"b1-c2-L","kind":"rate","arm":"L","cpu_s":126.3,"utc":"2026-08-17T13:22:53","cpu_busy":21,"threads":6,"block":1,"tok_s":18.69,"cycle":2}
+{"id":"b1-c2-A","kind":"rate","arm":"A","cpu_s":75.8,"utc":"2026-08-17T13:23:09","cpu_busy":21,"threads":6,"block":1,"tok_s":10.043,"cycle":2}
+{"id":"b1-c3-L","kind":"rate","arm":"L","cpu_s":124.4,"utc":"2026-08-17T13:23:31","cpu_busy":28,"threads":6,"block":1,"tok_s":18.95,"cycle":3}
+{"id":"b1-c3-A","kind":"rate","arm":"A","cpu_s":0,"utc":"2026-08-17T13:23:47","cpu_busy":7,"threads":6,"block":1,"tok_s":9.985,"cycle":3}
+{"id":"b1-c3-B","kind":"rate","arm":"B","cpu_s":47.6,"utc":"2026-08-17T13:23:58","cpu_busy":8,"threads":6,"block":1,"tok_s":15.401,"cycle":3}
+{"id":"b2-state","standby_gb":7.6,"block":2,"utc":"2026-08-17T13:39:30","kind":"blockstate","cpu_busy":35}
+{"id":"b2-c1-A","kind":"rate","arm":"A","cpu_s":75.6,"utc":"2026-08-17T13:39:45","cpu_busy":14,"threads":6,"block":2,"tok_s":9.97,"cycle":1}
+{"id":"b2-c1-B","kind":"rate","arm":"B","cpu_s":45.5,"utc":"2026-08-17T13:39:56","cpu_busy":8,"threads":6,"block":2,"tok_s":15.483,"cycle":1}
+{"id":"b2-c1-L","kind":"rate","arm":"L","cpu_s":126.6,"utc":"2026-08-17T13:40:21","cpu_busy":7,"threads":6,"block":2,"tok_s":18.66,"cycle":1}
+{"id":"b2-c2-B","kind":"rate","arm":"B","cpu_s":0,"utc":"2026-08-17T13:40:32","cpu_busy":11,"threads":6,"block":2,"tok_s":15.379,"cycle":2}
+{"id":"b2-c2-L","kind":"rate","arm":"L","cpu_s":126.4,"utc":"2026-08-17T13:40:55","cpu_busy":12,"threads":6,"block":2,"tok_s":18.66,"cycle":2}
+{"id":"b2-c2-A","kind":"rate","arm":"A","cpu_s":76.2,"utc":"2026-08-17T13:41:10","cpu_busy":7,"threads":6,"block":2,"tok_s":9.989,"cycle":2}
+{"id":"b2-c3-L","kind":"rate","arm":"L","cpu_s":125.8,"utc":"2026-08-17T13:41:33","cpu_busy":12,"threads":6,"block":2,"tok_s":18.76,"cycle":3}
+{"id":"b2-c3-A","kind":"rate","arm":"A","cpu_s":0,"utc":"2026-08-17T13:41:49","cpu_busy":12,"threads":6,"block":2,"tok_s":9.991,"cycle":3}
+{"id":"b2-c3-B","kind":"rate","arm":"B","cpu_s":46.6,"utc":"2026-08-17T13:42:00","cpu_busy":6,"threads":6,"block":2,"tok_s":15.451,"cycle":3}
+{"id":"b3-state","standby_gb":7.6,"block":3,"utc":"2026-08-17T13:57:30","kind":"blockstate","cpu_busy":2}
+{"id":"b3-c1-A","kind":"rate","arm":"A","cpu_s":74.8,"utc":"2026-08-17T13:57:46","cpu_busy":12,"threads":6,"block":3,"tok_s":9.981,"cycle":1}
+{"id":"b3-c1-B","kind":"rate","arm":"B","cpu_s":0,"utc":"2026-08-17T13:57:57","cpu_busy":12,"threads":6,"block":3,"tok_s":15.043,"cycle":1}
+{"id":"b3-c1-L","kind":"rate","arm":"L","cpu_s":126.6,"utc":"2026-08-17T13:58:21","cpu_busy":19,"threads":6,"block":3,"tok_s":18.64,"cycle":1}
+{"id":"b3-c2-B","kind":"rate","arm":"B","cpu_s":0,"utc":"2026-08-17T13:58:32","cpu_busy":22,"threads":6,"block":3,"tok_s":15.489,"cycle":2}
+{"id":"b3-c2-L","kind":"rate","arm":"L","cpu_s":0,"utc":"2026-08-17T13:58:55","cpu_busy":7,"threads":6,"block":3,"tok_s":18.71,"cycle":2}
+{"id":"b3-c2-A","kind":"rate","arm":"A","cpu_s":74.4,"utc":"2026-08-17T13:59:10","cpu_busy":9,"threads":6,"block":3,"tok_s":9.999,"cycle":2}
+{"id":"b3-c3-L","kind":"rate","arm":"L","cpu_s":125.1,"utc":"2026-08-17T13:59:33","cpu_busy":7,"threads":6,"block":3,"tok_s":18.86,"cycle":3}
+{"id":"b3-c3-A","kind":"rate","arm":"A","cpu_s":75.5,"utc":"2026-08-17T13:59:49","cpu_busy":9,"threads":6,"block":3,"tok_s":9.997,"cycle":3}
+{"id":"b3-c3-B","kind":"rate","arm":"B","cpu_s":0,"utc":"2026-08-17T14:00:00","cpu_busy":4,"threads":6,"block":3,"tok_s":15.497,"cycle":3}
