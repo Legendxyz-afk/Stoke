@@ -73,8 +73,25 @@ function Stream($exe, $model, $prompt, $kv, $threads) {
 }
 
 Set-Location $root
+
+# >> THE BINARY UNDER TEST MUST BE NEWER THAN THE SOURCE, AND THAT IS A BUG FIX.
+# This run was started once against a build/win/stoke.exe that predated the
+# change it was meant to gate, because an earlier build had gone to a SEPARATE
+# directory to avoid disturbing a run in flight. Four minutes of a green gate
+# about the wrong binary. The Makefile header warns about stale objects; this
+# is the same hazard one level up, and a gate that grades a stale artifact is
+# worse than no gate -- it manufactures confidence.
+$newest = (Get-ChildItem -Path "$root\src" -Recurse -Include *.c, *.h |
+           Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+$exeTime = (Get-Item -LiteralPath $NEW).LastWriteTime
+if ($exeTime -lt $newest.LastWriteTime) {
+    throw ("STOP: $NEW ($exeTime) is OLDER than $($newest.Name) " +
+           "($($newest.LastWriteTime)) -- rebuild before gating")
+}
+
 Say "=== attention-on-the-pool verification, branch $(git branch --show-current)"
 Say "    n=$NGen  new=$NEW"
+Say ("    binary $exeTime, newest source $($newest.Name) $($newest.LastWriteTime)")
 
 # MIN_POS=0 so the pooled path is taken from position 0 rather than only after
 # the context passes the dispatch threshold -- this run is about correctness,
