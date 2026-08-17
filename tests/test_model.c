@@ -53,6 +53,7 @@
 
 #include "blockpool.h"
 #include "model.h"
+#include "pool.h" /* L4: attention runs on the pool, so its tests drive it */
 
 #include <errno.h>
 #include <math.h>
@@ -898,6 +899,120 @@ TEST(model_generate_eos_stops_early_and_is_included) {
  * separate test below.
  * ===========================================================================
  */
+/* ===========================================================================
+ * M4.5 L4: attention runs on the worker pool, and must be BIT-IDENTICAL at any
+ * thread count.
+ *
+ * This is test_pool.c's matvec argument one level up, and it needs its own
+ * test because the two are not the same claim. Matvec's parallel unit writes
+ * only its own output rows and reads nothing that is shared and mutable.
+ * Attention's unit ALSO needs two scratch buffers -- a scores row and a KV
+ * dequantization buffer -- which were one-per-SEQUENCE until this change and
+ * are one-per-WORKER after it. If that move were wrong, two heads running at
+ * once would share a scores row, and the result would still look like a
+ * plausible number: no crash, no assertion, just a different token.
+ *
+ * THREE THINGS ARE ASSERTED, and the third is the one that keeps the first two
+ * honest:
+ *   1  6 threads reproduces 1 thread, bit for bit;
+ *   2  6 threads reproduces ITSELF on a re-run (a race is intermittent, so a
+ *      single agreeing pair is weak evidence);
+ *   3  the pooled path ACTUALLY RAN -- via model_att_dispatch_count(). Without
+ *      it, a build that silently fell back to the serial loop would pass every
+ *      comparison above while testing nothing.
+ * ===========================================================================
+ */
+TEST(l4_attention_on_the_pool_is_bit_identical_at_1_and_6_threads) {
+    /* ENOUGH POSITIONS TO CROSS THE DISPATCH THRESHOLD, rather than an env var
+     * that lowers it. The threshold is a speed heuristic -- a head at a short
+     * context is not worth a broadcast -- and at the fixture's usual handful of
+     * positions every forward would take the serial path, so the test would
+     * pass without once running the code it names.
+     *
+     * The first attempt set STOKE_ATT_MIN_POS=0 through putenv(), which the
+     * WSL leg rejected outright: glibc does not declare putenv under
+     * -std=c11 (it is POSIX, not ISO), while MinGW does. Running the real
+     * threshold on real positions is better anyway -- it tests what ships. */
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 n_embd = model_n_embd(m);
+    const u32 ATT_MIN_POS_DEFAULT = 32u; /* mirrors model.c's g_att_min_pos */
+    const u32 NTOK = 48;                 /* fixture max_ctx is 64 */
+    u32 tokens[48];
+    for (u32 t = 0; t < NTOK; t++) tokens[t] = t % 5u; /* vocab is 5 */
+
+    f32* out1 = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+    f32* out6 = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+    f32* out6b = (f32*)xmalloc((size_t)NTOK * n_embd * sizeof(f32));
+
+    u64 disp0 = model_att_dispatch_count();
+
+    /* Serial reference: one thread, so the pool is inert and the heads run on
+     * the caller exactly as they did before this change. */
+    pool_stop();
+    pool_start(1u);
+    {
+        Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                         model_n_head_kv(m), model_head_dim(m));
+        for (u32 t = 0; t < NTOK; t++)
+            model_forward_position(m, kv, tokens[t], t, NULL,
+                                   out1 + (size_t)t * n_embd);
+        kv_close(kv);
+    }
+
+    /* pool_start AFTER model_open on purpose: the per-worker scratch is sized
+     * from the pool as it stands, and this is the ordering that would leave it
+     * short if the re-check at the top of every forward were dropped. */
+    pool_stop();
+    pool_start(6u);
+    f32* dst[2] = {out6, out6b};
+    for (u32 rep = 0; rep < 2u; rep++) {
+        Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                         model_n_head_kv(m), model_head_dim(m));
+        for (u32 t = 0; t < NTOK; t++)
+            model_forward_position(m, kv, tokens[t], t, NULL,
+                                   dst[rep] + (size_t)t * n_embd);
+        kv_close(kv);
+    }
+    pool_stop();
+
+    size_t bytes = (size_t)NTOK * n_embd * sizeof(f32);
+    ASSERT_TRUE(memcmp(out1, out6, bytes) == 0);
+    ASSERT_TRUE(memcmp(out6, out6b, bytes) == 0);
+
+    /* The anti-vacuity check: it counts the times the heads were HANDED to
+     * pool_for_units, which is the decision the threshold could have skipped.
+     * (At one thread the pool then runs them inline, which is the point of the
+     * serial arm.) One per layer for every position at or past the threshold,
+     * over three runs of NTOK positions.
+     *
+     * This encodes ATT_MIN_POS's DEFAULT. If that default moves, this fails
+     * loudly with both numbers printed -- which is the intended behaviour: a
+     * threshold change should have to come past a test that says what it was
+     * relied on to be. */
+    u64 want = (u64)model_n_layer(m) * (NTOK - ATT_MIN_POS_DEFAULT + 1u) * 3u;
+    u64 dispatched = model_att_dispatch_count() - disp0;
+    if (dispatched < want) {
+        printf("  only %llu attention dispatches, expected %llu\n",
+               (unsigned long long)dispatched, (unsigned long long)want);
+    }
+    ASSERT_TRUE(dispatched >= want);
+
+    /* And the outputs must not be all-zero, or every memcmp above is vacuous
+     * too -- the same guard test_pool.c puts on its matvec comparison. */
+    u32 nonzero = 0;
+    for (u32 i = 0; i < NTOK * n_embd; i++) {
+        if (out1[i] != 0.0f) nonzero++;
+    }
+    ASSERT_TRUE(nonzero > 0u);
+
+    free(out1);
+    free(out6);
+    free(out6b);
+    model_close(m);
+}
+
 TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
     write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
     Model* m = model_open(MODEL_FIXTURE_PATH);

@@ -125,6 +125,14 @@ typedef struct {
 void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
                              const char* dump_dir, f32* x_out);
 
+/* How many times the attention heads have been handed to the worker pool.
+ *
+ * A TEST HOOK, and it is here rather than in the test because the condition it
+ * reports is invisible from outside: "the same output at 1 and at 6 threads"
+ * is equally true of a build that never dispatched at all. Process-global and
+ * monotonic; a test takes the difference across the calls it cares about. */
+u64 model_att_dispatch_count(void);
+
 /* Steps `n_seq` sequences by one position each, one Kv handle per sequence.
  *
  * Each sequence gets its OWN SeqScratch, so nothing they compute can reach

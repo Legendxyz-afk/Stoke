@@ -10,10 +10,12 @@
 
 #include "kernels/kernels.h"
 #include "kernels/simd.h"
+#include "pool.h" /* the attention heads run on the pool -- att_heads_run */
 
 #include <errno.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdlib.h> /* getenv, strtol -- see att_env_init */
 #include <string.h>
 
 #ifdef _WIN32
@@ -56,13 +58,117 @@ typedef struct {
  *
  * Allocated once at open, reused by every forward_position/compute_logits/
  * generate call -- "no malloc inside the per-token loop" (M2 op-spec 6). */
+/* How many context positions the QK loop scores per pass.
+ *
+ * WHY THIS EXISTS AT ALL. `vec_dot_f32` is `sum += a[i]*b[i]`, and that carries
+ * a loop-carried dependency on `sum`, so it runs at FP-ADD LATENCY -- about 4
+ * cycles per element -- no matter how many multiply units are idle. But each
+ * context position is an INDEPENDENT dot product, so scoring several at once
+ * with several accumulators fills the pipeline instead of stalling on it.
+ *
+ * ▶ AND IT IS BIT-EXACT, WHICH IS THE WHOLE POINT. Every accumulator still
+ * sums its own position left to right in exactly the scalar order, so this is
+ * not a reassociation and needs no twin and no grading run. The 2026-08-12
+ * ruling expected L4 to be a non-bit-exact twin ("canonical fold = the existing
+ * scalar order"); that is true of parallelism found INSIDE a reduction, and the
+ * parallelism here is across independent OUTPUTS instead.
+ *
+ * Four because the FP add latency is ~4 cycles and the throughput is ~1/cycle,
+ * so four chains saturate it; more would only add register pressure and scratch.
+ * Measured at ctx 1500 attention was 84.6% of decode, so this loop is where
+ * decode time actually goes. */
+#define ATT_LANES 4u
+
+/* Floats of kv scratch one attention loop needs: ATT_LANES live (K,V) pairs,
+ * since at Q8 kv_read dequantizes INTO this buffer and its pointers stay valid
+ * only "until the next kv_read using the same scratch" (kv.h). Sharing one
+ * region across the lanes would hand all four the last position's K -- silent,
+ * and still numerically plausible.
+ *
+ * ▶ ONE EXPRESSION, USED BY EVERY SITE THAT ALLOCATES IT. There are two such
+ * sites (the model-level scratch model_forward_position runs off, and the
+ * per-sequence ones the batch path uses), they were sized independently, and
+ * when the lane loop raised the requirement from 1 pair to 4 only the
+ * per-sequence site was updated. The `run` path then overran its buffer by
+ * 3072 bytes at --kv q8 and surfaced as `bp_block_slot: block 3230404224 out
+ * of range` -- a corrupted heap reported by an innocent bystander. Caught by
+ * byte-comparing the q8 path against the archived binary, which the f32-only
+ * check that preceded it could not have caught: at f32 kv_read is zero-copy
+ * and never touches this buffer at all. */
+#define ATT_KV_FLOATS(head_dim) ((size_t)(head_dim) * 2u * ATT_LANES)
+
+/* STOKE_ATT_LANES=1 falls back to the pre-2026-08-17 one-position-at-a-time
+ * loop. An env var and not a compile flag, so the A/B is a property of the RUN
+ * and both arms interleave in one sitting from ONE binary -- this box punishes
+ * before/after comparisons separated by real work. Read once at model_open;
+ * the scratch is always sized for the full ATT_LANES, so a smaller runtime
+ * value can never overrun it. */
+static u32 g_att_lanes = ATT_LANES;
+
+/* Run the heads on the pool (1) or serially on the calling thread (0). Both
+ * arms are BIT-IDENTICAL -- see att_heads_run -- so this is a pure speed
+ * switch, and it is an env var rather than a compile flag for the same reason
+ * STOKE_NO_QOS and STOKE_NO_PIN are: the A/B then interleaves inside ONE
+ * sitting from ONE binary, which is the only comparison this box supports. */
+static u32 g_att_par = 1u;
+
+/* Q-heads per claim. 1 by default: the box is 6 P-cores + 4 E-cores, an E-core
+ * takes several times longer on the same head, and the smallest claim is what
+ * keeps a slow core from holding 3 other heads hostage at the barrier. Larger
+ * values trade that balance for kv-cache reuse -- heads in one GQA group share
+ * a kv-head, so a chunk of gqa_group reads that head's K and V once instead of
+ * four times -- which is worth measuring, not assuming. */
+static u32 g_att_chunk = 1u;
+
+/* Below this many context positions a head is too small to be worth a
+ * dispatch (a broadcast, N wakeups, a join). 32 is a starting value chosen
+ * from the shape of the cost -- a head at context P costs roughly P*64 ns and
+ * a dispatch a few us -- and is tunable so the crossover can be measured
+ * rather than argued about. */
+static u32 g_att_min_pos = 32u;
+
+/* Counts the times the heads were actually handed to the pool.
+ *
+ * EXISTS SO A TEST CANNOT PASS VACUOUSLY. "Output is bit-identical at 1 and 6
+ * threads" is also true of a build where the dispatch never fires -- because
+ * the pool was not started, because g_att_par was 0, because the context sat
+ * under g_att_min_pos, or because pool_for_units decided there were too few
+ * chunks and quietly ran inline. That is four ways for the assertion to be
+ * about nothing, and this project has already recorded a test passing for a
+ * reason unrelated to its name. Written only by the dispatching thread. */
+static u64 g_att_dispatches = 0;
+
+u64 model_att_dispatch_count(void) { return g_att_dispatches; }
+
+static u32 env_u32(const char* name, u32 dflt, u32 lo, u32 hi) {
+    const char* s = getenv(name);
+    if (!s || !s[0]) return dflt;
+    char*         end = NULL;
+    unsigned long v = strtoul(s, &end, 10);
+    if (!end || *end != '\0' || v < (unsigned long)lo || v > (unsigned long)hi) {
+        return dflt;
+    }
+    return (u32)v;
+}
+
+static void att_env_init(void) {
+    g_att_lanes = ATT_LANES;
+    const char* s = getenv("STOKE_ATT_LANES");
+    if (s && s[0]) {
+        long v = strtol(s, NULL, 10);
+        if (v == 1 || v == (long)ATT_LANES) g_att_lanes = (u32)v;
+    }
+    g_att_par = env_u32("STOKE_ATT_PAR", 1u, 0u, 1u);
+    g_att_chunk = env_u32("STOKE_ATT_CHUNK", 1u, 1u, 1024u);
+    g_att_min_pos = env_u32("STOKE_ATT_MIN_POS", 32u, 0u, 1u << 20);
+}
+
 typedef struct {
     f32* s_a;        /* [n_embd]              post-attn_norm            */
     f32* s_q;        /* [n_head*head_dim]     Q, all heads flattened    */
     f32* s_k;        /* [n_head_kv*head_dim]  K, all kv-heads flattened */
     f32* s_v;        /* [n_head_kv*head_dim]  V, all kv-heads flattened */
     f32* s_attn_out; /* [n_head*head_dim]     per-head attn output      */
-    f32* s_scores;   /* [max_ctx]             one head's softmax row    */
     f32* s_proj;     /* [n_embd]              attn_output/ffn_down proj */
     f32* s_f;        /* [n_embd]              post-ffn_norm             */
     f32* s_gate;     /* [n_ff]                gate, then silu(gate)*up  */
@@ -79,13 +185,10 @@ typedef struct {
     u8* s_aq;
     u64 s_aq_bytes;
 
-    /* M4 Q8 KV: where kv_read dequantizes one (K,V) pair to. [2*head_dim].
-     * PER SEQUENCE, like everything else here -- a shared one would be the
-     * scratch-aliasing bug the interleaved-identity test exists to catch,
-     * except silent, since attention would read another sequence's KV and
-     * still produce a plausible number. Unused at f32, where kv_read hands
-     * back the storage pointer and copies nothing. */
-    f32* s_kv;
+    /* ▶ s_scores AND s_kv USED TO LIVE HERE, per sequence. They moved to
+     * Model::att_ws, per WORKER -- see that field. Nothing else in this struct
+     * is touched by more than one thread at a time, which is why the rest of
+     * it stays sequence-owned. */
 } SeqScratch;
 
 /* Pointer views over the N scratch sets a batch is stepping.
@@ -134,6 +237,40 @@ struct Model {
     SeqScratch** scratch_p;  /* [n_scratch], &scratch_n[s]       */
     u32 n_scratch;
     BatchViews views;        /* pointer arrays over N of them    */
+
+    /* PER-WORKER attention scratch: [att_workers][att_stride], holding one
+     * scores row (max_ctx) then one KV dequantization buffer (ATT_KV_FLOATS).
+     *
+     * ▶ WHY THIS IS PER WORKER AND NO LONGER PER SEQUENCE. Both buffers are
+     * private to ONE head's arithmetic -- scores is that head's softmax row,
+     * s_kv is where kv_read lands its dequantized pair. Per-sequence was the
+     * right unit while heads ran one after another; it is the WRONG unit the
+     * moment two heads of the SAME sequence run at once, which is exactly what
+     * the parallel attention loop does. Per worker is the tightest correct
+     * unit: a head runs on exactly one worker start to finish, and the count
+     * is threads (8) rather than heads (32).
+     *
+     * It also collapses two allocation sites into one. The model-level and
+     * per-sequence copies were sized independently, and the lane loop's raised
+     * requirement reached only one of them -- a 3072-byte heap overrun on the
+     * `run` path (see ATT_KV_FLOATS). One buffer, one owner, one size.
+     *
+     * ▶▶ ONE ALLOCATION PER WORKER, NOT ONE BIG ONE SLICED BY WORKER, AND THAT
+     * IS AN INSTRUMENT DECISION. The sliced version was written first. Then
+     * the undersize bug was mutated back in and run under ASan on the real
+     * model at --kv q8: ASan exited CLEAN. Of course it did -- an undersized
+     * slice overruns into the NEXT WORKER'S slice, which is still inside the
+     * same malloc block, so there is no boundary for ASan to see. The bug
+     * stayed silent and landed in the arithmetic, which is exactly how it got
+     * this far the first time.
+     *
+     * Separate allocations put a redzone between every worker, so the same
+     * mistake becomes a loud ASan report instead of a wrong token. The cost is
+     * one pointer indirection PER HEAD -- not per element -- against a bug
+     * class this file has now demonstrated it can produce. */
+    f32** att_ws;    /* [att_workers], each att_stride floats */
+    u32   att_workers;
+    u64   att_stride;
 };
 
 /* ===========================================================================
@@ -223,7 +360,6 @@ static void scratch_alloc(Model* m, SeqScratch* sc) {
     sc->s_k        = (f32*)xmalloc((size_t)m->n_head_kv * m->head_dim * sizeof(f32));
     sc->s_v        = (f32*)xmalloc((size_t)m->n_head_kv * m->head_dim * sizeof(f32));
     sc->s_attn_out = (f32*)xmalloc((size_t)m->n_head * m->head_dim * sizeof(f32));
-    sc->s_scores   = (f32*)xmalloc((size_t)m->max_ctx * sizeof(f32));
     sc->s_proj     = (f32*)xmalloc((size_t)m->n_embd * sizeof(f32));
     sc->s_f        = (f32*)xmalloc((size_t)m->n_embd * sizeof(f32));
     sc->s_gate     = (f32*)xmalloc((size_t)m->n_ff * sizeof(f32));
@@ -234,7 +370,45 @@ static void scratch_alloc(Model* m, SeqScratch* sc) {
     sc->s_logits   = (f32*)xmalloc((size_t)m->n_vocab * sizeof(f32));
     sc->s_aq_bytes = m->scratch.s_aq_bytes;
     sc->s_aq       = (u8*)xmalloc((size_t)sc->s_aq_bytes);
-    sc->s_kv       = (f32*)xmalloc((size_t)m->head_dim * 2u * sizeof(f32));
+}
+
+static void att_ws_free(Model* m) {
+    if (m->att_ws == NULL) return;
+    for (u32 w = 0; w < m->att_workers; w++) free(m->att_ws[w]);
+    free(m->att_ws);
+    m->att_ws = NULL;
+    m->att_workers = 0;
+}
+
+/* Sizes the per-worker attention scratch for the pool as it stands NOW.
+ *
+ * Called from model_open and again at the top of every forward call. In the
+ * normal order -- both of main.c's paths call pool_start BEFORE model_open --
+ * the model_open call sizes it correctly and the per-forward call is a single
+ * compare that never allocates, so the token loop still allocates nothing
+ * (M2 op-spec 6). The per-forward check exists because "the pool is already
+ * started" is a caller ordering, not an invariant this file can enforce, and
+ * the failure mode if it were assumed is a worker indexing past the end of
+ * this buffer -- silent, and in the arithmetic. A compare per token is the
+ * cheapest way to make the assumption unnecessary. */
+static void att_ws_ensure(Model* m) {
+    u32 want = pool_threads();
+    if (want < 1u) want = 1u;
+    if (m->att_ws != NULL && want <= m->att_workers) return;
+    /* Rounded to a whole 64-byte line. Separate allocations are already far
+     * apart, so this is not about false sharing between workers -- it keeps
+     * each buffer's own two regions (scores, then the KV pairs) line-aligned
+     * relative to its start. */
+    u64 need = (u64)m->max_ctx + (u64)ATT_KV_FLOATS(m->head_dim);
+    u64 stride = (need + 15u) & ~(u64)15u;
+    f32** ws = (f32**)xmalloc((size_t)want * sizeof(f32*));
+    for (u32 w = 0; w < want; w++) {
+        ws[w] = (f32*)xmalloc((size_t)stride * sizeof(f32));
+    }
+    att_ws_free(m);
+    m->att_ws = ws;
+    m->att_stride = stride;
+    m->att_workers = want;
 }
 
 /* Sizes the view arrays for at least `n` sequences and points them at `scs`.
@@ -280,13 +454,13 @@ static void views_free(BatchViews* vw) {
 
 static void scratch_free(SeqScratch* sc) {
     free(sc->s_a); free(sc->s_q); free(sc->s_k); free(sc->s_v);
-    free(sc->s_attn_out); free(sc->s_scores); free(sc->s_aq);
+    free(sc->s_attn_out); free(sc->s_aq);
     free(sc->s_proj); free(sc->s_f); free(sc->s_gate); free(sc->s_up);
     free(sc->s_x); free(sc->s_h); free(sc->s_xout); free(sc->s_logits);
-    free(sc->s_kv);
 }
 
 Model* model_open(const char* path) {
+    att_env_init();
     GgufFile* f = gguf_open(path);
 
     const char* arch = gguf_meta_str(f, "general.architecture");
@@ -450,7 +624,6 @@ Model* model_open(const char* path) {
     m->scratch.s_k = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
     m->scratch.s_v = (f32*)xmalloc((size_t)n_head_kv * head_dim * sizeof(f32));
     m->scratch.s_attn_out = (f32*)xmalloc((size_t)n_head * head_dim * sizeof(f32));
-    m->scratch.s_scores = (f32*)xmalloc((size_t)max_ctx * sizeof(f32));
     /* Largest contraction length over every matvec in the forward pass:
      * n_embd (Q/K/V, ffn_gate/up, logits), n_head*head_dim (attn_output),
      * and n_ff (ffn_down). Taking the max rather than assuming which one
@@ -486,7 +659,9 @@ Model* model_open(const char* path) {
     m->scratch.s_h = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
     m->scratch.s_xout = (f32*)xmalloc((size_t)n_embd * sizeof(f32));
     m->scratch.s_logits = (f32*)xmalloc((size_t)n_vocab * sizeof(f32));
-    m->scratch.s_kv = (f32*)xmalloc((size_t)head_dim * 2u * sizeof(f32));
+    /* Both of main.c's paths call pool_start before this, so this is the call
+     * that actually sizes it and the per-forward one never allocates. */
+    att_ws_ensure(m);
 
     return m;
 }
@@ -508,7 +683,6 @@ void model_close(Model* m) {
     free(m->scratch.s_k);
     free(m->scratch.s_v);
     free(m->scratch.s_attn_out);
-    free(m->scratch.s_scores);
     free(m->scratch.s_aq);
     free(m->scratch.s_proj);
     free(m->scratch.s_f);
@@ -518,7 +692,7 @@ void model_close(Model* m) {
     free(m->scratch.s_h);
     free(m->scratch.s_xout);
     free(m->scratch.s_logits);
-    free(m->scratch.s_kv);
+    att_ws_free(m);
     gguf_close(m->f);
     free(m);
 }
@@ -726,6 +900,90 @@ static void validate_seq(Model* m, Kv* kv, u32 token_id, u32 pos) {
  * The per-sequence work that remains sequence-outer (QK-norm, rope, the KV
  * append, attention) is exactly the work with no weight to amortize: it
  * reads that sequence's own cache and nothing else. */
+/* One sequence's attention, at one layer, for a RANGE OF Q-HEADS.
+ *
+ * ▶▶ WHY THIS IS BIT-EXACT AT ANY THREAD COUNT, and it is the same argument
+ * pool.h makes for matvec one level up. A q-head's output depends on that
+ * head's Q row, the kv-head it reads, and nothing else; it is written to its
+ * own slice of s_attn_out; and the arithmetic inside a head -- the order of
+ * every add in every dot product, the softmax, the V accumulation -- is
+ * character-for-character what it was when the loop was serial. The
+ * parallelism is over INDEPENDENT OUTPUTS, so it reassociates nothing and
+ * needs no twin, no grading run and no re-anchor. The byte-compare against the
+ * archived binary is what checks that claim rather than this paragraph.
+ *
+ * The one thing that was NOT already per-head is the scratch: the scores row
+ * and the KV dequantization buffer were one-per-sequence, which is exactly one
+ * too few the moment two heads run at once. They come from Model::att_ws,
+ * indexed by worker. */
+typedef struct {
+    Model*      m;
+    SeqScratch* sc;
+    Kv*         kvs;
+    u32         L;
+    u32         pos;
+    f32         scale;
+} AttHeads;
+
+static void att_heads_run(void* vctx, u64 h_begin, u64 h_end) {
+    const AttHeads* a = (const AttHeads*)vctx;
+    Model*          m = a->m;
+    SeqScratch*     sc = a->sc;
+    Kv*             kvs = a->kvs;
+    const u32       pos = a->pos;
+    const u32       L = a->L;
+    const f32       scale = a->scale;
+
+    f32*      ws = m->att_ws[pool_worker_index()];
+    f32*      scores = ws;
+    f32*      kvbuf = ws + m->max_ctx;
+    const u64 hd2 = (u64)m->head_dim * 2u;
+
+    for (u64 hh = h_begin; hh < h_end; hh++) {
+        u32        h = (u32)hh;
+        u32        kvh = h / m->gqa_group; /* causal GQA: h reads h/gqa_group */
+        const f32* qh = sc->s_q + (u64)h * m->head_dim;
+
+        /* ATT_LANES independent chains, each summed left-to-right in exactly
+         * vec_dot_f32's order -- see ATT_LANES. Bit-exact, so the tail below
+         * and the scalar path must stay identical too. */
+        u32 j = 0;
+        for (; g_att_lanes >= ATT_LANES && j + ATT_LANES <= (u32)pos + 1u;
+             j += ATT_LANES) {
+            KvSlot s0 = kv_read(kvs, L, kvh, j + 0u, kvbuf + 0u * hd2);
+            KvSlot s1 = kv_read(kvs, L, kvh, j + 1u, kvbuf + 1u * hd2);
+            KvSlot s2 = kv_read(kvs, L, kvh, j + 2u, kvbuf + 2u * hd2);
+            KvSlot s3 = kv_read(kvs, L, kvh, j + 3u, kvbuf + 3u * hd2);
+            f32 a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+            for (u32 d = 0; d < m->head_dim; d++) {
+                a0 += qh[d] * s0.k[d];
+                a1 += qh[d] * s1.k[d];
+                a2 += qh[d] * s2.k[d];
+                a3 += qh[d] * s3.k[d];
+            }
+            scores[j + 0u] = a0 * scale;
+            scores[j + 1u] = a1 * scale;
+            scores[j + 2u] = a2 * scale;
+            scores[j + 3u] = a3 * scale;
+        }
+        for (; j <= pos; j++) {
+            KvSlot slot = kv_read(kvs, L, kvh, j, kvbuf);
+            scores[j] = vec_dot_f32(qh, slot.k, m->head_dim) * scale;
+        }
+        softmax(scores, (u64)pos + 1u);
+
+        f32* out_h = sc->s_attn_out + (u64)h * m->head_dim;
+        for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
+        for (u32 jv = 0; jv <= pos; jv++) {
+            KvSlot slot = kv_read(kvs, L, kvh, jv, kvbuf);
+            f32    wgt = scores[jv];
+            for (u32 d = 0; d < m->head_dim; d++) {
+                out_h[d] += wgt * slot.v[d];
+            }
+        }
+    }
+}
+
 static void forward_batch_body(Model* m, SeqScratch* const* scs,
                                Kv* const* kv, const u32* token_ids,
                                const u32* positions, u32 n_seq,
@@ -758,6 +1016,10 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
         }
         ensure_dir(dump_dir);
     }
+
+    /* One compare per forward call; allocates only if the pool started after
+     * model_open, which main.c's two paths never do. See att_ws_ensure. */
+    att_ws_ensure(m);
 
     BatchViews* vw = &m->views;
     views_bind(vw, scs, n_seq);
@@ -834,27 +1096,28 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
                          sc->s_v + (u64)h * m->head_dim);
             }
 
-            /* causal GQA attention: q-head h reads kv-head h/gqa_group */
-            for (u32 h = 0; h < m->n_head; h++) {
-                u32        kvh = h / m->gqa_group;
-                const f32* qh = sc->s_q + (u64)h * m->head_dim;
-
-                for (u32 j = 0; j <= pos; j++) {
-                    KvSlot slot = kv_read(kvs, L, kvh, j, sc->s_kv);
-                    sc->s_scores[j] =
-                        vec_dot_f32(qh, slot.k, m->head_dim) * scale;
-                }
-                softmax(sc->s_scores, (u64)pos + 1u);
-
-                f32* out_h = sc->s_attn_out + (u64)h * m->head_dim;
-                for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
-                for (u32 j = 0; j <= pos; j++) {
-                    KvSlot slot = kv_read(kvs, L, kvh, j, sc->s_kv);
-                    f32    wgt = sc->s_scores[j];
-                    for (u32 d = 0; d < m->head_dim; d++) {
-                        out_h[d] += wgt * slot.v[d];
-                    }
-                }
+            /* causal GQA attention -- ON THE POOL, one unit per q-head.
+             *
+             * The heads are dispatched rather than looped because attention was
+             * the LAST single-threaded work in the forward pass: matvec has run
+             * on the pool since K5, and at ctx 1500 attention is 84.6% of
+             * decode, so ~85% of a long-context token was running on ONE core
+             * while the other seven sat at the barrier. */
+            AttHeads aj;
+            aj.m = m;
+            aj.sc = sc;
+            aj.kvs = kvs;
+            aj.L = L;
+            aj.pos = pos;
+            aj.scale = scale;
+            if (g_att_par && (u64)pos + 1u >= (u64)g_att_min_pos) {
+                g_att_dispatches++;
+                pool_for_units(m->n_head, g_att_chunk, att_heads_run, &aj);
+            } else {
+                /* Below the threshold the dispatch (a broadcast, N wakeups and
+                 * a join) costs more than the heads do, and this path is also
+                 * STOKE_ATT_PAR=0's arm: bit-identical, just serial. */
+                att_heads_run(&aj, 0, m->n_head);
             }
         }
 

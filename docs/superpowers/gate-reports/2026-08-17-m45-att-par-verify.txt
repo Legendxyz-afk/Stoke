@@ -1,0 +1,8 @@
+2026-08-17T20:08:58  === attention-on-the-pool verification, branch m45-aprime
+2026-08-17T20:08:58      n=32  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-17T20:10:44    Q4_K_M p00  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T20:11:41    Q4_K_M p00  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T20:20:44    Q4_K_M p41  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T20:25:10    Q4_K_M p41  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T20:26:31    Q4_K_M p00  kv=q8  t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T20:27:09    Q4_K_M p00  kv=q8  t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
