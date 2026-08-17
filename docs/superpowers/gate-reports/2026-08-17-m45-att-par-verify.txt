@@ -1,8 +1,18 @@
-2026-08-17T20:08:58  === attention-on-the-pool verification, branch m45-aprime
-2026-08-17T20:08:58      n=32  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
-2026-08-17T20:10:44    Q4_K_M p00  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
-2026-08-17T20:11:41    Q4_K_M p00  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
-2026-08-17T20:20:44    Q4_K_M p41  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
-2026-08-17T20:25:10    Q4_K_M p41  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
-2026-08-17T20:26:31    Q4_K_M p00  kv=q8  t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
-2026-08-17T20:27:09    Q4_K_M p00  kv=q8  t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T21:21:33  === attention-on-the-pool verification, branch m45-aprime
+2026-08-17T21:21:33      n=32  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-17T21:21:33      binary 08/17/2026 21:20:58, newest source model.c 08/17/2026 20:34:52
+2026-08-17T21:23:41    Q4_K_M p00  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T21:24:42    Q4_K_M p00  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T21:36:51    Q4_K_M p41  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-17T21:39  STOPPED BY OPERATOR -- THIS RUN IS PARTIAL, NOT A PASS.
+2026-08-17T21:39    COVERED (all four arms par 0/1 x lanes 1/4, IDENTICAL to the
+2026-08-17T21:39      archived binaries): Q4_K_M p00 kv=f32 t=2, t=6; p41 kv=f32 t=2.
+2026-08-17T21:39    OWED: p41 kv=f32 t=6; p00 kv=q8 t=2, t=6; p41 kv=q8 t=2, t=6;
+2026-08-17T21:39      Q8_0 anchor p41 t=2, t=6.  Re-run the whole script -- it is
+2026-08-17T21:39      cheap to repeat and a gate assembled from two sittings is not
+2026-08-17T21:39      one gate.
+2026-08-17T21:39    NOTE the q8 cases DID pass on 2026-08-17 ~20:26 against the
+2026-08-17T21:39      previous build of this change (before the per-worker scratch
+2026-08-17T21:39      became one allocation PER WORKER rather than one block sliced
+2026-08-17T21:39      by worker). That is evidence, not a discharge: it graded a
+2026-08-17T21:39      different binary.
