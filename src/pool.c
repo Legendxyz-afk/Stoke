@@ -10,6 +10,12 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
+#ifdef _WIN32
+/* For SetThreadInformation -- see thread_prefer_performance(). */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 /* The measured default -- see pool.h for the full reasoning. EIGHT, and
  * deliberately NOT the six that llama.cpp peaks at on this same box. */
 #define POOL_DEFAULT_THREADS 8u
@@ -40,10 +46,104 @@ static pthread_cond_t g_done = PTHREAD_COND_INITIALIZER;
  * serves it exactly once, and one that wakes spuriously sees the SAME
  * generation and goes back to sleep. A bare "there is work" flag cannot
  * express either case. */
-static u64 g_generation;
-static u32 g_workers_done;        /* helpers finished with g_generation */
+/* ▶ ATOMIC, since 2026-08-17, so the spin below can read them WITHOUT the
+ * mutex. The mutex and both condvars stay exactly as they were and remain the
+ * blocking path; the atomics only make the fast path legal. Every store still
+ * happens under g_mu while the waiter re-checks under g_mu, so a wakeup cannot
+ * be lost -- the spin is an optimisation layered on the correct protocol, not
+ * a replacement for it. */
+static atomic_ullong g_generation;
+static atomic_uint   g_workers_done; /* helpers finished with g_generation */
 static int g_quit;
 static Job g_job;
+
+/* ▶▶ WHY WORKERS SPIN BEFORE THEY SLEEP. Measured 2026-08-17. A forward pass
+ * issues ~250 matvec dispatches per token, so with a pure condvar wait each
+ * helper slept and woke thousands of times a second. On this hybrid box
+ * (6 P-cores + 4 E-cores) Windows' scheduler reads a thread that sleeps that
+ * often as low-utilisation work and prefers an E-CORE for it -- so stoke's
+ * whole pool drifts onto the slow cores, while llama.cpp's ggml workers spin
+ * and therefore read as CPU-hungry and keep the P-cores.
+ *
+ * The cost was not subtle: unpinned 2.39/2.45 tok/s against 15.79/15.76 pinned
+ * to P-cores, a 6.6x swing on the same binary minutes apart, with the sick runs
+ * burning 74 CPU-seconds to the healthy runs' 26 (the same work takes more
+ * processor-time on a slower core) at only ~45% duty cycle. Raising process
+ * priority recovered part of it (2.39 -> 5.60), which is the tell that this is
+ * a PLACEMENT decision and not the arithmetic.
+ *
+ * This also settles a claim the record had marked as not reproducing. The
+ * ROADMAP's locked call for dynamic chunking was justified by an E-core penalty
+ * that a later re-measurement could not find -- because that re-measurement was
+ * taken on LLAMA, which spins and so cannot exhibit it. On stoke it reproduces
+ * at 6.6x. The chunking was never the missing piece; the WAIT was.
+ *
+ * Tunable via STOKE_POOL_SPIN (iterations, 0 disables) so the sweep is a
+ * property of the run rather than of the binary. */
+/* ▶ DEFAULT 0 = OFF, deliberately. Spinning is only a PROXY for "look busy so
+ * the scheduler gives me a P-core", and measured on a healthy box it buys ~2%
+ * (inside the noise) for ~15% more CPU-seconds -- 30-33s against 26.5-27.5s at
+ * n=64. On a box whose second documented error source is thermal drift under
+ * sustained load, paying 15% more CPU forever for an unproven benefit is a bad
+ * trade, and §7.3's "keep whichever is fastest, including neither" says drop it.
+ * The code stays because it is verified and costs nothing switched off, and
+ * because it is the fallback if the QoS opt-out below turns out insufficient. */
+#define POOL_SPIN_DEFAULT 0u
+static u32 g_spin = POOL_SPIN_DEFAULT;
+
+/* ▶▶ THE ACTUAL FIX FOR THE E-CORE DRIFT: opt these threads out of EcoQoS.
+ * Windows throttles threads it classifies as background work by scheduling them
+ * on the efficiency cores, and a thread that sleeps on a condvar thousands of
+ * times a second (≈250 matvec dispatches per token) looks exactly like
+ * background work. SetThreadInformation(ThreadPowerThrottling) with StateMask=0
+ * says "this thread is performance work" directly, which is the intent -- rather
+ * than inferring it from a spin that burns power to look busy.
+ *
+ * Each thread sets its OWN state via GetCurrentThread(), so this needs no
+ * native handle out of pthread_t and stays inside the portable pool structure.
+ * Resolved dynamically and entirely best-effort: on a Windows without the entry
+ * point, behaviour is exactly what it was before. */
+#ifdef _WIN32
+#ifndef THREAD_POWER_THROTTLING_EXECUTION_SPEED
+#define THREAD_POWER_THROTTLING_EXECUTION_SPEED 0x1
+#endif
+#ifndef THREAD_POWER_THROTTLING_CURRENT_VERSION
+#define THREAD_POWER_THROTTLING_CURRENT_VERSION 1
+#endif
+typedef struct {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+} StokeThreadPowerThrottling;
+typedef BOOL(WINAPI* SetThreadInformationFn)(HANDLE, int, LPVOID, DWORD);
+
+static void thread_prefer_performance(void) {
+    /* STOKE_NO_QOS=1 restores the pre-2026-08-17 behaviour, so the opt-out can
+     * be A/B'd on one binary in one interleaved sitting. */
+    const char* off = getenv("STOKE_NO_QOS");
+    if (off && off[0] && !(off[0] == '0' && off[1] == '\0')) return;
+    HANDLE k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) return;
+    SetThreadInformationFn set =
+        (SetThreadInformationFn)(void (*)(void))GetProcAddress(
+            (HMODULE)k32, "SetThreadInformation");
+    if (!set) return;
+    StokeThreadPowerThrottling s;
+    s.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    s.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    s.StateMask = 0; /* 0 with the bit CONTROLLED = throttling OFF */
+    /* ThreadPowerThrottling == 3 in the THREAD_INFORMATION_CLASS enum. */
+    (void)set(GetCurrentThread(), 3, &s, (DWORD)sizeof(s));
+}
+#else
+static void thread_prefer_performance(void) {}
+#endif
+
+static inline void pool_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+}
 
 /* The claim counter. Sequentially consistent on purpose: this is claimed
  * once per 64 rows, so it is nowhere near hot enough to justify reasoning
@@ -65,23 +165,37 @@ static void run_chunks(void) {
 
 static void* worker_main(void* arg) {
     (void)arg;
+    thread_prefer_performance();
     u64 served = 0;
     for (;;) {
+        /* Spin for a bounded budget, then fall back to the condvar. On quit the
+         * generation never advances, so a spinning worker simply exhausts its
+         * budget and then blocks and sees g_quit -- a bounded shutdown delay,
+         * not a hang. */
+        for (u32 s = 0; s < g_spin; s++) {
+            if (atomic_load_explicit(&g_generation, memory_order_acquire) !=
+                served) {
+                break;
+            }
+            pool_relax();
+        }
         pthread_mutex_lock(&g_mu);
-        while (!g_quit && g_generation == served) {
+        while (!g_quit &&
+               atomic_load_explicit(&g_generation, memory_order_relaxed) ==
+                   served) {
             pthread_cond_wait(&g_wake, &g_mu);
         }
         if (g_quit) {
             pthread_mutex_unlock(&g_mu);
             return NULL;
         }
-        served = g_generation;
+        served = atomic_load_explicit(&g_generation, memory_order_relaxed);
         pthread_mutex_unlock(&g_mu);
 
         run_chunks();
 
         pthread_mutex_lock(&g_mu);
-        g_workers_done++;
+        atomic_fetch_add_explicit(&g_workers_done, 1u, memory_order_release);
         pthread_cond_signal(&g_done);
         pthread_mutex_unlock(&g_mu);
     }
@@ -91,9 +205,24 @@ void pool_start(u32 n_threads) {
     if (g_started) pool_stop();
     if (n_threads == 0u) n_threads = POOL_DEFAULT_THREADS;
     g_n_threads = n_threads;
-    g_generation = 0;
-    g_workers_done = 0;
+    atomic_store(&g_generation, 0ull);
+    atomic_store(&g_workers_done, 0u);
     g_quit = 0;
+    /* The caller runs chunks too (see pool_for_rows), so it needs the same
+     * treatment as the helpers -- otherwise one of the N workers is still
+     * eligible for an efficiency core. */
+    thread_prefer_performance();
+    /* Read once here, never in the wait loop: a getenv() per dispatch would
+     * cost more than the spin it configures. */
+    g_spin = POOL_SPIN_DEFAULT;
+    {
+        const char* s = getenv("STOKE_POOL_SPIN");
+        if (s && s[0]) {
+            char*         end = NULL;
+            unsigned long v = strtoul(s, &end, 10);
+            if (end && *end == '\0' && v <= 10000000ul) g_spin = (u32)v;
+        }
+    }
     if (n_threads <= 1u) {
         /* Inert on purpose: pool_for_rows runs inline and no thread is
          * created, so a single-threaded run has exactly the cost and exactly
@@ -146,8 +275,8 @@ void pool_for_rows(u64 n_rows, void (*fn)(void*, u64, u64), void* ctx) {
     g_job.ctx = ctx;
     g_job.n_rows = n_rows;
     atomic_store(&g_next_chunk, 0ull);
-    g_workers_done = 0;
-    g_generation++;
+    atomic_store_explicit(&g_workers_done, 0u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_generation, 1ull, memory_order_release);
     pthread_cond_broadcast(&g_wake);
     pthread_mutex_unlock(&g_mu);
 
@@ -156,8 +285,19 @@ void pool_for_rows(u64 n_rows, void (*fn)(void*, u64, u64), void* ctx) {
      * through every matvec. */
     run_chunks();
 
+    /* Same shape on the join: the caller has just finished its own chunks and
+     * the helpers are typically microseconds behind, so blocking here was
+     * paying a context switch to wait out a delay shorter than the switch. */
+    for (u32 s = 0; s < g_spin; s++) {
+        if (atomic_load_explicit(&g_workers_done, memory_order_acquire) >=
+            g_n_threads - 1u) {
+            break;
+        }
+        pool_relax();
+    }
     pthread_mutex_lock(&g_mu);
-    while (g_workers_done < g_n_threads - 1u) {
+    while (atomic_load_explicit(&g_workers_done, memory_order_relaxed) <
+           g_n_threads - 1u) {
         pthread_cond_wait(&g_done, &g_mu);
     }
     pthread_mutex_unlock(&g_mu);

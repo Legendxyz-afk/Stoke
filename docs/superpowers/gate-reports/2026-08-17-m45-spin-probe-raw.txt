@@ -1,0 +1,18 @@
+﻿2026-08-17T12:53:28  START passes=3 n=64 threads=6
+2026-08-17T12:53:35    p1 unpinned spin=0         16.098 tok/s   cpu  27.5s
+2026-08-17T12:53:41    p1 unpinned spin=2000       16.69 tok/s   cpu    31s
+2026-08-17T12:53:47    p1 unpinned spin=20000     16.103 tok/s   cpu  33.4s
+2026-08-17T12:53:54    p1 0xFFF spin=2000          16.72 tok/s   cpu    31s
+2026-08-17T12:54:07    p1 llama unpinned           18.66 tok/s
+2026-08-17T12:54:13    p2 unpinned spin=2000      16.931 tok/s   cpu  30.4s
+2026-08-17T12:54:19    p2 unpinned spin=20000     16.743 tok/s   cpu  31.8s
+2026-08-17T12:54:26    p2 0xFFF spin=2000         16.503 tok/s   cpu  30.7s
+2026-08-17T12:54:32    p2 unpinned spin=0         16.318 tok/s   cpu  26.5s
+2026-08-17T12:54:45    p2 llama unpinned           18.82 tok/s
+2026-08-17T12:54:51    p3 unpinned spin=20000     17.365 tok/s   cpu  30.7s
+2026-08-17T12:54:57    p3 0xFFF spin=2000         16.165 tok/s   cpu  31.2s
+2026-08-17T12:55:04    p3 unpinned spin=0          16.33 tok/s   cpu  27.1s
+2026-08-17T12:55:10    p3 unpinned spin=2000      16.517 tok/s   cpu  31.3s
+2026-08-17T12:55:23    p3 llama unpinned           19.02 tok/s
+2026-08-17T12:55:24  REPORT -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-17-m45-spin-probe-report.md
+2026-08-17T12:55:24  DONE
