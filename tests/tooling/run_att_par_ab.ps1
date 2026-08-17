@@ -32,6 +32,11 @@ param(
     [int]$NGen = 128,
     [int]$Threads = 8,
     [switch]$IncludeLong,
+    # Q-heads per pool claim. 1 is the shipped default -- smallest claim, best
+    # balance on a 6P+4E box. Larger values trade balance for kv-cache reuse
+    # (a GQA group of 4 q-heads shares one kv-head), which is worth measuring
+    # rather than assuming; this exists so the sweep costs a flag, not an edit.
+    [int]$Chunk = 0,
     [string]$Stamp = "2026-08-17-m45-att-par-ab"
 )
 
@@ -102,6 +107,7 @@ function RunCapture($exe, $argList) {
 function StokeRate($file, $par, $lanes) {
     [Environment]::SetEnvironmentVariable('STOKE_ATT_PAR', $par)
     [Environment]::SetEnvironmentVariable('STOKE_ATT_LANES', $lanes)
+    if ($Chunk -gt 0) { [Environment]::SetEnvironmentVariable('STOKE_ATT_CHUNK', "$Chunk") }
     RunCapture $STOKE @("batch", ('"' + $Q4 + '"'), "--raw", "-n", "$NGen",
         "-f", ('"' + $file + '"'), "--seqs", "1", "--threads", "$Threads",
         "--kv", "f32", "--timing")
@@ -151,6 +157,7 @@ for ($c = 1; $c -le $Cycles; $c++) {
 }
 [Environment]::SetEnvironmentVariable('STOKE_ATT_PAR', $null)
 [Environment]::SetEnvironmentVariable('STOKE_ATT_LANES', $null)
+[Environment]::SetEnvironmentVariable('STOKE_ATT_CHUNK', $null)
 
 function Cell($name, $arm) {
     return Median @($rows | Where-Object { $_.name -eq $name -and $_.arm -eq $arm -and $null -ne $_.rate } |
@@ -191,6 +198,28 @@ foreach ($pt in $POINTS) {
         $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} |" -f $pt.name, $pt.ctx, $am, $dm,
                    [math]::Round($am - $dm, 2), $lm)
     }
+}
+$lines += ""
+$lines += "## The slope, which is the M5-critical number"
+$lines += ""
+$lines += "ms/token per CONTEXT-token, fitted between the extreme points. Before L4 stoke's slope was 0.1791 against llama's 0.0150 (2026-08-17, `db85e0f`) -- 11.9x worse -- and extrapolating it to ctx 1024 was what made M5's aggregate bars look unreachable. That extrapolation was measured against a SINGLE-THREADED attention loop, so this row is what replaces it."
+$lines += ""
+if ($POINTS.Count -ge 2) {
+    $p1 = $POINTS[0]; $p2 = $POINTS[$POINTS.Count - 1]
+    $dctx = $p2.ctx - $p1.ctx
+    $lines += "| arm | ms/tok @ ctx $($p1.ctx) | ms/tok @ ctx $($p2.ctx) | slope ms/context-token |"
+    $lines += "|---|---|---|---|"
+    foreach ($armId in (@($ARMS | ForEach-Object { $_.id }) + @("llama"))) {
+        $a = Cell $p1.name $armId
+        $b = Cell $p2.name $armId
+        if ($a -and $b -and $dctx -gt 0) {
+            $am = 1000.0 / $a; $bm = 1000.0 / $b
+            $lines += ("| {0} | {1} | {2} | **{3}** |" -f $armId, [math]::Round($am, 2),
+                       [math]::Round($bm, 2), [math]::Round(($bm - $am) / $dctx, 4))
+        }
+    }
+    $lines += ""
+    $lines += "Two points fit a line and nothing more. The 2026-08-17 profile showed this cost is CONVEX -- the middle point sat 14% below the chord, consistent with the per-layer KV crossing out of L3 -- so a slope read off the extremes OVERSTATES the middle and UNDERSTATES the far end. Use it to compare arms in the same sitting, not as a law."
 }
 $lines += ""
 $lines += "## Wrong-cores check (CPU-seconds per unit)"
