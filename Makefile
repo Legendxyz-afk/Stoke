@@ -45,6 +45,11 @@ SAN     ?=
 ifeq ($(OS),Windows_NT)
   PLAT := win
   EXE  := .exe
+  # advapi32: AdjustTokenPrivileges, to enable SE_INC_WORKING_SET_NAME before
+  # asking for a hard minimum working set. See map_pin() in src/gguf.c -- the
+  # privilege is held but DISABLED by default, and without it the request is
+  # refused and the model gets trimmed out from under a running decode.
+  LIBS += -ladvapi32
 else
   PLAT := linux
   EXE  :=

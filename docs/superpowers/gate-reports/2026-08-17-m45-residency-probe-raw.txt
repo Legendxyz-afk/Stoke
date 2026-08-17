@@ -1,0 +1,11 @@
+﻿2026-08-17T11:29:44  START  runs=6 n=128 threads=6
+2026-08-17T11:29:44    model: 2.33 GB on drive M:
+2026-08-17T11:29:44    drive type=3 (3=fixed, 2=removable, 4=network)  free=90.3 GB
+2026-08-17T11:30:50    run 1: 2.161 tok/s  wall 62.4s  pagereads avg  max   standby 3.09 -> 3.12 GB  avail 6.07 -> 6.07 GB
+2026-08-17T11:31:09    run 2: 8.675 tok/s  wall 17.1s  pagereads avg  max   standby 3.12 -> 3.12 GB  avail 6.05 -> 6.05 GB
+2026-08-17T11:31:35    run 3: 5.958 tok/s  wall 24.2s  pagereads avg  max   standby 3.17 -> 3.16 GB  avail 6.1 -> 6.07 GB
+2026-08-17T11:32:37    run 4: 2.234 tok/s  wall 59.4s  pagereads avg  max   standby 3.15 -> 3.12 GB  avail 6.04 -> 5.89 GB
+2026-08-17T11:33:33    run 5: 2.453 tok/s  wall 54.4s  pagereads avg  max   standby 3.17 -> 3.18 GB  avail 6 -> 5.85 GB
+2026-08-17T11:34:36    run 6: 2.215 tok/s  wall 60.4s  pagereads avg  max   standby 3.18 -> 3.18 GB  avail 5.85 -> 5.79 GB
+2026-08-17T11:34:36  REPORT -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-17-m45-residency-probe-report.md
+2026-08-17T11:34:36  DONE

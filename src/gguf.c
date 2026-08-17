@@ -30,6 +30,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h> /* getenv -- see map_pin */
 #include <string.h>
 
 #ifdef _WIN32
@@ -58,6 +59,180 @@ typedef struct {
     int fd;
 #endif
 } MappedFile;
+
+/* ---------------------------------------------------------------------------
+ * map_pin -- defend the mapping against the OS working-set manager.
+ *
+ * WHY THIS EXISTS, measured 2026-08-17. Decode streams every weight once per
+ * token, so the model IS the working set; there is no locality to exploit and
+ * nothing to gain from paging any of it out. Windows does not know that. Under
+ * memory pressure its working-set manager trimmed a running decode from a
+ * 2448 MB working set down to 183-441 MB *mid-run*, and the six worker threads
+ * then re-faulted the pages back through one per-process working-set lock:
+ * 2.2-2.7 MILLION soft faults per 128-token run, and 15.4 tok/s became 2.2.
+ *
+ * The signature is worth recording because it fooled two hypotheses first.
+ * There is NO disk I/O (hard faults ~0 -- these are soft faults against pages
+ * still in RAM) and NO compression (the Memory Compression process sat at 0),
+ * so every disk- and residency-shaped explanation is wrong. It is also not
+ * core placement: it reproduces under an affinity mask that makes hyperthread
+ * stacking impossible. And it is invisible in an A/B against llama.cpp,
+ * because llama.cpp calls PrefetchVirtualMemory on its mapping and therefore
+ * never enters this state -- which is why llama measured rock-steady in the
+ * same interleave where stoke swung 5.6x.
+ *
+ * Two defences, both BEST EFFORT -- a failure here costs speed and can never
+ * cost correctness, so nothing in this function is allowed to fatal():
+ *   (1) a HARD minimum working set covering the mapping, which is what
+ *       actually stops the trimming; and
+ *   (2) one PrefetchVirtualMemory call to fault the mapping in as a batch
+ *       rather than as ~600K individual faults.
+ *
+ * Set STOKE_NO_PIN=1 to disable both. That escape is deliberately an
+ * environment variable and not a flag: it makes the A/B a property of the RUN
+ * rather than of the BINARY, so the two arms can be interleaved without a
+ * rebuild and without two executables to keep straight.
+ * ---------------------------------------------------------------------------
+ */
+/* Presence alone must NOT mean "disabled": STOKE_NO_PIN=0 reading as "no pin"
+ * is the kind of surprise that costs an afternoon of A/B runs. Empty and "0"
+ * both mean leave pinning ON. */
+static bool stoke_no_pin(void) {
+    const char* v = getenv("STOKE_NO_PIN");
+    return v != NULL && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
+}
+
+#ifdef _WIN32
+#ifndef QUOTA_LIMITS_HARDWS_MIN_ENABLE
+#define QUOTA_LIMITS_HARDWS_MIN_ENABLE 0x00000001
+#endif
+
+/* Declared ourselves rather than relying on _WIN32_WINNT being high enough in
+ * whichever mingw headers are in play; the layout is fixed ABI. */
+typedef struct {
+    PVOID  VirtualAddress;
+    SIZE_T NumberOfBytes;
+} StokeMemRange;
+typedef BOOL(WINAPI* PrefetchVirtualMemoryFn)(HANDLE, ULONG_PTR, StokeMemRange*,
+                                              ULONG);
+
+/* SE_INC_WORKING_SET_NAME is held by ordinary users but DISABLED in the token,
+ * and SetProcessWorkingSetSizeEx refuses to RAISE a minimum without it. The
+ * first cut of map_pin() skipped this and ignored the return value, so the
+ * request failed silently and the fix looked like it did not work -- which is
+ * why the outcome is now reported rather than assumed. */
+static bool enable_privilege(const char* name) {
+    HANDLE tok = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok)) {
+        return false;
+    }
+    bool ok = false;
+    LUID luid;
+    if (LookupPrivilegeValueA(NULL, name, &luid)) {
+        TOKEN_PRIVILEGES tp;
+        tp.PrivilegeCount = 1;
+        tp.Privileges[0].Luid = luid;
+        tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        if (AdjustTokenPrivileges(tok, FALSE, &tp, sizeof(tp), NULL, NULL)) {
+            /* AdjustTokenPrivileges reports success even when it changed
+             * nothing; only GetLastError distinguishes the two. */
+            ok = (GetLastError() == ERROR_SUCCESS);
+        }
+    }
+    CloseHandle(tok);
+    return ok;
+}
+
+static void map_pin(MappedFile* mf) {
+    if (!mf->base || mf->size == 0) return;
+    if (stoke_no_pin()) return;
+
+    HANDLE self = GetCurrentProcess();
+    bool   priv = enable_privilege("SeIncreaseWorkingSetPrivilege");
+    bool   hard_ws = false;
+    DWORD  ws_err = 0;
+
+    /* (1) The hard floor. Ask for the mapping plus slack for everything else
+     * the process touches (activations, KV pool, tokenizer tables). If the
+     * request is refused -- too little RAM, policy, whatever -- we keep the old
+     * behaviour, which is the pre-2026-08-17 status quo. */
+    SIZE_T lo = 0, hi = 0;
+    DWORD  flags = 0;
+    /* ▶ THE SLACK IS NOT COSMETIC. The floor has to cover the mapping AND
+     * everything else the process keeps hot -- KV pool, activation scratch,
+     * tokenizer tables, code. Set it to the mapping alone and the process sits
+     * pinned AT its floor under memory pressure, so every page it needs beyond
+     * the model evicts another: the working set reads perfectly STABLE while
+     * pages churn through it, which is precisely the trace measured on
+     * 2026-08-17 (WS flat at 2430 MB, 1.5M transition faults, 6 threads
+     * delivering 2.6 cores of work). Tunable so the floor can be swept without
+     * a rebuild, since the right value is a property of the box, not the code. */
+    SIZE_T slack_mb = 512;
+    {
+        const char* s = getenv("STOKE_PIN_SLACK_MB");
+        if (s && s[0]) {
+            long v = strtol(s, NULL, 10);
+            if (v >= 0 && v <= 8192) slack_mb = (SIZE_T)v;
+        }
+    }
+    if (GetProcessWorkingSetSizeEx(self, &lo, &hi, &flags)) {
+        SIZE_T want = (SIZE_T)mf->size + (slack_mb << 20);
+        if (want > lo) {
+            SIZE_T want_hi = want + (SIZE_T)(256u << 20);
+            if (hi > want_hi) want_hi = hi;
+            hard_ws = SetProcessWorkingSetSizeEx(self, want, want_hi,
+                                                 QUOTA_LIMITS_HARDWS_MIN_ENABLE)
+                          ? true
+                          : false;
+            if (!hard_ws) ws_err = GetLastError();
+        } else {
+            hard_ws = true; /* already covered */
+        }
+    }
+    if (getenv("STOKE_PIN_DEBUG")) {
+        fprintf(stderr,
+                "pin: privilege=%s hard_ws=%s%s (mapping %.2f GiB)\n",
+                priv ? "yes" : "no", hard_ws ? "yes" : "NO",
+                hard_ws ? "" : " <-- the model can be trimmed mid-run",
+                (double)mf->size / (1024.0 * 1024.0 * 1024.0));
+        if (!hard_ws && ws_err) {
+            fprintf(stderr, "pin: SetProcessWorkingSetSizeEx error %lu\n",
+                    (unsigned long)ws_err);
+        }
+    }
+
+    /* (2) One batched fault-in. Resolved dynamically: it is Windows 8+, and a
+     * missing entry point must degrade to "the old way", not to a link error
+     * on an older toolchain. */
+    HANDLE k32 = GetModuleHandleA("kernel32.dll");
+    if (k32) {
+        PrefetchVirtualMemoryFn prefetch =
+            (PrefetchVirtualMemoryFn)(void (*)(void))GetProcAddress(
+                (HMODULE)k32, "PrefetchVirtualMemory");
+        if (prefetch) {
+            StokeMemRange r;
+            r.VirtualAddress = (PVOID)(void*)mf->base;
+            r.NumberOfBytes = (SIZE_T)mf->size;
+            (void)prefetch(self, 1, &r, 0);
+        }
+    }
+}
+#else
+static void map_pin(MappedFile* mf) {
+    if (!mf->base || mf->size == 0) return;
+    if (stoke_no_pin()) return;
+    /* posix_madvise, not madvise: the latter is not POSIX and _POSIX_C_SOURCE
+     * (common.h) hides it under -std=c11. WILLNEED is advisory -- Linux reads
+     * the pages in but will still reclaim under pressure; mlock() is the hard
+     * equivalent of the Windows path above and is deliberately NOT taken here,
+     * since on Linux it needs a raised RLIMIT_MEMLOCK and would fail loudly on
+     * exactly the constrained boxes this engine targets. Revisit with a
+     * measurement if Linux ever shows the same trimming signature. */
+    (void)posix_madvise((void*)(uintptr_t)mf->base, (size_t)mf->size,
+                        POSIX_MADV_WILLNEED);
+}
+#endif
 
 #ifdef _WIN32
 static void map_open(const char* path, MappedFile* mf) {
@@ -104,6 +279,7 @@ static void map_open(const char* path, MappedFile* mf) {
     mf->size = size;
     mf->file_h = fh;
     mf->map_h = mh;
+    map_pin(mf);
 }
 
 static void map_close(MappedFile* mf) {
@@ -142,6 +318,7 @@ static void map_open(const char* path, MappedFile* mf) {
     mf->base = base;
     mf->size = size;
     mf->fd = fd;
+    map_pin(mf);
 }
 
 static void map_close(MappedFile* mf) {
