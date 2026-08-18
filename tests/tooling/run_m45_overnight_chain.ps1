@@ -32,7 +32,13 @@
 param(
     [string]$DeadlineHHmm = "07:15",
     [int]$QuietPollMin    = 3,
-    [double]$QuietCpuPct  = 12.0,
+    # > 18, NOT 12. The first version used 12 and read 12.1% on an idle box with
+    # a browser and a chat client open -- it would have spent the night waiting
+    # for a state this box does not reach while its owner is logged in. The
+    # 2026-08-17 P-BAR blocks were taken at 13%, 20% and 35% CPU and were used.
+    # What this gate exists to exclude is a GAME (50-66%), and 18 excludes that
+    # by a wide margin.
+    [double]$QuietCpuPct  = 18.0,
     [double]$MinFreeGB    = 3.5
 )
 
@@ -115,13 +121,21 @@ Say ("binary under test: build\win\stoke.exe, branch " + (& git -C $root branch 
 # rather than a token wait: an idle box at 23:00 is still worth four legs.
 $quiet = WaitForQuiet ([math]::Max(30, (MinutesLeft) - 420))
 if (-not $quiet) {
-    Say "the box never went quiet -- running the P-BAR legs anyway, since that runner"
-    Say "has its own quiesce gate and will refuse to measure a busy box on its own terms."
+    # > RUN ANYWAY, AND SAY SO. The first version skipped the A/B when the wait
+    # timed out, which would have thrown away the night's most load-bearing
+    # measurement to protect its precision. The A/B interleaves points and
+    # ROTATES ARM ORDER every cycle, so steady background load costs precision
+    # rather than fairness between arms, and its CPU-seconds column exposes any
+    # unit that was actually displaced onto the wrong cores. A caveat on the
+    # face of the report beats no measurement.
+    Say "THE BOX NEVER WENT QUIET -- running anyway, with this on the record."
+    Say "  Read the A/B's CPU-seconds table before trusting any single cell, and treat"
+    Say "  the arm-to-arm RATIOS as the result rather than the absolute rates."
 }
 
 $pre = 99
 $ab  = 99
-if ($quiet) {
+if ($true) {
     $pre = Invoke-Leg "leg1-preflight-ab" 25 @(
         "-File", "$root\tests\tooling\run_att_par_ab.ps1",
         "-Cycles", "1", "-NGen", "8", "-Threads", "8",
