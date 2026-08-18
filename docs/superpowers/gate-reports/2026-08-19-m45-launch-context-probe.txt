@@ -1,0 +1,4 @@
+2026-08-19T04:27:30  interactive t=8 pin=False  7.999 tok/s
+2026-08-19T04:27:48  interactive t=6 pin=True   8.179 tok/s
+2026-08-19T04:28:19  scheduled   t=8 pin=False  9.044 tok/s
+2026-08-19T04:28:37  scheduled   t=6 pin=True   8.318 tok/s

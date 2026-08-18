@@ -1,0 +1,16 @@
+﻿2026-08-19T04:29:56  START  islc_was_running=True  blocks=1 cycles=1 n=64
+2026-08-19T04:29:56    threads A=8 B=8 L=8; affinity 0xFFFF over 16 logical (unpinned)
+2026-08-19T04:29:56  PHASE 1: the owed correctness re-runs
+2026-08-19T04:29:56    skipped by request (already discharged)
+2026-08-19T04:29:56  PHASE 2: stopping ISLC, waiting for quiet
+2026-08-19T04:30:01    standby cache 0.14 GB before the wait
+2026-08-19T04:30:03    quiet sample 1/3 at 4%
+2026-08-19T04:31:03    quiet sample 2/3 at 2%
+2026-08-19T04:32:03    NEVER WENT QUIET -- measuring anyway and flagging it in the report
+2026-08-19T04:32:15  BLOCK 1 starting (cpu 17%, standby 2.53 GB)
+2026-08-19T04:32:25    b1-c1-A  8.61
+2026-08-19T04:32:32    b1-c1-B  15.53
+2026-08-19T04:32:45    b1-c1-L  18.63
+2026-08-19T04:32:48  ISLC restore attempted (was_running=True, forced=True): running=True
+2026-08-19T04:32:48  REPORT written -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-19-m45-armA-repro-report.md
+2026-08-19T04:32:48  DONE

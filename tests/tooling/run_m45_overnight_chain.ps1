@@ -173,9 +173,14 @@ $p1 = Invoke-Leg "leg3-pbar-t6-pinned" 210 @(
     "-ArmALabel", "A pre-maddubs", "-ArmBLabel", "B HEAD + L4",
     "-AnchorA", "9.989",
     "-ThreadsA", "6", "-ThreadsB", "6", "-ThreadsL", "6", "-Pin",
-    "-AlwaysRestoreISLC",
     "-Stamp", "2026-08-18-m45-pbar-l4-t6-pinned")
 
+# > DO NOT PASS -AlwaysRestoreISLC ON A LEG THAT IS FOLLOWED BY ANOTHER. On the
+# night of 08-18 leg 3 restored ISLC on exit, ISLC purged the 5.17 GB of model
+# cache it had just built, and leg 4 opened on a standby cache of 0.03 GB and
+# spent three warm attempts failing to rebuild it. ISLC should be stopped once
+# for the whole chain and restored after the LAST leg -- which is what passing
+# the switch only here now does.
 $p2 = Invoke-Leg "leg4-pbar-t8-unpinned" 180 @(
     "-File", "$root\tests\tooling\run_overnight_pbar.ps1",
     "-Blocks", "3", "-Cycles", "3", "-NGen", "128", "-Seqs", "1",

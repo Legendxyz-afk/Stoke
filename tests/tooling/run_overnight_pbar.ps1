@@ -236,8 +236,22 @@ function CpuBusy() {
     return [int]$c.PercentProcessorTime
 }
 
+# > FIXED 2026-08-19. This read Normal Priority ALONE and therefore reported a
+# cold cache that was not cold: on the night of 08-18 every block of the t=8 leg
+# was flagged "MAY BE DISK-BOUND" at 0.07-0.91 GB while the live breakdown was
+# Normal 0.74 + RESERVE 3.77 + Core 0.00 = 4.51 GB against a 2.33 GB model. The
+# pages had been re-read after an ISLC purge and Windows charged them to the
+# RESERVE bucket. The arms said so plainly -- B held 16.49-16.62 across those
+# "disk-bound" blocks, matching its warm-cache figures exactly -- but the guard
+# cried wolf on three of three blocks, which is how a real disk-bound block
+# would later be ignored. The model is cached if it is in ANY standby bucket.
 function StandbyGB() {
-    $s = (Get-Counter '\Memory\Standby Cache Normal Priority Bytes').CounterSamples[0].CookedValue
+    $s = 0.0
+    foreach ($ctr in @('\Memory\Standby Cache Normal Priority Bytes',
+                       '\Memory\Standby Cache Reserve Bytes',
+                       '\Memory\Standby Cache Core Bytes')) {
+        try { $s += (Get-Counter $ctr).CounterSamples[0].CookedValue } catch {}
+    }
     return [math]::Round($s / 1GB, 2)
 }
 
