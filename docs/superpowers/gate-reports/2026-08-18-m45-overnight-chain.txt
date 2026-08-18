@@ -1,0 +1,185 @@
+2026-08-18T21:22:39  ================ M4.5 OVERNIGHT CHAIN
+2026-08-18T21:22:39  deadline 2026-08-19T07:15:00 (box goes down 07:30), started 2026-08-18T21:22:39
+2026-08-18T21:22:39  binary under test: build\win\stoke.exe, branch m45-aprime
+2026-08-18T21:23:10    waiting: cpu 12.1% free 7.39 GB, 592 min left before the deadline
+2026-08-18T21:25:51  RESTARTED BY OPERATOR before any leg ran: quiet threshold 12 -> 18 (this box idles at ~12% with a browser open), and a timed-out wait no longer skips the A/B. Nothing was measured, nothing lost.
+2026-08-18T21:25:55  ================ M4.5 OVERNIGHT CHAIN
+2026-08-18T21:25:55  deadline 2026-08-19T07:15:00 (box goes down 07:30), started 2026-08-18T21:25:55
+2026-08-18T21:25:55  binary under test: build\win\stoke.exe, branch m45-aprime
+2026-08-18T21:26:25    box is quiet: cpu 10.4% free 7.43 GB after 0 min
+2026-08-18T21:26:26  === leg1-preflight-ab START (budget ~25 min, 589 min left)
+2026-08-18T21:30  OPERATOR NOTES, written while leg1 ran -- for whoever reads this at 00:04 or 06:22:
+2026-08-18T21:30    (1) cpu=0s in an A/B row means TOO SHORT TO SAMPLE, not "used no CPU".
+2026-08-18T21:30      RunCapture polls TotalProcessorTime while the child lives and the final
+2026-08-18T21:30      refresh throws once it has exited, so a 3-second n=8 unit records 0. At
+2026-08-18T21:30      n=128 the units run 8-40 s and the column populates (leg1 already shows
+2026-08-18T21:30      183.4s on the p40 unit). Do not read 0s as a wrong-cores acquittal.
+2026-08-18T21:30    (2) g_att_min_pos DEFAULTS TO 32 (src/model.c:128), so at p00's ctx 87 the
+2026-08-18T21:30      pooled path IS engaged and the p00 arms are a real comparison -- the
+2026-08-18T21:30      verify gate's STOKE_ATT_MIN_POS=0 was for correctness coverage, not this.
+2026-08-18T21:30    (3) WATCH FOR A SHORT-CONTEXT REGRESSION. leg1 at n=8 hinted par1 is SLOWER
+2026-08-18T21:30      than par0 at p00 (16.35 par0lanes1 vs 15.62 par1lanes4, 14.11 par1lanes1)
+2026-08-18T21:30      -- noise-dominated at 3 s per unit, so it is a flag, not a finding. It
+2026-08-18T21:30      matters because P-BAR IS GRADED AT p00: if dispatching 32 heads per layer
+2026-08-18T21:30      costs more than it saves at ctx 87, the re-grade lands BELOW 0.828 even
+2026-08-18T21:30      though L4 is a large win at long context. The lever already exists --
+2026-08-18T21:30      raise STOKE_ATT_MIN_POS so the pool engages only where it pays -- and a
+2026-08-18T21:30      sweep over {32,128,512,disabled} at p00 costs ~25 min, which fits the
+2026-08-18T21:30      slack between leg4 ending (~06:15) and the 07:15 deadline.
+2026-08-18T21:29:50  === leg1-preflight-ab END exit=0
+2026-08-18T21:29:50  === leg2-ab-4arm START (budget ~140 min, 585 min left)
+2026-08-18T22:23:51  === leg2-ab-4arm END exit=0
+2026-08-18T22:23:51  === leg3-pbar-t6-pinned START (budget ~210 min, 531 min left)
+2026-08-18T23:30  ARM A HAS COLLAPSED IN LEG 3 -- READ THIS BEFORE GRADING THE NIGHT.
+2026-08-18T23:30    Block 1 measured A at 5.335 / 5.293 / 5.280 against its 9.989 anchor:
+2026-08-18T23:30    a 47% shortfall, i.e. almost exactly HALF. B (16.596/15.335/16.369)
+2026-08-18T23:30    and L (18.10/18.04/18.02, vs 18.69 on 08-17) are both healthy.
+2026-08-18T23:30    A BAD BOX DEPRESSES ALL THREE ARMS. Only A moved, so this is not the
+2026-08-18T23:30    box, and the anchor guard is about to report "box not ready" for a
+2026-08-18T23:30    reason that is not the box.
+2026-08-18T23:30    HYPOTHESIS, and it is already in this project's record: arm A is the
+2026-08-18T23:30    pre-maddubs archive bc9dd3d6 (08-13), which PREDATES THE ECOQOS FIX
+2026-08-18T23:30    76dee7f (08-17). The recorded signature is an INTERMITTENT collapse of
+2026-08-18T23:30    up to 10.9x caused by Windows power-throttling a pool whose helpers
+2026-08-18T23:30    sleep on a condvar ~250x/token. -Pin excludes the E-cores by mask, but
+2026-08-18T23:30    it does NOT stop the thread being throttled ON a P-core, so a pinned
+2026-08-18T23:30    pre-fix binary can still lose ~half. On 08-17 the same binary read 9.99
+2026-08-18T23:30    under the same flags -- intermittent is exactly what that means.
+2026-08-18T23:30    CONSEQUENCES FOR GRADING:
+2026-08-18T23:30      * B/A IS MEANINGLESS TONIGHT (block 1 would read ~3.1x). Do not quote it.
+2026-08-18T23:30      * B/L STANDS. llama is measured in the same interleaved sitting and is
+2026-08-18T23:30        within 3% of its 08-17 value, so it is the sound box-readiness signal
+2026-08-18T23:30        in this run -- not arm A.
+2026-08-18T23:30      * Block 1 B/L = 16.369 / 18.04 = 0.907 against the 0.85 bar. ONE BLOCK.
+2026-08-18T23:30        Wait for all three and take the medians.
+2026-08-18T23:30      * DOCTRINE FIX for the runner: an anchor measured on a binary that lacks
+2026-08-18T23:30        the EcoQoS fix cannot certify box readiness -- it conflates box state
+2026-08-18T23:30        with that archive's own defect.
+2026-08-18T23:30    CHEAP TEST AFTER THE CHAIN (~5 min, needs the box free): run the archive
+2026-08-18T23:30    at t=6 pinned several times and see whether it is BIMODAL (~5.3 vs ~10.0).
+2026-08-18T23:30    Bimodal confirms throttling; a steady 5.3 refutes it and means something
+2026-08-18T23:30    about the archive or its anchor was wrong from the start.
+2026-08-19T00:10  CORRECTION TO THE 23:30 NOTE -- ARM A IS NOT INTERMITTENT, IT IS STABLY HALVED.
+2026-08-19T00:10    Block 2: A = 5.329 / 5.303 / 5.291. With block 1 that is SIX units across
+2026-08-19T00:10    75 minutes and two thermal states, all inside 5.28-5.34 -- a 1% spread.
+2026-08-19T00:10    The 08-17 run was equally steady at 9.985 / 9.989 / 9.997. Two stable
+2026-08-19T00:10    plateaus a factor of 1.885 apart, same frozen binary, same flags, same box.
+2026-08-19T00:10    THAT IS NOT A THROTTLING FLICKER, so "intermittent EcoQoS collapse" as I
+2026-08-19T00:10    wrote it at 23:30 is WRONG. What survives is the MECHANISM, with a cause
+2026-08-19T00:10    that is stable by construction:
+2026-08-19T00:10      TONIGHT'S RUN IS LAUNCHED BY TASK SCHEDULER. On 08-17 the same script was
+2026-08-19T00:10      launched interactively. A Task-Scheduler process has no interactive
+2026-08-19T00:10      window and is far likelier to be classified BACKGROUND by Windows, which
+2026-08-19T00:10      applies power throttling for the whole life of the process -- stably.
+2026-08-19T00:10    THE THREE ARMS BEHAVE EXACTLY AS THAT PREDICTS:
+2026-08-19T00:10      * arm A (pre-76dee7f): helpers sleep on a condvar ~250x/token, which is
+2026-08-19T00:10        what the heuristic keys on, and it never opts out -> throttled, 5.30.
+2026-08-19T00:10      * arm B (post-fix): SetThreadInformation(ThreadPowerThrottling,
+2026-08-19T00:10        StateMask=0) per worker -> immune, 16.4, ABOVE its 08-17 15.45 (L4).
+2026-08-19T00:10      * llama: its threads SPIN rather than sleep, so it never looks like
+2026-08-19T00:10        background work -> 18.0 vs 18.69, within 4%.
+2026-08-19T00:10    IF THIS HOLDS IT IS A RESULT, NOT AN ANNOYANCE: it prices the EcoQoS fix at
+2026-08-19T00:10    ~1.9x on this workload under a scheduled launch, and it means EVERY
+2026-08-19T00:10    ARM-A-RELATIVE NUMBER FROM A TASK-SCHEDULER RUN IS INVALID while B/L stays
+2026-08-19T00:10    sound. It also retires the "run long jobs under Task Scheduler" ops habit
+2026-08-19T00:10    for anything TIMED that predates the fix.
+2026-08-19T00:10    THE CLEAN EXPERIMENT, once the box is free: run the archive at t=6 pinned
+2026-08-19T00:10    INTERACTIVELY and again UNDER THE TASK, same flags. Interactive ~10 and
+2026-08-19T00:10    scheduled ~5.3 confirms it outright. Both ~5.3 kills it and points at
+2026-08-19T00:10    something that changed on the box between 08-17 and now.
+2026-08-19T01:08:05  === leg3-pbar-t6-pinned END exit=0
+2026-08-19T01:08:05  === leg4-pbar-t8-unpinned START (budget ~180 min, 367 min left)
+2026-08-19T02:30  LEG 4 BLOCK 1 IS DISK-BOUND -- DROP IT, AND FIX THE CAUSE FOR NEXT TIME.
+2026-08-19T02:30    The runner flagged it itself: standby 0.03 GB at entry, three warms each
+2026-08-19T02:30    left it at 0.07 GB, "! standby only 0.07 GB after 3 warms -- block 1 MAY
+2026-08-19T02:30    BE DISK-BOUND". By the report's own 2.0 GB rule that block does not count.
+2026-08-19T02:30    CAUSE, and it is a CHAINING DEFECT, not bad luck: leg 3's `finally`
+2026-08-19T02:30    RESTARTED ISLC on exit, ISLC exists to purge the standby list, and it
+2026-08-19T02:30    purged the 5.17 GB of cached model that leg 3 had just built. Leg 4 then
+2026-08-19T02:30    stopped ISLC again, but the cache was already gone and the warms could not
+2026-08-19T02:30    rebuild it. WHEN CHAINING P-BAR LEGS, ISLC MUST STAY STOPPED BETWEEN THEM
+2026-08-19T02:30    -- restore it once, after the LAST leg. -AlwaysRestoreISLC on every leg,
+2026-08-19T02:30    which is what this chain passed, is exactly the wrong shape for a chain.
+2026-08-19T02:30    SECOND FINDING, and it strengthens the background-classification story:
+2026-08-19T02:30    arm A fell from 5.30 (leg 3, warm) to 0.92 (leg 4 block 1, cold) -- a
+2026-08-19T02:30    further 5.7x. A background-classified process gets LOW-PRIORITY I/O as
+2026-08-19T02:30    well as CPU throttling, so a cold 2.33 GB model is read at background
+2026-08-19T02:30    priority. B and llama, not so classified, read it at normal priority and
+2026-08-19T02:30    stayed healthy (B 16.875/15.47/16.577, L 18.56/18.47/18.75) in the very
+2026-08-19T02:30    same block. That is a clean natural experiment: same file, same instant,
+2026-08-19T02:30    two priorities.
+2026-08-19T02:30  AND A CORRECTION I OWE ON THE RECORD: at 01:30 I wrote that t=6 PINNED beats
+2026-08-19T02:30    t=8 unpinned by ~9% and that the 08-17 thread curve was stale. LEG 4 SAYS
+2026-08-19T02:30    OTHERWISE -- B at t=8 unpinned reads 16.875 / 15.47 / 16.577 against leg 3's
+2026-08-19T02:30    16.369 / 16.672 / 16.529 at t=6 pinned. Those are level. My 9% came from
+2026-08-19T02:30    comparing the A/B's 15.17 against leg 3, i.e. ACROSS TWO HARNESSES -- and
+2026-08-19T02:30    the A/B interleaves ctx-1500 units, so its p00 cells are taken on a
+2026-08-19T02:30    thermally loaded box, while a P-BAR block starts cool after a 75-min gap.
+2026-08-19T02:30    That is this project's oldest measurement lesson and I walked into it. The
+2026-08-19T02:30    A/B's RATIOS stand; its absolute p00 rates read ~9% low and must not be
+2026-08-19T02:30    compared against P-BAR's. No claim about pinning is supported tonight.
+2026-08-19T03:35  SECOND CORRECTION ON LEG 4: BLOCKS 1 AND 2 ARE NOT DISK-BOUND. KEEP THEM.
+2026-08-19T03:35    Live counters at 03:32, ISLC confirmed NOT running:
+2026-08-19T03:35      Standby Normal Priority 0.74 GB   <-- the only one the guard reads
+2026-08-19T03:35      Standby RESERVE         3.77 GB   <-- the model is HERE
+2026-08-19T03:35      Standby Core            0.00 GB
+2026-08-19T03:35    Total standby 4.51 GB against a 2.33 GB model. The pages were re-read
+2026-08-19T03:35    after ISLC's purge and Windows charged them to the RESERVE bucket, so a
+2026-08-19T03:35    guard that reads Normal Priority alone reports a cold cache that is not
+2026-08-19T03:35    cold. THAT IS A TOOLING BUG: run_overnight_pbar.ps1 must SUM Normal +
+2026-08-19T03:35    Reserve + Core. The behaviour of the arms already said so -- B reads
+2026-08-19T03:35    16.49-16.62 in the "disk-bound" blocks, identical to leg 3's warm 16.37-
+2026-08-19T03:35    16.67, and llama is flat at 18.58-18.60. Nothing was reading from disk.
+2026-08-19T03:35    (My 02:30 note said DROP THEM. Wrong. They stand.)
+2026-08-19T03:35  AND THE ARM-A STORY IS NOW COMPLETE, WITH THE RECORDED MAGNITUDE MATCHED.
+2026-08-19T03:35    A under a Task-Scheduler launch, same frozen binary, same night:
+2026-08-19T03:35      leg 3, PINNED 0xFFF (E-cores excluded by mask):  5.30   = 1.9x down
+2026-08-19T03:35      leg 4, UNPINNED 0xFFFF (E-cores reachable):      0.92   = 10.9x down
+2026-08-19T03:35    9.989 / 0.916 = 10.9x. THE 2026-08-17 ECOQOS FINDING RECORDS EXACTLY
+2026-08-19T03:35    10.9x, and its mechanism was Windows parking the pool ON THE E-CORES.
+2026-08-19T03:35    So: background classification costs ~1.9x in frequency alone when the mask
+2026-08-19T03:35    forbids E-cores, and 10.9x when it does not. B carries the per-worker
+2026-08-19T03:35    opt-out and is immune in both; llama spins instead of sleeping and never
+2026-08-19T03:35    looks like background work. This is a natural replication of 76dee7f's
+2026-08-19T03:35    finding, from three arms measured in the same minutes, and it prices the
+2026-08-19T03:35    fix at up to an order of magnitude.
+2026-08-19T03:35  RUNNING GRADE, leg 4 (t=8 unpinned): b1 16.577/18.75 = 0.884, b2 16.622/18.60
+2026-08-19T03:35    = 0.894. Both clear 0.85. With leg 3's 0.912 at t=6 pinned, P-BAR looks
+2026-08-19T03:35    MET AT BOTH CONFIGURATIONS. Block 3 lands ~03:47; grade on the medians.
+2026-08-19T03:55:46  === leg4-pbar-t8-unpinned END exit=0
+2026-08-19T03:55:46  ================ CHAIN DONE  preflight=System.Object[] ab=System.Object[] pbar_t6=System.Object[] pbar_t8=System.Object[]
+2026-08-19T03:55:46  reports are in docs\superpowers\gate-reports\ under their stamps.
+2026-08-19T03:55:46  REMEMBER: delete the scheduled task stoke-m45-overnight -- a spent helper
+2026-08-19T03:55:46  outliving its job is a defect this project has recorded five times.
+2026-08-19T04:45  MY TASK-SCHEDULER HYPOTHESIS IS REFUTED BY EXPERIMENT. Recording it as wrong.
+2026-08-19T04:45    Controlled probe, same binary, same flags, same box, minutes apart
+2026-08-19T04:45    (2026-08-19-m45-launch-context-probe.txt):
+2026-08-19T04:45      interactive  t=8 unpinned 7.999   t=6 pinned 8.179
+2026-08-19T04:45      SCHEDULED    t=8 unpinned 9.044   t=6 pinned 8.318
+2026-08-19T04:45    The scheduled launch is if anything FASTER. Background classification by
+2026-08-19T04:45    Task Scheduler is NOT the cause, so the 00:10 and 03:35 notes are wrong on
+2026-08-19T04:45    mechanism. (The first instrument attempt also logged four PARSE-FAILs that
+2026-08-19T04:45    were really my own bug -- Start-Process does not quote ArgumentList entries,
+2026-08-19T04:45    so "M:\New Drive\..." split in two and the binary exited in 1 s on a usage
+2026-08-19T04:45    error. Fixed, and a sub-second exit now reports DID-NOT-RUN, not PARSE-FAIL.)
+2026-08-19T04:45    Then the harness itself was re-run at -Blocks 1 -Cycles 1: arm A came back
+2026-08-19T04:45    at 8.61. The anomaly does not reproduce on demand.
+2026-08-19T04:45  WHAT ARM A ACTUALLY IS, stated accurately at last:
+2026-08-19T04:45      08-17 sitting  9.985 / 9.989 / 9.997     (spread 0.1%)
+2026-08-19T04:45      leg 3 sitting  5.335 / 5.293 / 5.280     (spread 1.0%)
+2026-08-19T04:45      leg 4 sitting  0.938 / 0.922 / 0.916     (spread 2.4%)
+2026-08-19T04:45      04:27 probes   7.999 / 8.179 / 9.044 / 8.318 / 8.61
+2026-08-19T04:45    STABLE WITHIN A SITTING, VARYING UP TO 10.9x BETWEEN SITTINGS, while arm B
+2026-08-19T04:45    and llama hold to a few percent throughout. My 00:10 note said "stable, not
+2026-08-19T04:45    intermittent" -- that was true within a sitting and wrong across them. This
+2026-08-19T04:45    IS the 2026-08-17 EcoQoS signature: a per-process decision taken once at
+2026-08-19T04:45    startup and then held for that process's life. What I could not establish is
+2026-08-19T04:45    WHAT tips the decision; it is not the launch context.
+2026-08-19T04:45  THE ACTIONABLE CONCLUSION, which does not depend on the mechanism:
+2026-08-19T04:45    ARM A IS UNFIT AS AN ANCHOR. A baseline that swings 10.9x between sittings
+2026-08-19T04:45    cannot certify box readiness -- it is the very defect 76dee7f fixed, frozen
+2026-08-19T04:45    into an archive. Either use LLAMA as the readiness reference (it is measured
+2026-08-19T04:45    in the same sitting and held 18.0-18.75 all night), or re-archive the
+2026-08-19T04:45    pre-maddubs baseline REBUILT WITH THE QoS OPT-OUT so the ladder has a
+2026-08-19T04:45    measurable A. Until then B/A is void and B/L is the grade -- which is what
+2026-08-19T04:45    both reports already say on their face, so no verdict tonight depends on it.
