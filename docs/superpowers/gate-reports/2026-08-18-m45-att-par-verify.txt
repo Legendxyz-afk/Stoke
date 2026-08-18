@@ -1,0 +1,15 @@
+2026-08-18T15:18:12  === attention-on-the-pool verification, branch m45-aprime
+2026-08-18T15:18:12      n=32  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-18T15:18:12      binary 08/17/2026 21:20:58, newest source model.c 08/17/2026 20:34:52
+2026-08-18T15:19:35    Q4_K_M p00  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T15:20:01    Q4_K_M p00  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T15:26:35    Q4_K_M p41  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T16:01:20    Q4_K_M p41  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T16:02:03    Q4_K_M p00  kv=q8  t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T16:02:27    Q4_K_M p00  kv=q8  t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T16:09:28    Q4_K_M p41  kv=q8  t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T16:14:04    Q4_K_M p41  kv=q8  t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-18T16:18:24    Q8_0   p41  vs m3   t=2  lanes4/par1=SAME
+2026-08-18T16:20:36    Q8_0   p41  vs m3   t=6  lanes4/par1=SAME
+2026-08-18T16:20:36  ALL ARMS BIT-IDENTICAL TO THE ARCHIVES. Speed is a separate question and
+2026-08-18T16:20:36  is NOT measured here -- that needs the interleaved protocol on a quiet box.
