@@ -1,0 +1,46 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "title": "A — Instrument" },
+    { "file": "ControlRoom.dc.html", "x": 1540, "y": 0, "w": 1440, "h": 900, "title": "B — Control room (chosen)" },
+    { "file": "Blueprint.dc.html", "x": 3080, "y": 0, "w": 1440, "h": 900, "title": "C — Blueprint" },
+    { "file": "BlockMap.dc.html", "x": 770, "y": 1080, "w": 1440, "h": 760, "title": "The block map, drawn properly" }
+  ],
+  "annotations": [
+    {
+      "id": "surface-decision",
+      "x": -620,
+      "y": 0,
+      "w": 520,
+      "text": "THE SURFACE\n\nWeb-first: stoke serves this page itself on 127.0.0.1:8080, inside the one static binary Phase 1 already requires. No Electron, no installer, no code signing, and you can watch the swarm from your phone while the box works.\n\nA Tauri shell can wrap this exact page later for tray, folder-picker and auto-start — same frontend, no rewrite. That is the only thing the desktop path adds, and it costs Windows signing and SmartScreen reputation, so it waits until there are users."
+    },
+    {
+      "id": "dir-a-instrument",
+      "x": 0,
+      "y": -250,
+      "w": 520,
+      "text": "DIRECTION A — INSTRUMENT\n\nDense and dark. Lanes, block map, scheduler and residency all on one screen, nothing folded away. Reads like htop for inference: you lean in and everything is already there.\n\nTradeoff: it asks you to lean in. Nothing on it is legible from across the room, and it is the busiest of the three."
+    },
+    {
+      "id": "dir-b-control-room",
+      "x": 1540,
+      "y": -250,
+      "w": 520,
+      "text": "DIRECTION B — CONTROL ROOM · CHOSEN, SECOND PASS\n\nRebuilt for a professional read. Gone: the vertical side-rail text, the 104px display number, the airy 0.3em letterspacing, the ragged agent rows.\n\nIn: a real column grid with headers and tabular numerals, section tabs where a console expects them, a four-up KPI strip on hairlines, TTFT p50/p99 next to throughput, a status bar with session and build, and the per-block pool view brought back — its absence was this direction's one real weakness.\n\nColour is now carried by one tamed accent (chroma 0.09, not 0.13) doing state duty only, with the shared prefix in a muted blue that never competes with it."
+    },
+    {
+      "id": "dir-c-blueprint",
+      "x": 3080,
+      "y": -250,
+      "w": 520,
+      "text": "DIRECTION C — BLUEPRINT\n\nLight, technical-drawing language: hairlines, figure numbers, dimension callouts, graph-paper ground. This is the direction that screenshots into the README and the design notes without looking like a toy.\n\nTradeoff: white light at 2am is the wrong instrument for a box doing overnight work, and it feels the least live of the three."
+    },
+    {
+      "id": "anatomy-block-map",
+      "x": 170,
+      "y": 1120,
+      "w": 480,
+      "text": "Whichever direction wins, this view is the argument for the product — so it is drawn once, properly, here.\n\nThe numbers are the engine's own: 16 tokens per block (BP_BLOCK_TOKENS), 36 layers, 147 KB of KV per token at f16, blocks shared by refcount and given back under memory pressure."
+    }
+  ],
+  "launch": { "view": "focused", "file": "ControlRoom.dc.html" }
+}

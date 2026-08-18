@@ -1,0 +1,196 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: "Archivo", ui-sans-serif, system-ui, sans-serif; }
+    a { color: oklch(0.55 0.11 250); }
+    a:hover { color: oklch(0.45 0.11 250); }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 900px; background: oklch(0.97 0.006 90); background-image: linear-gradient(oklch(0.93 0.008 250) 1px, transparent 1px), linear-gradient(90deg, oklch(0.93 0.008 250) 1px, transparent 1px); background-size: 24px 24px; color: oklch(0.30 0.02 250); display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="border-bottom: 1px solid oklch(0.30 0.02 250); background: oklch(0.97 0.006 90); display: flex; align-items: stretch;">
+    <div style="padding: 16px 24px; border-right: 1px solid oklch(0.30 0.02 250); display: flex; flex-direction: column; gap: 3px;">
+      <span style="font-family: 'DM Mono', monospace; font-size: 16px; font-weight: 500; letter-spacing: 0.2em;">STOKE</span>
+      <span style="font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: oklch(0.52 0.02 250);">SWARM CONSOLE</span>
+    </div>
+    <div style="padding: 16px 24px; border-right: 1px solid oklch(0.86 0.01 250); display: flex; flex-direction: column; gap: 3px; min-width: 260px;">
+      <span style="font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: oklch(0.52 0.02 250);">MODEL</span>
+      <span style="font-family: 'DM Mono', monospace; font-size: 12px;">Qwen3-4B-Instruct-2507-Q4_K_M</span>
+    </div>
+    <div style="padding: 16px 24px; border-right: 1px solid oklch(0.86 0.01 250); display: flex; flex-direction: column; gap: 3px;">
+      <span style="font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: oklch(0.52 0.02 250);">AGGREGATE</span>
+      <span style="font-family: 'DM Mono', monospace; font-size: 12px;">{{agg}} tok/s &nbsp;&middot;&nbsp; N={{nActive}} &nbsp;&middot;&nbsp; t=8</span>
+    </div>
+    <div style="padding: 16px 24px; display: flex; flex-direction: column; gap: 3px;">
+      <span style="font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: oklch(0.52 0.02 250);">WORST STALL</span>
+      <span style="font-family: 'DM Mono', monospace; font-size: 12px;">86 ms &nbsp;/&nbsp; 250 ms budget</span>
+    </div>
+    <div style="flex-grow: 1;"></div>
+    <div style="padding: 16px 24px; border-left: 1px solid oklch(0.86 0.01 250); display: flex; flex-direction: column; gap: 3px; text-align: right;">
+      <span style="font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: oklch(0.52 0.02 250);">FIG. 1</span>
+      <span style="font-family: 'DM Mono', monospace; font-size: 12px;">KV POOL &mdash; 384 &times; 16 tok</span>
+    </div>
+  </div>
+
+  <div style="display: flex; flex-grow: 1; min-height: 0;">
+
+    <div style="width: 640px; flex-shrink: 0; border-right: 1px solid oklch(0.30 0.02 250); padding: 28px 32px; display: flex; flex-direction: column; gap: 18px;">
+
+      <div style="display: flex; align-items: baseline; gap: 12px;">
+        <span style="font-size: 15px; font-weight: 600; letter-spacing: 0.02em;">Block map</span>
+        <span style="font-family: 'DM Mono', monospace; font-size: 11px; color: oklch(0.52 0.02 250);">one cell = one block = 16 tokens &times; 36 layers</span>
+      </div>
+
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="display: flex; flex-direction: column; gap: 2px; font-family: 'DM Mono', monospace; font-size: 9px; color: oklch(0.58 0.02 250); padding-top: 1px;">
+          <sc-for list="{{rowLabels}}" as="r" hint-placeholder-count="16">
+            <div style="height: 15px; line-height: 15px; text-align: right; width: 34px;">{{r.label}}</div>
+          </sc-for>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; flex-grow: 1;">
+          <sc-for list="{{blocks}}" as="b" hint-placeholder-count="96">
+            <div style="{{b.style}}"></div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 9px; border-top: 1px solid oklch(0.86 0.01 250); padding-top: 14px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="width: 13px; height: 13px; background: {{blue}}; flex-shrink: 0;"></span>
+          <span style="font-family: 'DM Mono', monospace; font-size: 11px; width: 92px;">refcount 8</span>
+          <span style="font-size: 12px; color: oklch(0.42 0.02 250);">system prompt + tool schemas, adopted by every agent</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="width: 13px; height: 13px; background: oklch(0.72 0.07 250); flex-shrink: 0;"></span>
+          <span style="font-family: 'DM Mono', monospace; font-size: 11px; width: 92px;">refcount 1</span>
+          <span style="font-size: 12px; color: oklch(0.42 0.02 250);">private context, one owner, freed on cancel</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <span style="width: 13px; height: 13px; background: oklch(0.97 0.006 90); border: 1px solid oklch(0.78 0.01 250); flex-shrink: 0;"></span>
+          <span style="font-family: 'DM Mono', monospace; font-size: 11px; width: 92px;">free</span>
+          <span style="font-size: 12px; color: oklch(0.42 0.02 250);">returnable to the OS under desktop RAM pressure</span>
+        </div>
+      </div>
+
+      <div style="margin-top: 4px; border: 1px solid oklch(0.30 0.02 250); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; background: oklch(0.99 0.004 90);">
+        <span style="font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.12em; color: oklch(0.52 0.02 250);">NOTE</span>
+        <span style="font-size: 13px; line-height: 1.5; text-wrap: pretty;">
+          48 shared blocks stand in for 384 copies. At 147 KB per token of KV, holding this prefix once instead of eight times is <span style="font-family: 'DM Mono', monospace;">1.83 GB</span> that stays available to the pool.
+        </span>
+      </div>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0;">
+      <div style="padding: 28px 32px 14px 32px; display: flex; align-items: baseline; gap: 12px;">
+        <span style="font-size: 15px; font-weight: 600;">Agents</span>
+        <span style="font-family: 'DM Mono', monospace; font-size: 11px; color: oklch(0.52 0.02 250);">step 41,208 &middot; admitted 8 of 10</span>
+      </div>
+
+      <div style="padding: 0 32px; display: flex; flex-direction: column;">
+        <sc-for list="{{lanes}}" as="lane" hint-placeholder-count="8">
+          <div style="display: flex; align-items: center; gap: 14px; padding: 11px 0; border-top: 1px solid oklch(0.88 0.01 250);">
+            <span style="font-family: 'DM Mono', monospace; font-size: 11px; color: oklch(0.52 0.02 250); width: 24px;">{{lane.id}}</span>
+            <span style="font-size: 13px; font-weight: 500; width: 104px;">{{lane.name}}</span>
+            <div style="flex-grow: 1; min-width: 0; height: 16px; background: oklch(0.94 0.006 250); position: relative;">
+              <div style="{{lane.barShared}}"></div>
+              <div style="{{lane.barOwn}}"></div>
+            </div>
+            <span style="font-family: 'DM Mono', monospace; font-size: 11px; width: 62px; text-align: right;">{{lane.ctx}}</span>
+            <span style="font-family: 'DM Mono', monospace; font-size: 11px; width: 78px; text-align: right; color: {{lane.hue}};">{{lane.rate}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="padding: 18px 32px 0 32px; display: flex; gap: 22px; font-family: 'DM Mono', monospace; font-size: 10px; color: oklch(0.52 0.02 250);">
+        <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 11px; height: 11px; background: oklch(0.55 0.11 250);"></span>shared prefix</span>
+        <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 11px; height: 11px; background: oklch(0.72 0.07 250);"></span>own context</span>
+        <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 11px; height: 11px; background: oklch(0.58 0.13 40);"></span>prefill in flight</span>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+
+      <div style="border-top: 1px solid oklch(0.30 0.02 250); padding: 18px 32px 22px 32px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: baseline; gap: 12px;">
+          <span style="font-size: 13px; font-weight: 600;">Decode interval</span>
+          <span style="font-family: 'DM Mono', monospace; font-size: 11px; color: oklch(0.52 0.02 250);">last 240 steps &middot; ceiling is the 250 ms stall budget</span>
+        </div>
+        <div style="position: relative; height: 74px; border-left: 1px solid oklch(0.30 0.02 250); border-bottom: 1px solid oklch(0.30 0.02 250); padding-left: 2px;">
+          <div style="position: absolute; left: 0; right: 0; top: 0; border-top: 1px dashed oklch(0.58 0.13 40);"></div>
+          <span style="position: absolute; right: 0; top: -16px; font-family: 'DM Mono', monospace; font-size: 10px; color: oklch(0.58 0.13 40);">250 ms</span>
+          <div style="display: flex; gap: 2px; align-items: flex-end; height: 100%;">
+            <sc-for list="{{steps}}" as="st" hint-placeholder-count="56">
+              <div style="{{st.style}}"></div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"blue":{"editor":"color","default":"oklch(0.55 0.11 250)"}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const blue = this.props.blue ?? 'oklch(0.55 0.11 250)';
+    const own = 'oklch(0.72 0.07 250)';
+    const free = 'oklch(0.97 0.006 90)';
+    const flame = 'oklch(0.58 0.13 40)';
+
+    const rowLabels = [];
+    for (let i = 0; i < 16; i++) { rowLabels.push({ label: (i * 24).toString().padStart(3, '0') }); }
+
+    const blocks = [];
+    for (let i = 0; i < 384; i++) {
+      let bg = free;
+      let border = '1px solid oklch(0.86 0.01 250)';
+      if (i < 48) { bg = blue; border = '1px solid ' + blue; }
+      else if (i >= 52 && i < 188) { bg = own; border = '1px solid ' + own; }
+      else if (i >= 356 && i < 362) { bg = flame; border = '1px solid ' + flame; }
+      blocks.push({ style: 'height: 13px; background: ' + bg + '; border: ' + border + '; box-sizing: border-box;' });
+    }
+
+    const src = [
+      { id: 's0', name: 'planner', shared: 26, own: 34, ctx: '1,842', rate: '5.4 tok/s', hue: 'oklch(0.30 0.02 250)' },
+      { id: 's1', name: 'reader.a', shared: 26, own: 11, ctx: '964', rate: '5.9 tok/s', hue: 'oklch(0.30 0.02 250)' },
+      { id: 's2', name: 'reader.b', shared: 26, own: 14, ctx: '1,103', rate: '5.7 tok/s', hue: 'oklch(0.30 0.02 250)' },
+      { id: 's3', name: 'critic', shared: 26, own: 46, ctx: '2,410', rate: 'prefill', hue: flame },
+      { id: 's4', name: 'grep.rs', shared: 26, own: 4, ctx: '512', rate: '6.1 tok/s', hue: 'oklch(0.30 0.02 250)' },
+      { id: 's5', name: 'summarizer', shared: 26, own: 19, ctx: '1,287', rate: '5.6 tok/s', hue: 'oklch(0.30 0.02 250)' },
+      { id: 's6', name: 'test.gen', shared: 26, own: 7, ctx: '733', rate: '6.0 tok/s', hue: 'oklch(0.30 0.02 250)' },
+      { id: 's7', name: 'judge', shared: 0, own: 0, ctx: '—', rate: 'queued', hue: 'oklch(0.58 0.02 250)' }
+    ];
+
+    const lanes = src.map((s) => ({
+      id: s.id,
+      name: s.name,
+      ctx: s.ctx,
+      rate: s.rate,
+      hue: s.hue,
+      barShared: 'position: absolute; left: 0; top: 0; bottom: 0; width: ' + s.shared + '%; background: ' + blue + ';',
+      barOwn: 'position: absolute; left: ' + s.shared + '%; top: 0; bottom: 0; width: ' + s.own + '%; background: ' + (s.rate === 'prefill' ? flame : own) + ';'
+    }));
+
+    const steps = [];
+    for (let i = 0; i < 56; i++) {
+      const prefill = (i > 13 && i < 17) || (i > 41 && i < 45);
+      const h = prefill ? 34 : 12 + ((i * 5) % 7);
+      const bg = prefill ? flame : own;
+      steps.push({ style: 'flex-grow: 1; height: ' + h + 'px; background: ' + bg + ';' });
+    }
+
+    return { blue, rowLabels, blocks, lanes, steps, agg: '41.6', nActive: 7 };
+  }
+}
+</script>
+</body>
+</html>

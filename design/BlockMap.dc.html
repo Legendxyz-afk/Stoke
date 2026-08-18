@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; }
+    a { color: oklch(0.78 0.13 175); text-decoration: none; }
+    a:hover { color: oklch(0.86 0.13 175); }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 760px; background: oklch(0.17 0.012 250); color: oklch(0.93 0.008 250); display: flex; flex-direction: column; padding: 34px 40px; box-sizing: border-box; overflow: hidden;">
+
+  <div style="display: flex; align-items: flex-end; justify-content: space-between; padding-bottom: 26px;">
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.24em; color: oklch(0.66 0.012 250);">THE ONE VIEW NOTHING ELSE HAS</span>
+      <span style="font-size: 27px; font-weight: 600; letter-spacing: -0.01em;">Where the context actually lives</span>
+    </div>
+    <span style="font-size: 14px; color: oklch(0.70 0.012 250); max-width: 520px; text-align: right; text-wrap: pretty; line-height: 1.5;">
+      Every other local tool shows you a chat box. This shows the pool: 384 blocks of 16 tokens, who owns each one, and which are held once for everybody.
+    </span>
+  </div>
+
+  <div style="display: flex; gap: 34px; flex-grow: 1; min-height: 0;">
+
+    <div style="width: 322px; flex-shrink: 0; display: flex; flex-direction: column; gap: 22px;">
+      <sc-for list="{{beats}}" as="beat" hint-placeholder-count="3">
+        <div style="display: flex; flex-direction: column; gap: 7px; border-left: 2px solid {{beat.hue}}; padding-left: 14px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; color: {{beat.hue}};">{{beat.tag}}</span>
+          <span style="font-size: 14px; line-height: 1.55; color: oklch(0.86 0.008 250); text-wrap: pretty;">{{beat.body}}</span>
+        </div>
+      </sc-for>
+
+      <div style="margin-top: auto; border-top: 1px solid oklch(0.28 0.014 250); padding-top: 16px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: oklch(0.66 0.012 250);">held once</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; color: oklch(0.78 0.13 300); font-variant-numeric: tabular-nums;">1.83 GB</span>
+        </div>
+        <div style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: oklch(0.56 0.012 250); line-height: 1.5;">
+          147 KB of KV per token &times; 1,536 shared tokens &times; 7 agents that would otherwise each keep a copy
+        </div>
+      </div>
+    </div>
+
+    <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 16px; min-width: 0;">
+
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.14em; color: oklch(0.66 0.012 250);">POOL</span>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: oklch(0.50 0.012 250);">block 000 &rarr; 383, row-major, 24 per row</span>
+        <div style="flex-grow: 1;"></div>
+        <span style="font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: oklch(0.50 0.012 250);">6.14 / 8.00 GB</span>
+      </div>
+
+      <div style="display: flex; gap: 26px; align-items: flex-start;">
+        <div style="display: grid; grid-template-columns: repeat(24, 26px); gap: 3px;">
+          <sc-for list="{{blocks}}" as="b" hint-placeholder-count="72">
+            <div style="{{b.style}}"></div>
+          </sc-for>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 20px; padding-top: 4px; flex-grow: 1; min-width: 0;">
+          <sc-for list="{{callouts}}" as="c" hint-placeholder-count="4">
+            <div style="display: flex; gap: 11px; align-items: flex-start;">
+              <span style="width: 13px; height: 13px; background: {{c.hue}}; flex-shrink: 0; margin-top: 3px;"></span>
+              <div style="display: flex; flex-direction: column; gap: 4px; min-width: 0;">
+                <span style="font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 500; color: {{c.hue}};">{{c.title}}</span>
+                <span style="font-size: 12.5px; line-height: 1.5; color: oklch(0.76 0.012 250); text-wrap: pretty;">{{c.body}}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <div style="margin-top: auto; border-top: 1px solid oklch(0.28 0.014 250); padding-top: 14px; display: flex; gap: 30px;">
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.012 250);">FORK</span>
+          <span style="font-size: 12.5px; color: oklch(0.76 0.012 250);">full blocks shared by refcount, tail copied</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.012 250);">CANCEL</span>
+          <span style="font-size: 12.5px; color: oklch(0.76 0.012 250);">drops refcounts; only the last owner frees</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 5px;">
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.012 250);">PRESSURE</span>
+          <span style="font-size: 12.5px; color: oklch(0.76 0.012 250);">free blocks go back to the OS, not to a high-water mark</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"oklch(0.78 0.13 175)"},"sharedColor":{"editor":"color","default":"oklch(0.78 0.13 300)"}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? 'oklch(0.78 0.13 175)';
+    const sharedColor = this.props.sharedColor ?? 'oklch(0.78 0.13 300)';
+    const amber = 'oklch(0.78 0.13 85)';
+    const freeBg = 'oklch(0.235 0.012 250)';
+
+    const beats = [
+      { tag: 'A BLOCK', hue: accent, body: 'Sixteen token positions of keys and values, across all 36 layers. The unit the pool hands out, and the unit it takes back.' },
+      { tag: 'SHARING', hue: sharedColor, body: 'When eight agents open with the same system prompt, they adopt the same blocks by refcount instead of each writing their own copy of identical numbers.' },
+      { tag: 'WHY IT SHOWS', hue: amber, body: 'On a 16 GB laptop the pool is the budget. Watching it fill, share and give back is how you know whether the next agent fits — before you launch it.' }
+    ];
+
+    const callouts = [
+      { hue: sharedColor, title: 'blocks 000–047 · refcount 8', body: 'The shared prefix. One physical copy, eight logical owners; a ninth agent joins for the price of its own tail.' },
+      { hue: accent, title: 'blocks 052–187 · refcount 1', body: 'Private context, one run per agent. The lighter shades are the two agents that started later and have written less.' },
+      { hue: amber, title: 'blocks 356–361 · prefill in flight', body: 'Filling right now, for the agent still in prefill. Reserved against the pool so a long prompt cannot starve the decoders already running.' },
+      { hue: 'oklch(0.50 0.012 250)', title: 'the rest · free', body: 'Available, and genuinely returnable — the pool gives blocks back under desktop memory pressure rather than holding its peak.' }
+    ];
+
+    const blocks = [];
+    for (let i = 0; i < 240; i++) {
+      let bg = freeBg;
+      if (i < 48) { bg = sharedColor; }
+      else if (i >= 52 && i < 96) { bg = accent; }
+      else if (i >= 96 && i < 140) { bg = 'oklch(0.70 0.11 175)'; }
+      else if (i >= 140 && i < 168) { bg = 'oklch(0.60 0.09 175)'; }
+      else if (i >= 212 && i < 218) { bg = amber; }
+      blocks.push({ style: 'width: 26px; height: 13px; background: ' + bg + ';' });
+    }
+
+    return { accent, sharedColor, beats, callouts, blocks };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,623 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    body { margin: 0; font-family: "Archivo", ui-sans-serif, system-ui, sans-serif; }
+    a { color: oklch(0.76 0.09 70); text-decoration: none; }
+    a:hover { color: oklch(0.84 0.09 70); }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 900px; background: oklch(0.15 0.006 255); color: oklch(0.95 0.004 255); display: flex; flex-direction: column; overflow: hidden; font-size: 13px;">
+
+  <div style="height: 54px; flex-shrink: 0; border-bottom: 1px solid oklch(0.27 0.008 255); display: flex; align-items: stretch;">
+    <div style="display: flex; align-items: center; gap: 10px; padding: 0 22px; border-right: 1px solid oklch(0.22 0.008 255);">
+      <span style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em;">stoke</span>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.60 0.008 255); border: 1px solid oklch(0.30 0.008 255); padding: 2px 5px;">0.5.0</span>
+    </div>
+    <div style="display: flex; align-items: stretch;">
+      <sc-for list="{{tabs}}" as="tab" hint-placeholder-count="4">
+        <div style="{{tab.style}}" onClick="{{tab.pick}}">{{tab.label}}</div>
+      </sc-for>
+    </div>
+    <div style="flex-grow: 1;"></div>
+    <div style="display: flex; align-items: center; gap: 22px; padding: 0 22px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.68 0.008 255);">
+      <span style="display: flex; align-items: center; gap: 7px;"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{accent}};"></span>serving</span>
+      <span>127.0.0.1:8080</span>
+      <span style="color: oklch(0.55 0.008 255);">t=8</span>
+      <span style="color: oklch(0.55 0.008 255);">kv f32</span>
+      <span style="color: oklch(0.55 0.008 255);">9.4/15.6 GB</span>
+    </div>
+  </div>
+
+  <sc-if value="{{isSwarm}}" hint-placeholder-val="{{true}}">
+  <div style="flex-grow: 1; display: flex; flex-direction: column; min-height: 0;">
+
+    <div style="height: 112px; flex-shrink: 0; display: flex; border-bottom: 1px solid oklch(0.27 0.008 255);">
+      <div style="width: 330px; flex-shrink: 0; padding: 18px 22px; display: flex; flex-direction: column; justify-content: space-between; border-right: 1px solid oklch(0.22 0.008 255);">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">AGGREGATE THROUGHPUT</div>
+        <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;">
+          <div style="display: flex; align-items: baseline; gap: 8px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 44px; font-weight: 500; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums;">{{agg}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: oklch(0.60 0.008 255);">tok/s</span>
+          </div>
+          <svg width="118" height="34" viewBox="0 0 118 34" fill="none" style="margin-bottom: 2px;">
+            <polyline points="{{spark}}" stroke="{{accent}}" stroke-width="1.4" stroke-linejoin="round"></polyline>
+          </svg>
+        </div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255);">60 s window &middot; bar 17.7 at N=8</div>
+      </div>
+
+      <sc-for list="{{kpis}}" as="k" hint-placeholder-count="3">
+        <div style="flex-grow: 1; padding: 18px 22px; display: flex; flex-direction: column; justify-content: space-between; border-right: 1px solid oklch(0.22 0.008 255);">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">{{k.label}}</div>
+          <div style="display: flex; align-items: baseline; gap: 7px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums;">{{k.value}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.60 0.008 255);">{{k.unit}}</span>
+          </div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255);">{{k.foot}}</div>
+        </div>
+      </sc-for>
+
+      <div style="width: 268px; flex-shrink: 0; padding: 18px 22px; display: flex; flex-direction: column; justify-content: space-between;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">WORST DECODE STALL</div>
+        <div style="display: flex; align-items: baseline; gap: 7px;">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 28px; font-weight: 500; line-height: 1; font-variant-numeric: tabular-nums;">86</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.60 0.008 255);">ms of 250 budget</span>
+        </div>
+        <div style="height: 4px; background: oklch(0.24 0.008 255); position: relative;">
+          <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 34.4%; background: {{accent}};"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-grow: 1; min-height: 0;">
+      <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid oklch(0.27 0.008 255);">
+
+        <div style="display: flex; align-items: center; gap: 12px; padding: 13px 22px 11px 22px;">
+          <span style="font-size: 13px; font-weight: 600;">Agents</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">8 admitted &middot; 2 queued &middot; step 41,208</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 34px 168px 76px minmax(0, 1fr) 84px 72px 66px; gap: 14px; padding: 0 22px 8px 22px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: oklch(0.55 0.008 255); border-bottom: 1px solid oklch(0.27 0.008 255);">
+          <div>ID</div>
+          <div>AGENT</div>
+          <div>STATE</div>
+          <div>OUTPUT</div>
+          <div style="text-align: right;">CONTEXT</div>
+          <div style="text-align: right;">RATE</div>
+          <div style="text-align: right;">TTFT</div>
+        </div>
+
+        <sc-for list="{{lanes}}" as="lane" hint-placeholder-count="8">
+          <div style="display: grid; grid-template-columns: 34px 168px 76px minmax(0, 1fr) 84px 72px 66px; gap: 14px; align-items: center; padding: 0 22px; height: 46px; border-bottom: 1px solid oklch(0.20 0.008 255);">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.58 0.008 255);">{{lane.id}}</span>
+            <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+              <span style="font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{lane.name}}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{lane.tool}}</span>
+            </div>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.08em; border: 1px solid {{lane.hue}}; color: {{lane.hue}}; padding: 3px 0; text-align: center;">{{lane.state}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.70 0.008 255); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{lane.text}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums;">{{lane.ctx}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: {{lane.rateHue}};">{{lane.rate}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: oklch(0.68 0.008 255);">{{lane.ttft}}</span>
+          </div>
+        </sc-for>
+
+        <div style="flex-grow: 1;"></div>
+
+        <div style="border-top: 1px solid oklch(0.27 0.008 255); padding: 14px 22px 16px 22px; display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 12px; font-weight: 600;">Decode interval</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255);">last 240 steps &middot; prefill co-runs marked</span>
+            <div style="flex-grow: 1;"></div>
+            <div style="display: flex; gap: 16px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255);">
+              <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 8px; height: 8px; background: {{accent}};"></span>decode</span>
+              <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 8px; height: 8px; background: {{flame}};"></span>prefill</span>
+            </div>
+          </div>
+          <div style="position: relative; height: 60px; border-bottom: 1px solid oklch(0.27 0.008 255);">
+            <div style="position: absolute; left: 0; right: 0; top: 0; border-top: 1px dashed oklch(0.45 0.06 30);"></div>
+            <span style="position: absolute; right: 0; top: -15px; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: oklch(0.58 0.06 30);">250 ms</span>
+            <div style="display: flex; gap: 2px; align-items: flex-end; height: 100%;">
+              <sc-for list="{{steps}}" as="st" hint-placeholder-count="60">
+                <div style="{{st.style}}"></div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="width: 396px; flex-shrink: 0; display: flex; flex-direction: column;">
+        <div style="padding: 13px 20px 11px 20px; display: flex; align-items: baseline; gap: 10px; border-bottom: 1px solid oklch(0.27 0.008 255);">
+          <span style="font-size: 13px; font-weight: 600;">KV pool</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">384 blocks &times; 16 tok</span>
+          <div style="flex-grow: 1;"></div>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.68 0.008 255); font-variant-numeric: tabular-nums;">6.14 / 8.00 GB</span>
+        </div>
+
+        <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+          <div style="display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px;">
+            <sc-for list="{{blocks}}" as="b" hint-placeholder-count="96">
+              <div style="{{b.style}}"></div>
+            </sc-for>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 7px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.58 0.008 255);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="width: 9px; height: 9px; background: {{shared}};"></span>
+              <span style="color: oklch(0.72 0.008 255);">48 blocks, refcount 8</span>
+              <span>system prompt, held once</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="width: 9px; height: 9px; background: {{accent}};"></span>
+              <span style="color: oklch(0.72 0.008 255);">136 blocks, refcount 1</span>
+              <span>per-agent context</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="width: 9px; height: 9px; background: oklch(0.24 0.008 255);"></span>
+              <span style="color: oklch(0.72 0.008 255);">200 blocks free</span>
+              <span>returnable under pressure</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+          <div style="display: flex; align-items: baseline; justify-content: space-between;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">PREFIX REUSE</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; color: {{shared}};">71%</span>
+          </div>
+          <div style="height: 4px; background: oklch(0.24 0.008 255); display: flex;">
+            <div style="width: 71%; background: {{shared}};"></div>
+          </div>
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255); line-height: 1.55;">
+            1,536 shared tokens &times; 7 agents &times; 147 KB/token = <span style="color: oklch(0.72 0.008 255);">1.83 GB</span> not copied
+          </div>
+        </div>
+
+        <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 11px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">RESIDENT MODELS</div>
+          <sc-for list="{{models}}" as="m" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="width: 6px; height: 6px; background: {{m.dot}}; flex-shrink: 0;"></span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; flex-grow: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{m.name}}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.58 0.008 255); font-variant-numeric: tabular-nums;">{{m.size}}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.52 0.008 255); width: 54px; text-align: right;">{{m.state}}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="flex-grow: 1;"></div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{isModels}}" hint-placeholder-val="{{false}}">
+  <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid oklch(0.27 0.008 255);">
+
+      <div style="padding: 16px 22px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <div style="display: flex; flex-direction: column; gap: 6px; flex-grow: 1;">
+          <div style="display: flex; align-items: baseline; gap: 12px;">
+            <span style="font-size: 13px; font-weight: 600;">Residency</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">least-recently-used eviction against a fixed budget</span>
+            <div style="flex-grow: 1;"></div>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-variant-numeric: tabular-nums; color: oklch(0.72 0.008 255);">6.93 / 8.00 GB</span>
+          </div>
+          <div style="height: 8px; background: oklch(0.24 0.008 255); display: flex; gap: 1px;">
+            <div style="width: 29%; background: {{accent}};"></div>
+            <div style="width: 50%; background: oklch(0.50 0.04 70);"></div>
+            <div style="width: 8%; background: oklch(0.36 0.02 255);"></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: minmax(0, 1fr) 84px 80px 92px 96px 84px; gap: 14px; padding: 14px 22px 8px 22px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: oklch(0.55 0.008 255); border-bottom: 1px solid oklch(0.27 0.008 255);">
+        <div>MODEL</div>
+        <div style="text-align: right;">SIZE</div>
+        <div style="text-align: right;">CTX MAX</div>
+        <div style="text-align: right;">SINGLE-STREAM</div>
+        <div style="text-align: right;">LAST USED</div>
+        <div style="text-align: right;">STATE</div>
+      </div>
+
+      <sc-for list="{{modelRows}}" as="m" hint-placeholder-count="5">
+        <div style="display: grid; grid-template-columns: minmax(0, 1fr) 84px 80px 92px 96px 84px; gap: 14px; align-items: center; padding: 0 22px; height: 52px; border-bottom: 1px solid oklch(0.20 0.008 255);">
+          <div style="display: flex; align-items: center; gap: 11px; min-width: 0;">
+            <span style="width: 6px; height: 6px; background: {{m.dot}}; flex-shrink: 0;"></span>
+            <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0;">
+              <span style="font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{m.name}}</span>
+              <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255);">{{m.arch}}</span>
+            </div>
+          </div>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums;">{{m.size}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: oklch(0.68 0.008 255);">{{m.ctx}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: oklch(0.68 0.008 255);">{{m.rate}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: oklch(0.58 0.008 255);">{{m.used}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.08em; border: 1px solid {{m.hue}}; color: {{m.hue}}; padding: 3px 0; text-align: center;">{{m.state}}</span>
+        </div>
+      </sc-for>
+
+      <div style="flex-grow: 1;"></div>
+
+      <div style="border-top: 1px solid oklch(0.27 0.008 255); padding: 16px 22px; display: flex; align-items: center; gap: 12px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.60 0.008 255);">stoke pull</span>
+        <div style="flex-grow: 1; border: 1px solid oklch(0.30 0.008 255); background: oklch(0.185 0.006 255); padding: 9px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: oklch(0.55 0.008 255);">qwen3:8b-q4_k_m</div>
+        <div style="border: 1px solid {{accent}}; color: {{accent}}; padding: 9px 18px; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.08em;">FETCH</div>
+      </div>
+    </div>
+
+    <div style="width: 396px; flex-shrink: 0; display: flex; flex-direction: column;">
+      <div style="padding: 13px 20px 11px 20px; border-bottom: 1px solid oklch(0.27 0.008 255); display: flex; align-items: baseline; gap: 10px;">
+        <span style="font-size: 13px; font-weight: 600;">Qwen3-4B-Instruct-2507</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">Q4_K_M</span>
+      </div>
+
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <sc-for list="{{modelFacts}}" as="f" hint-placeholder-count="7">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 14px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.58 0.008 255);">{{f.k}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-variant-numeric: tabular-nums; text-align: right;">{{f.v}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 9px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">KV COST</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.68 0.008 255); line-height: 1.6;">
+          147 KB per token at f16, 74 KB at q8. One 2,048-token agent costs <span style="color: oklch(0.95 0.004 255);">302 MB</span> of pool.
+        </div>
+      </div>
+
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 11px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">CHAT TEMPLATE</div>
+        <div style="border: 1px solid oklch(0.24 0.008 255); background: oklch(0.175 0.006 255); padding: 11px 12px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: oklch(0.66 0.008 255); line-height: 1.7;">
+          &lt;|im_start|&gt;system<br>{system}&lt;|im_end|&gt;<br>&lt;|im_start|&gt;user<br>{prompt}&lt;|im_end|&gt;
+        </div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.55 0.008 255);">read from the GGUF, not guessed from the name</div>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{isRequests}}" hint-placeholder-val="{{false}}">
+  <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid oklch(0.27 0.008 255);">
+
+      <div style="padding: 14px 22px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <sc-for list="{{filters}}" as="f" hint-placeholder-count="4">
+          <div style="{{f.style}}">{{f.label}}</div>
+        </sc-for>
+        <div style="flex-grow: 1;"></div>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">1,284 in this session &middot; 0 refused</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 74px 88px minmax(0, 1fr) 76px 72px 66px 74px 62px; gap: 12px; padding: 14px 22px 8px 22px; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: oklch(0.55 0.008 255); border-bottom: 1px solid oklch(0.27 0.008 255);">
+        <div>TIME</div>
+        <div>ID</div>
+        <div>ENDPOINT</div>
+        <div style="text-align: right;">PROMPT</div>
+        <div style="text-align: right;">GEN</div>
+        <div style="text-align: right;">TTFT</div>
+        <div style="text-align: right;">TOTAL</div>
+        <div style="text-align: right;">STATUS</div>
+      </div>
+
+      <sc-for list="{{requests}}" as="r" hint-placeholder-count="9">
+        <div style="display: grid; grid-template-columns: 74px 88px minmax(0, 1fr) 76px 72px 66px 74px 62px; gap: 12px; align-items: center; padding: 0 22px; height: 42px; border-bottom: 1px solid oklch(0.20 0.008 255); background: {{r.bg}};">
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.58 0.008 255);">{{r.time}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.68 0.008 255);">{{r.id}}</span>
+          <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{r.endpoint}}</span>
+            <span style="{{r.hitStyle}}">{{r.hit}}</span>
+          </div>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; color: oklch(0.68 0.008 255);">{{r.prompt}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; color: oklch(0.68 0.008 255);">{{r.gen}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums;">{{r.ttft}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums;">{{r.total}}</span>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; text-align: right; color: {{r.statusHue}};">{{r.status}}</span>
+        </div>
+      </sc-for>
+
+      <div style="flex-grow: 1;"></div>
+    </div>
+
+    <div style="width: 396px; flex-shrink: 0; display: flex; flex-direction: column;">
+      <div style="padding: 13px 20px 11px 20px; border-bottom: 1px solid oklch(0.27 0.008 255); display: flex; align-items: baseline; gap: 10px;">
+        <span style="font-size: 13px; font-weight: 600;">req_8f21c4</span>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">/v1/chat/completions</span>
+      </div>
+
+      <div style="padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">LIFECYCLE</div>
+        <sc-for list="{{phases}}" as="p" hint-placeholder-count="4">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: oklch(0.60 0.008 255); width: 58px;">{{p.name}}</span>
+            <div style="flex-grow: 1; height: 12px; background: oklch(0.21 0.008 255); position: relative;">
+              <div style="{{p.bar}}"></div>
+            </div>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-variant-numeric: tabular-nums; width: 56px; text-align: right;">{{p.ms}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">PREFIX</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.65; color: oklch(0.68 0.008 255);">
+          <span style="color: {{shared}};">1,536 of 2,410 tokens</span> adopted from blocks already resident. 96 blocks skipped, <span style="color: oklch(0.95 0.004 255);">1.41 s</span> of prefill never run.
+        </div>
+      </div>
+
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">CLIENT</div>
+        <sc-for list="{{clientFacts}}" as="f" hint-placeholder-count="4">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 14px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.58 0.008 255);">{{f.k}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; text-align: right;">{{f.v}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{isLogs}}" hint-placeholder-val="{{false}}">
+  <div style="flex-grow: 1; display: flex; min-height: 0;">
+
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid oklch(0.27 0.008 255);">
+      <div style="padding: 14px 22px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <sc-for list="{{levels}}" as="l" hint-placeholder-count="4">
+          <div style="{{l.style}}">{{l.label}}</div>
+        </sc-for>
+        <div style="flex-grow: 1;"></div>
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.55 0.008 255);">following &middot; 4,912 lines</span>
+      </div>
+
+      <div style="padding: 10px 0; display: flex; flex-direction: column;">
+        <sc-for list="{{logLines}}" as="line" hint-placeholder-count="16">
+          <div style="display: grid; grid-template-columns: 92px 62px minmax(0, 1fr); gap: 14px; padding: 5px 22px; align-items: baseline;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.50 0.008 255);">{{line.time}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.06em; color: {{line.hue}};">{{line.src}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: {{line.textHue}}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{line.msg}}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="flex-grow: 1;"></div>
+    </div>
+
+    <div style="width: 396px; flex-shrink: 0; display: flex; flex-direction: column;">
+      <div style="padding: 13px 20px 11px 20px; border-bottom: 1px solid oklch(0.27 0.008 255);">
+        <span style="font-size: 13px; font-weight: 600;">This session</span>
+      </div>
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 13px; border-bottom: 1px solid oklch(0.22 0.008 255);">
+        <sc-for list="{{counters}}" as="c" hint-placeholder-count="5">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 14px;">
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.60 0.008 255);">{{c.k}}</span>
+            <span style="font-family: 'JetBrains Mono', monospace; font-size: 15px; font-variant-numeric: tabular-nums; color: {{c.hue}};">{{c.v}}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 9px;">
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: oklch(0.60 0.008 255);">EXPORT</div>
+        <div style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: oklch(0.62 0.008 255); line-height: 1.65;">
+          Logs are a ring buffer in the engine. Nothing is written to disk unless you ask for it.
+        </div>
+        <div style="border: 1px solid oklch(0.32 0.008 255); color: oklch(0.80 0.008 255); padding: 9px 0; text-align: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; letter-spacing: 0.08em; margin-top: 3px;">SAVE SESSION LOG</div>
+      </div>
+      <div style="flex-grow: 1;"></div>
+    </div>
+  </div>
+  </sc-if>
+
+  <div style="height: 30px; flex-shrink: 0; border-top: 1px solid oklch(0.27 0.008 255); display: flex; align-items: center; gap: 20px; padding: 0 22px; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: oklch(0.52 0.008 255);">
+    <span>session 4h 12m</span>
+    <span>1,284 requests</span>
+    <span>0 refused</span>
+    <span>0 evictions</span>
+    <div style="flex-grow: 1;"></div>
+    <span>build m4.5 &middot; 755a43b</span>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"oklch(0.76 0.09 70)"},"shared":{"editor":"color","default":"oklch(0.70 0.07 250)"}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? 'oklch(0.76 0.09 70)';
+    const shared = this.props.shared ?? 'oklch(0.70 0.07 250)';
+    const flame = 'oklch(0.66 0.09 30)';
+    const dim = 'oklch(0.55 0.008 255)';
+    const bright = 'oklch(0.95 0.004 255)';
+    const free = 'oklch(0.24 0.008 255)';
+    const tab = (this.state && this.state.tab) || 'Swarm';
+
+    const tabs = ['Swarm', 'Models', 'Requests', 'Logs'].map((label) => ({
+      label,
+      pick: () => this.setState({ tab: label }),
+      style: 'display: flex; align-items: center; padding: 0 18px; font-size: 12.5px; cursor: pointer; color: ' +
+        (label === tab ? bright : dim) +
+        '; border-bottom: 2px solid ' + (label === tab ? accent : 'transparent') + ';'
+    }));
+
+    const kpis = [
+      { label: 'ACTIVE', value: '7', unit: 'of 8 admitted', foot: '2 queued, 0 refused' },
+      { label: 'TTFT p50 / p99', value: '0.41', unit: 's / 1.9 s', foot: 'shared prefix skips 1,536 tok' },
+      { label: 'POOL', value: '77', unit: '% of 8.00 GB', foot: 'give-back armed at 1.5 GB free' }
+    ];
+
+    const src = [
+      { id: 's0', name: 'planner', tool: 'chat.completions', state: 'DECODE', ctx: '1,842', rate: '5.4', ttft: '0.38 s', text: 'the third constraint is bandwidth, not compute — so the plan should' },
+      { id: 's1', name: 'reader.a', tool: 'tools/read_file', state: 'DECODE', ctx: '964', rate: '5.9', ttft: '0.31 s', text: 'src/model.c lines 480–560 implement the per-head attention loop' },
+      { id: 's2', name: 'reader.b', tool: 'tools/read_file', state: 'DECODE', ctx: '1,103', rate: '5.7', ttft: '0.34 s', text: 'the block table maps logical positions to physical blocks by' },
+      { id: 's3', name: 'critic', tool: 'chat.completions', state: 'PREFILL', ctx: '2,410', rate: '—', ttft: '—', text: '1,536 of 2,410 tokens adopted from the shared prefix' },
+      { id: 's4', name: 'grep.rs', tool: 'tools/search', state: 'DECODE', ctx: '512', rate: '6.1', ttft: '0.22 s', text: 'no match for pool_for_rows outside src/kernels/vec.c, which is' },
+      { id: 's5', name: 'summarizer', tool: 'chat.completions', state: 'DECODE', ctx: '1,287', rate: '5.6', ttft: '0.36 s', text: 'in short: attention was the last single-threaded stage in the' },
+      { id: 's6', name: 'test.gen', tool: 'chat.completions', state: 'DECODE', ctx: '733', rate: '6.0', ttft: '0.27 s', text: 'static void test_shared_scratch_is_per_worker(void) { /* mutation' },
+      { id: 's7', name: 'judge', tool: 'chat.completions', state: 'QUEUED', ctx: '—', rate: '—', ttft: '—', text: 'waiting on admission — reserve held for the prefill in flight' }
+    ];
+
+    const lanes = src.map((s) => ({
+      id: s.id, name: s.name, tool: s.tool, state: s.state, ctx: s.ctx, ttft: s.ttft, text: s.text, rate: s.rate,
+      hue: s.state === 'PREFILL' ? flame : (s.state === 'QUEUED' ? dim : accent),
+      rateHue: s.rate === '—' ? dim : bright
+    }));
+
+    const agg = lanes.filter((l) => l.state === 'DECODE')
+      .reduce((sum, l) => sum + parseFloat(l.rate), 0).toFixed(1);
+
+    const sparkPts = [];
+    for (let i = 0; i < 24; i++) {
+      const v = 17 + ((i * 11) % 9) - (i > 17 ? 4 : 0);
+      sparkPts.push((i * 5.1).toFixed(1) + ',' + v.toFixed(1));
+    }
+
+    const blocks = [];
+    for (let i = 0; i < 384; i++) {
+      let bg = free;
+      if (i < 48) { bg = shared; }
+      else if (i >= 52 && i < 100) { bg = accent; }
+      else if (i >= 100 && i < 148) { bg = 'oklch(0.68 0.08 70)'; }
+      else if (i >= 148 && i < 188) { bg = 'oklch(0.58 0.06 70)'; }
+      else if (i >= 356 && i < 362) { bg = flame; }
+      blocks.push({ style: 'height: 9px; background: ' + bg + ';' });
+    }
+
+    const steps = [];
+    for (let i = 0; i < 60; i++) {
+      const prefill = (i > 14 && i < 19) || (i > 43 && i < 49);
+      const h = prefill ? 54 : 16 + ((i * 7) % 7);
+      steps.push({ style: 'flex-grow: 1; height: ' + h + 'px; background: ' + (prefill ? flame : accent) + ';' });
+    }
+
+    const models = [
+      { name: 'Qwen3-4B-Instruct-2507-Q4_K_M', size: '2.33 GB', state: 'serving', dot: accent },
+      { name: 'Qwen3-4B-Instruct-2507-Q8_0', size: '3.99 GB', state: 'warm', dot: 'oklch(0.50 0.02 255)' },
+      { name: 'Qwen3-0.6B-Q8_0 (draft)', size: '0.61 GB', state: 'idle 4m', dot: 'oklch(0.38 0.01 255)' }
+    ];
+
+    const modelRows = [
+      { name: 'Qwen3-4B-Instruct-2507', arch: 'qwen3 · 36L · GQA 32/8 · Q4_K_M', size: '2.33 GB', ctx: '32,768', rate: '15.5 tok/s', used: 'now', state: 'SERVING', hue: accent, dot: accent },
+      { name: 'Qwen3-4B-Instruct-2507', arch: 'qwen3 · 36L · GQA 32/8 · Q8_0', size: '3.99 GB', ctx: '32,768', rate: '9.8 tok/s', used: '12m ago', state: 'WARM', hue: 'oklch(0.68 0.008 255)', dot: 'oklch(0.50 0.02 255)' },
+      { name: 'Qwen3-0.6B', arch: 'qwen3 · 28L · GQA 16/8 · Q8_0 · draft', size: '0.61 GB', ctx: '32,768', rate: '61.2 tok/s', used: '4m ago', state: 'WARM', hue: 'oklch(0.68 0.008 255)', dot: 'oklch(0.50 0.02 255)' },
+      { name: 'Llama-3.2-3B-Instruct', arch: 'llama · 28L · GQA 24/8 · Q4_K_M', size: '1.88 GB', ctx: '131,072', rate: '18.1 tok/s', used: '2h ago', state: 'ON DISK', hue: dim, dot: 'oklch(0.34 0.01 255)' },
+      { name: 'Qwen3-14B-Instruct', arch: 'qwen3 · 40L · GQA 40/8 · Q4_K_M', size: '8.99 GB', ctx: '32,768', rate: '—', used: 'never', state: 'ON DISK', hue: dim, dot: 'oklch(0.34 0.01 255)' }
+    ];
+
+    const modelFacts = [
+      { k: 'layers', v: '36' },
+      { k: 'heads (q / kv)', v: '32 / 8' },
+      { k: 'head dim', v: '128' },
+      { k: 'vocab', v: '151,936' },
+      { k: 'file', v: 'models/…-Q4_K_M.gguf' },
+      { k: 'loaded in', v: '1.9 s' },
+      { k: 'sha256', v: 'f3b7181a…' }
+    ];
+
+    const mkFilter = (label, on) => ({
+      label,
+      style: 'padding: 6px 13px; font-family: \'JetBrains Mono\', monospace; font-size: 10.5px; letter-spacing: 0.06em; border: 1px solid ' +
+        (on ? accent : 'oklch(0.28 0.008 255)') + '; color: ' + (on ? accent : dim) + ';'
+    });
+    const filters = [mkFilter('ALL', true), mkFilter('CHAT', false), mkFilter('COMPLETIONS', false), mkFilter('EMBEDDINGS', false)];
+
+    const reqSrc = [
+      { time: '14:22:07', id: 'req_8f21c4', endpoint: '/v1/chat/completions', hit: 'prefix 64%', prompt: '2,410', gen: '512', ttft: '0.41 s', total: '9.2 s', status: '200', sel: true },
+      { time: '14:22:03', id: 'req_8f21b9', endpoint: '/v1/chat/completions', hit: 'prefix 64%', prompt: '1,842', gen: '318', ttft: '0.38 s', total: '5.9 s', status: '200', sel: false },
+      { time: '14:21:58', id: 'req_8f21a2', endpoint: '/v1/chat/completions', hit: '', prompt: '96', gen: '128', ttft: '0.11 s', total: '2.2 s', status: '200', sel: false },
+      { time: '14:21:44', id: 'req_8f2196', endpoint: '/v1/chat/completions', hit: 'prefix 64%', prompt: '964', gen: '204', ttft: '0.31 s', total: '3.6 s', status: '200', sel: false },
+      { time: '14:21:31', id: 'req_8f2188', endpoint: '/v1/embeddings', hit: '', prompt: '512', gen: '—', ttft: '—', total: '0.6 s', status: '200', sel: false },
+      { time: '14:21:12', id: 'req_8f2174', endpoint: '/v1/chat/completions', hit: 'prefix 64%', prompt: '1,103', gen: '96', ttft: '0.34 s', total: '1.9 s', status: 'cancel', sel: false },
+      { time: '14:20:58', id: 'req_8f2160', endpoint: '/v1/chat/completions', hit: 'prefix 64%', prompt: '733', gen: '256', ttft: '0.27 s', total: '4.4 s', status: '200', sel: false },
+      { time: '14:20:41', id: 'req_8f2152', endpoint: '/v1/chat/completions', hit: '', prompt: '2,048', gen: '64', ttft: '1.9 s', total: '3.1 s', status: '200', sel: false },
+      { time: '14:20:22', id: 'req_8f2141', endpoint: '/v1/chat/completions', hit: 'prefix 64%', prompt: '512', gen: '384', ttft: '0.22 s', total: '6.3 s', status: '200', sel: false }
+    ];
+
+    const requests = reqSrc.map((r) => ({
+      time: r.time, id: r.id, endpoint: r.endpoint, prompt: r.prompt, gen: r.gen, ttft: r.ttft, total: r.total,
+      status: r.status,
+      statusHue: r.status === '200' ? 'oklch(0.72 0.008 255)' : flame,
+      bg: r.sel ? 'oklch(0.19 0.008 255)' : 'transparent',
+      hit: r.hit,
+      hitStyle: r.hit
+        ? 'font-family: \'JetBrains Mono\', monospace; font-size: 9.5px; letter-spacing: 0.04em; color: ' + shared + '; border: 1px solid ' + shared + '; padding: 1px 5px; flex-shrink: 0;'
+        : 'display: none;'
+    }));
+
+    const phases = [
+      { name: 'queue', ms: '12 ms', bar: 'position: absolute; left: 0; top: 0; bottom: 0; width: 2%; background: oklch(0.45 0.01 255);' },
+      { name: 'prefill', ms: '398 ms', bar: 'position: absolute; left: 2%; top: 0; bottom: 0; width: 22%; background: ' + flame + ';' },
+      { name: 'decode', ms: '8.79 s', bar: 'position: absolute; left: 24%; top: 0; bottom: 0; width: 76%; background: ' + accent + ';' },
+      { name: 'skipped', ms: '1.41 s', bar: 'position: absolute; left: 0; top: 0; bottom: 0; width: 34%; background: repeating-linear-gradient(90deg, ' + shared + ' 0 3px, transparent 3px 6px);' }
+    ];
+
+    const clientFacts = [
+      { k: 'client', v: 'openai-python 1.99' },
+      { k: 'stream', v: 'true (SSE)' },
+      { k: 'model', v: 'qwen3-4b-q4' },
+      { k: 'max_tokens', v: '512' }
+    ];
+
+    const mkLevel = (label, on, hue) => ({
+      label,
+      style: 'padding: 6px 13px; font-family: \'JetBrains Mono\', monospace; font-size: 10.5px; letter-spacing: 0.06em; border: 1px solid ' +
+        (on ? hue : 'oklch(0.28 0.008 255)') + '; color: ' + (on ? hue : dim) + ';'
+    });
+    const levels = [mkLevel('ALL', true, accent), mkLevel('INFO', false, 'oklch(0.68 0.008 255)'), mkLevel('WARN', false, flame), mkLevel('ERROR', false, 'oklch(0.62 0.13 25)')];
+
+    const logSrc = [
+      { time: '14:22:07.412', src: 'http', msg: 'POST /v1/chat/completions  seq s3 admitted, 2,410 prompt tokens', lvl: 'info' },
+      { time: '14:22:07.413', src: 'kv', msg: 'bp_seq_ensure: 96 of 151 blocks adopted by refcount, 55 allocated', lvl: 'info' },
+      { time: '14:22:07.811', src: 'sched', msg: 'prefill s3 co-running with 6 decoders, worst decode gap 86 ms (budget 250)', lvl: 'info' },
+      { time: '14:22:08.002', src: 'pool', msg: 'timing: prefill 874 tok in 398.2 ms | decode 1 tok in 61.4 ms', lvl: 'info' },
+      { time: '14:21:58.221', src: 'http', msg: 'POST /v1/chat/completions  seq s8 refused admission (pool has 200 blocks, needs 214)', lvl: 'warn' },
+      { time: '14:21:58.222', src: 'sched', msg: 'queued s8 behind s3; reserve 32 blocks held against livelock', lvl: 'info' },
+      { time: '14:21:44.108', src: 'kv', msg: 'block 0x1a4 refcount 8 → 7, seq s6 released; not freed', lvl: 'info' },
+      { time: '14:21:31.900', src: 'model', msg: 'Qwen3-0.6B-Q8_0 idle 4m, LRU rank 3 of 3 — unload candidate', lvl: 'info' },
+      { time: '14:21:12.554', src: 'http', msg: 'client closed stream, seq s2 cancelled at token 96 — 14 blocks freed', lvl: 'info' },
+      { time: '14:20:58.010', src: 'pool', msg: 'worker 5 thread-power-throttling cleared (EcoQoS guard)', lvl: 'info' },
+      { time: '14:20:41.773', src: 'sched', msg: 'no prefix hit for seq s5: first 16 tokens differ at position 4', lvl: 'info' },
+      { time: '14:20:22.318', src: 'kv', msg: 'give-back armed: 1.62 GB free, watermark 1.50 GB', lvl: 'info' },
+      { time: '14:19:04.221', src: 'model', msg: 'loaded models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf in 1.9 s (2.33 GB)', lvl: 'info' },
+      { time: '14:18:12.006', src: 'http', msg: 'listening on 127.0.0.1:8080 — openai-compatible, SSE streaming', lvl: 'info' }
+    ];
+
+    const logLines = logSrc.map((l) => ({
+      time: l.time,
+      src: l.src,
+      msg: l.msg,
+      hue: l.lvl === 'warn' ? flame : shared,
+      textHue: l.lvl === 'warn' ? 'oklch(0.86 0.05 40)' : 'oklch(0.74 0.008 255)'
+    }));
+
+    const counters = [
+      { k: 'requests', v: '1,284', hue: bright },
+      { k: 'refused admission', v: '1', hue: flame },
+      { k: 'cancellations', v: '37', hue: bright },
+      { k: 'block evictions', v: '0', hue: bright },
+      { k: 'errors', v: '0', hue: bright }
+    ];
+
+    return {
+      accent, shared, flame, tabs, kpis, lanes, agg, spark: sparkPts.join(' '), blocks, steps, models,
+      modelRows, modelFacts, filters, requests, phases, clientFacts, levels, logLines, counters,
+      isSwarm: tab === 'Swarm', isModels: tab === 'Models', isRequests: tab === 'Requests', isLogs: tab === 'Logs'
+    };
+  }
+}
+</script>
+</body>
+</html>
