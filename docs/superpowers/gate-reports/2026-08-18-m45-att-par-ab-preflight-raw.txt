@@ -1,0 +1,14 @@
+2026-08-18T21:26:26  START cycles=1 n=8 threads=8 points=2 arms=4
+2026-08-18T21:26:27  CYCLE 1 (standby 4.75 GB)
+2026-08-18T21:26:33    c1 p00   par0lanes1     16.35  cpu=0s
+2026-08-18T21:26:36    c1 p00   par0lanes4     16.47  cpu=13.2s
+2026-08-18T21:26:39    c1 p00   par1lanes1     14.11  cpu=0s
+2026-08-18T21:26:42    c1 p00   par1lanes4     15.62  cpu=0s
+2026-08-18T21:26:57    c1 p00   llama          17.81  cpu=0s
+2026-08-18T21:27:41    c1 p40   par0lanes1     8.324  cpu=183.4s
+2026-08-18T21:28:25    c1 p40   par0lanes4     8.921  cpu=192.3s
+2026-08-18T21:29:02    c1 p40   par1lanes1    11.872  cpu=207.3s
+2026-08-18T21:29:38    c1 p40   par1lanes4    11.755  cpu=214s
+2026-08-18T21:29:50    c1 p40   llama          15.25  cpu=65s
+2026-08-18T21:29:50  REPORT -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-18-m45-att-par-ab-preflight-report.md
+2026-08-18T21:29:50  DONE
