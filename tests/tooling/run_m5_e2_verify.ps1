@@ -53,7 +53,8 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $root = "M:\New Drive\Desktop\Programming\stoke"
-$log  = "$root\docs\superpowers\gate-reports\$Stamp.txt"
+$gr   = "$root\docs\superpowers\gate-reports"
+$log  = "$gr\$Stamp.txt"
 $Q4   = "$root\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 $Q8   = "$root\models\Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf"
 # The SAME two referents M4.5 closed against (its byte-compare was 10/10 on
@@ -134,6 +135,18 @@ foreach ($kv in @("f32", "q8")) {
         }
     }
 }
+
+# THE DENOMINATOR, WRITTEN ONCE, FOR THE STATUS BAR -- and deliberately ONLY
+# the denominator. The case grid is fixed here and the log cannot reveal it, so
+# the bar has to be told; but progress is counted from the log's own SAME/DIFFER
+# lines, never from anything this file claims. That split is what stops a
+# "running" claim outliving the run, which is how the bar once sat on
+# "M2 24/24 BANKED" for two days.
+$nQ8 = $(if ($Quick) { 0 } else { 2 })
+@{ name = $Stamp; total = ($cases.Count + $nQ8); arms = $arms.Count
+   plan = "$($cases.Count) Q4_K_M + $nQ8 Q8_0 cases x $($arms.Count) arms"
+   started = (Get-Date -Format s) } | ConvertTo-Json -Compress |
+    Out-File -Encoding ascii "$gr\$Stamp.status.json"
 
 foreach ($c in $cases) {
     $prompt = "$root\tests\data\parity\$($c.p).txt"
