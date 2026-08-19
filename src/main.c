@@ -690,6 +690,7 @@ static void cmd_bench_serve(int argc, char** argv) {
     const char* model_path = argv[3];
     bool        raw = false;
     long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
+    long long   stagger_long = 0;
     KvDtype     kv_dt = KV_F32;
     const char* src[BATCH_MAX_PROMPTS];
     bool        src_is_file[BATCH_MAX_PROMPTS];
@@ -706,15 +707,17 @@ static void cmd_bench_serve(int argc, char** argv) {
             else fatal("stoke bench --serve: unknown --kv value, want f32 or q8");
         } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--seqs") == 0 ||
                    strcmp(argv[i], "--ctx") == 0 ||
+                   strcmp(argv[i], "--stagger") == 0 ||
                    strcmp(argv[i], "--threads") == 0) {
             const char* flag = argv[i];
             if (i + 1 >= argc)
                 fatal("stoke bench --serve: %s needs an argument", flag);
             long long v = strtoll(argv[++i], NULL, 10);
-            if (strcmp(flag, "-n") == 0)          n_long = v;
-            else if (strcmp(flag, "--seqs") == 0) seqs_long = v;
-            else if (strcmp(flag, "--ctx") == 0)  ctx_long = v;
-            else                                  threads_long = v;
+            if (strcmp(flag, "-n") == 0)             n_long = v;
+            else if (strcmp(flag, "--seqs") == 0)    seqs_long = v;
+            else if (strcmp(flag, "--ctx") == 0)     ctx_long = v;
+            else if (strcmp(flag, "--stagger") == 0) stagger_long = v;
+            else                                     threads_long = v;
         } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "-f") == 0) {
             bool is_file = (argv[i][1] == 'f');
             if (i + 1 >= argc)
@@ -803,24 +806,39 @@ static void cmd_bench_serve(int argc, char** argv) {
     u32*    out_ids = (u32*)xcalloc((size_t)n_seq * n_gen, sizeof(u32));
     double* t_done = (double*)xcalloc(n_seq, sizeof(double));
 
+    /* ARRIVALS, AND WHY THEY ARE NOT ALL AT ZERO BY DEFAULT-OR-NEVER.
+     *
+     * --stagger 0 submits everything at once: that is the throughput shape,
+     * and it is what gate item [2]'s aggregate bar is about. But it CANNOT
+     * measure gate item [3], which bounds a decode stall "during co-running
+     * prefill" -- with every request arriving at t=0 every prefill happens
+     * before the decode set matures, so no prefill ever co-runs with a mature
+     * one and the ITL max is measuring something else entirely. --stagger K
+     * submits request i after K steps, so a prompt lands while decodes are in
+     * flight. [3] needs a staggered run; [2] wants an unstaggered one. */
+    u32    submitted = 0;
     double t0 = now_ms();
-    for (u32 i = 0; i < n_seq; i++) {
-        u32          p = i % n_src;
-        SchedRequest r;
-        r.id = 1000 + i;
-        r.prompt_ids = ids[p];
-        r.n_prompt = n_ids[p];
-        r.max_tokens = n_gen;
-        r.eos_id = -1;
-        if (!sched_submit(s, &r))
-            fatal("stoke bench --serve: request %u refused -- the pool cannot "
-                  "hold prompt %u (%u tokens) plus -n %u",
-                  i, p, n_ids[p], n_gen);
-    }
 
     u64 guard = 0;
     u64 guard_max = (u64)n_seq * n_gen * 64ull + 100000ull;
-    while (sched_pending(s) && guard++ < guard_max) {
+    for (;;) {
+        while (submitted < n_seq &&
+               (u64)submitted * (u64)stagger_long <= guard) {
+            u32          p = submitted % n_src;
+            SchedRequest r;
+            r.id = 1000 + submitted;
+            r.prompt_ids = ids[p];
+            r.n_prompt = n_ids[p];
+            r.max_tokens = n_gen;
+            r.eos_id = -1;
+            if (!sched_submit(s, &r))
+                fatal("stoke bench --serve: request %u refused -- the pool "
+                      "cannot hold prompt %u (%u tokens) plus -n %u",
+                      submitted, p, n_ids[p], n_gen);
+            submitted++;
+        }
+        if (!sched_pending(s) && submitted >= n_seq) break;
+        if (guard++ >= guard_max) break;
         sched_step(s);
         double t = now_ms();
         for (u32 i = 0; i < n_seq; i++) {

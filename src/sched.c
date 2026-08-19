@@ -20,6 +20,7 @@
 #include "blockpool.h" /* bp_capacity, for the admissibility check at submit */
 
 #include <pthread.h>
+#include <stdlib.h> /* getenv, strtol -- STOKE_SCHED_CHUNK */
 #include <stdatomic.h>
 #include <string.h>
 
@@ -79,6 +80,7 @@ struct Sched {
     Req* all;          /* every live request, for lookup by id             */
 
     u64 next_arrival;
+    u32  chunk;   /* SCHED_CHUNK_TOKENS, or STOKE_SCHED_CHUNK */
     u64  last_preempted;
     bool ever_preempted;
 
@@ -202,6 +204,33 @@ Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host) {
               "scheduler with no way to step is a caller error");
     }
     Sched* s = (Sched*)xcalloc(1, sizeof(Sched));
+    /* STOKE_SCHED_CHUNK overrides the locked 128, for MEASURING the co-run
+     * tradeoff rather than for shipping a different value. A chunk amortises
+     * the weight stream across its rows (throughput) and makes the step it
+     * rides in longer (ITL) -- gate item [2] wants it large and gate item [3]
+     * wants it small, and the forward note's attribution ladder says to try 64
+     * if the co-run blows the ITL budget. An env var and not a rebuild, so both
+     * arms come from ONE binary in ONE sitting, exactly as every other A/B on
+     * this box has to.
+     *
+     * S-ALIGN still binds: a value that is not a whole number of KV blocks is
+     * REFUSED rather than rounded, because a chunk ending mid-block leaves that
+     * block unregistrable by the prefix cache and rounding would silently
+     * measure a different width than the one asked for. */
+    s->chunk = SCHED_CHUNK_TOKENS;
+    {
+        const char* e = getenv("STOKE_SCHED_CHUNK");
+        if (e && e[0]) {
+            long v = strtol(e, NULL, 10);
+            if (v <= 0 || (u32)v % kv_block_tokens() != 0u) {
+                fatal("sched: STOKE_SCHED_CHUNK=%s -- must be positive and a "
+                      "multiple of the KV block size (%u); a chunk must end on "
+                      "a block boundary (S-ALIGN)",
+                      e, kv_block_tokens());
+            }
+            s->chunk = (u32)v;
+        }
+    }
     s->store = store;
     s->max_ctx = max_ctx;
     s->host = *host;
@@ -451,7 +480,7 @@ u32 sched_step(Sched* s) {
     Req* pf = s->prefilling;
     if (pf) {
         chunk = pf->target - pf->n_done;
-        if (chunk > SCHED_CHUNK_TOKENS) chunk = SCHED_CHUNK_TOKENS;
+        if (chunk > s->chunk) chunk = s->chunk;
     }
     rows_ensure(s, n_running + chunk);
 
