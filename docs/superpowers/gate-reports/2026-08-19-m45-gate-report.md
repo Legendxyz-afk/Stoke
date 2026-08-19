@@ -109,10 +109,18 @@ relinked binary during leg 3: both **IDENTICAL**.
       wrong** — C fired C-FAIL-RATE and was parked; the criterion that stopped
       it was later retired as unsound, and what ships is the bit-exact maddubs
       twin plus Q6_K. §3 is corrected
-- [ ] `stoke/MEMORY.md` build-log entry for the M4.5 close
-- [ ] `.superpowers` ledger block appended
-- [ ] owner line moved M4.5 → M5
-- [ ] `git tag m45` (local, not pushed) — **Kabir's word**
-- [ ] the two fixes in §6.2 landed on `main`
-- [ ] seven spent `stoke-m45-*` scheduled tasks from earlier sessions deleted —
-      offered, not deleted unilaterally
+- [x] `stoke/MEMORY.md` build-log entry for the M4.5 close
+- [x] `.superpowers` ledger block appended
+- [x] owner line moved M4.5 → M5
+- [x] `git tag m45` (local, not pushed) — **Kabir's word**
+- [x] the two fixes in §6.2 landed on `main` (`df035ae`, `20f65e7`, both
+      verified ancestors of `main` at M5 entry)
+- [x] seven spent `stoke-m45-*` scheduled tasks from earlier sessions deleted —
+      **zero `stoke*` scheduled tasks exist** (checked at M5 entry, 2026-08-19)
+
+**These six were ticked at M5 ENTRY, not at close — they were all done on
+2026-08-19 and the report was never re-opened to record it.** Verified one by
+one rather than assumed: the tag, the ancestry of both fixes, the ledger block,
+the MEMORY.md entry, the owner line, and an empty `Get-ScheduledTask stoke*`.
+**A checklist that outlives the work it tracked reads as work outstanding** —
+the same defect class as the spent helper, one level up, and cheap to close.
