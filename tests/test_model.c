@@ -53,6 +53,8 @@
 
 #include "blockpool.h"
 #include "model.h"
+#include "sched.h"
+#include "serve.h"
 #include "pool.h" /* L4: attention runs on the pool, so its tests drive it */
 
 #include <errno.h>
@@ -1117,6 +1119,110 @@ TEST(m5_e2_kv_head_outer_attention_is_thread_invariant_on_both_gqa_shapes) {
     /* Leave the shared fixture path holding the UNMUTATED file: a later test
      * that opens it without rewriting it must not silently inherit gqa 4. */
     write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+}
+
+/* ===========================================================================
+ * M5 -- the SCHEDULER's output equals SOLO generation, on the real forward.
+ *
+ * ▶ THIS IS THE PROPERTY EVERY THROUGHPUT NUMBER RESTS ON. Gate item [2] is a
+ * tok/s bar measured through the scheduler; a bar met by a scheduler that
+ * generates different text than `model_generate` measures nothing. So before
+ * any of that is timed, the streams have to match -- and match PER REQUEST
+ * while several run concurrently, since the interesting failure is a batch
+ * where each sequence is individually fluent and one of them is somebody
+ * else's continuation.
+ *
+ * What it exercises that the sim cannot: the real forward, the real batched
+ * output projection, the real argmax, and the real chunked prefill -- the sim's
+ * fake model computes none of those. What the SIM does that this cannot: a
+ * million steps of invariant checking. They are complementary, and neither is
+ * evidence for the other.
+ *
+ * Three requests with DIFFERENT prompts, so a host that fed one row's hidden
+ * state to another row's projection produces a visibly wrong stream rather
+ * than an accidentally-equal one.
+ * ===========================================================================
+ */
+TEST(m5_scheduler_output_equals_solo_generation) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 NREQ = 3, NGEN = 6;
+    const u32 nprompt[3] = {5, 9, 7}; /* distinct, and not chunk-aligned */
+    u32       prompts[3][16];
+    for (u32 i = 0; i < NREQ; i++)
+        for (u32 p = 0; p < nprompt[i]; p++)
+            prompts[i][p] = (u32)((i * 3 + p) % 5u); /* vocab is 5 */
+
+    pool_stop();
+    pool_start(2u);
+
+    /* ---- solo reference: one sequence at a time, its own store. */
+    u32 solo[3][8];
+    u32 solo_n[3];
+    for (u32 i = 0; i < NREQ; i++) {
+        Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m), model_n_head_kv(m),
+                         model_head_dim(m));
+        solo_n[i] = model_generate(m, kv, prompts[i], nprompt[i], NGEN,
+                                   /*eos_id=*/-1, solo[i], NULL, -1, NULL, NULL);
+        kv_close(kv);
+    }
+
+    /* ---- the same three through the scheduler, sharing ONE pool. */
+    KvStore* store = kv_store_open(model_n_layer(m), 64u, model_n_head_kv(m),
+                                   model_head_dim(m), KV_F32);
+    ServeHost* host = serve_host_open(m);
+    SchedHost  sh = serve_host(host);
+    Sched*     s = sched_open(store, model_max_ctx(m), &sh);
+
+    for (u32 i = 0; i < NREQ; i++) {
+        SchedRequest r = {100 + i, prompts[i], nprompt[i], NGEN, -1};
+        ASSERT_TRUE(sched_submit(s, &r));
+    }
+
+    u32 got[3][8];
+    u32 got_n[3] = {0, 0, 0};
+    u32 guard = 0;
+    while (sched_pending(s) && guard++ < 500) {
+        sched_step(s);
+        for (u32 i = 0; i < NREQ; i++) {
+            SchedFinish f;
+            got_n[i] += sched_poll(s, 100 + i, got[i] + got_n[i],
+                                   8 - got_n[i], &f);
+        }
+    }
+    ASSERT_TRUE(guard < 500);
+
+    /* The anti-vacuity pair: the host must actually have run forwards, and
+     * they must have carried rows. "The streams matched" is also true of two
+     * runs that both produced nothing. */
+    ASSERT_TRUE(serve_host_steps(host) > 0);
+    ASSERT_TRUE(serve_host_rows(host) > 0);
+
+    for (u32 i = 0; i < NREQ; i++) {
+        if (got_n[i] != solo_n[i]) {
+            printf("  req %u: scheduler %u ids, solo %u\n", i, got_n[i],
+                   solo_n[i]);
+        }
+        ASSERT_EQ_U32(got_n[i], solo_n[i]);
+        for (u32 k = 0; k < solo_n[i]; k++) {
+            if (got[i][k] != solo[i][k]) {
+                printf("  req %u id %u: scheduler %u, solo %u\n", i, k,
+                       got[i][k], solo[i][k]);
+            }
+            ASSERT_EQ_U32(got[i][k], solo[i][k]);
+        }
+    }
+
+    /* And the three must not be identical to each other, or a host that mixed
+     * up rows would satisfy every comparison above. */
+    ASSERT_TRUE(memcmp(solo[0], solo[1], solo_n[0] * sizeof(u32)) != 0);
+
+    sched_close(s);
+    serve_host_close(host);
+    kv_store_close(store);
+    pool_stop();
+    model_close(m);
 }
 
 /* ===========================================================================
