@@ -17,6 +17,8 @@
 
 #include "sched.h"
 
+#include "blockpool.h" /* bp_capacity, for the admissibility check at submit */
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -230,6 +232,20 @@ void sched_close(Sched* s) {
 bool sched_submit(Sched* s, const SchedRequest* req) {
     if (!req || req->n_prompt == 0 || req->max_tokens == 0) return false;
     if ((u64)req->n_prompt + req->max_tokens > (u64)s->max_ctx) return false;
+
+    /* ▶ REFUSED AT THE DOOR IF IT COULD NEVER CLEAR THE WATERMARK ON AN EMPTY
+     * POOL, and this is a LIVELOCK fix rather than tidiness. Admission needs
+     * free >= blocks(prompt) + W with W's floor of 8, so a prompt bigger than
+     * capacity - 8 is never admissible however long it waits -- and the step
+     * loop would then return 0 rows forever while sched_pending stayed true,
+     * which a driver reads as "busy" and spins on. A request that cannot run is
+     * information the submitter can act on; a scheduler that never says so is
+     * not. Same reasoning as kv_open_in_partial refusing an unreachable
+     * ceiling: unreachable-and-loud beats unreachable-and-silent. */
+    u32 cap = bp_capacity(kv_store_pool(s->store));
+    if ((u64)blocks_for_tokens(req->n_prompt) + SCHED_W_FLOOR > (u64)cap)
+        return false;
+    if (blocks_for_tokens(req->n_prompt + req->max_tokens) > cap) return false;
 
     /* Duplicate ids are refused rather than tolerated: every lookup here is by
      * id, so two live requests sharing one would make cancel, poll and progress

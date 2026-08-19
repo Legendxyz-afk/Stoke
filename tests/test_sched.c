@@ -412,7 +412,51 @@ static void test_linear_cost_model_changes_nothing(void) {
     ok("cost model: and identical step counts", s0.steps == s1.steps);
 }
 
+/* A request that could never clear the watermark is refused at SUBMIT, not
+ * queued forever. Without this the step loop returns 0 rows while
+ * sched_pending stays true -- which a driver reads as "busy" and spins on, so
+ * the failure is a hang rather than an error. */
+static void test_unadmittable_is_refused_at_the_door(void) {
+    const u32 NL = 2, NH = 1, HD = 4;
+    KvStore* store = kv_store_open(NL, 12, NH, HD, KV_F32); /* 12 blocks */
+    Sim sim = {0.0, 97, 0, 0, 0, 0};
+    SchedHost host = {sim_step, sim_now, &sim};
+    Sched* s = sched_open(store, 4096, &host);
+
+    static u32 prompt[1024];
+    for (u32 i = 0; i < 1024; i++) prompt[i] = i % 97;
+
+    /* blocks(80) = 5, + W floor 8 = 13 > 12 capacity: never admissible. */
+    SchedRequest too_big = {1, prompt, 80, 4, -1};
+    ok("a prompt that can never clear the watermark is refused",
+       sched_submit(s, &too_big) == false);
+
+    /* blocks(48) = 3, + 8 = 11 <= 12: admissible. */
+    SchedRequest fits = {2, prompt, 48, 4, -1};
+    ok("one that can is accepted", sched_submit(s, &fits) == true);
+
+    /* And a ceiling past the pool is refused too, even with a small prompt. */
+    SchedRequest tall = {3, prompt, 16, 400, -1};
+    ok("a ceiling past the whole pool is refused", sched_submit(s, &tall) == false);
+
+    ok("duplicate ids are refused", sched_submit(s, &fits) == false);
+
+    /* The accepted one must actually run to completion, so the guard above did
+     * not simply refuse everything. */
+    u32 guard = 0;
+    while (sched_pending(s) && guard++ < 1000) sched_step(s);
+    SchedFinish f = SCHED_FINISH_NONE;
+    u32 out[8];
+    u32 got = sched_poll(s, 2, out, 8, &f);
+    ok("the accepted request completed", got == 4 && f == SCHED_FINISH_MAX_TOKENS);
+    ok("...without spinning out the guard", guard < 1000);
+
+    sched_close(s);
+    kv_store_close(store);
+}
+
 int main(void) {
+    test_unadmittable_is_refused_at_the_door();
     test_single_request();
     test_burst_is_fcfs_and_finishes();
     test_cancel_frees_everything();
