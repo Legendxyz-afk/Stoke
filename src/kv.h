@@ -85,6 +85,18 @@ void kv_note_token(Kv* kv, u32 pos, u32 token_id);
  * it itself has to know BP_BLOCK_TOKENS, and gets to be wrong about it. */
 u32 kv_blocks_for_ctx(u32 max_ctx);
 
+/* The block size in POSITIONS.
+ *
+ * ▶ WHY THIS EXISTS BESIDE kv_blocks_for_ctx, WHICH WAS ADDED SO CALLERS WOULD
+ * NOT NEED IT. That function serves a caller SIZING a store, and such a caller
+ * genuinely only needs a count. A caller that must ALIGN TO a block boundary
+ * needs the granularity itself, and there is exactly one: M5's chunked prefill,
+ * whose chunks must end block-aligned or the prefix cache cannot register what
+ * the chunk produced (the S-ALIGN invariant, design note
+ * 2026-08-19-m5-entry.md section 1). Deriving it by probing kv_blocks_for_ctx
+ * would be the same coupling written obscurely. */
+u32 kv_block_tokens(void);
+
 /* ---- prefix dedup (M4 gate item 3) -----------------------------------
  * Adopts the longest run of leading WHOLE blocks of `ids[0..n_ids)` that the
  * store already holds with exactly those ids, sharing them by refcount, and

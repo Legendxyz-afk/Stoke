@@ -70,6 +70,8 @@ static u32 blocks_needed(u32 tokens) {
 
 u32 kv_blocks_for_ctx(u32 max_ctx) { return blocks_needed(max_ctx); }
 
+u32 kv_block_tokens(void) { return BP_BLOCK_TOKENS; }
+
 KvStore* kv_store_open(u32 n_layer, u32 capacity_blocks, u32 n_head_kv,
                        u32 head_dim, KvDtype dtype) {
     if (n_layer == 0 || capacity_blocks == 0 || n_head_kv == 0 || head_dim == 0) {

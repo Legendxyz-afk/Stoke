@@ -125,6 +125,15 @@ static u32 g_att_lanes = ATT_LANES;
  * (0). See the ATT_LANES header for why both arms exist and when 0 dies. */
 static u32 g_att_gqa = 1u;
 
+/* M5 E3: positions per prefill chunk. 128 = 8 KV blocks, so every chunk
+ * boundary is block-aligned and S-ALIGN holds by construction; it also matches
+ * the LOCKED scheduler chunk, so M5's co-running prefill inherits this width.
+ * 1 turns E3 off. Declared up here with the other run-time knobs because
+ * att_env_init validates it; the mechanism and its correctness argument live
+ * at prefill_range. */
+#define PREFILL_CHUNK 128u
+static u32 g_prefill_chunk = PREFILL_CHUNK;
+
 /* Run the heads on the pool (1) or serially on the calling thread (0). Both
  * arms are BIT-IDENTICAL -- see att_heads_run -- so this is a pure speed
  * switch, and it is an env var rather than a compile flag for the same reason
@@ -173,7 +182,31 @@ static u64 g_att_gqa_steps = 0;
 
 u64 model_att_gqa_step_count(void) { return g_att_gqa_steps; }
 
+/* Positions that went through E3's BATCHED prefill path, as opposed to the
+ * position-by-position one.
+ *
+ * THIRD ANTI-VACUITY COUNTER, GUARDING A THIRD NOTHING. "chunked prefill writes
+ * the same KV as position-by-position" is also true of a build where the
+ * chunker silently never engaged -- because the chunk width was clamped,
+ * because the prompt was shorter than one chunk, because a dump forced the solo
+ * path. That is three ways for the comparison to be between one code path and
+ * itself. Written only by the prefilling thread. */
+static u64 g_prefill_batch_rows = 0;
+
+u64 model_prefill_batch_rows(void) { return g_prefill_batch_rows; }
+
 void model_att_set_gqa(u32 on) { g_att_gqa = on ? 1u : 0u; }
+
+void model_set_prefill_chunk(u32 chunk) {
+    if (chunk == 0u) chunk = 1u;
+    if (chunk != 1u && chunk % kv_block_tokens() != 0u) {
+        fatal("model: model_set_prefill_chunk(%u) -- not 1 and not a multiple "
+              "of the KV block size (%u); a prefill chunk must end on a block "
+              "boundary (S-ALIGN)",
+              chunk, kv_block_tokens());
+    }
+    g_prefill_chunk = chunk;
+}
 
 static u32 env_u32(const char* name, u32 dflt, u32 lo, u32 hi) {
     const char* s = getenv(name);
@@ -195,6 +228,22 @@ static void att_env_init(void) {
     }
     g_att_par = env_u32("STOKE_ATT_PAR", 1u, 0u, 1u);
     g_att_gqa = env_u32("STOKE_ATT_GQA", 1u, 0u, 1u);
+
+    /* STOKE_PREFILL_CHUNK: 1 turns E3 off (position-by-position, the pre-M5
+     * path and the A/B's other arm); anything else must be a WHOLE NUMBER OF
+     * BLOCKS or S-ALIGN is violated -- a chunk that ends mid-block leaves that
+     * block unregistrable by the prefix cache until something else fills it.
+     * A bad value is REFUSED rather than rounded: rounding would silently
+     * measure a different chunk width than the one asked for, and this knob
+     * exists to be measured. */
+    u32 pc = env_u32("STOKE_PREFILL_CHUNK", PREFILL_CHUNK, 1u, 1u << 16);
+    if (pc != 1u && pc % kv_block_tokens() != 0u) {
+        fatal("model: STOKE_PREFILL_CHUNK=%u is not 1 and not a multiple of "
+              "the KV block size (%u) -- a prefill chunk must end on a block "
+              "boundary or the prefix cache cannot register it (S-ALIGN)",
+              pc, kv_block_tokens());
+    }
+    g_prefill_chunk = pc;
     g_att_chunk = env_u32("STOKE_ATT_CHUNK", 1u, 1u, 1024u);
     g_att_min_pos = env_u32("STOKE_ATT_MIN_POS", 32u, 0u, 1u << 20);
 }
@@ -1406,6 +1455,108 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
 }
 
 /* ===========================================================================
+ * M5 E3 -- CHUNKED BATCHED PREFILL
+ *
+ * ▶▶ WHAT IT FIXES. Prefill ran position by position, and a position streams
+ * the WHOLE 2.4973 GB of weights: at 43.6 GB/s that is ~57 ms of pure traffic
+ * each, so a 550-token prompt paid ~31 s before generating anything. llama
+ * batches prefill at ubatch 512 for exactly this reason. Running a CHUNK of
+ * positions as batch rows makes matvec_batch read each weight row once for the
+ * whole chunk, so the weight term amortises by the chunk width and prefill
+ * stops being bandwidth-bound on weights.
+ *
+ * ▶▶ IT IS THE SAME ARITHMETIC, and the property that says so is already
+ * gated: batch-composition independence is EXACT (M4 gate item [2] -- 31
+ * streams byte-identical to solo over N in {1,2,4,8,16}). A chunk is a batch
+ * whose rows happen to be consecutive positions of ONE sequence rather than
+ * one position of several, and nothing in forward_batch_body distinguishes
+ * those cases: each row has its own scratch, and rows differ only in the
+ * (token id, position) pair they were handed.
+ *
+ * ▶▶ INTRA-CHUNK CAUSALITY HOLDS BY CONSTRUCTION, AND THAT IS E1's DOING.
+ * E1 split the layer body into "write every row's K/V" then "attend", so by
+ * the time row i attends, its chunk-mates at positions < its own are already
+ * resident and its chunk-mates at HIGHER positions are irrelevant -- attention
+ * reads 0..pos and stops. No mask, no special case, and no dependence on the
+ * order the rows happen to be visited. Under the pre-E1 interleaved order this
+ * would have been a correctness property of a loop's direction, which is the
+ * kind that holds until someone reorders it.
+ *
+ * ▶ ONE Kv HANDLE, REPEATED. kv.h's one-handle-per-sequence rule is about
+ * DISTINCT sequences (the frozen kv_view carries no sequence parameter, so the
+ * sequence has to live in the handle). A chunk's rows ARE one sequence, so
+ * they share one handle by definition rather than by exception.
+ * ===========================================================================
+ */
+
+/* Runs positions [from, to) of ONE sequence, in chunks, leaving x_out holding
+ * the LAST position's hidden state -- which is all the caller wanted from the
+ * loop this replaces. `dump_last` is passed to the final position only, and
+ * that position always runs alone: write_dump_layer names its files by LAYER,
+ * so a batched chunk would overwrite them and the survivor would be whichever
+ * row ran last (forward_batch_body refuses n_seq != 1 with a dump for exactly
+ * this reason). The dump exists to be diffed against ref_forward.py. */
+static void prefill_range(Model* m, Kv* kv, const u32* ids, u32 from, u32 to,
+                          const char* dump_last, f32* x_out) {
+    if (from >= to) return;
+
+    u32 chunk = g_prefill_chunk;
+    u32 last = to;
+    if (dump_last != NULL) last = to - 1u; /* the dumped position runs solo */
+
+    if (chunk > 1u && last > from) {
+        /* Buffers for one chunk, allocated ONCE per prefill and not per chunk.
+         * M2 op-spec 6's rule is about the per-token loop; a prompt's prefill
+         * is entered once per sequence per generate call, and sizing these from
+         * Model would mean another grown-on-demand array to keep in step with
+         * scratch_n for no measurable gain. */
+        u32   width = chunk;
+        Kv**  kvs = (Kv**)xmalloc((size_t)width * sizeof(Kv*));
+        u32*  toks = (u32*)xmalloc((size_t)width * sizeof(u32));
+        u32*  poss = (u32*)xmalloc((size_t)width * sizeof(u32));
+        f32** xs = (f32**)xmalloc((size_t)width * sizeof(f32*));
+        f32*  xbuf =
+            (f32*)xmalloc((size_t)width * (size_t)m->n_embd * sizeof(f32));
+
+        for (u32 t = from; t < last;) {
+            u32 c = last - t;
+            if (c > chunk) c = chunk;
+            for (u32 i = 0; i < c; i++) {
+                kvs[i] = kv;
+                toks[i] = ids[t + i];
+                poss[i] = t + i;
+                xs[i] = xbuf + (size_t)i * m->n_embd;
+            }
+            model_forward_batch(m, kvs, toks, poss, c, xs);
+            g_prefill_batch_rows += c;
+            /* This chunk's LAST row, copied every chunk rather than the final
+             * row computed once at the end. The closed form for "which slot
+             * held the last position" is (last-1-from) % chunk, which is
+             * correct and is exactly the kind of index that becomes wrong the
+             * first time the loop's shape changes. One 10 KB copy per 128
+             * positions is not a cost. */
+            memcpy(x_out, xbuf + (size_t)(c - 1u) * m->n_embd,
+                   (size_t)m->n_embd * sizeof(f32));
+            t += c;
+        }
+
+        free(kvs);
+        free(toks);
+        free(poss);
+        free(xs);
+        free(xbuf);
+    } else {
+        for (u32 t = from; t < last; t++) {
+            model_forward_position(m, kv, ids[t], t, NULL, x_out);
+        }
+    }
+
+    if (last < to) {
+        model_forward_position(m, kv, ids[last], last, dump_last, x_out);
+    }
+}
+
+/* ===========================================================================
  * model_compute_logits -- output_norm -> tied matvec vs token_embd
  * ===========================================================================
  */
@@ -1529,11 +1680,9 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
      * in the numbers it reports. */
     double t_start = now_ms();
 
-    for (u32 t = 0; t < n_prompt; t++) {
-        bool last_prefill = (t == n_prompt - 1);
-        model_forward_position(m, kv, prompt_ids[t], t,
-                                last_prefill ? dump_dir : NULL, m->scratch.s_xout);
-    }
+    /* M5 E3: chunked, with the dumped last position still run solo. Was a
+     * position-by-position loop, each re-streaming all 2.4973 GB of weights. */
+    prefill_range(m, kv, prompt_ids, 0u, n_prompt, dump_dir, m->scratch.s_xout);
 
     u32 pos = n_prompt; /* absolute position the next forward call will use */
     model_compute_logits(m, m->scratch.s_xout, m->scratch.s_logits);
@@ -1673,9 +1822,12 @@ void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
         seqs[s].n_adopted = start;
 
         f32* x = xbuf + (size_t)s * m->n_embd;
-        for (u32 t = start; t < seqs[s].n_prompt; t++) {
-            model_forward_position(m, kv[s], seqs[s].prompt_ids[t], t, NULL, x);
-        }
+        /* M5 E3: chunked. `start` is a multiple of the block size when it comes
+         * from adoption (kv_adopt_prefix returns whole blocks) and 0 otherwise,
+         * so chunking from it keeps every boundary block-aligned -- S-ALIGN
+         * holds without the chunker having to re-derive it. */
+        prefill_range(m, kv[s], seqs[s].prompt_ids, start, seqs[s].n_prompt,
+                      NULL, x);
         model_compute_logits(m, x, m->scratch.s_logits);
         u32 id = model_argmax(m->scratch.s_logits, m->n_vocab);
         seqs[s].out_ids[0] = id;

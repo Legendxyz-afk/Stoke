@@ -150,6 +150,22 @@ u64 model_att_gqa_step_count(void);
  * model_open: the open re-reads the environment and would overwrite this. */
 void model_att_set_gqa(u32 on);
 
+/* Prompt positions that went through E3's BATCHED prefill rather than the
+ * position-by-position path. The anti-vacuity counter for the chunked-prefill
+ * test: "both widths write the same KV" is also true when the chunker never
+ * engaged. Process-global and monotonic. */
+u64 model_prefill_batch_rows(void);
+
+/* Positions per prefill chunk (M5 E3). 1 = position-by-position, the pre-M5
+ * path. Mirrors STOKE_PREFILL_CHUNK, and like it, refuses a value that is
+ * neither 1 nor a whole number of KV blocks -- a chunk must end block-aligned
+ * or the prefix cache cannot register what it produced (S-ALIGN).
+ *
+ * A TEST HOOK for the same reason model_att_set_gqa is one: E3's claim is that
+ * chunking changes no arithmetic, and a test has to run both widths. CALL IT
+ * AFTER model_open, which re-reads the environment. */
+void model_set_prefill_chunk(u32 chunk);
+
 /* Steps `n_seq` sequences by one position each, one Kv handle per sequence.
  *
  * Each sequence gets its OWN SeqScratch, so nothing they compute can reach

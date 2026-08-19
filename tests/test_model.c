@@ -1121,6 +1121,130 @@ TEST(m5_e2_kv_head_outer_attention_is_bit_identical_to_the_q_head_outer_loop) {
     write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
 }
 
+/* ===========================================================================
+ * M5 E3 -- chunked prefill writes the same KV cache as position-by-position.
+ *
+ * WHAT IS BEING CLAIMED. Prefill now runs a CHUNK of consecutive positions as
+ * batch rows so each weight row is streamed once for the whole chunk instead of
+ * once per position. The claim is that this changes no arithmetic: a chunk is a
+ * batch whose rows happen to be consecutive positions of ONE sequence, and
+ * forward_batch_body does not distinguish that from one position of several.
+ *
+ * ▶ THE COMPARISON IS THE WHOLE KV CACHE, NOT THE TOKEN STREAM. The fixture has
+ * a 5-token vocabulary and an argmax dominated by recent positions, and a
+ * measured mutation has already shown that a fixture-level token comparison
+ * CANNOT see K/V that was written wrong (see the adoption check in
+ * generate_batch). Every K and V element at every (layer, kv_head, position)
+ * is compared instead -- that is where a chunking error would land, and it is
+ * visible there long before it reaches a token.
+ *
+ * ▶ WHAT THIS TEST CANNOT SEE, stated rather than left implicit. The fixture's
+ * weights are F32, so both widths take rows_f32_batch and the K-quant FUSED
+ * batch kernel is never entered. On the real model n_seq=1 routes to the solo
+ * kernel and n_seq>1 to the xn kernel -- genuinely different code. That
+ * equivalence is M4 gate item [2]'s (31 streams byte-identical to solo over
+ * N in {1,2,4,8,16}), and chunk 128 inherits it by tiling: the xn path tiles
+ * sequences at KERNELS_BATCH_TILE = 16, so 128 rows are 8 tiles of exactly the
+ * N=16 case that gate covered. The real-model byte-compare is what checks it
+ * end to end; this test checks the plumbing the gate cannot reach cheaply.
+ * ===========================================================================
+ */
+TEST(m5_e3_chunked_prefill_writes_the_same_kv_as_position_by_position) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 n_embd = model_n_embd(m);
+    const u32 NPROMPT = 40; /* > 2 blocks of 16, and not a multiple of one */
+    u32       ids[40];
+    for (u32 t = 0; t < NPROMPT; t++) ids[t] = t % 5u; /* vocab is 5 */
+
+    pool_stop();
+    pool_start(4u);
+
+    /* Chunk 16 rather than the shipping 128: the fixture's max_ctx is 64, so
+     * 128 would run the whole prompt as ONE chunk and never cross a boundary --
+     * and crossing boundaries is the entire mechanism under test. 40 positions
+     * at 16 gives 16 + 16 + 8, i.e. two full chunks and a partial one. */
+    const u32 widths[2] = {1u, 16u};
+    const u32 NGEN = 4;
+    /* Mirrors model.c's PREFILL_CHUNK, deliberately: if that default moves,
+     * this restores the wrong value and the next test to depend on it says so.
+     * Same reasoning as ATT_MIN_POS_DEFAULT in the L4 test above. */
+    const u32 PREFILL_CHUNK_DEFAULT = 128u;
+    Kv*       kvs[2];
+    u32       out[2][4];
+    u32       counts[2];
+
+    u64 batched[2];
+    for (u32 w = 0; w < 2u; w++) {
+        u64 before = model_prefill_batch_rows();
+        model_set_prefill_chunk(widths[w]);
+        kvs[w] = kv_open(model_n_layer(m), model_max_ctx(m),
+                         model_n_head_kv(m), model_head_dim(m));
+        counts[w] = model_generate(m, kvs[w], ids, NPROMPT, NGEN,
+                                   /*eos_id=*/-1, out[w], NULL, -1, NULL, NULL);
+        batched[w] = model_prefill_batch_rows() - before;
+    }
+    model_set_prefill_chunk(PREFILL_CHUNK_DEFAULT);
+    pool_stop();
+    (void)n_embd;
+
+    /* THE ANTI-VACUITY CHECK, and it is the reason this test is worth having.
+     * Width 1 must run NO position through the batched path and width 16 must
+     * run ALL of them (16 + 16 + 8). If the chunker silently never engaged --
+     * clamped width, prompt shorter than a chunk, a dump forcing the solo path
+     * -- every comparison below would be a code path against itself. */
+    if (batched[0] != 0 || batched[1] != NPROMPT) {
+        printf("  batched rows: width1=%llu (want 0), width16=%llu (want %u)\n",
+               (unsigned long long)batched[0], (unsigned long long)batched[1],
+               NPROMPT);
+    }
+    ASSERT_TRUE(batched[0] == 0);
+    ASSERT_TRUE(batched[1] == (u64)NPROMPT);
+
+    ASSERT_EQ_U32(counts[0], counts[1]);
+
+    /* The token stream too -- weak evidence on a 5-token vocabulary, which is
+     * exactly why it is the SECOND check and not the only one. */
+    ASSERT_TRUE(memcmp(out[0], out[1], sizeof(out[0])) == 0);
+
+    /* EVERY K and V element the prompt produced, compared elementwise. */
+    u64 same = 0, diff = 0;
+    for (u32 L = 0; L < model_n_layer(m); L++) {
+        for (u32 h = 0; h < model_n_head_kv(m); h++) {
+            for (u32 p = 0; p < NPROMPT; p++) {
+                KvSlot a = kv_view(kvs[0], L, h, p);
+                KvSlot b = kv_view(kvs[1], L, h, p);
+                for (u32 d = 0; d < model_head_dim(m); d++) {
+                    if (a.k[d] == b.k[d]) same++; else diff++;
+                    if (a.v[d] == b.v[d]) same++; else diff++;
+                }
+            }
+        }
+    }
+    if (diff != 0) {
+        printf("  %llu of %llu KV elements differ between chunk 1 and 16\n",
+               (unsigned long long)diff, (unsigned long long)(same + diff));
+    }
+    ASSERT_TRUE(diff == 0);
+    /* Anti-vacuity: the loops above must actually have compared something, and
+     * the cache must not be uniformly zero (which would compare equal while
+     * meaning nothing was written). */
+    ASSERT_TRUE(same > 0);
+    u32 nonzero = 0;
+    for (u32 p = 0; p < NPROMPT; p++) {
+        KvSlot a = kv_view(kvs[0], 0, 0, p);
+        for (u32 d = 0; d < model_head_dim(m); d++) {
+            if (a.k[d] != 0.0f) nonzero++;
+        }
+    }
+    ASSERT_TRUE(nonzero > 0u);
+
+    kv_close(kvs[0]);
+    kv_close(kvs[1]);
+    model_close(m);
+}
+
 TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
     write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
     Model* m = model_open(MODEL_FIXTURE_PATH);
