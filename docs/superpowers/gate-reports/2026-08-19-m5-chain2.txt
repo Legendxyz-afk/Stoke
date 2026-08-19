@@ -7,3 +7,29 @@
 2026-08-19T11:19:59  [chain2] waiting for 2 job(s)
 2026-08-19T11:30:01  [chain2] waiting for 2 job(s)
 2026-08-19T11:40:04  [chain2] waiting for 2 job(s)
+2026-08-19T11:50:06  [chain2] waiting for 2 job(s)
+2026-08-19T12:00:08  [chain2] waiting for 2 job(s)
+2026-08-19T12:10:11  [chain2] waiting for 2 job(s)
+2026-08-19T12:17:12  [chain2] clear after 107 min
+2026-08-19T12:17:12  [chain2] m4_batch_identity starting (N in 1,2,4,8,16)
+model   : M:\New Drive\Desktop\Programming\stoke\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+prompts : p00, p10, p20, p30, p45
+widths  : [1, 2, 4, 8, 16]   n_gen=16
+
+  solo p00: 16 ids in 2.5s
+  solo p10: 16 ids in 2.5s
+  solo p20: 16 ids in 3.4s
+  solo p30: 16 ids in 3.2s
+  solo p45: 16 ids in 2.1s
+
+  N=1   OK   1/1 slots compared in 2.4s
+  N=2   OK   2/2 slots compared in 3.5s
+  N=4   OK   4/4 slots compared in 7.7s
+  N=8   OK   8/8 slots compared in 14.1s
+  N=16  OK   16/16 slots compared in 26.7s
+
+GATE ITEM 2: PASS -- 31 sequence streams over 5 widths, all byte-identical to solo
+2026-08-19T12:18:20  [chain2] m4_batch_identity rc=0
+2026-08-19T12:18:20  [chain2] prefill A/B starting (3 cycles)
+2026-08-19T12:29:45  [chain2] prefill A/B rc=0
+2026-08-19T12:29:45  [chain2] DONE

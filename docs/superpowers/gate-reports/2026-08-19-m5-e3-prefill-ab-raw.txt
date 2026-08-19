@@ -1,0 +1,24 @@
+﻿2026-08-19T12:18:21  START cycles=3 n=8 threads=6 affinity=0xFFF (PINNED to P-cores)
+2026-08-19T12:18:21  CYCLE 1
+2026-08-19T12:18:24    c1 p00   chunk=1    23 tok in 1580 ms
+2026-08-19T12:18:27    c1 p00   chunk=128  23 tok in 941.5 ms
+2026-08-19T12:18:58    c1 p40   chunk=1    490 tok in 29604.3 ms
+2026-08-19T12:19:18    c1 p40   chunk=128  490 tok in 18099.9 ms
+2026-08-19T12:21:05    c1 long  chunk=1    1436 tok in 104776 ms
+2026-08-19T12:22:09    c1 long  chunk=128  1436 tok in 62657.3 ms
+2026-08-19T12:22:09  CYCLE 2
+2026-08-19T12:23:13    c2 long  chunk=128  1436 tok in 61392.9 ms
+2026-08-19T12:24:59    c2 long  chunk=1    1436 tok in 104081.4 ms
+2026-08-19T12:25:20    c2 p40   chunk=128  490 tok in 18966.3 ms
+2026-08-19T12:25:52    c2 p40   chunk=1    490 tok in 30560.3 ms
+2026-08-19T12:25:55    c2 p00   chunk=128  23 tok in 990.1 ms
+2026-08-19T12:25:58    c2 p00   chunk=1    23 tok in 1774.1 ms
+2026-08-19T12:25:58  CYCLE 3
+2026-08-19T12:26:01    c3 p00   chunk=1    23 tok in 1621.5 ms
+2026-08-19T12:26:04    c3 p00   chunk=128  23 tok in 993.7 ms
+2026-08-19T12:26:36    c3 p40   chunk=1    490 tok in 30240.3 ms
+2026-08-19T12:26:56    c3 p40   chunk=128  490 tok in 18716 ms
+2026-08-19T12:28:40    c3 long  chunk=1    1436 tok in 102063.2 ms
+2026-08-19T12:29:45    c3 long  chunk=128  1436 tok in 62326.4 ms
+2026-08-19T12:29:45  REPORT -> M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-19-m5-e3-prefill-ab-report.md
+2026-08-19T12:29:45  DONE
