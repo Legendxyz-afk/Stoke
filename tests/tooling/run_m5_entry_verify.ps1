@@ -13,18 +13,23 @@
 # gate exercised it on the BATCH path, and E3 puts it on the `run` path that
 # every parity artifact in this project was made with. Same claim, new caller.
 #
-# THE ARMS, as (gqa, prefill chunk) pairs:
-#   base 0/1     -- M4.5's engine exactly. Must still match the archive; it is
-#                   also what proves this build is sound.
-#   e2   1/1     -- kv-head-outer attention alone.
-#   e3   0/128   -- chunked prefill alone, on M4.5's attention.
-#   ship 1/128   -- both, which is what the default binary does.
-# Isolating the middle two is what makes a DIFFER attributable to one rung
-# instead of to "the entry".
+# THE ARMS are prefill chunk widths:
+#   chunk1   -- prefill position by position, so `run` takes the SOLO K-quant
+#               kernel throughout. This is also the arm that proves the build.
+#   chunk128 -- the shipping default, which routes prefill through the FUSED
+#               kernel. A DIFFER here and not in chunk1 points straight at that
+#               kernel switch rather than at "the entry".
 #
-# par 0 vs 1 is NOT an axis here: run_m5_e2_verify.ps1 already ran all four
-# gqa x par combinations green across these same cases, and E3 changes nothing
-# about how attention is dispatched.
+# ▶ IT HAD FOUR ARMS UNTIL 2026-08-19 (base/e2/e3/ship over a gqa x chunk grid).
+# The gqa axis selected M4.5's q-head-outer attention, which was deleted once
+# the A/B that needed it in-binary had reported -- so two of the four arms named
+# a configuration that no longer exists. They were removed rather than left to
+# run as silent duplicates of the other two: a gate whose arms are secretly the
+# same arm still passes, and reads to a later auditor like twice the evidence.
+#
+# par 0 vs 1 is NOT an axis here: run_m5_e2_verify.ps1 ran all four gqa x par
+# combinations green across these same cases, and neither E1 nor E3 changes how
+# attention is dispatched.
 #
 # Axes and their reasons are the E2 script's, unchanged: --kv q8 is MANDATORY
 # (at f32 kv_read is zero-copy and never touches the per-worker KV scratch, so
@@ -84,13 +89,15 @@ Say ("    binary $exeTime, newest source $($newest.Name) $($newest.LastWriteTime
 
 $env:STOKE_ATT_MIN_POS = "0"
 $env:STOKE_ATT_PAR = "1"
-$env:STOKE_ATT_LANES = "4"
 
+# ▶ THE gqa AXIS IS GONE (2026-08-19). It selected between E2's kv-head-outer
+# loop and M4.5's q-head-outer one; the latter was deleted once the A/B that
+# needed it in-binary had reported. Two arms remain, and they are the two
+# configurations that still exist. The banked log from the four-arm run stands
+# as its own artifact -- it records what it ran, which was true then.
 $arms = @(
-    @{ name = "base"; gqa = "0"; chunk = "1" },
-    @{ name = "e2";   gqa = "1"; chunk = "1" },
-    @{ name = "e3";   gqa = "0"; chunk = "128" },
-    @{ name = "ship"; gqa = "1"; chunk = "128" }
+    @{ name = "chunk1";   chunk = "1" },
+    @{ name = "chunk128"; chunk = "128" }
 )
 
 $fail = 0
@@ -115,11 +122,10 @@ foreach ($c in $cases) {
     $prompt = "$root\tests\data\parity\$($c.p).txt"
     # The archive predates every switch and ignores them; set anyway so the
     # referent's environment is stated rather than assumed.
-    $env:STOKE_ATT_GQA = "0"; $env:STOKE_PREFILL_CHUNK = "1"
+    $env:STOKE_PREFILL_CHUNK = "1"
     $want = Stream $archiveQ4 $Q4 $prompt $c.kv $c.t
     $res = @()
     foreach ($a in $arms) {
-        $env:STOKE_ATT_GQA = $a.gqa
         $env:STOKE_PREFILL_CHUNK = $a.chunk
         $got = Stream $NEW $Q4 $prompt $c.kv $c.t
         $ok = ($got -eq $want)
@@ -131,11 +137,10 @@ foreach ($c in $cases) {
 
 foreach ($t in $(if ($Quick) { @() } else { @(2, 6) })) {
     $prompt = "$root\tests\data\parity\p41.txt"
-    $env:STOKE_ATT_GQA = "0"; $env:STOKE_PREFILL_CHUNK = "1"
+    $env:STOKE_PREFILL_CHUNK = "1"
     $want = Stream $archiveQ8 $Q8 $prompt "" $t
     $res = @()
     foreach ($a in $arms) {
-        $env:STOKE_ATT_GQA = $a.gqa
         $env:STOKE_PREFILL_CHUNK = $a.chunk
         $got = Stream $NEW $Q8 $prompt "" $t
         $ok = ($got -eq $want)
@@ -145,9 +150,7 @@ foreach ($t in $(if ($Quick) { @() } else { @(2, 6) })) {
     Say ("  Q8_0   p41  vs m3   t={0}  {1}" -f $t, ($res -join "  "))
 }
 
-$env:STOKE_ATT_LANES = $null
 $env:STOKE_ATT_PAR = $null
-$env:STOKE_ATT_GQA = $null
 $env:STOKE_ATT_MIN_POS = $null
 $env:STOKE_PREFILL_CHUNK = $null
 
@@ -156,10 +159,10 @@ if ($fail -eq 0) {
         Say "PRE-FLIGHT GREEN on p00 -- run WITHOUT -Quick for the gate evidence."
         exit 0
     }
-    Say "ALL FOUR RUNG ARMS BIT-IDENTICAL TO THE ARCHIVES -- E1+E2+E3 move no arithmetic."
+    Say "ALL RUNG ARMS BIT-IDENTICAL TO THE ARCHIVES -- E1+E2+E3 move no arithmetic."
     Say "Speed is a SEPARATE question and is NOT measured here."
     exit 0
 }
-Say "$fail ARM(S) MOVED THE STREAM -- read WHICH arm: base implicates the build,"
-Say "e2 the attention nest, e3 the fused K-quant kernel on the run path. STOP."
+Say "$fail ARM(S) MOVED THE STREAM -- read WHICH arm: chunk1 implicates the build"
+Say "or the attention nest, chunk128 the fused K-quant kernel on the run path. STOP."
 exit 1

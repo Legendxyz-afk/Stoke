@@ -10,7 +10,7 @@
 
 #include "kernels/kernels.h"
 #include "kernels/simd.h"
-#include "pool.h" /* the attention heads run on the pool -- att_heads_run */
+#include "pool.h" /* the attention heads run on the pool -- att_kvheads_run */
 
 #include <errno.h>
 #include <math.h>
@@ -58,72 +58,50 @@ typedef struct {
  *
  * Allocated once at open, reused by every forward_position/compute_logits/
  * generate call -- "no malloc inside the per-token loop" (M2 op-spec 6). */
-/* ▶▶ M5 E2 SUPERSEDES THIS LOOP, AND BOTH ARMS ARE STILL HERE ON PURPOSE.
- * ATT_LANES scores 4 POSITIONS of one q-head at once. The M5 entry rung scores
- * one position against the 4 Q-HEADS OF ONE GQA GROUP instead -- the same four
- * independent FP chains, and additionally it fetches that kv-head's K and V
- * ONCE for the group instead of once per q-head, which is a 4x cut in the
- * traffic that decode at long context is actually made of (design note
- * docs/superpowers/design-notes/2026-08-19-m5-entry.md sections 3-4). So E2
- * subsumes ATT_LANES rather than competing with it.
+/* ▶▶ ATT_LANES AND THE q-HEAD-OUTER ARM ARE GONE (M5, 2026-08-19), AND WHAT
+ * THEY WERE FOR IS WORTH KEEPING.
  *
- * The lanes arm survives ONLY as STOKE_ATT_GQA=0, because the A/B that prices
- * E2 has to run both arms from ONE binary in ONE sitting -- this box punishes
- * before/after comparisons separated by real work, and the pre-`76dee7f`
- * archive is on record as swinging 10.9x between sittings. It is deleted
- * (with ATT_LANES and STOKE_ATT_LANES) once E2 is priced; until then the
- * default is the E2 arm and the lanes arm is the measurement anchor.
+ * `vec_dot_f32` is `sum += a[i]*b[i]`, which carries a loop-carried dependency
+ * on `sum` and therefore runs at FP-ADD LATENCY -- about 4 cycles per element,
+ * however many multiply units are idle. Several INDEPENDENT dot products run at
+ * once fill that pipeline instead of stalling on it. ATT_LANES got its four
+ * independent chains from four POSITIONS of one q-head; E2's loop
+ * (att_kvheads_run) gets them from the four Q-HEADS OF ONE GQA GROUP, which
+ * fills the pipeline exactly as well AND fetches that kv-head's K and V once
+ * for the group instead of once per q-head. E2 subsumed it, so keeping both
+ * meant 16 live chains and 16 scratch slots for no argued reason.
  *
- * WHY LANES EXISTED AT ALL. `vec_dot_f32` is `sum += a[i]*b[i]`, and that
- * carries a loop-carried dependency on `sum`, so it runs at FP-ADD LATENCY --
- * about 4 cycles per element -- no matter how many multiply units are idle.
- * But each context position is an INDEPENDENT dot product, so scoring several
- * at once with several accumulators fills the pipeline instead of stalling on
- * it. E2 keeps that argument and changes only WHICH independent dot products
- * share the pass.
+ * The lanes arm outlived its deletion only as the STOKE_ATT_GQA=0 measurement
+ * anchor -- both A/B arms had to come from ONE binary in ONE sitting, since the
+ * pre-`76dee7f` archive swings up to 10.9x between sittings. That A/B has
+ * reported (gate-reports/2026-08-19-m5-e2-ab-report.md: 0.984x / 1.058x /
+ * 1.120x at ctx 87 / 554 / 1500), so the anchor's job is discharged and keeping
+ * it would be the "spent helper outliving its job" defect, recorded five times.
  *
- * ▶ AND IT IS BIT-EXACT, WHICH IS THE WHOLE POINT. Every accumulator still
- * sums its own position left to right in exactly the scalar order, so this is
- * not a reassociation and needs no twin and no grading run. The 2026-08-12
- * ruling expected L4 to be a non-bit-exact twin ("canonical fold = the existing
- * scalar order"); that is true of parallelism found INSIDE a reduction, and the
- * parallelism here is across independent OUTPUTS instead.
- *
- * Four because the FP add latency is ~4 cycles and the throughput is ~1/cycle,
- * so four chains saturate it; more would only add register pressure and scratch.
- * Measured at ctx 1500 attention was 84.6% of decode, so this loop is where
- * decode time actually goes. */
-#define ATT_LANES 4u
+ * ⚠ THE ONE THING THE DELETION MAKES PERMANENT, stated rather than buried: E2
+ * is a 1.6% REGRESSION at ctx 87 (+1.75 ms at the intercept, the cost of
+ * dropping the unit count from n_head to n_head_kv) and a 12% gain at ctx 1500.
+ * Selecting the loop by context length at runtime was considered and REJECTED:
+ * it doubles this file's attention code and its maintenance to recover <=1.6%
+ * at short contexts, while M5's own operating point is an agentic trace with a
+ * shared 1-2k prefix, i.e. the long end. */
 
-/* Floats of kv scratch one attention loop needs: ATT_LANES live (K,V) pairs,
- * since at Q8 kv_read dequantizes INTO this buffer and its pointers stay valid
- * only "until the next kv_read using the same scratch" (kv.h). Sharing one
- * region across the lanes would hand all four the last position's K -- silent,
- * and still numerically plausible.
+/* Floats of kv scratch one attention loop needs: ONE live (K,V) pair. At Q8
+ * kv_read dequantizes INTO this buffer and its pointers stay valid only "until
+ * the next kv_read using the same scratch" (kv.h) -- E2's loop consumes both
+ * halves of a slot within the iteration that fetched it, so one pair suffices.
  *
- * ▶ ONE EXPRESSION, USED BY EVERY SITE THAT ALLOCATES IT. There are two such
- * sites (the model-level scratch model_forward_position runs off, and the
- * per-sequence ones the batch path uses), they were sized independently, and
- * when the lane loop raised the requirement from 1 pair to 4 only the
- * per-sequence site was updated. The `run` path then overran its buffer by
- * 3072 bytes at --kv q8 and surfaced as `bp_block_slot: block 3230404224 out
- * of range` -- a corrupted heap reported by an innocent bystander. Caught by
- * byte-comparing the q8 path against the archived binary, which the f32-only
- * check that preceded it could not have caught: at f32 kv_read is zero-copy
- * and never touches this buffer at all. */
-#define ATT_KV_FLOATS(head_dim) ((size_t)(head_dim) * 2u * ATT_LANES)
-
-/* STOKE_ATT_LANES=1 falls back to the pre-2026-08-17 one-position-at-a-time
- * loop. An env var and not a compile flag, so the A/B is a property of the RUN
- * and both arms interleave in one sitting from ONE binary -- this box punishes
- * before/after comparisons separated by real work. Read once at model_open;
- * the scratch is always sized for the full ATT_LANES, so a smaller runtime
- * value can never overrun it. Applies to the STOKE_ATT_GQA=0 arm only. */
-static u32 g_att_lanes = ATT_LANES;
-
-/* M5 E2: kv-head-outer attention (1, the default) vs M4.5's q-head-outer loop
- * (0). See the ATT_LANES header for why both arms exist and when 0 dies. */
-static u32 g_att_gqa = 1u;
+ * ▶ ONE EXPRESSION, USED BY EVERY SITE THAT ALLOCATES IT, and that is a scar.
+ * There were two such sites, sized independently, and when the lane loop raised
+ * the requirement from 1 pair to 4 only one of them was updated: the `run` path
+ * then overran its buffer by 3072 bytes at --kv q8 and surfaced as
+ * `bp_block_slot: block 3230404224 out of range`, a corrupted heap reported by
+ * an innocent bystander. Caught by byte-comparing the q8 path against the
+ * archived binary, which the f32-only check that preceded it could not have
+ * caught: at f32 kv_read is zero-copy and never touches this buffer at all.
+ * The requirement has now gone back DOWN to 1 pair, which is the direction that
+ * cannot overrun -- but the expression stays single-sourced anyway. */
+#define ATT_KV_FLOATS(head_dim) ((size_t)(head_dim) * 2u)
 
 /* M5 E3: positions per prefill chunk. 128 = 8 KV blocks, so every chunk
  * boundary is block-aligned and S-ALIGN holds by construction; it also matches
@@ -135,18 +113,26 @@ static u32 g_att_gqa = 1u;
 static u32 g_prefill_chunk = PREFILL_CHUNK;
 
 /* Run the heads on the pool (1) or serially on the calling thread (0). Both
- * arms are BIT-IDENTICAL -- see att_heads_run -- so this is a pure speed
+ * arms are BIT-IDENTICAL -- see att_kvheads_run -- so this is a pure speed
  * switch, and it is an env var rather than a compile flag for the same reason
  * STOKE_NO_QOS and STOKE_NO_PIN are: the A/B then interleaves inside ONE
  * sitting from ONE binary, which is the only comparison this box supports. */
 static u32 g_att_par = 1u;
 
-/* Q-heads per claim. 1 by default: the box is 6 P-cores + 4 E-cores, an E-core
- * takes several times longer on the same head, and the smallest claim is what
- * keeps a slow core from holding 3 other heads hostage at the barrier. Larger
- * values trade that balance for kv-cache reuse -- heads in one GQA group share
- * a kv-head, so a chunk of gqa_group reads that head's K and V once instead of
- * four times -- which is worth measuring, not assuming. */
+/* KV-HEADS per claim (it was q-heads before E2 made the kv-head the unit). 1 by
+ * default: the box is 6 P-cores + 4 E-cores, an E-core takes several times
+ * longer on the same work, and the smallest claim is what keeps a slow core
+ * from holding others hostage at the barrier. A claim is already gqa_group
+ * q-heads wide, so raising this costs balance faster than it did before E2.
+ *
+ * ▶ ITS OLD HEADER PROMISED THE KV-CACHE REUSE THAT E2 NOW GETS STRUCTURALLY
+ * ("a chunk of gqa_group reads that head's K and V once instead of four times
+ * -- worth measuring, not assuming"). It was never true: chunking only put the
+ * four q-heads on the same WORKER and left four separate passes over the same
+ * K and V, so the reuse depended on cache residency rather than on the loop.
+ * E2 made it a property of the loop nest. The knob survives for balance
+ * tuning, and for exercising the sequence-straddling walk in att_batch_run,
+ * which the default of 1 can never reach. */
 static u32 g_att_chunk = 1u;
 
 /* Below this many context positions a head is too small to be worth a
@@ -169,19 +155,6 @@ static u64 g_att_dispatches = 0;
 
 u64 model_att_dispatch_count(void) { return g_att_dispatches; }
 
-/* Times the E2 (kv-head-outer) arm was the one selected.
- *
- * SECOND ANTI-VACUITY COUNTER, AND IT GUARDS A DIFFERENT NOTHING. The counter
- * above answers "did the heads reach the pool"; this one answers "were the two
- * arms of the bit-identity test actually two arms". If model_att_set_gqa were
- * misspelled, shadowed, or read before it was written, both halves of that test
- * would run the SAME loop and it would pass -- a green test about one code path
- * pretending to be about two. Written only by the dispatching thread, exactly
- * like g_att_dispatches, so it stays invisible to TSan. */
-static u64 g_att_gqa_steps = 0;
-
-u64 model_att_gqa_step_count(void) { return g_att_gqa_steps; }
-
 /* Positions that went through E3's BATCHED prefill path, as opposed to the
  * position-by-position one.
  *
@@ -194,8 +167,6 @@ u64 model_att_gqa_step_count(void) { return g_att_gqa_steps; }
 static u64 g_prefill_batch_rows = 0;
 
 u64 model_prefill_batch_rows(void) { return g_prefill_batch_rows; }
-
-void model_att_set_gqa(u32 on) { g_att_gqa = on ? 1u : 0u; }
 
 void model_att_set_chunk(u32 units) {
     g_att_chunk = units ? units : 1u;
@@ -224,14 +195,11 @@ static u32 env_u32(const char* name, u32 dflt, u32 lo, u32 hi) {
 }
 
 static void att_env_init(void) {
-    g_att_lanes = ATT_LANES;
-    const char* s = getenv("STOKE_ATT_LANES");
-    if (s && s[0]) {
-        long v = strtol(s, NULL, 10);
-        if (v == 1 || v == (long)ATT_LANES) g_att_lanes = (u32)v;
-    }
+    /* STOKE_ATT_LANES and STOKE_ATT_GQA are GONE, and are deliberately not
+     * accepted-and-ignored: a knob that silently does nothing is worse than one
+     * that does not exist, because a later A/B would set it, see no difference,
+     * and record that as a finding about the kernel. */
     g_att_par = env_u32("STOKE_ATT_PAR", 1u, 0u, 1u);
-    g_att_gqa = env_u32("STOKE_ATT_GQA", 1u, 0u, 1u);
 
     /* STOKE_PREFILL_CHUNK: 1 turns E3 off (position-by-position, the pre-M5
      * path and the A/B's other arm); anything else must be a WHOLE NUMBER OF
@@ -327,17 +295,19 @@ struct Model {
     u32 n_scratch;
     BatchViews views;        /* pointer arrays over N of them    */
 
-    /* PER-WORKER attention scratch: [att_workers][att_stride], holding one
-     * scores row (max_ctx) then one KV dequantization buffer (ATT_KV_FLOATS).
+    /* PER-WORKER attention scratch: [att_workers][att_stride], holding
+     * gqa_group scores rows (one per q-head of the claim's group) then one KV
+     * dequantization buffer (ATT_KV_FLOATS).
      *
-     * ▶ WHY THIS IS PER WORKER AND NO LONGER PER SEQUENCE. Both buffers are
-     * private to ONE head's arithmetic -- scores is that head's softmax row,
-     * s_kv is where kv_read lands its dequantized pair. Per-sequence was the
-     * right unit while heads ran one after another; it is the WRONG unit the
-     * moment two heads of the SAME sequence run at once, which is exactly what
-     * the parallel attention loop does. Per worker is the tightest correct
-     * unit: a head runs on exactly one worker start to finish, and the count
-     * is threads (8) rather than heads (32).
+     * ▶ WHY THIS IS PER WORKER AND NO LONGER PER SEQUENCE. Both regions are
+     * private to ONE claim's arithmetic -- the scores rows are that group's
+     * softmax rows, and the pair is where kv_read lands its dequantized K/V.
+     * Per-sequence was the right unit while heads ran one after another; it is
+     * the WRONG unit the moment two claims of the SAME sequence run at once,
+     * which is exactly what the parallel attention loop does. Per worker is the
+     * tightest correct unit: a claim runs on exactly one worker start to
+     * finish, and the count is threads (8) rather than kv-heads (8 per
+     * sequence, and n_seq times that in a batch).
      *
      * It also collapses two allocation sites into one. The model-level and
      * per-sequence copies were sized independently, and the lane loop's raised
@@ -490,11 +460,8 @@ static void att_ws_ensure(Model* m) {
      * relative to its start. */
     /* gqa_group scores rows, not one: E2's unit is a KV-HEAD, and its whole
      * group's softmax rows are live at once (the K pass fills all of them
-     * before the first softmax runs). ATT_KV_FLOATS is kept at the lanes arm's
-     * 4 pairs, which also covers E2's single live pair -- ONE expression, and
-     * a size that is right for whichever arm the run selects. Sizing it per
-     * arm would put a runtime switch between an allocation and the loop that
-     * indexes it, which is how the 3072-byte overrun happened. */
+     * before the first softmax runs). Then ONE (K,V) pair, which is all the
+     * loop keeps alive at a time. */
     u64 need = (u64)m->gqa_group * (u64)m->max_ctx +
                (u64)ATT_KV_FLOATS(m->head_dim);
     u64 stride = (need + 15u) & ~(u64)15u;
@@ -1022,69 +989,6 @@ typedef struct {
     f32         scale;
 } AttHeads;
 
-static void att_heads_run(void* vctx, u64 h_begin, u64 h_end) {
-    const AttHeads* a = (const AttHeads*)vctx;
-    Model*          m = a->m;
-    SeqScratch*     sc = a->sc;
-    Kv*             kvs = a->kvs;
-    const u32       pos = a->pos;
-    const u32       L = a->L;
-    const f32       scale = a->scale;
-
-    /* kvbuf sits past ALL gqa_group scores rows, not past one, so the two arms
-     * share a single layout and a single size. This arm uses only row 0; the
-     * gap costs nothing and removes the possibility of the arms disagreeing
-     * about where the KV scratch starts. */
-    f32*      ws = m->att_ws[pool_worker_index()];
-    f32*      scores = ws;
-    f32*      kvbuf = ws + (u64)m->gqa_group * (u64)m->max_ctx;
-    const u64 hd2 = (u64)m->head_dim * 2u;
-
-    for (u64 hh = h_begin; hh < h_end; hh++) {
-        u32        h = (u32)hh;
-        u32        kvh = h / m->gqa_group; /* causal GQA: h reads h/gqa_group */
-        const f32* qh = sc->s_q + (u64)h * m->head_dim;
-
-        /* ATT_LANES independent chains, each summed left-to-right in exactly
-         * vec_dot_f32's order -- see ATT_LANES. Bit-exact, so the tail below
-         * and the scalar path must stay identical too. */
-        u32 j = 0;
-        for (; g_att_lanes >= ATT_LANES && j + ATT_LANES <= (u32)pos + 1u;
-             j += ATT_LANES) {
-            KvSlot s0 = kv_read(kvs, L, kvh, j + 0u, kvbuf + 0u * hd2);
-            KvSlot s1 = kv_read(kvs, L, kvh, j + 1u, kvbuf + 1u * hd2);
-            KvSlot s2 = kv_read(kvs, L, kvh, j + 2u, kvbuf + 2u * hd2);
-            KvSlot s3 = kv_read(kvs, L, kvh, j + 3u, kvbuf + 3u * hd2);
-            f32 a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-            for (u32 d = 0; d < m->head_dim; d++) {
-                a0 += qh[d] * s0.k[d];
-                a1 += qh[d] * s1.k[d];
-                a2 += qh[d] * s2.k[d];
-                a3 += qh[d] * s3.k[d];
-            }
-            scores[j + 0u] = a0 * scale;
-            scores[j + 1u] = a1 * scale;
-            scores[j + 2u] = a2 * scale;
-            scores[j + 3u] = a3 * scale;
-        }
-        for (; j <= pos; j++) {
-            KvSlot slot = kv_read(kvs, L, kvh, j, kvbuf);
-            scores[j] = vec_dot_f32(qh, slot.k, m->head_dim) * scale;
-        }
-        softmax(scores, (u64)pos + 1u);
-
-        f32* out_h = sc->s_attn_out + (u64)h * m->head_dim;
-        for (u32 d = 0; d < m->head_dim; d++) out_h[d] = 0.0f;
-        for (u32 jv = 0; jv <= pos; jv++) {
-            KvSlot slot = kv_read(kvs, L, kvh, jv, kvbuf);
-            f32    wgt = scores[jv];
-            for (u32 d = 0; d < m->head_dim; d++) {
-                out_h[d] += wgt * slot.v[d];
-            }
-        }
-    }
-}
-
 /* M5 E2 -- THE SAME ATTENTION, WALKED KV-HEAD-OUTER. One unit is one kv-head
  * and the whole GQA group rides its K and V.
  *
@@ -1110,12 +1014,15 @@ static void att_heads_run(void* vctx, u64 h_begin, u64 h_end) {
  * that claim rather than this paragraph.
  *
  * ▶ THE 4-WIDE BLOCK IS NOT A SPECIAL CASE FOR THIS MODEL. Any gqa_group runs:
- * groups of 4 take the 4-chain block for the same FP-latency reason ATT_LANES
- * existed, and the remainder falls through to vec_dot_f32. gqa_group == 1
- * (a plain-MHA model) takes the tail exclusively and is then exactly the old
- * loop with its lanes removed -- correct, and slower than the lanes arm on such
- * a model, which is a real cost recorded rather than hidden: there is no GQA
- * redundancy to remove when every q-head has its own kv-head. */
+ * groups of 4 take the 4-chain block for the FP-latency reason in this file's
+ * header, and the remainder falls through to vec_dot_f32. gqa_group == 1 (a
+ * plain-MHA model) takes the tail exclusively, giving ONE chain and no reuse --
+ * correct, and slower there than the deleted lanes loop would have been. Stated
+ * rather than hidden: with one q-head per kv-head there is no GQA redundancy to
+ * remove, so the trade E2 makes has nothing to buy. M7's Llama-3.2 target is
+ * also GQA, so this costs nothing on the roadmap as it stands; a true MHA model
+ * would want the position-lane loop back, and its argument is preserved in the
+ * file header and in git at the deletion commit. */
 static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
     const AttHeads*  a = (const AttHeads*)vctx;
     Model*           m = a->m;
@@ -1382,21 +1289,22 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
          * E2's unit is a KV-HEAD, so one sequence contributes n_head_kv units,
          * not n_head. At GQA 4:1 that is 8 claims instead of 32 -- fewer, and
          * each 4x larger, which trades scheduling balance for the traffic cut.
-         * On a 6P+4E box that trade is a real risk (an E-core now holds four
-         * heads hostage at the barrier, not one), and flattening the batch into
+         * That trade was a real risk on a 6P+4E box (an E-core now holds four
+         * q-heads at the barrier, not one) and it was MEASURED: +1.75 ms at the
+         * intercept, i.e. 0.984x at ctx 87, against 1.120x at ctx 1500 --
+         * gate-reports/2026-08-19-m5-e2-ab-report.md. Flattening the batch into
          * the same unit space is what keeps the claim count workable at N>1:
-         * 8 units at N=1, but 128 at N=16. Measured, not argued -- design note
-         * 2026-08-19-m5-entry.md section 4, rung E2. */
+         * 8 units at N=1, but 128 at N=16, where the balance cost disappears
+         * (N=8 measured 1.059x, no regression). */
         AttBatch ab;
         ab.m = m;
         ab.scs = scs;
         ab.kv = kv;
         ab.positions = positions;
-        ab.per_seq = g_att_gqa ? m->n_head_kv : m->n_head;
-        ab.run = g_att_gqa ? att_kvheads_run : att_heads_run;
+        ab.per_seq = m->n_head_kv;
+        ab.run = att_kvheads_run;
         ab.L = L;
         ab.scale = scale;
-        if (g_att_gqa) g_att_gqa_steps++;
 
         /* The dispatch threshold is a SPEED heuristic about how much work a
          * unit carries, so the batch is judged by its LONGEST sequence -- the

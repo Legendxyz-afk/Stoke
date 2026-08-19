@@ -1025,31 +1025,33 @@ TEST(l4_attention_on_the_pool_is_bit_identical_at_1_and_6_threads) {
 }
 
 /* ===========================================================================
- * M5 E2 -- the kv-head-outer attention loop is bit-identical to M4.5's
- * q-head-outer one.
+ * M5 E2 -- the kv-head-outer attention loop is thread-count invariant, on BOTH
+ * of its shapes.
  *
- * WHAT IS BEING CLAIMED. E2 changes the loop nest so a kv-head's K and V are
- * fetched ONCE for its whole GQA group instead of once per q-head -- at ctx
- * 1500 that is 1.77 GB of KV reads per token becoming 0.44 GB, which is the
- * point of the rung. The claim is that this moves no arithmetic: every score is
- * still one q-head's dot product summed left to right, every output element
- * still accumulates over j in ascending order. A claim of that shape is worth
- * exactly the comparison that checks it.
+ * ▶ THIS TEST USED TO COMPARE TWO ARMS. It ran E2's loop against M4.5's
+ * q-head-outer one and asserted they were bit-identical; that arm was deleted
+ * once the A/B that needed it had reported, so the comparison no longer exists
+ * to be made. What must NOT be lost with it is the COVERAGE: E2's loop takes a
+ * 4-wide chain block when gqa_group >= 4 and a scalar tail otherwise, and the
+ * standing fixture's group of 3 exercises the TAIL ONLY. Deleting the arm test
+ * without keeping MUT_GQA4 alive would have silently retired the only check on
+ * the block the real model actually runs -- the shape of regression a deletion
+ * commit is most likely to cause and least likely to be blamed for.
  *
- * WHY THIS TEST EXISTS BESIDE THE REAL-MODEL BYTE-COMPARE. The PowerShell gate
- * compares generated token streams against an archived binary on the 4B model:
- * stronger evidence, minutes to run, and needs a model file this tree does not
- * carry. This runs in the suite, on both thread counts, on BOTH shapes of the
- * new loop -- and it compares HIDDEN STATES, which diverge long before a
- * sampled token does.
+ * WHAT IS ASSERTED NOW. The parallelism is over INDEPENDENT OUTPUTS, so the
+ * result must not depend on how many workers claim them: 1 thread vs 6, on both
+ * gqa shapes, compared over HIDDEN STATES (which diverge long before a sampled
+ * token does). Plus the anti-vacuity check the L4 test established -- that the
+ * pooled path actually ran -- because "same at 1 and 6 threads" is equally true
+ * of a build that never dispatched at all.
  *
- * BOTH SHAPES, and that is the whole reason MUT_GQA4 exists: the new loop takes
- * a 4-wide chain block when gqa_group >= 4 and a scalar tail otherwise. The
- * standing fixture's group of 3 exercises the tail ONLY, so a suite built on it
- * alone would leave the block the real model actually runs completely untested.
+ * The stronger evidence lives elsewhere and is not duplicated here: the
+ * PowerShell gate byte-compares the real 4B model's token streams against
+ * archived binaries (gate-reports/2026-08-19-m5-entry-verify.txt, 10 cases x 4
+ * rung arms, all SAME).
  * ===========================================================================
  */
-TEST(m5_e2_kv_head_outer_attention_is_bit_identical_to_the_q_head_outer_loop) {
+TEST(m5_e2_kv_head_outer_attention_is_thread_invariant_on_both_gqa_shapes) {
     const u32      NTOK = 48; /* fixture max_ctx is 64; past ATT_MIN_POS 32 */
     const Mutation variants[2] = {MUT_NONE, MUT_GQA4};
     const u32      want_group[2] = {3u, 4u}; /* tail-only, then 4-wide block */
@@ -1071,39 +1073,35 @@ TEST(m5_e2_kv_head_outer_attention_is_bit_identical_to_the_q_head_outer_loop) {
         out[0] = (f32*)xmalloc(bytes);
         out[1] = (f32*)xmalloc(bytes);
 
-        /* 1 thread and 6: the arms must agree with each other at each count,
-         * and E2 changes the UNIT COUNT (n_head_kv, not n_head), so the thread
-         * count is not incidental to what is being compared. */
-        for (u32 threads = 1u; threads <= 6u; threads += 5u) {
-            u64 gqa0 = model_att_gqa_step_count();
+        u64       disp0 = model_att_dispatch_count();
+        const u32 threads[2] = {1u, 6u};
+        for (u32 w = 0; w < 2u; w++) {
             pool_stop();
-            pool_start(threads);
-            for (u32 arm = 0; arm < 2u; arm++) {
-                model_att_set_gqa(arm);
-                Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
-                                 model_n_head_kv(m), model_head_dim(m));
-                for (u32 t = 0; t < NTOK; t++) {
-                    model_forward_position(m, kv, tokens[t], t, NULL,
-                                           out[arm] + (size_t)t * n_embd);
-                }
-                kv_close(kv);
+            pool_start(threads[w]);
+            Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                             model_n_head_kv(m), model_head_dim(m));
+            for (u32 t = 0; t < NTOK; t++) {
+                model_forward_position(m, kv, tokens[t], t, NULL,
+                                       out[w] + (size_t)t * n_embd);
             }
-            ASSERT_TRUE(memcmp(out[0], out[1], bytes) == 0);
-
-            /* The anti-vacuity check. Arm 1 must have run the E2 loop for every
-             * layer of every position, and arm 0 must have run it for none --
-             * if the selector were broken both arms would take the same path
-             * and the memcmp above would compare a loop against itself. */
-            u64 gqa_steps = model_att_gqa_step_count() - gqa0;
-            u64 want = (u64)model_n_layer(m) * NTOK;
-            if (gqa_steps != want) {
-                printf("  E2 arm ran %llu layer-steps, expected exactly %llu\n",
-                       (unsigned long long)gqa_steps, (unsigned long long)want);
-            }
-            ASSERT_TRUE(gqa_steps == want);
+            kv_close(kv);
         }
         pool_stop();
-        model_att_set_gqa(1u); /* restore the shipping default */
+
+        ASSERT_TRUE(memcmp(out[0], out[1], bytes) == 0);
+
+        /* Anti-vacuity: the heads must actually have been HANDED to the pool.
+         * One dispatch per layer per position at or past ATT_MIN_POS's default,
+         * over two runs. Encoding that default is deliberate -- if it moves,
+         * this fails loudly rather than quietly testing less. */
+        const u32 ATT_MIN_POS_DEFAULT = 32u; /* mirrors model.c */
+        u64 want = (u64)model_n_layer(m) * (NTOK - ATT_MIN_POS_DEFAULT + 1u) * 2u;
+        u64 got = model_att_dispatch_count() - disp0;
+        if (got < want) {
+            printf("  only %llu attention dispatches, expected %llu\n",
+                   (unsigned long long)got, (unsigned long long)want);
+        }
+        ASSERT_TRUE(got >= want);
 
         /* And the states must not be all-zero, or every memcmp is vacuous. */
         u32 nonzero = 0;
