@@ -10,6 +10,8 @@
 #include "gguf.h"
 #include "kv.h"
 #include "model.h"
+#include "sched.h"
+#include "serve.h"
 #include "pool.h"
 #include "tok.h"
 
@@ -645,6 +647,265 @@ static void cmd_run(int argc, char** argv) {
 #define BATCH_MAX_PROMPTS 64
 #define BATCH_MAX_SEQS    256
 
+/* ---------------------------------------------------------------------------
+ * `stoke bench --serve` -- M5's in-process serving driver.
+ *
+ * WHAT IT MEASURES, AND WHY THESE THREE. Gate item [2] is an AGGREGATE tok/s
+ * bar over N concurrent requests; [3] is an inter-token-latency bound (no
+ * decode stall > 250 ms while a prefill co-runs); and Fable's 08-02 addition
+ * asks for p95 request completion, recorded not gated, because that is the
+ * agent-shaped number the human-shaped ITL bar does not capture.
+ *
+ * > ITL IS TIMED AT THE CONSUMER, ONE STEP'S GRANULARITY. Every step, the
+ * driver polls every request and stamps whatever ids arrived with the time it
+ * saw them. That is exactly the granularity the bar is about -- a decode stall
+ * IS a step that carried no row for that request -- and it needs nothing from
+ * the scheduler except the ids it already emits. Timing inside sched.c would
+ * measure the scheduler's opinion of when a token was ready rather than when a
+ * consumer could have had it.
+ *
+ * > THIS PRINTS NUMBERS; IT DOES NOT GRADE THEM. The bars are met on a quiet
+ * box under the interleaved protocol, against a referent measured in the same
+ * sitting -- this box has two error sources (E-core migration, thermal drift)
+ * and neither is visible from inside one run. A single invocation of this is an
+ * observation, not a result.
+ * ------------------------------------------------------------------------- */
+static int cmp_double(const void* a, const void* b) {
+    double x = *(const double*)a, y = *(const double*)b;
+    return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
+static double pct(const double* v, u32 n, double p) {
+    if (n == 0) return 0.0;
+    u32 i = (u32)(p * (double)(n - 1) + 0.5);
+    return v[i];
+}
+
+static void cmd_bench_serve(int argc, char** argv) {
+    if (argc < 4) {
+        fatal("usage: stoke bench --serve <model.gguf> [--raw] [-n N] "
+              "(-p text | -f file)... [--seqs N] [--ctx N] [--threads N] "
+              "[--kv f32|q8]");
+    }
+    const char* model_path = argv[3];
+    bool        raw = false;
+    long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
+    KvDtype     kv_dt = KV_F32;
+    const char* src[BATCH_MAX_PROMPTS];
+    bool        src_is_file[BATCH_MAX_PROMPTS];
+    u32         n_src = 0;
+
+    for (int i = 4; i < argc; i++) {
+        if (strcmp(argv[i], "--raw") == 0) {
+            raw = true;
+        } else if (strcmp(argv[i], "--kv") == 0) {
+            if (i + 1 >= argc) fatal("stoke bench --serve: --kv needs f32 or q8");
+            const char* w = argv[++i];
+            if (strcmp(w, "f32") == 0)     kv_dt = KV_F32;
+            else if (strcmp(w, "q8") == 0) kv_dt = KV_Q8_0;
+            else fatal("stoke bench --serve: unknown --kv value, want f32 or q8");
+        } else if (strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "--seqs") == 0 ||
+                   strcmp(argv[i], "--ctx") == 0 ||
+                   strcmp(argv[i], "--threads") == 0) {
+            const char* flag = argv[i];
+            if (i + 1 >= argc)
+                fatal("stoke bench --serve: %s needs an argument", flag);
+            long long v = strtoll(argv[++i], NULL, 10);
+            if (strcmp(flag, "-n") == 0)          n_long = v;
+            else if (strcmp(flag, "--seqs") == 0) seqs_long = v;
+            else if (strcmp(flag, "--ctx") == 0)  ctx_long = v;
+            else                                  threads_long = v;
+        } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "-f") == 0) {
+            bool is_file = (argv[i][1] == 'f');
+            if (i + 1 >= argc)
+                fatal("stoke bench --serve: %s needs an argument", argv[i]);
+            if (n_src == BATCH_MAX_PROMPTS)
+                fatal("stoke bench --serve: at most %d prompts", BATCH_MAX_PROMPTS);
+            src[n_src] = argv[++i];
+            src_is_file[n_src] = is_file;
+            n_src++;
+        } else {
+            fatal("stoke bench --serve: unknown argument '%s'", argv[i]);
+        }
+    }
+    if (n_src == 0)
+        fatal("stoke bench --serve: at least one -p or -f is required");
+    if (n_long <= 0 || n_long > 65536)
+        fatal("stoke bench --serve: -n %lld out of range (1..65536)", n_long);
+    if (seqs_long < 0 || seqs_long > BATCH_MAX_SEQS)
+        fatal("stoke bench --serve: --seqs %lld out of range [0,%d]",
+              seqs_long, BATCH_MAX_SEQS);
+
+    u32 n_gen = (u32)n_long;
+    u32 n_seq = (seqs_long > 0) ? (u32)seqs_long : n_src;
+
+    GgufFile* gf = gguf_open(model_path);
+    Tok*      tok = tok_from_gguf(gf);
+    gguf_close(gf);
+
+    u32* ids[BATCH_MAX_PROMPTS];
+    u32  n_ids[BATCH_MAX_PROMPTS];
+    u32  longest = 0;
+    for (u32 p = 0; p < n_src; p++) {
+        char*       file_buf = NULL;
+        const char* text;
+        u64         text_len;
+        if (src_is_file[p]) {
+            file_buf = read_whole_file(src[p], "stoke bench --serve", &text_len);
+            text = file_buf;
+        } else {
+            text = src[p];
+            text_len = (u64)strlen(src[p]);
+        }
+        u32 cap = (u32)(text_len * 3) + 64;
+        ids[p] = (u32*)xcalloc(cap, sizeof(u32));
+        if (raw) {
+            n_ids[p] = tok_encode(tok, text, text_len, ids[p], cap, false);
+        } else {
+            StokeMsg msg;
+            msg.role = "user";
+            msg.role_len = 4;
+            msg.content = text;
+            msg.content_len = text_len;
+            n_ids[p] = tok_apply_chatml(tok, &msg, 1, ids[p], cap);
+        }
+        if (n_ids[p] == 0)
+            fatal("stoke bench --serve: prompt %u tokenized to zero ids", p);
+        if (n_ids[p] > longest) longest = n_ids[p];
+        free(file_buf);
+    }
+
+    pool_start((u32)threads_long);
+    Model* model = model_open(model_path);
+
+    u64 need_ctx = (u64)longest + (u64)n_gen;
+    u32 ctx = (ctx_long > 0) ? (u32)ctx_long : (u32)need_ctx;
+    if ((u64)ctx < need_ctx)
+        fatal("stoke bench --serve: --ctx %u too small for %u + %u", ctx,
+              longest, n_gen);
+    if (ctx > model_max_ctx(model))
+        fatal("stoke bench --serve: --ctx %u exceeds max_ctx %u", ctx,
+              model_max_ctx(model));
+
+    /* THE POOL IS SIZED AS THE STATIC BATCH PATH SIZES IT, deliberately: this
+     * measurement is meant to be comparable with `stoke batch --seqs N`, and a
+     * scheduler that won by being given more memory would not have won. */
+    u32      capacity = n_seq * kv_blocks_for_ctx(ctx);
+    KvStore* store = kv_store_open(model_n_layer(model), capacity,
+                                   model_n_head_kv(model),
+                                   model_head_dim(model), kv_dt);
+    ServeHost* host = serve_host_open(model);
+    SchedHost  sh = serve_host(host);
+    Sched*     s = sched_open(store, ctx, &sh);
+
+    double* t_tok = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
+    u32*    got = (u32*)xcalloc(n_seq, sizeof(u32));
+    u32*    out_ids = (u32*)xcalloc((size_t)n_seq * n_gen, sizeof(u32));
+    double* t_done = (double*)xcalloc(n_seq, sizeof(double));
+
+    double t0 = now_ms();
+    for (u32 i = 0; i < n_seq; i++) {
+        u32          p = i % n_src;
+        SchedRequest r;
+        r.id = 1000 + i;
+        r.prompt_ids = ids[p];
+        r.n_prompt = n_ids[p];
+        r.max_tokens = n_gen;
+        r.eos_id = -1;
+        if (!sched_submit(s, &r))
+            fatal("stoke bench --serve: request %u refused -- the pool cannot "
+                  "hold prompt %u (%u tokens) plus -n %u",
+                  i, p, n_ids[p], n_gen);
+    }
+
+    u64 guard = 0;
+    u64 guard_max = (u64)n_seq * n_gen * 64ull + 100000ull;
+    while (sched_pending(s) && guard++ < guard_max) {
+        sched_step(s);
+        double t = now_ms();
+        for (u32 i = 0; i < n_seq; i++) {
+            SchedFinish f;
+            u32         before = got[i];
+            got[i] += sched_poll(s, 1000 + i,
+                                 out_ids + (size_t)i * n_gen + got[i],
+                                 n_gen - got[i], &f);
+            for (u32 k = before; k < got[i]; k++)
+                t_tok[(size_t)i * n_gen + k] = t;
+            if (f != SCHED_FINISH_NONE && t_done[i] == 0.0) t_done[i] = t;
+        }
+    }
+    if (guard >= guard_max)
+        fatal("stoke bench --serve: step budget exhausted -- livelock");
+    double t1 = now_ms();
+
+    SchedStats st;
+    sched_stats(s, &st);
+
+    u64 total_ids = 0;
+    for (u32 i = 0; i < n_seq; i++) total_ids += got[i];
+
+    /* ITL: gaps between CONSECUTIVE ids of ONE request, pooled. The first id is
+     * excluded -- the gap before it is prefill, a different quantity, and
+     * including it is what would make an ITL percentile look good by averaging
+     * one long wait into many short ones. */
+    u32     n_gap = 0;
+    double* gaps = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
+    for (u32 i = 0; i < n_seq; i++) {
+        for (u32 k = 1; k < got[i]; k++) {
+            gaps[n_gap++] = t_tok[(size_t)i * n_gen + k] -
+                            t_tok[(size_t)i * n_gen + k - 1];
+        }
+    }
+    qsort(gaps, n_gap, sizeof(double), cmp_double);
+
+    double* comp = (double*)xcalloc(n_seq, sizeof(double));
+    for (u32 i = 0; i < n_seq; i++) comp[i] = t_done[i] - t0;
+    qsort(comp, n_seq, sizeof(double), cmp_double);
+
+    double wall_s = (t1 - t0) / 1000.0;
+    printf("serve: %u seqs x %u gen over %u prompt(s), ctx %u, kv %s, "
+           "%u pool blocks\n",
+           n_seq, n_gen, n_src, ctx, (kv_dt == KV_Q8_0) ? "q8" : "f32",
+           capacity);
+    printf("  wall %.1f ms | %llu ids | AGGREGATE %.3f tok/s\n", t1 - t0,
+           (unsigned long long)total_ids,
+           (wall_s > 0.0) ? (double)total_ids / wall_s : 0.0);
+    printf("  ITL  p50 %.1f  p95 %.1f  max %.1f ms  (n=%u)\n",
+           pct(gaps, n_gap, 0.50), pct(gaps, n_gap, 0.95),
+           n_gap ? gaps[n_gap - 1] : 0.0, n_gap);
+    printf("  completion p50 %.0f  p95 %.0f  max %.0f ms\n",
+           pct(comp, n_seq, 0.50), pct(comp, n_seq, 0.95),
+           n_seq ? comp[n_seq - 1] : 0.0);
+    printf("  steps %llu | rows %llu | prefill chunks %llu | preemptions %llu "
+           "(%llu prefill yields)\n",
+           (unsigned long long)st.steps,
+           (unsigned long long)serve_host_rows(host),
+           (unsigned long long)st.prefill_chunks,
+           (unsigned long long)st.preemptions,
+           (unsigned long long)st.prefill_yields);
+    /* ANTI-VACUITY, printed rather than assumed: a run where every request
+     * generated nothing would still report a tidy aggregate of 0. */
+    if (total_ids != (u64)n_seq * n_gen) {
+        printf("  ! only %llu of %llu expected ids -- read nothing else here\n",
+               (unsigned long long)total_ids,
+               (unsigned long long)((u64)n_seq * n_gen));
+    }
+
+    free(gaps);
+    free(comp);
+    free(t_tok);
+    free(got);
+    free(out_ids);
+    free(t_done);
+    sched_close(s);
+    serve_host_close(host);
+    kv_store_close(store);
+    model_close(model);
+    pool_stop();
+    for (u32 p = 0; p < n_src; p++) free(ids[p]);
+    tok_free(tok);
+}
+
 static void cmd_batch(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke batch <model.gguf> [--raw] [-n N] "
@@ -919,6 +1180,14 @@ int main(int argc, char** argv) {
          * required mode rather than a default so that later bench modes
          * (end-to-end tok/s, scenario replay) can be added without ever
          * silently changing what a bare `stoke bench` measures. */
+        if (argc >= 3 && strcmp(argv[2], "--serve") == 0) {
+            /* M5 in-process serving driver -- the mode this dispatch
+             * was deliberately shaped to allow without ever changing
+             * what a bare `stoke bench` or `--ops` measures. */
+            cmd_bench_serve(argc, argv);
+            finish_stdout_or_fatal();
+            return 0;
+        }
         if (argc < 4 || strcmp(argv[2], "--ops") != 0) {
             fatal("usage: stoke bench --ops <path.gguf> [--reps N] [--jsonl]");
         }
