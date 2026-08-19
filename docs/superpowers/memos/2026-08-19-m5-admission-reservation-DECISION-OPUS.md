@@ -52,20 +52,42 @@ milestone removes.
 
 ## 4. THE DECISION
 
-**Split what is RESERVED from what is PERMITTED.** `BpSeq` already carries both
-fields — `reserved` (counted into `reserved_total`) and `cap_blocks` (the growth
-ceiling `bp_seq_ensure` checks) — and `bp_admit` sets them to the same value.
-Splitting them is the entire change:
+> **⚠ §4 WAS AMENDED IN PLACE ON THE SAME DAY, BEFORE ANY CODE WAS WRITTEN.**
+> The first version said: set `reserved = blocks_for(n_prompt) + W` and
+> `cap_blocks = blocks_for(n_prompt + max_tokens)`, keeping the reserve as a
+> *pool-level guarantee*. **That does not work, and the reason is worth more
+> than the proposal was.** `Σ reserved ≤ capacity` does NOT protect any
+> individual sequence's reserve once sequences may grow beyond their own:
+> capacity 100, A and B each reserving 10 with a ceiling of 100 — A grows
+> opportunistically to 95, and B's promised 10 blocks are gone while the
+> invariant still holds. Making the promise real would require every
+> opportunistic allocation to check *other* sequences' unspent reserves, which
+> puts admission policy inside the allocator — where it stops being a tunable
+> heuristic and becomes an invariant. **The locked design never asked for that:
+> `W` is described as decode headroom checked AT ADMISSION, with preemption as
+> the backstop.** Caught by working the allocation order through rather than by
+> a test, which is the argument for writing the memo before the code.
 
-| | today | at M5 |
+**Partial admission reserves NOTHING in the pool's accounting. It raises the
+CEILING and leaves the policy to the scheduler.**
+
+| | `bp_admit` (unchanged) | `bp_admit_partial` (new) |
 |---|---|---|
-| `reserved` | `blocks_for(max_ctx)` | `blocks_for(n_prompt) + W` |
-| `cap_blocks` | `blocks_for(max_ctx)` | `blocks_for(n_prompt + max_tokens)` |
+| `reserved` | `blocks_for(max_tokens)` | **0** |
+| `cap_blocks` | `blocks_for(max_tokens)` | `blocks_for(n_prompt + max_tokens)` |
+| growth beyond it | cannot fail | fails when the free list is dry ⇒ **preempt** |
 
-**I8 stays literally true and literally checkable: `Σ reserved ≤ capacity`.**
-What changes is that it no longer *implies* "growth always succeeds" — and that
-implication was never an invariant. It was a consequence of setting the two
-fields equal, and it is the consequence that made preemption dead code.
+- **I8 is untouched, in code and in meaning: `Σ reserved ≤ capacity`.** Sequences
+  admitted through the new entry point contribute 0, so the invariant remains
+  literally true and the full-reservation guarantee that `stoke run` and
+  `stoke batch` depend on is unchanged — their sequences still reserve
+  everything and still cannot fail.
+- **The watermark lives in `sched.c`**, checked against
+  `kv_store_free_blocks()`: `free_blocks ≥ blocks(prompt) + W`. That is where
+  the forward note puts it, it is what makes `W` sweepable by the sim, and it
+  keeps the allocator a dumb allocator.
+- **F9 is answered by preemption instead of by reservation** at M5 — which is
+  precisely what F9's own parenthetical anticipated (§3).
 
 **`bp_seq_ensure` already supports the new regime and needs no change**
 (`src/blockpool.c:233`): it fails on `need > cap_blocks` *and* on `block_alloc`
@@ -76,19 +98,30 @@ test that forces it, not an assumption that it works.
 
 ### 4.1 What must be added, and what must not
 
-- **Add** `bp_admit_partial(pool, reserve_tokens, cap_tokens)`. Keep `bp_admit`
-  as the full-reservation form: `stoke run`, `stoke batch` and every existing
-  test use it, and their behaviour must not move under a scheduler change they
-  do not participate in.
+- **Add** `bp_admit_partial(pool, cap_tokens)`. Keep `bp_admit` as the
+  full-reservation form: `stoke run`, `stoke batch` and every existing test use
+  it, and their behaviour must not move under a scheduler change they do not
+  participate in.
 - **Do not** make `bp_admit` itself partial. That would silently convert every
   existing caller's "guaranteed" into "probably", and the failure would appear
   as a mid-generation fatal in tooling that has no preemption path — the exact
   F9 outcome, reintroduced in the one place nothing can catch it.
-- **Add an invariant, do not weaken one.** **I12: `cap_blocks(s) ≥ len(s)` for
-  every live sequence, and `Σ reserved ≤ capacity` (I8) continues to hold across
-  admission, growth, preemption and release.** The M4 note's standing advice
-  applies — *cite the set, never the count*; this makes it twelve, and the note
+- **Add an invariant, do not weaken one.** **I12: for every live sequence,
+  `nblocks ≤ cap_blocks` and `cap_blocks ≥ ceil(len/BP_BLOCK_TOKENS)`** — the
+  ceiling is real and is honoured, which is the only structural promise a
+  partially-admitted sequence gets. I8 continues to hold unchanged across
+  admission, growth, preemption and release. The M4 note's standing advice
+  applies — *cite the set, never the count*; this makes it twelve, and that note
   already says reasonable derivations land between 9 and 14.
+- **And one the sim must assert rather than the pool enforce:** a
+  scheduler-admitted sequence that is refused a block must be PREEMPTED, never
+  fatal. `bp_seq_ensure` returning false is a normal scheduler event at M5 and a
+  caller error everywhere else — so `kv_vec_offset`'s `fatal()` on an unbackable
+  position stays exactly as it is, and `sched.c` is responsible for never
+  letting a step reach it. **That asymmetry is deliberate and is the single
+  most likely place for this decision to go wrong**: the scheduler must decide
+  preemption BEFORE the forward, because by the time `kv_write` allocates, the
+  step is already running.
 
 ### 4.2 The risk this takes on, named
 
