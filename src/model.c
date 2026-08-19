@@ -197,6 +197,10 @@ u64 model_prefill_batch_rows(void) { return g_prefill_batch_rows; }
 
 void model_att_set_gqa(u32 on) { g_att_gqa = on ? 1u : 0u; }
 
+void model_att_set_chunk(u32 units) {
+    g_att_chunk = units ? units : 1u;
+}
+
 void model_set_prefill_chunk(u32 chunk) {
     if (chunk == 0u) chunk = 1u;
     if (chunk != 1u && chunk % kv_block_tokens() != 0u) {

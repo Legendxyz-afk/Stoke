@@ -150,6 +150,19 @@ u64 model_att_gqa_step_count(void);
  * model_open: the open re-reads the environment and would overwrite this. */
 void model_att_set_gqa(u32 on);
 
+/* Attention units per pool claim (mirrors STOKE_ATT_CHUNK).
+ *
+ * A TEST HOOK, and it guards a path nothing else reaches. E1 dispatches the
+ * whole batch's attention over a FLATTENED (sequence, unit) space, so a claim
+ * can straddle two sequences and the worker has to walk it as per-sequence
+ * segments. That only happens when the claim size does not divide the units one
+ * sequence contributes -- which the default (1) never does, so the straddling
+ * code is unreachable in the shipping configuration and would sit untested
+ * while remaining reachable for anyone who tunes the knob. Its failure mode is
+ * a worker indexing past its sequence's arrays into the neighbour's: valid
+ * memory, plausible floats, silently wrong output. */
+void model_att_set_chunk(u32 units);
+
 /* Prompt positions that went through E3's BATCHED prefill rather than the
  * position-by-position path. The anti-vacuity counter for the chunked-prefill
  * test: "both widths write the same KV" is also true when the chunker never

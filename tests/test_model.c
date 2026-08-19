@@ -1122,6 +1122,82 @@ TEST(m5_e2_kv_head_outer_attention_is_bit_identical_to_the_q_head_outer_loop) {
 }
 
 /* ===========================================================================
+ * M5 E1 -- a pool claim that STRADDLES two sequences maps to the right ones.
+ *
+ * E1 dispatches the whole batch's attention over a flattened (sequence, unit)
+ * space, so one claim can begin inside sequence s and end inside s+1, and the
+ * worker walks it as per-sequence segments. Get that arithmetic wrong and a
+ * worker indexes past its sequence's arrays into the neighbour's -- valid
+ * memory, plausible floats, silently different output.
+ *
+ * ▶ THE POINT OF THIS TEST IS THAT NOTHING ELSE REACHES THE PATH. A claim
+ * straddles only when the claim size does not divide the units one sequence
+ * contributes, and the shipping claim size is ONE, which divides everything.
+ * So the straddling branch is unreachable in the default configuration and is
+ * reachable for anyone who sets STOKE_ATT_CHUNK -- the worst combination:
+ * untested and live. On this fixture n_head_kv is 1, so a sequence contributes
+ * exactly one unit and a claim of 2 straddles by construction.
+ *
+ * Compared against claim size 1 -- the arrangement whose correctness the whole
+ * rest of the suite already covers -- rather than against a fixed expectation.
+ * ===========================================================================
+ */
+TEST(m5_e1_a_pool_claim_straddling_two_sequences_reads_the_right_sequence) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
+    Model* m = model_open(MODEL_FIXTURE_PATH);
+
+    const u32 n_embd = model_n_embd(m);
+    const u32 NSEQ = 3;
+    const u32 NTOK = 40; /* past ATT_MIN_POS so the dispatch actually happens */
+    ASSERT_EQ_U32(model_n_head_kv(m), 1u); /* the premise of "2 straddles" */
+
+    pool_stop();
+    pool_start(4u);
+
+    size_t bytes = (size_t)NSEQ * n_embd * sizeof(f32);
+    f32*   outs[2];
+    outs[0] = (f32*)xmalloc(bytes);
+    outs[1] = (f32*)xmalloc(bytes);
+
+    const u32 claims[2] = {1u, 2u};
+    for (u32 c = 0; c < 2u; c++) {
+        model_att_set_chunk(claims[c]);
+        Kv*  kv[3];
+        f32* xp[3];
+        u32  tok[3], pos[3];
+        for (u32 s = 0; s < NSEQ; s++) {
+            kv[s] = kv_open(model_n_layer(m), model_max_ctx(m),
+                            model_n_head_kv(m), model_head_dim(m));
+            xp[s] = outs[c] + (size_t)s * n_embd;
+        }
+        /* Each sequence walks a DIFFERENT token pattern, so a worker that read
+         * the neighbour's scratch would produce a different answer rather than
+         * accidentally the same one. */
+        for (u32 t = 0; t < NTOK; t++) {
+            for (u32 s = 0; s < NSEQ; s++) {
+                tok[s] = (t + s) % 5u; /* vocab is 5 */
+                pos[s] = t;
+            }
+            model_forward_batch(m, kv, tok, pos, NSEQ, xp);
+        }
+        for (u32 s = 0; s < NSEQ; s++) kv_close(kv[s]);
+    }
+    model_att_set_chunk(1u); /* restore the shipping default */
+    pool_stop();
+
+    ASSERT_TRUE(memcmp(outs[0], outs[1], bytes) == 0);
+
+    /* And the three sequences must not be identical to each other, or a worker
+     * reading the wrong one would be invisible to the comparison above. */
+    ASSERT_TRUE(memcmp(outs[0], outs[0] + n_embd,
+                       (size_t)n_embd * sizeof(f32)) != 0);
+
+    free(outs[0]);
+    free(outs[1]);
+    model_close(m);
+}
+
+/* ===========================================================================
  * M5 E3 -- chunked prefill writes the same KV cache as position-by-position.
  *
  * WHAT IS BEING CLAIMED. Prefill now runs a CHUNK of consecutive positions as
