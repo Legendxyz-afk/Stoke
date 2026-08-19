@@ -38,6 +38,17 @@ must not call `model_forward_batch` or `now_ms()` directly. Both arrive through
 the seam in §2. That is a small amount of indirection bought for the ability to
 assert eight scheduler invariants a million times.
 
+**⚠ AND ONE THING THE REAL POOL MUST CHANGE FIRST, or three of this note's
+traces are theatre.** Running the real `BlockPool` is only meaningful if the
+conditions the traces create can actually occur in it. Under M4's `bp_admit`
+they cannot: it reserves the WHOLE context, so decode-time exhaustion is
+unreachable and with it every preemption path — `pressure` forces nothing, and
+S4/S6 sit green over a branch that never executes. Decided in
+`superpowers/memos/2026-08-19-m5-admission-reservation-DECISION-OPUS.md`
+(split `reserved` from `cap_blocks`; I8 stays true, its *implication* does
+not; add I12; `bp_admit` itself untouched). **That memo is a precondition of
+§6's catalogue meaning anything.**
+
 ## 2. THE SEAM
 
 ```c
