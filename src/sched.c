@@ -79,6 +79,8 @@ struct Sched {
     Req* all;          /* every live request, for lookup by id             */
 
     u64 next_arrival;
+    u64  last_preempted;
+    bool ever_preempted;
 
     /* The submit queue: the ONE place a foreign thread touches this object.
      * Plain mutex, per the forward note's instruction not to get clever --
@@ -356,6 +358,8 @@ static void preempt(Sched* s, Req* victim) {
     victim->target = victim->spec.n_prompt + victim->n_gen - 1u;
     if (victim->target == 0) victim->target = victim->spec.n_prompt;
     waiting_push_front(s, victim);
+    s->last_preempted = victim->spec.id;
+    s->ever_preempted = true;
     s->st.preemptions++;
 }
 
@@ -533,6 +537,13 @@ u32 sched_step(Sched* s) {
     if (pf && chunk > 0) {
         pf->n_done += chunk;
         s->st.prefill_chunks++;
+        /* S7 (S-ALIGN): a chunk must end on a block boundary, or the block it
+         * stopped inside cannot be registered by the prefix cache until
+         * something else fills it. Ending the prompt is the one allowed
+         * exception. Chunk 128 over block 16 satisfies this by construction --
+         * this is what notices if either constant moves without the other. */
+        if (pf->n_done % kv_block_tokens() != 0u && pf->n_done != pf->target)
+            s->st.chunk_misaligned++;
         if (pf->n_done >= pf->target) {
             s->prefilling = NULL;
             if (completes) {
@@ -609,6 +620,11 @@ u64 sched_youngest_running(const Sched* s, bool* ok) {
     if (!y) { if (ok) *ok = false; return 0; }
     if (ok) *ok = true;
     return y->spec.id;
+}
+
+u64 sched_last_preempted(const Sched* s, bool* ok) {
+    if (ok) *ok = s->ever_preempted;
+    return s->last_preempted;
 }
 
 u32 sched_progress(const Sched* s, u64 id) {

@@ -101,6 +101,7 @@ typedef struct {
     const char* err;        /* first failure of ANY invariant, or NULL       */
     u64         admissions; /* times a request left WAITING for PREFILLING   */
     u64         s2_checked;
+    u64         s4_checked;
     u64         s5_checked;
 } Watch;
 
@@ -171,6 +172,28 @@ static void watch_after(Watch* w, Sched* s, KvStore* store, const Before* b) {
         if (still && now_head == b->oldest_waiting)
             w->err = "S3: admitted something other than the queue head";
     }
+
+    /* S4 -- PUSH-FRONT: a preemption victim goes to the HEAD of WAITING.
+     *
+     * That is the half of the victim rule an outside observer can check, and it
+     * is the half the starvation argument actually rests on: the victim
+     * re-admits before any newer arrival, so preemption costs it latency and
+     * never its place in the queue. (The other half -- WHICH request is chosen
+     * -- is not observable from here, and this file deliberately does not reach
+     * into sched.c to find out.) */
+    u64 d_pre_s4 = a.preemptions - b->st.preemptions;
+    if (d_pre_s4 > 0 && !w->err) {
+        bool had_v, has_head;
+        u64  victim = sched_last_preempted(s, &had_v);
+        u64  head = sched_oldest_waiting(s, &has_head);
+        w->s4_checked++;
+        if (had_v && has_head && head != victim)
+            w->err = "S4: a preempted request is not at the head of WAITING";
+    }
+
+    /* S7 -- S-ALIGN, counted by the scheduler and asserted here. */
+    if (!w->err && a.chunk_misaligned != 0)
+        w->err = "S7: a prefill chunk ended off a block boundary";
 }
 
 /* ---- the trace catalogue -----------------------------------------------
@@ -403,7 +426,7 @@ static u32 run_trace(const Trace* t, int linear, u32 capacity_override,
 
 /* GATE ITEM [1]: all traces green, all asserts, 3 seeds x {constant, linear}. */
 static void test_trace_matrix(void) {
-    u64  total_pre = 0, total_steps = 0, s2 = 0, s5 = 0;
+    u64  total_pre = 0, total_steps = 0, s2 = 0, s4 = 0, s5 = 0;
     bool all_green = true, all_finished = true;
 
     for (u32 k = 0; k < TR__COUNT; k++) {
@@ -411,7 +434,7 @@ static void test_trace_matrix(void) {
             for (int lin = 0; lin < 2; lin++) {
                 Trace t;
                 gen_trace((TraceKind)k, seed, &t);
-                Watch      w = {NULL, 0, 0, 0};
+                Watch      w = {NULL, 0, 0, 0, 0};
                 Collected  c;
                 SchedStats st;
                 u32        steps = run_trace(&t, lin, 0, &c, &w, &st);
@@ -442,6 +465,7 @@ static void test_trace_matrix(void) {
                 total_pre += st.preemptions;
                 total_steps += st.steps;
                 s2 += w.s2_checked;
+                s4 += w.s4_checked;
                 s5 += w.s5_checked;
             }
         }
@@ -454,9 +478,12 @@ static void test_trace_matrix(void) {
      * evaluated is not an invariant that held. */
     ok("matrix: S2 was actually evaluated", s2 > 0);
     ok("matrix: S5 was actually evaluated on thousands of steps", s5 > 1000);
-    printf("  matrix: %llu steps, %llu preemptions, S2 checked %llu, S5 %llu\n",
+    ok("matrix: S4 was actually evaluated", s4 > 0);
+    printf("  matrix: %llu steps, %llu preemptions; checked S2 %llu, S4 %llu, "
+           "S5 %llu\n",
            (unsigned long long)total_steps, (unsigned long long)total_pre,
-           (unsigned long long)s2, (unsigned long long)s5);
+           (unsigned long long)s2, (unsigned long long)s4,
+           (unsigned long long)s5);
 }
 
 /* ▶▶ THE ONE THAT MATTERS: preempt-replay losslessness (S6).
@@ -478,7 +505,7 @@ static void test_preempt_replay_is_lossless(void) {
         Trace t;
         gen_trace(TR_PRESSURE, seed, &t);
 
-        Watch      wt = {NULL, 0, 0, 0}, wr = {NULL, 0, 0, 0};
+        Watch      wt = {NULL, 0, 0, 0, 0}, wr = {NULL, 0, 0, 0, 0};
         Collected  tight, ref;
         SchedStats st_t, st_r;
         run_trace(&t, 0, 0, &tight, &wt, &st_t);
@@ -520,7 +547,7 @@ static void test_cost_model_cannot_change_a_decision(void) {
     for (u32 k = 0; k < TR__COUNT; k++) {
         Trace t;
         gen_trace((TraceKind)k, 2, &t);
-        Watch      w0 = {NULL, 0, 0, 0}, w1 = {NULL, 0, 0, 0};
+        Watch      w0 = {NULL, 0, 0, 0, 0}, w1 = {NULL, 0, 0, 0, 0};
         Collected  c0, c1;
         SchedStats s0, s1;
         run_trace(&t, 0, 0, &c0, &w0, &s0);
@@ -544,7 +571,7 @@ static void test_cancel_returns_every_block(void) {
     for (u64 seed = 1; seed <= 3; seed++) {
         Trace t;
         gen_trace(TR_CANCEL_STORM, seed, &t);
-        Watch      w = {NULL, 0, 0, 0};
+        Watch      w = {NULL, 0, 0, 0, 0};
         Collected  c;
         SchedStats st;
         run_trace(&t, 0, 0, &c, &w, &st);
@@ -604,7 +631,7 @@ static void soak(u64 want_steps) {
         TraceKind k = (TraceKind)(seed % TR__COUNT);
         Trace     t;
         gen_trace(k, seed, &t);
-        Watch      w = {NULL, 0, 0, 0};
+        Watch      w = {NULL, 0, 0, 0, 0};
         Collected  c;
         SchedStats st;
         run_trace(&t, (int)(seed & 1u), 0, &c, &w, &st);

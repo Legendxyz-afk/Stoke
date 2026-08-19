@@ -194,6 +194,12 @@ typedef struct {
      * broken on every trace with aborts in it. */
     u64 cancelled_running;
     u64 prefill_chunks; /* chunks issued; with steps, the co-run rate        */
+    /* S7 (S-ALIGN): chunk boundaries that were NOT block-aligned and were not
+     * the end of the prompt. Must be 0. Counted rather than fatal because the
+     * sim is where an invariant belongs: chunk 128 over block 16 satisfies this
+     * by construction TODAY, and this is what notices if either constant moves
+     * without the other. */
+    u64 chunk_misaligned;
     u64 decode_rows;    /* total decode rows stepped                         */
     u64 finished;       /* requests retired, for any reason                  */
 } SchedStats;
@@ -208,6 +214,13 @@ u64 sched_oldest_waiting(const Sched* s, bool* ok);
 /* The youngest RUNNING request's id, with *ok false when none. S4's victim
  * rule is checkable only against the same. */
 u64 sched_youngest_running(const Sched* s, bool* ok);
+
+/* The id of the most recently preempted request, with *ok false if none ever
+ * was. Exists so the sim can check S4's PUSH-FRONT half -- a victim goes to the
+ * head of WAITING, which is what makes its re-admission immediate and is what
+ * the starvation argument rests on. Checking the victim's identity from outside
+ * is otherwise impossible: `preemptions` says one happened, not to whom. */
+u64 sched_last_preempted(const Sched* s, bool* ok);
 
 /* Positions a request currently has BACKED -- prompt plus generated, minus
  * whatever a preemption freed. The reference-run comparison needs it to tell a
