@@ -71,6 +71,70 @@ static void test_admission_bound(void) {
     bp_close(bp);
 }
 
+/* ===========================================================================
+ * M5 -- PARTIAL ADMISSION, and the branch that had never executed.
+ *
+ * bp_seq_ensure has always been able to fail on `block_alloc -> BP_NIL`, and
+ * under full-reservation admission that branch was UNREACHABLE: a sequence's
+ * reservation guaranteed its growth. M5 admits schedulable sequences through
+ * bp_admit_partial, which reserves nothing, so the branch becomes live -- and
+ * it is the signal the scheduler preempts on. A path that exists, is correct,
+ * and has never run is exactly what gets a test that FORCES it rather than an
+ * assumption that it works.
+ *
+ * Decision + reasoning: superpowers/memos/2026-08-19-m5-admission-reservation-
+ * DECISION-OPUS.md.
+ * ===========================================================================
+ */
+static void test_partial_admission_and_forced_exhaustion(void) {
+    BlockPool* bp = bp_open(4);
+
+    /* Partial admission does NOT consume the reservation budget, so several
+     * sequences with ceilings far beyond the pool all get in. Under bp_admit
+     * the second of these would be refused. */
+    BpSeq* a = bp_admit_partial(bp, 64); /* ceiling 4 blocks = the whole pool */
+    BpSeq* b = bp_admit_partial(bp, 64);
+    ok("partial admission reserves nothing, so both get in", a && b);
+    ok("...whereas full reservation would refuse the second",
+       bp_admit(bp, 64) != NULL && bp_admit(bp, 64) == NULL);
+    inv(bp, "partial admissions");
+
+    /* A ceiling the pool could never satisfy is a caller error, refused. */
+    ok("a ceiling beyond capacity is REFUSED", bp_admit_partial(bp, 65) == NULL);
+
+    bp_close(bp);
+    bp = bp_open(4);
+    a = bp_admit_partial(bp, 64);
+    b = bp_admit_partial(bp, 64);
+
+    /* FORCE THE BRANCH: `a` grows opportunistically until the pool is dry,
+     * then `b` -- which was admitted and promised nothing -- is refused. */
+    ok("a grows to the whole pool", bp_seq_ensure(bp, a, 64));
+    ok("the pool is dry", bp_free_count(bp) == 0);
+    inv(bp, "a at full stretch");
+
+    ok("b's growth is REFUSED, not fatal", bp_seq_ensure(bp, b, 16) == false);
+    inv(bp, "refused growth");
+    ok("a refused growth changes nothing", bp_seq_len(b) == 0 &&
+                                           bp_seq_nblocks(b) == 0);
+
+    /* And the recovery the scheduler will perform: preempt the other sequence,
+     * then the refused one proceeds. This is the whole preemption path in
+     * miniature, and it is unreachable under full reservation. */
+    bp_release(bp, a);
+    ok("after preempting a, b proceeds", bp_seq_ensure(bp, b, 16));
+    inv(bp, "post-preemption");
+
+    /* I12: the ceiling is the only structural promise a partial sequence has,
+     * so it must actually hold. Growing past it is refused for a DIFFERENT
+     * reason than exhaustion -- with the pool now mostly free. */
+    ok("growth past the ceiling is refused even with blocks free",
+       bp_free_count(bp) > 0 && bp_seq_ensure(bp, b, 65) == false);
+    inv(bp, "ceiling refusal");
+
+    bp_close(bp);
+}
+
 static void test_fork_cow(void) {
     BlockPool* bp = bp_open(16);
     BpSeq* p = bp_admit(bp, 64);
@@ -323,6 +387,7 @@ int main(int argc, char** argv) {
 
     test_basics();
     test_admission_bound();
+    test_partial_admission_and_forced_exhaustion();
     test_fork_cow();
     test_fork_on_boundary_copies_nothing();
     test_fencing();

@@ -158,6 +158,29 @@ BpSeq* bp_admit(BlockPool* bp, u32 max_tokens) {
     return s;
 }
 
+BpSeq* bp_admit_partial(BlockPool* bp, u32 cap_tokens) {
+    u32 cap = blocks_for(cap_tokens);
+    if (cap == 0) cap = 1;
+    /* A ceiling the pool could never satisfy even when empty is a caller
+     * error, not a sequence that merely will not grow that far -- refused
+     * loudly, because the alternative is a request that can never finish and
+     * nothing to say why. */
+    if (cap > bp->capacity) return NULL;
+
+    BpSeq* s = (BpSeq*)xcalloc(1, sizeof(*s));
+    s->cap_blocks = cap;
+    s->table = (u32*)xcalloc((size_t)cap, sizeof(u32));
+    /* RESERVES NOTHING, and that is the whole difference. reserved_total is
+     * untouched, so I8 stays literally true and the full-reservation guarantee
+     * bp_admit's callers depend on is exactly what it was. */
+    s->reserved = 0;
+
+    s->next = bp->seqs;
+    if (bp->seqs) bp->seqs->prev = s;
+    bp->seqs = s;
+    return s;
+}
+
 static void block_deref(BlockPool* bp, u32 i) {
     BpBlock* x = &bp->b[i];
     if (x->refcount == 0) fatal("blockpool: deref of a free block %u", i);
@@ -486,6 +509,34 @@ const char* bp_check(const BlockPool* bp) {
         for (BpSeq* s = bp->seqs; s; s = s->next) r += s->reserved;
         if (r != bp->reserved_total) err = "I8: reservation accounting drift";
         else if (bp->reserved_total > cap) err = "I8: reservations exceed capacity";
+    }
+
+    /* I12 (M5) -- THE CEILING IS REAL AND IS HONOURED.
+     *
+     * ▶ WHY THIS BECAME NECESSARY. Before M5, cap_blocks and reserved were set
+     * to the same value by bp_admit, so "a sequence cannot outgrow its
+     * reservation" and "a sequence cannot outgrow its table" were the same
+     * statement and I8 covered both. bp_admit_partial separates them: it
+     * reserves nothing and only raises the ceiling, so I8 no longer says
+     * anything about a scheduler-admitted sequence's growth. The ceiling is
+     * then the ONLY structural promise such a sequence has.
+     *
+     * ▶ AND IT IS CLOSE TO A RESTATEMENT TODAY, WHICH IS WORTH SAYING RATHER
+     * THAN DRESSING UP. Both growth sites already refuse to cross it --
+     * bp_seq_ensure on `need > cap_blocks`, bp_seq_adopt on
+     * `nblocks == cap_blocks` -- so this can only fire if a THIRD growth path
+     * appears or if `len` desyncs from the table. M5 adds exactly such a path
+     * (the scheduler re-splicing blocks on preempt-replay), and the thing that
+     * used to make the ceiling automatic -- reserved == cap_blocks -- is what
+     * just went away. Cheap, and pointed at where the next change lands.
+     * Decision: superpowers/memos/2026-08-19-m5-admission-reservation-
+     * DECISION-OPUS.md. */
+    if (!err) {
+        for (BpSeq* s = bp->seqs; s && !err; s = s->next) {
+            if (s->nblocks > s->cap_blocks) err = "I12: nblocks exceeds cap_blocks";
+            else if (blocks_for(s->len) > s->cap_blocks)
+                err = "I12: len needs more blocks than cap_blocks allows";
+        }
     }
 
     free(seen);

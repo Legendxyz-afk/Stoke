@@ -54,8 +54,44 @@ bool bp_resize(BlockPool* bp, u32 new_capacity);
 /* ---- admission (I8) --------------------------------------------------
  * Full-reservation admission: until preemption exists, a sequence that
  * cannot finish must not start. Reserves ceil(max_tokens/16) blocks for the
- * sequence's whole life. Returns NULL if the reservation does not fit. */
+ * sequence's whole life. Returns NULL if the reservation does not fit.
+ *
+ * ▶ STILL THE FORM EVERY PRE-M5 CALLER USES, DELIBERATELY. `stoke run`,
+ * `stoke batch` and the tests admit through here and must keep the guarantee
+ * they were written against; making this partial would turn their
+ * "guaranteed" into "probably" and surface as a mid-generation fatal in
+ * tooling that has no preemption path -- failure mode F9 reintroduced exactly
+ * where nothing can catch it. */
 BpSeq* bp_admit(BlockPool* bp, u32 max_tokens);
+
+/* ---- partial admission (M5) ------------------------------------------
+ * Admits a sequence that RESERVES NOTHING and may grow, opportunistically,
+ * up to ceil(cap_tokens/16) blocks. Returns NULL only when that ceiling
+ * exceeds the pool's whole capacity -- an unreachable ceiling is a caller
+ * error, not a sequence that merely will not grow that far.
+ *
+ * ▶▶ WHY IT EXISTS, AND WHAT IT DELIBERATELY DOES NOT PROMISE. Under
+ * bp_admit an admitted sequence can always grow, so bp_seq_ensure's
+ * allocation-failure branch is UNREACHABLE -- and with it every preemption
+ * path M5 specifies, which would leave gate item [6], the memory-pressure
+ * trace, and the victim/replay invariants asserting green over a branch that
+ * never executes. M4's own failure-mode table already named the precondition:
+ * full reservation was right "with no preemption path (M4 has none)". M5
+ * builds that path.
+ *
+ * The decode reserve `W` is NOT enforced here. It is a scheduler policy
+ * checked at admission time against the live free count, because a pool-level
+ * reserve cannot actually be honoured once sequences may grow past their own:
+ * `Sum reserved <= capacity` holds while one sequence's opportunistic growth
+ * consumes another's promise. Making it real would put admission policy inside
+ * the allocator. Full reasoning: superpowers/memos/2026-08-19-m5-admission-
+ * reservation-DECISION-OPUS.md.
+ *
+ * ▶ SO bp_seq_ensure CAN NOW FAIL ON A LIVE SEQUENCE, and that is a NORMAL
+ * scheduler event rather than an error -- the caller preempts. Callers with no
+ * preemption path must keep using bp_admit. I12 is what a sequence admitted
+ * here does still get: its ceiling is real. */
+BpSeq* bp_admit_partial(BlockPool* bp, u32 cap_tokens);
 
 /* Frees every block the sequence holds and drops its reservation. Legal at
  * ANY point in the sequence's life -- teardown is a first-class op (ROADMAP
