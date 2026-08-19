@@ -271,6 +271,7 @@ typedef struct {
     f32**  f;        /* s_f        : x for ffn_gate/ffn_up            */
     f32**  gate;     /* s_gate     : y for ffn_gate, then x for down  */
     f32**  up;       /* s_up       : y for ffn_up                     */
+    f32**  h;        /* s_h        : x for the OUTPUT projection       */
     void** aq;       /* s_aq       : one quantized-activation buffer  */
     u32    n;        /* sets the arrays are sized for                 */
 } BatchViews;
@@ -492,11 +493,13 @@ static void views_bind(BatchViews* vw, SeqScratch* const* scs, u32 n) {
         vw->f        = (f32**)xrealloc(vw->f, (size_t)n * sizeof(f32*));
         vw->gate     = (f32**)xrealloc(vw->gate, (size_t)n * sizeof(f32*));
         vw->up       = (f32**)xrealloc(vw->up, (size_t)n * sizeof(f32*));
+        vw->h        = (f32**)xrealloc(vw->h, (size_t)n * sizeof(f32*));
         vw->aq       = (void**)xrealloc(vw->aq, (size_t)n * sizeof(void*));
         vw->n        = n;
     }
     for (u32 s = 0; s < n; s++) {
         vw->a[s]        = scs[s]->s_a;
+        vw->h[s]        = scs[s]->s_h;
         vw->q[s]        = scs[s]->s_q;
         vw->k[s]        = scs[s]->s_k;
         vw->v[s]        = scs[s]->s_v;
@@ -512,7 +515,7 @@ static void views_bind(BatchViews* vw, SeqScratch* const* scs, u32 n) {
 static void views_free(BatchViews* vw) {
     free(vw->a); free(vw->q); free(vw->k); free(vw->v);
     free(vw->attn_out); free(vw->proj); free(vw->f);
-    free(vw->gate); free(vw->up); free(vw->aq);
+    free(vw->gate); free(vw->up); free(vw->aq); free(vw->h);
     memset(vw, 0, sizeof *vw);
 }
 
@@ -1484,35 +1487,37 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
     forward_batch_body(m, scs, kvs, &token_id, &pos, 1u, dump_dir, out);
 }
 
+/* Grows the per-sequence scratch sets to cover `n`. EXTRACTED so the two
+ * callers -- the forward body and the batched output projection -- cannot
+ * drift: the use-after-free below is reachable only by a batch that GROWS, so
+ * no fixed-width test would ever see a second copy get it wrong. */
+static void scratch_n_ensure(Model* m, u32 n) {
+    if (n <= m->n_scratch) return;
+    /* Grown on demand rather than sized at open: the batch width is the
+     * caller's, and model_open has no way to know it. Never shrunk -- a later
+     * smaller batch reuses the same sets. */
+    m->scratch_n = (SeqScratch*)xrealloc(m->scratch_n,
+                                         (size_t)n * sizeof(SeqScratch));
+    for (u32 s = m->n_scratch; s < n; s++) scratch_alloc(m, &m->scratch_n[s]);
+    m->scratch_p = (SeqScratch**)xrealloc(m->scratch_p,
+                                          (size_t)n * sizeof(SeqScratch*));
+    m->n_scratch = n;
+
+    /* EVERY entry is rewritten, not just the newly added ones. The xrealloc of
+     * scratch_n above may have MOVED the array, which leaves every previously
+     * stored &scratch_n[s] dangling; refilling only [old_n, n) would leave the
+     * older entries pointing into freed memory. That is a use-after-free
+     * reachable ONLY by a batch that grows -- so no fixed-width test would ever
+     * see it. The block pool met this same hazard and answered it with indices
+     * instead of pointers; here the array is model-owned and rebuilt in this
+     * ONE place, which is what keeps it honest. */
+    for (u32 s = 0; s < n; s++) m->scratch_p[s] = &m->scratch_n[s];
+}
+
 void model_forward_batch(Model* m, Kv* const* kv, const u32* token_ids,
                          const u32* positions, u32 n_seq, f32* const* x_out) {
     if (n_seq == 0) return;
-    if (n_seq > m->n_scratch) {
-        /* Grown on demand rather than sized at open: the batch width is the
-         * caller's, and model_open has no way to know it. Never shrunk --
-         * a later smaller batch reuses the same sets. */
-        m->scratch_n = (SeqScratch*)xrealloc(m->scratch_n,
-                                             (size_t)n_seq * sizeof(SeqScratch));
-        for (u32 s = m->n_scratch; s < n_seq; s++) {
-            scratch_alloc(m, &m->scratch_n[s]);
-        }
-        m->scratch_p = (SeqScratch**)xrealloc(
-            m->scratch_p, (size_t)n_seq * sizeof(SeqScratch*));
-        m->n_scratch = n_seq;
-
-        /* EVERY entry is rewritten, not just the newly added ones. The
-         * xrealloc of scratch_n above may have MOVED the array, which leaves
-         * every previously stored &scratch_n[s] dangling; refilling only
-         * [old_n, n_seq) would leave the older entries pointing into freed
-         * memory. That is a use-after-free reachable ONLY by a batch that
-         * grows -- so no fixed-width test would ever see it.
-         *
-         * The block pool met this same hazard and answered it with indices
-         * instead of pointers. Here the array is model-owned and rebuilt in
-         * this one place, which is small enough to keep honest; the rebuild
-         * is what makes it so, not the pointer type. */
-        for (u32 s = 0; s < n_seq; s++) m->scratch_p[s] = &m->scratch_n[s];
-    }
+    scratch_n_ensure(m, n_seq);
 
     /* One scratch set per sequence -- the array the seqs-inner body indexes.
      * Pointing several entries at the same set is exactly the failure the
@@ -1525,6 +1530,50 @@ void model_compute_logits(Model* m, const f32* x, f32* logits_out) {
     rmsnorm(x, (const f32*)m->output_norm->data, m->n_embd, m->eps, m->scratch.s_h);
     const GgufTensor* w = (m->output != NULL) ? m->output : m->tok_embd;
     matvec(w, m->scratch.s_h, m->n_embd, logits_out, m->n_vocab, m->scratch.s_aq);
+}
+
+/* ▶▶ THE OUTPUT PROJECTION IS THE LAST UNBATCHED WEIGHT IN THE ENGINE, AND IT
+ * IS NOT A SMALL ONE. `token_embd.weight` is 319 MB of the model's 2.497 GB --
+ * 12.8% -- and the single-row form above streams ALL of it per row. The batch
+ * decode loop called it once per active sequence, so at N=16 a step paid
+ * 16 x 319 MB = 5.1 GB for logits against ~2.2 GB for the entire rest of the
+ * forward: the output projection was TWICE the model.
+ *
+ * ⚠ AND IT SILENTLY INVALIDATED A NUMBER ALREADY IN THE ROADMAP. The M5 entry
+ * note's aggregate ceilings (N=8 57.8 tok/s, N=16 72.9) were computed with the
+ * weight term read ONCE per step, which is what forward_batch_body does and
+ * what this function did not. Measured against the real traffic the N=16
+ * ceiling was 48.6 tok/s, not 72.9. Batching restores the note's figure --
+ * i.e. the note described the engine this commit makes true.
+ *
+ * Bit-exactness is M4 gate item [2]'s, unchanged and not re-argued: matvec_batch
+ * computes each row with the identical single-row kernel, and the K-quant path
+ * tiles sequences at KERNELS_BATCH_TILE = 16, so no row sees a shape the gate
+ * did not already cover.
+ *
+ * `x` may alias nothing here: each row's normalised copy lands in that row's
+ * OWN s_h, which is why this needs the scratch sets rather than a single
+ * buffer -- the defect the single-row form would have had at N>1. */
+void model_compute_logits_batch(Model* m, const f32* const* x, u32 n,
+                                f32* const* logits_out) {
+    if (n == 0) return;
+    if (n == 1) {
+        /* One row takes the solo kernel, exactly as before: matvec_batch's
+         * K-quant path routes n_seq==1 to the same place anyway, and going
+         * through here would only add a pointer gather. */
+        model_compute_logits(m, x[0], logits_out[0]);
+        return;
+    }
+    scratch_n_ensure(m, n);
+    BatchViews* vw = &m->views;
+    views_bind(vw, m->scratch_p, n);
+    for (u32 s = 0; s < n; s++) {
+        rmsnorm(x[s], (const f32*)m->output_norm->data, m->n_embd, m->eps,
+                vw->h[s]);
+    }
+    const GgufTensor* w = (m->output != NULL) ? m->output : m->tok_embd;
+    matvec_batch(w, (const f32* const*)vw->h, m->n_embd, logits_out, m->n_vocab,
+                 vw->aq, n);
 }
 
 /* ===========================================================================
@@ -1691,6 +1740,13 @@ void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
     u32*  tok_act = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
     u32*  pos_act = (u32*)xmalloc((size_t)n_seq * sizeof(u32));
     f32** x_act   = (f32**)xmalloc((size_t)n_seq * sizeof(f32*));
+    /* One logits row per ACTIVE sequence. n_vocab is 151,936 on the 4B model,
+     * so this is ~600 KB per sequence -- allocated once for the whole
+     * generation rather than per step, since the decode loop must not
+     * allocate (M2 op-spec 6). */
+    f32*  logit_buf = (f32*)xmalloc((size_t)n_seq * (size_t)m->n_vocab *
+                                    sizeof(f32));
+    f32** logit_p = (f32**)xmalloc((size_t)n_seq * sizeof(f32*));
 
     u32 n_act = 0;
     u64 n_prefill_total = 0;
@@ -1769,13 +1825,18 @@ void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
 
         /* Compacting in place while walking it: `keep` never overtakes `i`,
          * so a survivor is only ever written to a slot already read. */
+        /* ONE batched output projection for the whole active set. Was one
+         * per sequence, each streaming all 319 MB of token_embd -- 5.1 GB a
+         * step at N=16, against ~2.2 GB for the entire rest of the forward. */
+        for (u32 i = 0; i < n_act; i++)
+            logit_p[i] = logit_buf + (size_t)i * m->n_vocab;
+        model_compute_logits_batch(m, (const f32* const*)x_act, n_act, logit_p);
+
         u32 keep = 0;
         for (u32 i = 0; i < n_act; i++) {
             u32 s = act[i];
             pos[s]++;
-            model_compute_logits(m, xbuf + (size_t)s * m->n_embd,
-                                 m->scratch.s_logits);
-            u32 id = model_argmax(m->scratch.s_logits, m->n_vocab);
+            u32 id = model_argmax(logit_p[i], m->n_vocab);
             seqs[s].out_ids[seqs[s].n_out++] = id;
             next[s] = id;
 
@@ -1798,4 +1859,5 @@ void model_generate_batch(Model* m, Kv* const* kv, ModelBatchSeq* seqs,
 
     free(xbuf); free(pos); free(next); free(act);
     free(kv_act); free(tok_act); free(pos_act); free(x_act);
+    free(logit_buf); free(logit_p);
 }

@@ -189,6 +189,20 @@ void model_forward_batch(Model* m, Kv* const* kv, const u32* token_ids,
  * logits_out buffer; no allocation. */
 void model_compute_logits(Model* m, const f32* x, f32* logits_out);
 
+/* The same projection for `n` rows at once, writing logits_out[i][n_vocab].
+ *
+ * ▶ WHY IT EXISTS. `token_embd.weight` is 319 MB -- 12.8% of the 4B model --
+ * and the single-row form streams all of it per row. Called once per sequence,
+ * a decode step at N=16 paid 5.1 GB for logits against ~2.2 GB for the whole
+ * rest of the forward, i.e. the output projection was TWICE the model. This is
+ * the last weight in the engine that was not batched.
+ *
+ * Bit-identical to calling the single-row form per row: matvec_batch computes
+ * each row with the identical single-row kernel (M4 gate item [2]), and n == 1
+ * is routed to that form explicitly. */
+void model_compute_logits_batch(Model* m, const f32* const* x, u32 n,
+                                f32* const* logits_out);
+
 /* Greedy-decodes up to n_gen ids following prompt_ids[0..n_prompt) (the
  * SAME per-position loop as ref_forward.py's generate(): prefill one
  * position at a time, dump_dir applies only to the LAST prompt position,
