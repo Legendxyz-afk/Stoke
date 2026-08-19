@@ -327,8 +327,14 @@ static void retire(Sched* s, Req* r, SchedFinish why) {
 
 static void retire_cancelled(Sched* s) {
     for (Req* r = s->all; r; r = r->all_next) {
-        if (r->cancel && r->state != SCHED_FINISHED)
+        if (r->cancel && r->state != SCHED_FINISHED) {
+            /* Counted BEFORE retire() clears the state. S5 quantifies over
+             * RUNNABLE decodes, and a request cancelled here stops being one
+             * before any row is built -- so the sim needs to tell this apart
+             * from a decode that was dropped. */
+            if (r->state == SCHED_RUNNING) s->st.cancelled_running++;
             retire(s, r, SCHED_FINISH_CANCELLED);
+        }
     }
 }
 
@@ -381,7 +387,11 @@ static bool preempt_for(Sched* s, const Req* r) {
         if (q->arrival >= r->arrival) victim = q; /* youngest eligible */
     }
     if (victim) { preempt(s, victim); return true; }
-    if (s->prefilling && s->prefilling != r) { preempt(s, s->prefilling); return true; }
+    if (s->prefilling && s->prefilling != r) {
+        preempt(s, s->prefilling);
+        s->st.prefill_yields++;
+        return true;
+    }
     return false;
 }
 

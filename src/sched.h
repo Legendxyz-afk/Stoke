@@ -173,6 +173,26 @@ typedef struct {
     u32 free_blocks;    /* at the last step boundary                         */
     u64 steps;          /* sched_step calls that carried >= 1 row            */
     u64 preemptions;    /* thrash metric: RECORDED, never gated              */
+    /* Of those preemptions, the ones whose victim was the in-flight PREFILL
+     * rather than a RUNNING request.
+     *
+     * ▶ SPLIT OUT SO S5 CAN BE ASSERTED EXACTLY RATHER THAN BOUNDED. "every
+     * runnable decode decodes every step" means decode rows must equal the
+     * RUNNING count at step top, less any of those the step itself preempted.
+     * A yielded prefill is also a preemption but costs no decode row, so
+     * without this the identity only holds as an inequality -- and an
+     * inequality would stay true through a bug that silently dropped a
+     * runnable decode. */
+    u64 prefill_yields;
+    /* RUNNING requests retired by cancellation at a step's top.
+     *
+     * ▶ ALSO SPLIT OUT FOR S5, AND FOR THE SAME REASON. A cancelled request is
+     * retired before rows are built, so it owes no decode row -- it is no
+     * longer RUNNABLE, which is what S5 quantifies over. Without this the
+     * identity mistakes a correct cancellation for a dropped decode; the first
+     * version of the assertion did exactly that and reported the scheduler
+     * broken on every trace with aborts in it. */
+    u64 cancelled_running;
     u64 prefill_chunks; /* chunks issued; with steps, the co-run rate        */
     u64 decode_rows;    /* total decode rows stepped                         */
     u64 finished;       /* requests retired, for any reason                  */
