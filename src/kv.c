@@ -180,6 +180,30 @@ Kv* kv_open_in(KvStore* st, u32 max_ctx) {
     return kv;
 }
 
+Kv* kv_open_in_partial(KvStore* st, u32 cap_ctx) {
+    if (cap_ctx == 0) fatal("kv: kv_open_in_partial -- cap_ctx must be > 0");
+    BpSeq* seq = bp_admit_partial(st->pool, cap_ctx);
+    if (!seq) return NULL; /* ceiling exceeds the pool's whole capacity */
+
+    Kv* kv = (Kv*)xmalloc(sizeof(Kv));
+    kv->n_layer   = st->n_layer;
+    /* max_ctx is the CEILING, not a guarantee. Every bound check below keeps
+     * reading it as "positions this handle may address", which is still true;
+     * what is no longer true is that they are all obtainable. */
+    kv->max_ctx    = cap_ctx;
+    kv->n_head_kv  = st->n_head_kv;
+    kv->head_dim   = st->head_dim;
+    kv->store      = st;
+    kv->owns_store = false;
+    kv->seq        = seq;
+    return kv;
+}
+
+bool kv_reserve(Kv* kv, u32 n_positions) {
+    if (n_positions > kv->max_ctx) return false;
+    return bp_seq_ensure(kv->store->pool, kv->seq, n_positions);
+}
+
 Kv* kv_open(u32 n_layer, u32 max_ctx, u32 n_head_kv, u32 head_dim) {
     if (n_layer == 0 || max_ctx == 0 || n_head_kv == 0 || head_dim == 0) {
         fatal("kv: kv_open -- all dims must be > 0 (n_layer=%u max_ctx=%u "

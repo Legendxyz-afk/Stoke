@@ -331,7 +331,61 @@ static void test_kv_dtype(void) {
     }
 }
 
+/* M5 -- partial admission at the KV layer, and the obligation it creates.
+ *
+ * kv_open_in_partial reserves nothing, so several sequences whose ceilings
+ * each exceed the pool all get in and then COMPETE for blocks. That is the
+ * regime the scheduler runs in, and the thing it has to get right is that a
+ * position it is about to step is already backed -- because the read/write
+ * accessors FATAL on an unbackable position rather than returning an error.
+ * kv_reserve is the only place that refusal is survivable, so this test is
+ * about kv_reserve being both usable and honest.
+ */
+static void test_partial_admission(void) {
+    const u32 NL = 2, NH = 1, HD = 4;
+    /* 4 blocks = 64 positions. */
+    KvStore* st = kv_store_open(NL, 4, NH, HD, KV_F32);
+
+    Kv* a = kv_open_in_partial(st, 64);
+    Kv* b = kv_open_in_partial(st, 64);
+    ok("partial admission reserves nothing, so both ceilings fit", a && b);
+    ok("...whereas full reservation admits only one",
+       kv_open_in(st, 64) != NULL && kv_open_in(st, 64) == NULL);
+
+    ok("a ceiling past the whole pool is refused",
+       kv_open_in_partial(st, 65) == NULL);
+    kv_store_close(st);
+
+    st = kv_store_open(NL, 4, NH, HD, KV_F32);
+    a = kv_open_in_partial(st, 64);
+    b = kv_open_in_partial(st, 64);
+
+    ok("A reserves the whole pool", kv_reserve(a, 64));
+    ok("the pool is dry", kv_store_free_blocks(st) == 0);
+    ok("B's reservation is REFUSED, survivably", kv_reserve(b, 16) == false);
+    ok("a refused reservation backs nothing", kv_len(b) == 0);
+
+    /* A position that WAS reserved is writable and readable as normal -- the
+     * refusal above must not have left the handle poisoned. */
+    write_pos(a, 63, 42.0f);
+    ok("A still works at a position it did reserve", check_pos(a, 63, 42.0f));
+
+    /* The recovery the scheduler performs: preempt A, then B proceeds. */
+    kv_close(a);
+    ok("after preempting A, B's reservation succeeds", kv_reserve(b, 16));
+    write_pos(b, 0, 7.0f);
+    ok("B can then use what it reserved", check_pos(b, 0, 7.0f));
+
+    ok("reserving past the CEILING is refused even with blocks free",
+       kv_store_free_blocks(st) > 0 && kv_reserve(b, 65) == false);
+
+    kv_close(b);
+    kv_store_close(st);
+}
+
 int main(void) {
+    test_partial_admission();
+
     const u32 NL = 3, NH = 2, HD = 4;
 
     /* 8 blocks = 128 positions, shared by three sequences of 32 each. */

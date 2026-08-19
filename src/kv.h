@@ -26,6 +26,8 @@
 
 #include "common.h"
 
+#include <stdbool.h> /* kv_reserve returns one; common.h does not provide it */
+
 typedef struct Kv Kv;
 
 /* One position's K and V vectors for one (layer, kv_head): both point to
@@ -153,6 +155,35 @@ KvSlot kv_read(Kv* kv, u32 layer, u32 kv_head, u32 pos, f32* scratch);
  * (I8), so this returns NULL when the store cannot guarantee max_ctx -- the
  * caller must not start a sequence it cannot finish. */
 Kv*  kv_open_in(KvStore* st, u32 max_ctx);
+
+/* M5: a view whose sequence RESERVES NOTHING and may grow opportunistically to
+ * `cap_ctx`. Returns NULL only when `cap_ctx` exceeds the store's whole pool.
+ *
+ * ▶ THE CALLER TAKES ON AN OBLIGATION HERE, and it is not optional. A sequence
+ * opened this way can be REFUSED A POSITION mid-generation when the pool runs
+ * dry -- and the accessors below do not return that refusal, they fatal on it
+ * (kv_vec_offset's "could not back position"), because for every other caller
+ * in this program an unbackable position IS a bug. So a caller of this function
+ * must know, BEFORE it steps a sequence, that the positions that step will
+ * touch are already backed, and preempt something if they are not. That is
+ * M5's scheduler; nothing else should call this.
+ *
+ * Why the accessors were not softened to return an error instead: it would push
+ * a "cannot happen" branch into every KV read and write on the hot path, to be
+ * ignored by all of them, so that one caller could avoid checking in advance --
+ * and checking in advance is what that caller has to do anyway, since by the
+ * time a forward pass is writing K/V the step is already running.
+ *
+ * Decision: superpowers/memos/2026-08-19-m5-admission-reservation-DECISION-
+ * OPUS.md. */
+Kv*  kv_open_in_partial(KvStore* st, u32 cap_ctx);
+
+/* Grows this sequence's backing to cover `n_positions`, returning false if the
+ * pool cannot. THE ONLY PLACE A CALLER CAN LEARN THAT A POSITION IS NOT
+ * AVAILABLE WITHOUT DYING OF IT -- the read/write accessors fatal instead. M5's
+ * scheduler calls this at step-build time for every row it intends to step, and
+ * preempts when it returns false. */
+bool kv_reserve(Kv* kv, u32 n_positions);
 
 /* Blocks currently free in the store's pool -- for admission decisions and
  * for tests that need to see sharing actually happen. */
