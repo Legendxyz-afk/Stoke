@@ -133,6 +133,23 @@ void model_forward_position(Model* m, Kv* kv, u32 token_id, u32 pos,
  * monotonic; a test takes the difference across the calls it cares about. */
 u64 model_att_dispatch_count(void);
 
+/* How many layer-steps ran the M5 E2 (kv-head-outer) arm rather than M4.5's.
+ * The anti-vacuity counter for the arms' bit-identity test: without it, a
+ * broken arm selector makes that test compare a code path against itself and
+ * pass. Process-global and monotonic, like the dispatch counter. */
+u64 model_att_gqa_step_count(void);
+
+/* Selects the attention arm: 0 = M4.5's q-head-outer loop, 1 = M5 E2's
+ * kv-head-outer loop (the default). Mirrors STOKE_ATT_GQA.
+ *
+ * A TEST HOOK, for the same reason the counter above is one. E2's entire claim
+ * is that the two arms are bit-identical, so a test has to run both -- and it
+ * cannot do that through the environment, because model_open reads
+ * STOKE_ATT_GQA and glibc does not declare putenv under -std=c11 (the WSL leg
+ * already rejected that approach once, see the L4 test). CALL IT AFTER
+ * model_open: the open re-reads the environment and would overwrite this. */
+void model_att_set_gqa(u32 on);
+
 /* Steps `n_seq` sequences by one position each, one Kv handle per sequence.
  *
  * Each sequence gets its OWN SeqScratch, so nothing they compute can reach

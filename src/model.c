@@ -58,13 +58,29 @@ typedef struct {
  *
  * Allocated once at open, reused by every forward_position/compute_logits/
  * generate call -- "no malloc inside the per-token loop" (M2 op-spec 6). */
-/* How many context positions the QK loop scores per pass.
+/* ▶▶ M5 E2 SUPERSEDES THIS LOOP, AND BOTH ARMS ARE STILL HERE ON PURPOSE.
+ * ATT_LANES scores 4 POSITIONS of one q-head at once. The M5 entry rung scores
+ * one position against the 4 Q-HEADS OF ONE GQA GROUP instead -- the same four
+ * independent FP chains, and additionally it fetches that kv-head's K and V
+ * ONCE for the group instead of once per q-head, which is a 4x cut in the
+ * traffic that decode at long context is actually made of (design note
+ * docs/superpowers/design-notes/2026-08-19-m5-entry.md sections 3-4). So E2
+ * subsumes ATT_LANES rather than competing with it.
  *
- * WHY THIS EXISTS AT ALL. `vec_dot_f32` is `sum += a[i]*b[i]`, and that carries
- * a loop-carried dependency on `sum`, so it runs at FP-ADD LATENCY -- about 4
- * cycles per element -- no matter how many multiply units are idle. But each
- * context position is an INDEPENDENT dot product, so scoring several at once
- * with several accumulators fills the pipeline instead of stalling on it.
+ * The lanes arm survives ONLY as STOKE_ATT_GQA=0, because the A/B that prices
+ * E2 has to run both arms from ONE binary in ONE sitting -- this box punishes
+ * before/after comparisons separated by real work, and the pre-`76dee7f`
+ * archive is on record as swinging 10.9x between sittings. It is deleted
+ * (with ATT_LANES and STOKE_ATT_LANES) once E2 is priced; until then the
+ * default is the E2 arm and the lanes arm is the measurement anchor.
+ *
+ * WHY LANES EXISTED AT ALL. `vec_dot_f32` is `sum += a[i]*b[i]`, and that
+ * carries a loop-carried dependency on `sum`, so it runs at FP-ADD LATENCY --
+ * about 4 cycles per element -- no matter how many multiply units are idle.
+ * But each context position is an INDEPENDENT dot product, so scoring several
+ * at once with several accumulators fills the pipeline instead of stalling on
+ * it. E2 keeps that argument and changes only WHICH independent dot products
+ * share the pass.
  *
  * ▶ AND IT IS BIT-EXACT, WHICH IS THE WHOLE POINT. Every accumulator still
  * sums its own position left to right in exactly the scalar order, so this is
@@ -102,8 +118,12 @@ typedef struct {
  * and both arms interleave in one sitting from ONE binary -- this box punishes
  * before/after comparisons separated by real work. Read once at model_open;
  * the scratch is always sized for the full ATT_LANES, so a smaller runtime
- * value can never overrun it. */
+ * value can never overrun it. Applies to the STOKE_ATT_GQA=0 arm only. */
 static u32 g_att_lanes = ATT_LANES;
+
+/* M5 E2: kv-head-outer attention (1, the default) vs M4.5's q-head-outer loop
+ * (0). See the ATT_LANES header for why both arms exist and when 0 dies. */
+static u32 g_att_gqa = 1u;
 
 /* Run the heads on the pool (1) or serially on the calling thread (0). Both
  * arms are BIT-IDENTICAL -- see att_heads_run -- so this is a pure speed
@@ -140,6 +160,21 @@ static u64 g_att_dispatches = 0;
 
 u64 model_att_dispatch_count(void) { return g_att_dispatches; }
 
+/* Times the E2 (kv-head-outer) arm was the one selected.
+ *
+ * SECOND ANTI-VACUITY COUNTER, AND IT GUARDS A DIFFERENT NOTHING. The counter
+ * above answers "did the heads reach the pool"; this one answers "were the two
+ * arms of the bit-identity test actually two arms". If model_att_set_gqa were
+ * misspelled, shadowed, or read before it was written, both halves of that test
+ * would run the SAME loop and it would pass -- a green test about one code path
+ * pretending to be about two. Written only by the dispatching thread, exactly
+ * like g_att_dispatches, so it stays invisible to TSan. */
+static u64 g_att_gqa_steps = 0;
+
+u64 model_att_gqa_step_count(void) { return g_att_gqa_steps; }
+
+void model_att_set_gqa(u32 on) { g_att_gqa = on ? 1u : 0u; }
+
 static u32 env_u32(const char* name, u32 dflt, u32 lo, u32 hi) {
     const char* s = getenv(name);
     if (!s || !s[0]) return dflt;
@@ -159,6 +194,7 @@ static void att_env_init(void) {
         if (v == 1 || v == (long)ATT_LANES) g_att_lanes = (u32)v;
     }
     g_att_par = env_u32("STOKE_ATT_PAR", 1u, 0u, 1u);
+    g_att_gqa = env_u32("STOKE_ATT_GQA", 1u, 0u, 1u);
     g_att_chunk = env_u32("STOKE_ATT_CHUNK", 1u, 1u, 1024u);
     g_att_min_pos = env_u32("STOKE_ATT_MIN_POS", 32u, 0u, 1u << 20);
 }
@@ -399,7 +435,15 @@ static void att_ws_ensure(Model* m) {
      * apart, so this is not about false sharing between workers -- it keeps
      * each buffer's own two regions (scores, then the KV pairs) line-aligned
      * relative to its start. */
-    u64 need = (u64)m->max_ctx + (u64)ATT_KV_FLOATS(m->head_dim);
+    /* gqa_group scores rows, not one: E2's unit is a KV-HEAD, and its whole
+     * group's softmax rows are live at once (the K pass fills all of them
+     * before the first softmax runs). ATT_KV_FLOATS is kept at the lanes arm's
+     * 4 pairs, which also covers E2's single live pair -- ONE expression, and
+     * a size that is right for whichever arm the run selects. Sizing it per
+     * arm would put a runtime switch between an allocation and the loop that
+     * indexes it, which is how the 3072-byte overrun happened. */
+    u64 need = (u64)m->gqa_group * (u64)m->max_ctx +
+               (u64)ATT_KV_FLOATS(m->head_dim);
     u64 stride = (need + 15u) & ~(u64)15u;
     f32** ws = (f32**)xmalloc((size_t)want * sizeof(f32*));
     for (u32 w = 0; w < want; w++) {
@@ -934,9 +978,13 @@ static void att_heads_run(void* vctx, u64 h_begin, u64 h_end) {
     const u32       L = a->L;
     const f32       scale = a->scale;
 
+    /* kvbuf sits past ALL gqa_group scores rows, not past one, so the two arms
+     * share a single layout and a single size. This arm uses only row 0; the
+     * gap costs nothing and removes the possibility of the arms disagreeing
+     * about where the KV scratch starts. */
     f32*      ws = m->att_ws[pool_worker_index()];
     f32*      scores = ws;
-    f32*      kvbuf = ws + m->max_ctx;
+    f32*      kvbuf = ws + (u64)m->gqa_group * (u64)m->max_ctx;
     const u64 hd2 = (u64)m->head_dim * 2u;
 
     for (u64 hh = h_begin; hh < h_end; hh++) {
@@ -981,6 +1029,173 @@ static void att_heads_run(void* vctx, u64 h_begin, u64 h_end) {
                 out_h[d] += wgt * slot.v[d];
             }
         }
+    }
+}
+
+/* M5 E2 -- THE SAME ATTENTION, WALKED KV-HEAD-OUTER. One unit is one kv-head
+ * and the whole GQA group rides its K and V.
+ *
+ * ▶▶ WHAT THIS BUYS, AND IT IS TRAFFIC, NOT ARITHMETIC. The loop above is
+ * q-head-outer, so with GQA 4:1 each kv-head's K and V are streamed FOUR times
+ * per layer per token -- once per q-head that reads them. At ctx 1500 that is
+ * 1.77 GB of KV reads per token against 2.50 GB of weights, and decode there
+ * measures 106.75 ms against a 97.9 ms pure-traffic floor, i.e. 92% of ceiling:
+ * the traffic model is nearly the whole story and a traffic cut converts almost
+ * one-for-one. Fetching once per GROUP takes that 1.77 GB to 0.44 GB. Numbers
+ * and the M5 bar arithmetic they feed: design note 2026-08-19-m5-entry.md
+ * section 3.
+ *
+ * ▶▶ WHY IT IS BIT-EXACT, stated as the thing that would make it not. A
+ * reassociation would need some sum's operands to arrive in a new order. None
+ * do: every score is still one q-head's dot product summed left to right over
+ * d, character-for-character `vec_dot_f32`; every output element still
+ * accumulates over j in ascending order with the same weights; the softmax sees
+ * the same row it saw before. What changed is the LOOP NEST and how many times
+ * a byte is fetched from the same address -- neither is arithmetic. As with L4,
+ * the parallelism is across independent OUTPUTS, so no twin, no grading run and
+ * no re-anchor; the byte-compare against the archived m45 binary is what checks
+ * that claim rather than this paragraph.
+ *
+ * ▶ THE 4-WIDE BLOCK IS NOT A SPECIAL CASE FOR THIS MODEL. Any gqa_group runs:
+ * groups of 4 take the 4-chain block for the same FP-latency reason ATT_LANES
+ * existed, and the remainder falls through to vec_dot_f32. gqa_group == 1
+ * (a plain-MHA model) takes the tail exclusively and is then exactly the old
+ * loop with its lanes removed -- correct, and slower than the lanes arm on such
+ * a model, which is a real cost recorded rather than hidden: there is no GQA
+ * redundancy to remove when every q-head has its own kv-head. */
+static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
+    const AttHeads*  a = (const AttHeads*)vctx;
+    Model*           m = a->m;
+    SeqScratch*      sc = a->sc;
+    Kv*              kvs = a->kvs;
+    const u32        L = a->L;
+    const f32        scale = a->scale;
+    const u32        hd = m->head_dim;
+    const u32        G = m->gqa_group;
+    const u32        n = a->pos + 1u; /* causal: positions 0..pos inclusive */
+    const u64        row = (u64)m->max_ctx;
+
+    f32* ws = m->att_ws[pool_worker_index()];
+    f32* scores = ws;                       /* [G][max_ctx], row g per q-head */
+    f32* kvbuf = ws + (u64)G * row;         /* ONE live (K,V) pair is enough:
+                                             * the group shares the fetch, so
+                                             * nothing outlives its iteration */
+
+    for (u64 kk = kh_begin; kk < kh_end; kk++) {
+        const u32  kvh = (u32)kk;
+        const f32* qbase = sc->s_q + (u64)kvh * G * hd;
+        f32*       obase = sc->s_attn_out + (u64)kvh * G * hd;
+
+        /* ---- score pass: K[j] fetched once, scored against all G q-heads */
+        for (u32 j = 0; j < n; j++) {
+            const f32* kj = kv_read(kvs, L, kvh, j, kvbuf).k;
+            u32        g = 0;
+            for (; g + 4u <= G; g += 4u) {
+                const f32* q0 = qbase + (u64)(g + 0u) * hd;
+                const f32* q1 = qbase + (u64)(g + 1u) * hd;
+                const f32* q2 = qbase + (u64)(g + 2u) * hd;
+                const f32* q3 = qbase + (u64)(g + 3u) * hd;
+                f32        a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+                for (u32 d = 0; d < hd; d++) {
+                    a0 += q0[d] * kj[d];
+                    a1 += q1[d] * kj[d];
+                    a2 += q2[d] * kj[d];
+                    a3 += q3[d] * kj[d];
+                }
+                scores[(u64)(g + 0u) * row + j] = a0 * scale;
+                scores[(u64)(g + 1u) * row + j] = a1 * scale;
+                scores[(u64)(g + 2u) * row + j] = a2 * scale;
+                scores[(u64)(g + 3u) * row + j] = a3 * scale;
+            }
+            for (; g < G; g++) {
+                scores[(u64)g * row + j] =
+                    vec_dot_f32(qbase + (u64)g * hd, kj, hd) * scale;
+            }
+        }
+
+        for (u32 g = 0; g < G; g++) softmax(scores + (u64)g * row, n);
+
+        for (u32 g = 0; g < G; g++) {
+            f32* o = obase + (u64)g * hd;
+            for (u32 d = 0; d < hd; d++) o[d] = 0.0f;
+        }
+
+        /* ---- value pass: V[j] fetched once, accumulated into all G outputs.
+         * Ordered j-outer/g-inner so each output's adds still arrive in
+         * ascending j -- g-outer would be the same fetch count but would put
+         * the reuse a whole pass apart, which is the redundancy this rung is
+         * here to remove. */
+        for (u32 j = 0; j < n; j++) {
+            const f32* vj = kv_read(kvs, L, kvh, j, kvbuf).v;
+            for (u32 g = 0; g < G; g++) {
+                const f32 wgt = scores[(u64)g * row + j];
+                f32*      o = obase + (u64)g * hd;
+                for (u32 d = 0; d < hd; d++) o[d] += wgt * vj[d];
+            }
+        }
+    }
+}
+
+/* M5 E1 -- ONE dispatch per layer for the WHOLE batch, over the flattened
+ * (sequence, attention-unit) space.
+ *
+ * ▶▶ WHAT IT REPLACES. The attention dispatch used to sit inside the sequence
+ * loop, so a step cost n_seq broadcasts per layer: at N=16 that is 16 x 36 =
+ * 576 broadcast-wakeup-join round trips per token where 36 would do. A dispatch
+ * is a few microseconds and the saving is ~1% of an N=16 step -- which is why
+ * E1 is NOT on this milestone's list for its own number. It is here because it
+ * is what makes batched prefill (rung E3) correct BY CONSTRUCTION rather than
+ * by loop order: with every sequence's K/V written before any attention runs, a
+ * chunk position attending over 0..pos picks up its chunk-mates naturally, with
+ * no mask and no special case.
+ *
+ * ▶ THE HAZARD IT HAS TO NOT HAVE, stated so it can be attacked: a write
+ * landing in a block another sequence is concurrently reading. It cannot.
+ * Adoption is admission-time only and whole-block only (kv.h, kv.c:142), so a
+ * sequence writes only into blocks it alone owns -- its adopted prefix blocks
+ * are full and never rewritten, and decode never revisits a position. If the
+ * batch byte-compare ever moves, THIS is the claim to attack first.
+ *
+ * ▶ AND THE ONE THAT IS ALREADY DISCHARGED: bp_seq_ensure, which kv_read
+ * reaches through kv_vec_offset, is a pure read once the position is backed
+ * (blockpool.c:234) -- and phase 1 has backed every position the batch will
+ * read before phase 2 starts. So the parallel region mutates no pool state,
+ * which is what lets several sequences of ONE shared store run at once. */
+typedef struct {
+    Model*             m;
+    SeqScratch* const* scs;
+    Kv* const*         kv;
+    const u32*         positions;
+    u64                per_seq; /* attention units one sequence contributes */
+    void (*run)(void*, u64, u64);
+    u32 L;
+    f32 scale;
+} AttBatch;
+
+static void att_batch_run(void* vctx, u64 u_begin, u64 u_end) {
+    const AttBatch* b = (const AttBatch*)vctx;
+    const u64       per = b->per_seq;
+
+    /* A claim can straddle sequences, so it is walked as a run of per-sequence
+     * segments rather than assumed to lie inside one. Getting this wrong would
+     * hand a worker head indices past its sequence's own arrays -- silently, in
+     * the arithmetic, since the neighbouring sequence's scratch is a valid
+     * allocation full of plausible floats. */
+    for (u64 u = u_begin; u < u_end;) {
+        const u32 s = (u32)(u / per);
+        const u64 seq_end = (u64)(s + 1u) * per;
+        const u64 stop = (u_end < seq_end) ? u_end : seq_end;
+
+        AttHeads aj;
+        aj.m = b->m;
+        aj.sc = b->scs[s];
+        aj.kvs = b->kv[s];
+        aj.L = b->L;
+        aj.pos = b->positions[s];
+        aj.scale = b->scale;
+        b->run(&aj, u - (u64)s * per, stop - (u64)s * per);
+
+        u = stop;
     }
 }
 
@@ -1051,9 +1266,13 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
         const f32* qn = (const f32*)ly->attn_q_norm->data;
         const f32* kn = (const f32*)ly->attn_k_norm->data;
 
-        /* Sequence-outer from here to the attn_output matvec: none of it
-         * touches a weight, so there is nothing to amortize. Each iteration
-         * reads only sequence s's own scratch and its own Kv. */
+        /* ▶▶ M5 E1: TWO PHASES, NOT ONE SEQUENCE-OUTER BLOCK. Phase 1 is every
+         * sequence's QK-norm, rope, token note and KV append; phase 2 is ONE
+         * dispatch over the whole batch's attention. None of it touches a
+         * weight, so there is still nothing to amortize -- the split buys a
+         * dispatch per layer instead of one per (sequence, layer), and buys E3
+         * the property that all of a batch's K/V is resident before any of its
+         * attention reads. See att_batch_run. */
         for (u32 s = 0; s < n_seq; s++) {
             SeqScratch* sc  = scs[s];
             Kv*         kvs = kv[s];
@@ -1088,37 +1307,62 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
              * store cannot keep. At f32 these are the same memcpy and the
              * same zero-copy read as before -- byte-identical, checked
              * against the archived m3 gate binary -- and at Q8 they are
-             * where quantization happens. sc->s_kv is this SEQUENCE's
-             * dequantization buffer; sharing one across the batch would be
-             * the scratch-aliasing failure, silent, in attention. */
+             * where quantization happens. kv_write needs no scratch in either
+             * mode (it memcpy's or quantizes straight into the store); the
+             * dequantization buffer belongs to the READ side and lives per
+             * WORKER in Model::att_ws, where L4 moved it when heads stopped
+             * running one at a time. */
             for (u32 h = 0; h < m->n_head_kv; h++) {
                 kv_write(kvs, L, h, pos, sc->s_k + (u64)h * m->head_dim,
                          sc->s_v + (u64)h * m->head_dim);
             }
+        }
 
-            /* causal GQA attention -- ON THE POOL, one unit per q-head.
-             *
-             * The heads are dispatched rather than looped because attention was
-             * the LAST single-threaded work in the forward pass: matvec has run
-             * on the pool since K5, and at ctx 1500 attention is 84.6% of
-             * decode, so ~85% of a long-context token was running on ONE core
-             * while the other seven sat at the barrier. */
-            AttHeads aj;
-            aj.m = m;
-            aj.sc = sc;
-            aj.kvs = kvs;
-            aj.L = L;
-            aj.pos = pos;
-            aj.scale = scale;
-            if (g_att_par && (u64)pos + 1u >= (u64)g_att_min_pos) {
-                g_att_dispatches++;
-                pool_for_units(m->n_head, g_att_chunk, att_heads_run, &aj);
-            } else {
-                /* Below the threshold the dispatch (a broadcast, N wakeups and
-                 * a join) costs more than the heads do, and this path is also
-                 * STOKE_ATT_PAR=0's arm: bit-identical, just serial. */
-                att_heads_run(&aj, 0, m->n_head);
-            }
+        /* ---- phase 2: causal GQA attention for the WHOLE batch, ON THE POOL.
+         *
+         * The heads are dispatched rather than looped because attention was the
+         * LAST single-threaded work in the forward pass: matvec has run on the
+         * pool since K5, and at ctx 1500 attention is 84.6% of decode, so ~85%
+         * of a long-context token was running on ONE core while the other seven
+         * sat at the barrier.
+         *
+         * E2's unit is a KV-HEAD, so one sequence contributes n_head_kv units,
+         * not n_head. At GQA 4:1 that is 8 claims instead of 32 -- fewer, and
+         * each 4x larger, which trades scheduling balance for the traffic cut.
+         * On a 6P+4E box that trade is a real risk (an E-core now holds four
+         * heads hostage at the barrier, not one), and flattening the batch into
+         * the same unit space is what keeps the claim count workable at N>1:
+         * 8 units at N=1, but 128 at N=16. Measured, not argued -- design note
+         * 2026-08-19-m5-entry.md section 4, rung E2. */
+        AttBatch ab;
+        ab.m = m;
+        ab.scs = scs;
+        ab.kv = kv;
+        ab.positions = positions;
+        ab.per_seq = g_att_gqa ? m->n_head_kv : m->n_head;
+        ab.run = g_att_gqa ? att_kvheads_run : att_heads_run;
+        ab.L = L;
+        ab.scale = scale;
+        if (g_att_gqa) g_att_gqa_steps++;
+
+        /* The dispatch threshold is a SPEED heuristic about how much work a
+         * unit carries, so the batch is judged by its LONGEST sequence -- the
+         * one whose units are biggest. At n_seq=1 this is exactly the test that
+         * was here before, which is what keeps the L4 dispatch-count test
+         * meaning what it meant. */
+        u32 pos_max = positions[0];
+        for (u32 s = 1; s < n_seq; s++) {
+            if (positions[s] > pos_max) pos_max = positions[s];
+        }
+        if (g_att_par && (u64)pos_max + 1u >= (u64)g_att_min_pos) {
+            g_att_dispatches++;
+            pool_for_units((u64)n_seq * ab.per_seq, g_att_chunk, att_batch_run,
+                           &ab);
+        } else {
+            /* Below the threshold the dispatch (a broadcast, N wakeups and a
+             * join) costs more than the heads do, and this path is also
+             * STOKE_ATT_PAR=0's arm: bit-identical, just serial. */
+            att_batch_run(&ab, 0, (u64)n_seq * ab.per_seq);
         }
 
         /* attn_output matvec -> residual add */

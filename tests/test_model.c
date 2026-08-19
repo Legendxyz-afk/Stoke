@@ -217,7 +217,16 @@ typedef enum {
     MUT_VALUE_LEN_MISMATCH,
     MUT_HEAD_COUNT_NOT_DIVISIBLE,
     MUT_ODD_HEAD_DIM,
-    MUT_BAD_ATTN_Q_DIMS
+    MUT_BAD_ATTN_Q_DIMS,
+    /* Not a defect -- a VALID fixture with gqa_group 4 instead of 3.
+     *
+     * It exists because M5's E2 attention loop takes a 4-wide chain block when
+     * gqa_group >= 4 and a scalar tail otherwise, and the standing fixture's
+     * group of 3 runs ONLY the tail. A suite that never builds a group of 4
+     * would pass while leaving the block the real model actually uses (Qwen3
+     * is 32 q-heads over 8 kv-heads) untested -- this project has already
+     * recorded a test passing for a reason unrelated to its name four times. */
+    MUT_GQA4
 } Mutation;
 
 /* Writes a tiny, otherwise-self-consistent qwen3-shaped GGUF v3 file to
@@ -225,6 +234,8 @@ typedef enum {
  * valid). See the file header comment for why this exists instead of a
  * committed tests/data/ fixture. */
 static void write_fixture(const char* path, Mutation mut) {
+    u32 n_head = FIX_N_HEAD;
+    if (mut == MUT_GQA4) n_head = 4u; /* over n_head_kv 1 => gqa_group 4 */
     u32 n_head_kv = 1u;
     if (mut == MUT_HEAD_COUNT_NOT_DIVISIBLE) n_head_kv = 2u; /* 3 % 2 != 0 */
     u32 head_dim = FIX_HEAD_DIM;
@@ -253,7 +264,7 @@ static void write_fixture(const char* path, Mutation mut) {
     kv_count++;
     kv_u32(&kvs, "qwen3.feed_forward_length", FIX_N_FF);
     kv_count++;
-    kv_u32(&kvs, "qwen3.attention.head_count", FIX_N_HEAD);
+    kv_u32(&kvs, "qwen3.attention.head_count", n_head);
     kv_count++;
     kv_u32(&kvs, "qwen3.attention.head_count_kv", n_head_kv);
     kv_count++;
@@ -273,7 +284,7 @@ static void write_fixture(const char* path, Mutation mut) {
     u64 tensor_count = 0;
     u64 fill_ctr = 0;
 
-    u32 q_dim = FIX_N_HEAD * head_dim;
+    u32 q_dim = n_head * head_dim;
     u32 kv_dim = n_head_kv * head_dim;
     u64 d1[1];
     u64 d2[2];
@@ -1011,6 +1022,103 @@ TEST(l4_attention_on_the_pool_is_bit_identical_at_1_and_6_threads) {
     free(out6);
     free(out6b);
     model_close(m);
+}
+
+/* ===========================================================================
+ * M5 E2 -- the kv-head-outer attention loop is bit-identical to M4.5's
+ * q-head-outer one.
+ *
+ * WHAT IS BEING CLAIMED. E2 changes the loop nest so a kv-head's K and V are
+ * fetched ONCE for its whole GQA group instead of once per q-head -- at ctx
+ * 1500 that is 1.77 GB of KV reads per token becoming 0.44 GB, which is the
+ * point of the rung. The claim is that this moves no arithmetic: every score is
+ * still one q-head's dot product summed left to right, every output element
+ * still accumulates over j in ascending order. A claim of that shape is worth
+ * exactly the comparison that checks it.
+ *
+ * WHY THIS TEST EXISTS BESIDE THE REAL-MODEL BYTE-COMPARE. The PowerShell gate
+ * compares generated token streams against an archived binary on the 4B model:
+ * stronger evidence, minutes to run, and needs a model file this tree does not
+ * carry. This runs in the suite, on both thread counts, on BOTH shapes of the
+ * new loop -- and it compares HIDDEN STATES, which diverge long before a
+ * sampled token does.
+ *
+ * BOTH SHAPES, and that is the whole reason MUT_GQA4 exists: the new loop takes
+ * a 4-wide chain block when gqa_group >= 4 and a scalar tail otherwise. The
+ * standing fixture's group of 3 exercises the tail ONLY, so a suite built on it
+ * alone would leave the block the real model actually runs completely untested.
+ * ===========================================================================
+ */
+TEST(m5_e2_kv_head_outer_attention_is_bit_identical_to_the_q_head_outer_loop) {
+    const u32      NTOK = 48; /* fixture max_ctx is 64; past ATT_MIN_POS 32 */
+    const Mutation variants[2] = {MUT_NONE, MUT_GQA4};
+    const u32      want_group[2] = {3u, 4u}; /* tail-only, then 4-wide block */
+
+    for (u32 vi = 0; vi < 2u; vi++) {
+        write_fixture(MODEL_FIXTURE_PATH, variants[vi]);
+        Model*    m = model_open(MODEL_FIXTURE_PATH);
+        const u32 n_embd = model_n_embd(m);
+
+        /* The fixture must actually have the shape the case is named for --
+         * otherwise "both shapes" is a comment, not a fact. */
+        ASSERT_EQ_U32(model_n_head(m) / model_n_head_kv(m), want_group[vi]);
+
+        u32 tokens[48];
+        for (u32 t = 0; t < NTOK; t++) tokens[t] = t % 5u; /* vocab is 5 */
+
+        size_t bytes = (size_t)NTOK * n_embd * sizeof(f32);
+        f32*   out[2];
+        out[0] = (f32*)xmalloc(bytes);
+        out[1] = (f32*)xmalloc(bytes);
+
+        /* 1 thread and 6: the arms must agree with each other at each count,
+         * and E2 changes the UNIT COUNT (n_head_kv, not n_head), so the thread
+         * count is not incidental to what is being compared. */
+        for (u32 threads = 1u; threads <= 6u; threads += 5u) {
+            u64 gqa0 = model_att_gqa_step_count();
+            pool_stop();
+            pool_start(threads);
+            for (u32 arm = 0; arm < 2u; arm++) {
+                model_att_set_gqa(arm);
+                Kv* kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                                 model_n_head_kv(m), model_head_dim(m));
+                for (u32 t = 0; t < NTOK; t++) {
+                    model_forward_position(m, kv, tokens[t], t, NULL,
+                                           out[arm] + (size_t)t * n_embd);
+                }
+                kv_close(kv);
+            }
+            ASSERT_TRUE(memcmp(out[0], out[1], bytes) == 0);
+
+            /* The anti-vacuity check. Arm 1 must have run the E2 loop for every
+             * layer of every position, and arm 0 must have run it for none --
+             * if the selector were broken both arms would take the same path
+             * and the memcmp above would compare a loop against itself. */
+            u64 gqa_steps = model_att_gqa_step_count() - gqa0;
+            u64 want = (u64)model_n_layer(m) * NTOK;
+            if (gqa_steps != want) {
+                printf("  E2 arm ran %llu layer-steps, expected exactly %llu\n",
+                       (unsigned long long)gqa_steps, (unsigned long long)want);
+            }
+            ASSERT_TRUE(gqa_steps == want);
+        }
+        pool_stop();
+        model_att_set_gqa(1u); /* restore the shipping default */
+
+        /* And the states must not be all-zero, or every memcmp is vacuous. */
+        u32 nonzero = 0;
+        for (u32 i = 0; i < NTOK * n_embd; i++) {
+            if (out[0][i] != 0.0f) nonzero++;
+        }
+        ASSERT_TRUE(nonzero > 0u);
+
+        free(out[0]);
+        free(out[1]);
+        model_close(m);
+    }
+    /* Leave the shared fixture path holding the UNMUTATED file: a later test
+     * that opens it without rewriting it must not silently inherit gqa 4. */
+    write_fixture(MODEL_FIXTURE_PATH, MUT_NONE);
 }
 
 TEST(m4_interleaved_sequences_on_a_shared_store_are_bit_identical_to_solo) {
