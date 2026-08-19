@@ -1,0 +1,15 @@
+2026-08-19T14:06:28  === M5 ENTRY verification (E1+E2+E3), branch m5-entry
+2026-08-19T14:06:28      n=24  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit=78b1cc5
+2026-08-19T14:06:28      binary 08/19/2026 14:04:26, newest source model.h 08/19/2026 14:01:56
+2026-08-19T14:06:48    Q4_K_M p00  kv=f32 t=2  chunk1=SAME  chunk128=SAME
+2026-08-19T14:06:58    Q4_K_M p00  kv=f32 t=6  chunk1=SAME  chunk128=SAME
+2026-08-19T14:10:14    Q4_K_M p41  kv=f32 t=2  chunk1=SAME  chunk128=SAME
+2026-08-19T14:11:45    Q4_K_M p41  kv=f32 t=6  chunk1=SAME  chunk128=SAME
+2026-08-19T14:12:06    Q4_K_M p00  kv=q8  t=2  chunk1=SAME  chunk128=SAME
+2026-08-19T14:12:16    Q4_K_M p00  kv=q8  t=6  chunk1=SAME  chunk128=SAME
+2026-08-19T14:15:38    Q4_K_M p41  kv=q8  t=2  chunk1=SAME  chunk128=SAME
+2026-08-19T14:17:16    Q4_K_M p41  kv=q8  t=6  chunk1=SAME  chunk128=SAME
+2026-08-19T14:22:47    Q8_0   p41  vs m3   t=2  chunk1=SAME  chunk128=SAME
+2026-08-19T14:27:02    Q8_0   p41  vs m3   t=6  chunk1=SAME  chunk128=SAME
+2026-08-19T14:27:02  ALL RUNG ARMS BIT-IDENTICAL TO THE ARCHIVES -- E1+E2+E3 move no arithmetic.
+2026-08-19T14:27:02  Speed is a SEPARATE question and is NOT measured here.
