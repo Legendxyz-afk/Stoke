@@ -677,6 +677,41 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   interleave from one binary. Design note:
   `docs/superpowers/design-notes/2026-08-17-m45-l4-attention-on-the-pool.md`.
 
+- **2026-08-19 — M4.5 CLOSED, tag `m45`. P-BAR IS MET.** The overnight chain
+  (byte-compare gate -> 4-arm A/B -> P-BAR at both graded configurations) ran
+  unattended and finished clean. **P-BAR: 0.912x at t=6 pinned, 0.892x at t=8
+  unpinned, against the 0.85 bar the milestone MISSED at 0.827-0.838 before
+  L4** — three blocks each, spaced across the night from different thermal
+  states, arm order rotating, llama re-measured inside the same sitting per
+  SS8.2. Correctness closed the same day: **byte-compare 10/10 in ONE sitting**
+  (`a48de9f`), discharging the four cases owed from the partial run.
+  **What L4 is worth: 1.09x at ctx 87, 1.58x at 554, 2.94x at ctx 1500, and the
+  slope falls 0.1713 -> 0.0289 ms/context-token** — stoke was 11.9x worse than
+  llama on slope, now 1.72x. **THE M5 ALARM IS RETIRED**: ctx 1024 costs ~93
+  ms/token, not the ~187 measured against a single-threaded attention loop, so
+  the ratio goes 0.33x -> 0.76x and M5's aggregate bars are back in range; the
+  08-11 budget's KV-traffic claim (crossover N x L ~ 16,936) is untouched and is
+  now the live constraint. **THE POOL IS 99% OF THE WIN** — isolated at ctx
+  1500, lanes alone 1.26x, pool alone 2.90x, both 2.94x, so `ATT_LANES` earns
+  ~1.3% and is a simplification candidate rather than an optimisation.
+  **THE PREDICTION MISSED HIGH (317 -> ~63 ms predicted, 106.75 measured) — the
+  third instance after A' (0.907x) and Q6_K (1.108x vs 1.20x) ⇒ price a kernel
+  argument at half its argued gain.** **ARM A IS UNFIT AS AN ANCHOR**: the
+  pre-maddubs archive predates `76dee7f` and read 9.99 / 5.30 / 0.92 / 8.6
+  across sittings while arm B and llama held to a few percent — stable within a
+  sitting, up to 10.9x between them. A Task-Scheduler-classification
+  explanation was TESTED AND REFUTED (scheduled 9.044 vs interactive 7.999), so
+  what survives is the fact, not a mechanism; both reports grade on B/L and say
+  so on their face. Two harness guards were fixed the same night: the standby
+  check read Normal-Priority bytes alone and cried wolf on three of three good
+  blocks (the model was in the RESERVE bucket), and `-AlwaysRestoreISLC` on a
+  chained leg lets ISLC purge the cache the next leg depends on. Gate report:
+  `docs/superpowers/gate-reports/2026-08-19-m45-gate-report.md` — its SS3 also
+  corrects the record on rung C, which was NOT adopted (C-FAIL-RATE fired,
+  `a53ee34`/`bc8bd00`); the criterion that stopped it was later retired as
+  unsound (`e253d7e`), and what ships is the bit-exact maddubs twin (`650c47c`)
+  plus Q6_K on maddubs (`cf0d8eb`).
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session

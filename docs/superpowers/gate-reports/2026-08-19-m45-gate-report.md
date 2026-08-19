@@ -44,8 +44,8 @@ say so on their face, and no part of this verdict depends on it.
 
 | rung | disposition |
 |---|---|
-| B — batch hoist | landed (as recorded; **verify against the ledger before stamping**) |
-| C — CONTRACT v2 re-anchor | landed, graded per §6 (as recorded; **same check**) |
+| B — batch hoist | **landed.** `1788b24` hoists the Q4_K unpack out of the sequence loop (N=16 +29.5%), `cb9d00a` retracts that figure as unreliable, `f91e44e` re-measures it properly at **+32.5%** with Q6_K joining the hoist. Per §7.1's step model B cannot move N=1, and it did not |
+| C — CONTRACT v2 re-anchor | **NOT ADOPTED AS SPECIFIED — and this row is the reason the ledger check was owed.** v2 landed for Q4_K (`1f78ebe`) and Q6_K (`bf13034`) with grading owed; the graded run then **fired C-FAIL-RATE** (`a53ee34`) and C was **parked, not adopted** (`bc8bd00`), even though its integer-totals oracle came back clean. The criterion that stopped it was then **disproven on its own terms**: the NULL-1 base rate measured 35/50 for a change that means nothing (`20fb0c9`), a mathematically identical pair scored like C on every axis (`4883b25`), and first-divergence count was formally **retired as a gate criterion on Q4_K_M** (`e253d7e`). What actually ships from this rung is the **maddubs twin** (`650c47c`) — 32 products per instruction and **not one bit changes** — plus **Q6_K on maddubs** (`cf0d8eb`, 1.108× at N=1, also bit-identical). Both are bit-exact, so neither needed the grading that stopped C |
 | A′ — row tiling under v2 | **DEAD — rejected on measurement at 0.907×**, not on argument |
 | D — repack | **never triggered.** §7.4 conditions it on a P-BAR miss after the ladder; P-BAR is met. Independently, the 08-17 attribution showed matvec already at parity (intercepts 52.95 vs 53.61 ms), so D would repack the term that is not the problem, and it was expected to fail its RAM gate on a 15.63 GB box |
 | L4 — attention | **executed `ba4e140` + `755a43b`, and cost NO gate** — the cause was not arithmetic: attention had never run on the pool. Parallelism over independent outputs, so no twin, no grading run, no re-anchor; §7.6's 8-lane canonical fold is not needed and not done |
@@ -104,8 +104,11 @@ relinked binary during leg 3: both **IDENTICAL**.
 - [x] correctness gate 10/10, one sitting, on the current binary
 - [x] ROADMAP M4.5 row updated; M5 row's alarm retired in place
 - [x] measurement artifacts committed
-- [ ] **§3's B and C rows verified against the ledger** — written here from the
-      ROADMAP and memory, not re-derived tonight
+- [x] **§3's B and C rows verified against the branch history (2026-08-19).**
+      Worth doing: the draft said "C landed, graded per §6" and **that was
+      wrong** — C fired C-FAIL-RATE and was parked; the criterion that stopped
+      it was later retired as unsound, and what ships is the bit-exact maddubs
+      twin plus Q6_K. §3 is corrected
 - [ ] `stoke/MEMORY.md` build-log entry for the M4.5 close
 - [ ] `.superpowers` ledger block appended
 - [ ] owner line moved M4.5 → M5
