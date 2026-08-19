@@ -1,0 +1,15 @@
+2026-08-19T10:42:44  === M5 ENTRY verification (E1+E2+E3), branch m5-entry
+2026-08-19T10:42:44      n=24  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit=e21892e
+2026-08-19T10:42:44      binary 08/19/2026 10:42:43, newest source model.c 08/19/2026 10:15:51
+2026-08-19T10:44:36    Q4_K_M p00  kv=f32 t=2  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T10:45:11    Q4_K_M p00  kv=f32 t=6  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T10:50:31    Q4_K_M p41  kv=f32 t=2  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T10:52:53    Q4_K_M p41  kv=f32 t=6  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T10:53:50    Q4_K_M p00  kv=q8  t=2  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T10:54:12    Q4_K_M p00  kv=q8  t=6  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T11:06:53    Q4_K_M p41  kv=q8  t=2  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T11:15:11    Q4_K_M p41  kv=q8  t=6  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T11:30:59    Q8_0   p41  vs m3   t=2  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T11:39:15    Q8_0   p41  vs m3   t=6  base=SAME  e2=SAME  e3=SAME  ship=SAME
+2026-08-19T11:39:15  ALL FOUR RUNG ARMS BIT-IDENTICAL TO THE ARCHIVES -- E1+E2+E3 move no arithmetic.
+2026-08-19T11:39:15  Speed is a SEPARATE question and is NOT measured here.

@@ -1,0 +1,1 @@
+{"name": "m5-e2-verify", "total": 10, "plan": "8 Q4_K_M cases (kv f32/q8 x p00/p41 x t2/t6) + 2 Q8_0 cases (p41 x t2/t6)", "arms": 4, "started": "2026-08-19T09:46:03"}

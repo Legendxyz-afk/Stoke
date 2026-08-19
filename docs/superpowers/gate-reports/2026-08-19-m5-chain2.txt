@@ -1,0 +1,9 @@
+2026-08-19T10:29:47  [chain2] START pid=24016
+2026-08-19T10:29:47  [chain2] waiting for 2 job(s)
+2026-08-19T10:39:49  [chain2] waiting for 2 job(s)
+2026-08-19T10:49:51  [chain2] waiting for 2 job(s)
+2026-08-19T10:59:54  [chain2] waiting for 2 job(s)
+2026-08-19T11:09:56  [chain2] waiting for 2 job(s)
+2026-08-19T11:19:59  [chain2] waiting for 2 job(s)
+2026-08-19T11:30:01  [chain2] waiting for 2 job(s)
+2026-08-19T11:40:04  [chain2] waiting for 2 job(s)
