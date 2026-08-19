@@ -1,0 +1,5 @@
+2026-08-19T09:29:28  === attention-on-the-pool verification, branch main
+2026-08-19T09:29:28      n=24  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-19T09:29:28      binary 08/19/2026 09:23:00, newest source pool.h 08/19/2026 07:19:26
+2026-08-19T09:31:27    Q4_K_M p00  kv=f32 t=2  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME
+2026-08-19T09:31:59    Q4_K_M p00  kv=f32 t=6  lanes1/par0=SAME  lanes1/par1=SAME  lanes4/par0=SAME  lanes4/par1=SAME

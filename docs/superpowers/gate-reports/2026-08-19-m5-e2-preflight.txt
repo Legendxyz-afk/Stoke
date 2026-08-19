@@ -1,0 +1,7 @@
+2026-08-19T09:44:11  === M5 E2 kv-head-outer attention verification, branch main
+2026-08-19T09:44:11      n=16  new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-19T09:44:11      binary 08/19/2026 09:42:43, newest source model.c 08/19/2026 09:40:25
+2026-08-19T09:44:12      *** -Quick: PRE-FLIGHT ONLY, p00 at t=6, no Q8_0 leg. NOT a gate. ***
+2026-08-19T09:45:05    Q4_K_M p00  kv=f32 t=6  gqa0/par1=SAME  gqa0/par0=SAME  gqa1/par1=SAME  gqa1/par0=SAME
+2026-08-19T09:45:38    Q4_K_M p00  kv=q8  t=6  gqa0/par1=SAME  gqa0/par0=SAME  gqa1/par1=SAME  gqa1/par0=SAME
+2026-08-19T09:45:38  PRE-FLIGHT GREEN on p00 -- run WITHOUT -Quick for the gate evidence.
