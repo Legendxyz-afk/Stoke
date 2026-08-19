@@ -1,0 +1,17 @@
+model   : models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+prompts : p00, p10, p20, p30, p45
+widths  : [1, 2, 4, 8, 16]   n_gen=16
+
+  solo p00: 16 ids in 2.5s
+  solo p10: 16 ids in 2.5s
+  solo p20: 16 ids in 3.7s
+  solo p30: 16 ids in 3.4s
+  solo p45: 16 ids in 2.3s
+
+  N=1   OK   1/1 slots compared in 2.5s
+  N=2   OK   2/2 slots compared in 3.9s
+  N=4   OK   4/4 slots compared in 8.0s
+  N=8   OK   8/8 slots compared in 13.5s
+  N=16  OK   16/16 slots compared in 25.8s
+
+GATE ITEM 2: PASS -- 31 sequence streams over 5 widths, all byte-identical to solo
