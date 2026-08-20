@@ -1,0 +1,2 @@
+﻿{"rate":23.621,"id":"c1-t8-S","kind":"cell","arm":"S","gflops":199.8,"dir":"up","clock_pct":137.4,"threads":8,"cycle":1,"cpu_s":135.5,"secs":26,"utc":"2026-08-20T12:42:50"}
+{"rate":69.64,"id":"c1-t8-L","kind":"cell","arm":"L","gflops":589.2,"dir":"up","clock_pct":114.9,"threads":8,"cycle":1,"cpu_s":174.8,"secs":27.6,"utc":"2026-08-20T12:43:17"}
