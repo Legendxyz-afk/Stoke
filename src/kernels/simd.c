@@ -30,6 +30,18 @@
 #error "simd.c requires -mavxvnni (K0 P-B: neither toolchain rejects the wrong intrinsic spelling, so this guard is the only protection)"
 #endif
 
+/* ▶ THE MINS TERM'S A/B SWITCH, AND IT DEFAULTS TO THE OLD SPELLING.
+ * `vec_dot_q4_k_q8_k_xn_avx2` computes its per-sequence mins term with a
+ * scalar loop that objdump shows is ~40-45% of the emitted per-sequence work.
+ * The SIMD spelling is bit-exact by construction (integer, associative, proved
+ * non-overflowing at the site), but "bit-exact by construction" is an argument
+ * and this project ships on measurement: the default stays 0 until the
+ * byte-compare gate is green AND an interleaved A/B says it is faster.
+ * Build the B arm with -DSTOKE_MINS_SIMD=1. */
+#ifndef STOKE_MINS_SIMD
+#define STOKE_MINS_SIMD 0
+#endif
+
 /* ---------------------------------------------------------------- feature */
 
 /* Cached across calls: CPUID is serializing and this is read per matvec row.
@@ -572,12 +584,58 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
             f32 ad;
             memcpy(&ad, ablk, sizeof ad);
 
-            i32 sumi = 0;
+            /* ── THE MINS TERM. Two spellings of ONE integer sum, and the
+             * SIMD one is exact by construction rather than by testing.
+             *
+             * WHY IT IS HERE (2026-08-20). Gate [2]'s attribution measured the
+             * prefill gap to llama.cpp at ~3.2x AT EVERY THREAD COUNT, with
+             * stoke's thread scaling (4.54x at t=8) BETTER than llama's (4.30x)
+             * -- so the gap is per-thread instruction efficiency, not the pool.
+             * `objdump` on this function then found the scalar spelling below
+             * fully unrolled and NOT vectorized by GCC: 16 `movswl` + 8 `add` +
+             * 8 `imul` + 8 `add` is ~40 uops beside the ~57 the actual vector
+             * dot product costs. Roughly 40-45% of the emitted per-sequence
+             * work was a loop that is not the dot product.
+             *
+             * WHY REGROUPING IT IS BIT-EXACT, not merely tested to be. Every
+             * term is an integer, integer addition is associative, and nothing
+             * overflows: `bsums[j]` sums 16 quants each clamped to +-128 so
+             * |bs| <= 2048; a pair is <= 4096 against an i16 ceiling of 32767;
+             * times a 6-bit min (<= 63) is <= 258048, and `vpmaddwd` sums two
+             * of those to <= 516096 against an i32 ceiling. That is `simd.c`'s
+             * founding principle (see kq_hsum_i32 above) applied to the one
+             * term in this kernel that had never been given it.
+             *
+             * AND GCC ALREADY PROVED THE REGROUPING SOUND. The disassembly
+             * shows `add %edx,%r15d` feeding a SINGLE `imul` -- the compiler
+             * noticed mins8[j/2] is shared by j=2k and j=2k+1 and folded
+             * bs[2k]+bs[2k+1] before multiplying. The SIMD form computes the
+             * identical pairing, which is why the two spellings agree bit for
+             * bit rather than merely closely. */
+            i32 sumi;
+#if STOKE_MINS_SIMD
+            {
+                /* [m0,m0,m1,m1,...,m7,m7] so lane 2k and 2k+1 both carry
+                 * mins8[k], making vpmaddwd's pair-sum exactly
+                 * mins8[k]*(bs[2k]+bs[2k+1]). */
+                static const i8 dup[16] = {0, 0, 1, 1, 2, 2, 3, 3,
+                                           4, 4, 5, 5, 6, 6, 7, 7};
+                __m128i m8 = _mm_loadl_epi64((const __m128i*)(const void*)mins8);
+                __m128i m8d = _mm_shuffle_epi8(
+                    m8, _mm_loadu_si128((const __m128i*)(const void*)dup));
+                __m256i m16 = _mm256_cvtepu8_epi16(m8d);
+                __m256i bs16 =
+                    _mm256_loadu_si256((const __m256i*)(const void*)bsums);
+                sumi = kq_hsum_i32(_mm256_madd_epi16(m16, bs16));
+            }
+#else
+            sumi = 0;
             for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS / 16u; ++j) {
                 i16 bs;
                 memcpy(&bs, bsums + 2u * j, sizeof bs);
                 sumi += (i32)bs * (i32)mins8[j / 2u];
             }
+#endif
 
             __m256i acc = _mm256_setzero_si256();
             for (u32 j = 0; j < 8u; ++j) {

@@ -1,0 +1,16 @@
+﻿{"rate":5.184,"id":"c1-t1-S","kind":"cell","arm":"S","gflops":43.9,"dir":"up","clock_pct":117.6,"threads":1,"cycle":1,"cpu_s":98,"secs":107.2,"utc":"2026-08-20T12:45:39"}
+{"rate":17.46,"id":"c1-t1-L","kind":"cell","arm":"L","gflops":147.7,"dir":"up","clock_pct":122.4,"threads":1,"cycle":1,"cpu_s":90.3,"secs":95.4,"utc":"2026-08-20T12:47:15"}
+{"rate":9.86,"id":"c1-t2-S","kind":"cell","arm":"S","gflops":83.4,"dir":"up","clock_pct":176.5,"threads":2,"cycle":1,"cpu_s":93.6,"secs":57.1,"utc":"2026-08-20T12:48:12"}
+{"rate":35,"id":"c1-t2-L","kind":"cell","arm":"L","gflops":296.1,"dir":"up","clock_pct":96,"threads":2,"cycle":1,"cpu_s":91.7,"secs":52,"utc":"2026-08-20T12:49:04"}
+{"rate":17.925,"id":"c1-t4-S","kind":"cell","arm":"S","gflops":151.6,"dir":"up","clock_pct":180.1,"threads":4,"cycle":1,"cpu_s":98,"secs":30.9,"utc":"2026-08-20T12:49:35"}
+{"rate":65.22,"id":"c1-t4-L","kind":"cell","arm":"L","gflops":551.8,"dir":"up","clock_pct":99.7,"threads":4,"cycle":1,"cpu_s":97.8,"secs":31.1,"utc":"2026-08-20T12:50:06"}
+{"rate":24.706,"id":"c1-t8-S","kind":"cell","arm":"S","gflops":209,"dir":"up","clock_pct":151.9,"threads":8,"cycle":1,"cpu_s":131.3,"secs":22.6,"utc":"2026-08-20T12:50:28"}
+{"rate":75.84,"id":"c1-t8-L","kind":"cell","arm":"L","gflops":641.6,"dir":"up","clock_pct":94.6,"threads":8,"cycle":1,"cpu_s":160.6,"secs":26.1,"utc":"2026-08-20T12:50:54"}
+{"rate":24.939,"id":"c2-t8-S","kind":"cell","arm":"S","gflops":211,"dir":"down","clock_pct":157.5,"threads":8,"cycle":2,"cpu_s":130,"secs":22.3,"utc":"2026-08-20T12:51:17"}
+{"rate":75.83,"id":"c2-t8-L","kind":"cell","arm":"L","gflops":641.5,"dir":"down","clock_pct":95.2,"threads":8,"cycle":2,"cpu_s":161,"secs":26.8,"utc":"2026-08-20T12:51:44"}
+{"rate":18.033,"id":"c2-t4-S","kind":"cell","arm":"S","gflops":152.6,"dir":"down","clock_pct":179,"threads":4,"cycle":2,"cpu_s":97.5,"secs":30.6,"utc":"2026-08-20T12:52:14"}
+{"rate":61.29,"id":"c2-t4-L","kind":"cell","arm":"L","gflops":518.5,"dir":"down","clock_pct":96.1,"threads":4,"cycle":2,"cpu_s":102.5,"secs":31.6,"utc":"2026-08-20T12:52:46"}
+{"rate":9.811,"id":"c2-t2-S","kind":"cell","arm":"S","gflops":83,"dir":"down","clock_pct":130.9,"threads":2,"cycle":2,"cpu_s":94,"secs":55.4,"utc":"2026-08-20T12:53:41"}
+{"rate":34.46,"id":"c2-t2-L","kind":"cell","arm":"L","gflops":291.5,"dir":"down","clock_pct":104.9,"threads":2,"cycle":2,"cpu_s":92.1,"secs":51.9,"utc":"2026-08-20T12:54:33"}
+{"rate":5.76,"id":"c2-t1-S","kind":"cell","arm":"S","gflops":48.7,"dir":"down","clock_pct":157.6,"threads":1,"cycle":2,"cpu_s":92.1,"secs":96.6,"utc":"2026-08-20T12:56:10"}
+{"rate":17.78,"id":"c2-t1-L","kind":"cell","arm":"L","gflops":150.4,"dir":"down","clock_pct":104.2,"threads":1,"cycle":2,"cpu_s":89.1,"secs":93.2,"utc":"2026-08-20T12:57:43"}

@@ -1,0 +1,22 @@
+﻿2026-08-20T12:43:52  M5 attribution -- kernel or pool? stamp 2026-08-20-m5-attrib-threads
+2026-08-20T12:43:52  threads: 1,2,4,8  cycles: 2  ctx: 704  kv: f32
+2026-08-20T12:43:52    note: ISLC is running -- prefill_ms excludes load, so this is tolerated
+2026-08-20T12:43:52  CYCLE 1 (up): 1 -> 2 -> 4 -> 8
+2026-08-20T12:45:39    c1-t1-S      5.184 tok/s =   43.9 GFLOP/s  (107.2s, 0.91 cores, clock 117.6%)
+2026-08-20T12:47:15    c1-t1-L     17.460 tok/s =  147.7 GFLOP/s  (95.4s, 0.95 cores, clock 122.4%)
+2026-08-20T12:48:12    c1-t2-S      9.860 tok/s =   83.4 GFLOP/s  (57.1s, 1.64 cores, clock 176.5%)
+2026-08-20T12:49:04    c1-t2-L     35.000 tok/s =  296.1 GFLOP/s  (52s, 1.76 cores, clock 96%)
+2026-08-20T12:49:35    c1-t4-S     17.925 tok/s =  151.6 GFLOP/s  (30.9s, 3.17 cores, clock 180.1%)
+2026-08-20T12:50:06    c1-t4-L     65.220 tok/s =  551.8 GFLOP/s  (31.1s, 3.14 cores, clock 99.7%)
+2026-08-20T12:50:28    c1-t8-S     24.706 tok/s =  209.0 GFLOP/s  (22.6s, 5.81 cores, clock 151.9%)
+2026-08-20T12:50:54    c1-t8-L     75.840 tok/s =  641.6 GFLOP/s  (26.1s, 6.15 cores, clock 94.6%)
+2026-08-20T12:50:55  CYCLE 2 (down): 8 -> 4 -> 2 -> 1
+2026-08-20T12:51:17    c2-t8-S     24.939 tok/s =  211.0 GFLOP/s  (22.3s, 5.83 cores, clock 157.5%)
+2026-08-20T12:51:44    c2-t8-L     75.830 tok/s =  641.5 GFLOP/s  (26.8s, 6.01 cores, clock 95.2%)
+2026-08-20T12:52:14    c2-t4-S     18.033 tok/s =  152.6 GFLOP/s  (30.6s, 3.19 cores, clock 179%)
+2026-08-20T12:52:46    c2-t4-L     61.290 tok/s =  518.5 GFLOP/s  (31.6s, 3.24 cores, clock 96.1%)
+2026-08-20T12:53:41    c2-t2-S      9.811 tok/s =   83.0 GFLOP/s  (55.4s, 1.7 cores, clock 130.9%)
+2026-08-20T12:54:33    c2-t2-L     34.460 tok/s =  291.5 GFLOP/s  (51.9s, 1.77 cores, clock 104.9%)
+2026-08-20T12:56:10    c2-t1-S      5.760 tok/s =   48.7 GFLOP/s  (96.6s, 0.95 cores, clock 157.6%)
+2026-08-20T12:57:43    c2-t1-L     17.780 tok/s =  150.4 GFLOP/s  (93.2s, 0.96 cores, clock 104.2%)
+2026-08-20T12:57:43  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-20-m5-attrib-threads-report.md
