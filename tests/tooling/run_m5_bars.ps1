@@ -353,12 +353,66 @@ $lines += "# M5 gate item [2] -- the bars, measured"
 $lines += ""
 $lines += "Run ``$Stamp``. S2 = 512 prompt tokens (525 real, ChatML) x $NGen generated,"
 $lines += "M0's own prompts (``tests/data/bench_prompts/``), ctx $Ctx, threads $Threads, unpinned,"
-$lines += "$Blocks interleaved blocks on a quiesced box. Raw: ``$Stamp-raw.txt``, bank: ``$Stamp-bank.jsonl``."
+# Block count from the BANK, not from -Blocks: the report is regenerable from a
+# finished run (-Blocks 0), and taking the parameter published "0 interleaved
+# blocks" over a table of three.
+$nblk = @($all | ForEach-Object { [int]$_.block } | Sort-Object -Unique).Count
+$lines += "$nblk interleaved blocks. Raw: ``$Stamp-raw.txt``, bank: ``$Stamp-bank.jsonl``."
 $lines += ""
 $lines += "**The gate number is AGGREGATE(M0)**: decode-only ids over the span from the first"
-$lines += "token anywhere to the last token anywhere -- `bench/bench.py`'s ``aggregate_decode_tps``,"
+# >> SINGLE QUOTES, NOT DOUBLE. In a double-quoted PowerShell string a backtick
+# is the ESCAPE character, so "``bench/..." rendered as backspace + "ench/...".
+# It published a corrupted citation of the file the whole metric rests on.
+$lines += 'token anywhere to the last token anywhere -- `bench/bench.py`''s `aggregate_decode_tps`,'
 $lines += "which is how the 17.7 / 14.2 / 10.8 / 16.8 cells were computed."
 $lines += ""
+# THE QUIESCE GATE IS A START CONDITION, NOT A PROPERTY OF THE RUN: a box that
+# starts quiet throttles under sustained load.
+#
+# >> AND THE llama ARM ALONE CANNOT CERTIFY THAT, WHICH IS A TRAP I WALKED INTO.
+# It runs ONCE PER BLOCK, at the END. So its three samples were all taken after
+# the box had already warmed, they agreed to 1.03x, and the first version of
+# this section concluded "the blocks are at ONE clock and cross-block numbers
+# are comparable" -- while the table directly below it showed block 1's B arm at
+# ~23 against blocks 2-3 at ~17. A thermometer that is only read after the
+# patient's fever breaks reports a healthy temperature every time. llama dates
+# the PLATEAU; it is blind to the transient that preceded its first sample.
+#
+# So the verdict comes from stoke's own repeats: for each cell, block 1 against
+# the median of the later blocks. That is the comparison that spans the warming.
+$blkIds = @($all | ForEach-Object { [int]$_.block } | Sort-Object -Unique)
+$lblocks = @($all | Where-Object { $_.arm -eq "L" } | Sort-Object block)
+if ($lblocks.Count -gt 1) {
+    $ppv = @($lblocks | ForEach-Object { [double]$_.pp })
+    $lines += ("**Thermal state.** llama ``pp512`` by block: {0} -- these are taken at each" -f
+               (($ppv | ForEach-Object { "{0:n2}" -f $_ }) -join " / "))
+    $lines += "block's END, so they date the plateau and say nothing about block 1's own cells."
+}
+if ($blkIds.Count -gt 1) {
+    $ratios = @()
+    foreach ($cell in $Cells) {
+        foreach ($arm in @("S", "B")) {
+            $b1 = @($all | Where-Object { $_.cell -eq $cell -and $_.arm -eq $arm -and [int]$_.block -eq $blkIds[0] })
+            $rest = @($all | Where-Object { $_.cell -eq $cell -and $_.arm -eq $arm -and [int]$_.block -ne $blkIds[0] } |
+                      ForEach-Object { [double]$_.gate })
+            if ($b1.Count -gt 0 -and $rest.Count -gt 0) {
+                $m = Median $rest
+                if ($m -gt 0) { $ratios += ([double]$b1[0].gate / $m) }
+            }
+        }
+    }
+    if ($ratios.Count -gt 0) {
+        $rm = Median $ratios
+        $lines += ("Stoke's own repeats: block {0} runs at **{1:n2}x** the median of the later blocks" -f $blkIds[0], $rm)
+        if ($rm -gt 1.08) {
+            $lines += "-- **block $($blkIds[0]) is a WARMING TRANSIENT and is not comparable to the rest.**"
+            $lines += "Read the later blocks against each other; they are the stable-clock replicates."
+        } else {
+            $lines += "-- within 8%, so all blocks are at one clock and cross-block numbers compare."
+        }
+    }
+    $lines += ""
+}
 $lines += "## Medians by cell"
 $lines += ""
 $lines += "| cell | S serve AGG(M0) | S decode-only (N/ITL p50) | S TTFT p50 s | B batch decode | B prefill tok/s | bar | verdict |"
@@ -393,14 +447,16 @@ foreach ($cell in $Cells) {
     $isGate = $GATE.ContainsKey($seqs)
     if ($isGate) { $bar = $GATE[$seqs] } else { $bar = $REF[$seqs] }
     $barTxt = "-"
-    if ($null -ne $bar) { if ($isGate) { $barTxt = ">=$bar" } else { $barTxt = "$bar ref" } }
+    if ($null -ne $bar) { if ($isGate) { $barTxt = "&gt;= $bar" } else { $barTxt = "$bar ref" } }
     $verdict = "-"
     if ($null -ne $sAgg -and $null -ne $bar) {
         if (-not $isGate) { $verdict = ("{0:n2}x ref" -f ($sAgg / $bar)) }
         elseif ($sAgg -ge $bar) { $verdict = "**MET**" }
         else { $verdict = ("MISS ({0:n2}x)" -f ($sAgg / $bar)) }
     }
-    $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} | >={6} | {7} |" -f $cell,
+    # The `>=` lives in $barTxt, NOT in the format string -- it was in both,
+    # and published ">=>=17.7" on every row of the gate's own table.
+    $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} | {6} | {7} |" -f $cell,
         $(if ($null -ne $sAgg) { "{0:n3}" -f $sAgg } else { "-" }),
         $(if ($null -ne $sDec) { "{0:n2}" -f $sDec } else { "-" }),
         $(if ($null -ne $sTtf) { "{0:n1}" -f ($sTtf / 1000.0) } else { "-" }),
@@ -409,6 +465,26 @@ foreach ($cell in $Cells) {
         $barTxt, $verdict)
 }
 $lines += ""
+# PER BLOCK, BECAUSE A MEDIAN OVER A WARMING TRANSIENT PLUS A PLATEAU IS A
+# NUMBER ABOUT NEITHER. If block 1 sits well above 2 and 3 while 2 and 3 agree,
+# block 1 is the box warming up and the plateau blocks are the comparable pair.
+$blks = @($all | ForEach-Object { [int]$_.block } | Sort-Object -Unique)
+$lines += "## The same numbers by block (read column 1 against the rest)"
+$lines += ""
+$lines += ("| cell | arm | " + (($blks | ForEach-Object { "block $_" }) -join " | ") + " |")
+$lines += ("|---|---|" + (($blks | ForEach-Object { "---" }) -join "|") + "|")
+foreach ($cell in $Cells) {
+    foreach ($arm in @("S", "B")) {
+        $row = "| $cell | $arm |"
+        foreach ($b in $blks) {
+            $u = @($all | Where-Object { $_.cell -eq $cell -and $_.arm -eq $arm -and [int]$_.block -eq $b })
+            if ($u.Count -gt 0) { $row += (" {0:n3} |" -f [double]$u[0].gate) } else { $row += " - |" }
+        }
+        $lines += $row
+    }
+}
+$lines += ""
+
 $L = @($all | Where-Object { $_.arm -eq "L" })
 $lTg = Median (@($L | ForEach-Object { [double]$_.gate }))
 $lPp = Median (@($L | ForEach-Object { [double]$_.pp }))

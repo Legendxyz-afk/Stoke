@@ -1,0 +1,4 @@
+﻿2026-08-20T12:08:24  M5 decode flatness -- is aggregate tok/s flat in N? stamp 2026-08-20-m5-flatness
+2026-08-20T12:08:24  seqs: 1,2,4,8,16  passes: 4 (counterbalanced)  threads: 8  ctx: 192  n: 128  kv: f32
+2026-08-20T12:08:24  PASS 1 (up): 1 -> 2 -> 4 -> 8 -> 16
+2026-08-20T12:08:37    p1-n1     N=1    15.258 tok/s   (10.6s wall, 58.2s cpu, clock 98.5%)

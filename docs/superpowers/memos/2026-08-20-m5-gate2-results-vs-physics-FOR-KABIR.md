@@ -139,6 +139,30 @@ both engines. Scaling the cool-box compute ceiling of 23.1 by that gives
 confirmed outright: at N=8 it is 7% slower, and the note's justification was
 capacity.)*
 
+### 2c. The counterbalanced run, and its prediction written first
+
+`run_m5_flatness.ps1`, N ∈ {1, 2, 4, 8, 16}, four counterbalanced passes,
+ctx 192, launched at 12:08 on the plateau. **Written before the result.**
+
+The compute model does not merely say "flat" — it puts a **knee at N = 1.48**,
+because at N=1 the weight stream (57.3 ms at this ctx) still costs more than the
+arithmetic (41.8 ms), and from N=2 up it never does again. So:
+
+| N | compute model (plateau) | traffic model (plateau) |
+|---|---|---|
+| 1 | **≈13.1** (traffic-bound) | ≈13.1 |
+| 2 | **≈17.9** | ≈25.0 |
+| 4 | **≈17.9** | ≈46.8 |
+| 8 | **≈17.9** | ≈81.0 |
+| 16 | **≈17.9** | ≈126 |
+
+**A rise from N=1 to N=2 and then dead flat.** The two models agree at N=1 and
+diverge 7× by N=16, and the shape — a knee then a plateau, rather than a curve
+that keeps climbing — is a thing only the compute account predicts.
+
+**Falsifier:** N=4 or N=8 landing above ~21 (i.e. more than 20% over the N=2
+value) means the flatness is not flat and the crossover is somewhere else.
+
 **⇒ THE AGGREGATE TRAFFIC CEILINGS IN THE M5 ENTRY NOTE — 57.8 at N=8, 72.9 at
 N=16 — DESCRIBE A MACHINE THAT DOES NOT EXIST FROM N=2 UP.** `m5_traffic_budget.py`
 ends its ceiling table with the words "upper bounds: traffic only, no compute,

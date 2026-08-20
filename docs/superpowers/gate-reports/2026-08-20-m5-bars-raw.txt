@@ -1,0 +1,55 @@
+﻿2026-08-20T09:44:08  M5 gate [2] -- the bars. stamp 2026-08-20-m5-bars
+2026-08-20T09:44:08  cells: 8f32,16f32,8q8,16q8  blocks: 3  threads: 8  ctx: 704  n: 128
+2026-08-20T09:44:08  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-20T09:44:09    waiting: cpu 17% > 12%
+2026-08-20T09:44:29    waiting: cpu 13% > 12%
+2026-08-20T09:44:49    waiting: cpu 19% > 12%
+2026-08-20T09:45:33  QUIESCE GATE PASSED on cpu 11%, 7% (<= 12% twice), standby 0.6 GB
+2026-08-20T09:45:37  BLOCK 1 starting (cpu 11%, standby 0.6 GB)
+2026-08-20T09:48:39    b1-8f32-S         6.378 tok/s   (178s wall, 1193.8s cpu)
+2026-08-20T09:51:39    b1-8f32-B        23.071 tok/s   (175.4s wall, 1190.2s cpu)
+2026-08-20T09:57:44    b1-16f32-S        5.905 tok/s   (361.1s wall, 2443.4s cpu)
+2026-08-20T10:03:56    b1-16f32-B       22.653 tok/s   (367.2s wall, 2482.8s cpu)
+2026-08-20T10:07:02    b1-8q8-S          6.193 tok/s   (181.8s wall, 1216.6s cpu)
+2026-08-20T10:10:08    b1-8q8-B         22.980 tok/s   (180.7s wall, 1212.4s cpu)
+2026-08-20T10:17:12    b1-16q8-S         5.049 tok/s   (420.5s wall, 2836.2s cpu)
+2026-08-20T10:25:13    b1-16q8-B        17.470 tok/s   (476.9s wall, 3206.9s cpu)
+2026-08-20T10:26:11    b1-L           tg  17.030  pp  71.290 tok/s  (53.4s)
+2026-08-20T10:26:14  BLOCK 2 starting (cpu 4%, standby 3.31 GB)
+2026-08-20T10:30:20    b2-8f32-S         4.659 tok/s   (241.9s wall, 1621.9s cpu)
+2026-08-20T10:34:20    b2-8f32-B        17.367 tok/s   (235.4s wall, 1576.6s cpu)
+2026-08-20T10:42:08    b2-16f32-S        4.594 tok/s   (464.7s wall, 3143s cpu)
+2026-08-20T10:49:57    b2-16f32-B       17.936 tok/s   (464s wall, 3136.9s cpu)
+2026-08-20T10:54:10    b2-8q8-S          4.496 tok/s   (248.7s wall, 1667.8s cpu)
+2026-08-20T10:58:25    b2-8q8-B         16.130 tok/s   (250.9s wall, 1683s cpu)
+2026-08-20T11:06:54    b2-16q8-S         4.233 tok/s   (504.2s wall, 3392s cpu)
+2026-08-20T11:14:42    b2-16q8-B        18.219 tok/s   (463.8s wall, 3122.5s cpu)
+2026-08-20T11:15:37    b2-L           tg  17.760  pp  72.240 tok/s  (51.8s)
+2026-08-20T11:15:40  BLOCK 3 starting (cpu 12%, standby 3.25 GB)
+2026-08-20T11:19:31    b3-8f32-S         4.938 tok/s   (226.9s wall, 1529s cpu)
+2026-08-20T11:23:41    b3-8f32-B        16.671 tok/s   (245.7s wall, 1655.1s cpu)
+2026-08-20T11:31:42    b3-16f32-S        4.470 tok/s   (477.6s wall, 3230.9s cpu)
+2026-08-20T11:39:33    b3-16f32-B       17.887 tok/s   (467.1s wall, 3152.7s cpu)
+2026-08-20T11:43:44    b3-8q8-S          4.545 tok/s   (245.6s wall, 1650.8s cpu)
+2026-08-20T11:47:36    b3-8q8-B         17.390 tok/s   (228.2s wall, 1536.2s cpu)
+2026-08-20T11:55:29    b3-16q8-S         4.550 tok/s   (468.6s wall, 3162.6s cpu)
+2026-08-20T12:03:25    b3-16q8-B        17.513 tok/s   (471.3s wall, 3187.4s cpu)
+2026-08-20T12:04:22    b3-L           tg  17.480  pp  73.150 tok/s  (53.7s)
+2026-08-20T12:04:22  all blocks done -- writing report
+2026-08-20T12:04:23  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-20-m5-bars-report.md
+2026-08-20T12:05:41  M5 gate [2] -- the bars. stamp 2026-08-20-m5-bars
+2026-08-20T12:05:41  cells: 8f32,16f32,8q8,16q8  blocks: 0  threads: 8  ctx: 704  n: 128
+2026-08-20T12:05:41  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-20T12:05:43    waiting: cpu 18% > 12%
+2026-08-20T12:06:07  !! QUIESCE GATE NOT MET after 1 tries -- last reads 18%, standby 3.63 GB.
+2026-08-20T12:06:07  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-20T12:06:07  all blocks done -- writing report
+2026-08-20T12:06:07  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-20-m5-bars-report.md
+2026-08-20T12:07:32  M5 gate [2] -- the bars. stamp 2026-08-20-m5-bars
+2026-08-20T12:07:32  cells: 8f32,16f32,8q8,16q8  blocks: 0  threads: 8  ctx: 704  n: 128
+2026-08-20T12:07:32  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-20T12:07:34    waiting: cpu 31% > 12%
+2026-08-20T12:07:58  !! QUIESCE GATE NOT MET after 1 tries -- last reads 31%, standby 3.66 GB.
+2026-08-20T12:07:58  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-20T12:07:58  all blocks done -- writing report
+2026-08-20T12:07:58  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-20-m5-bars-report.md
