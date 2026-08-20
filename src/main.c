@@ -880,14 +880,73 @@ static void cmd_bench_serve(int argc, char** argv) {
     for (u32 i = 0; i < n_seq; i++) comp[i] = t_done[i] - t0;
     qsort(comp, n_seq, sizeof(double), cmp_double);
 
+    /* ===================================================================
+     * THE GATE NUMBER IS M0'S NUMBER, COMPUTED M0'S WAY.
+     *
+     * Gate item [2]'s bars -- 17.7 / 14.2 / 10.8 / 16.8 -- are cells from
+     * the M0 baseline table, and that table's `aggregate_decode_tps` is
+     *
+     *     sum over clients of (n_tokens - 1)
+     *     -----------------------------------------------------------
+     *     max(last-token wallclock) - min(first-token wallclock)
+     *
+     * (`bench/bench.py`): DECODE-only ids -- each client's first id is its
+     * TTFT, a different quantity -- over the span from the earliest first
+     * token ANYWHERE to the latest last token anywhere. It is not a
+     * per-client average and it is not end-to-end throughput: the leading
+     * prefill sits outside the span, while a later arrival's prefill sits
+     * inside it and is charged in full.
+     *
+     * This driver used to print `total ids / total wall`, which is neither.
+     * On S2's shape that is not a rounding difference -- the prompt is 512
+     * tokens against 128 generated, so a metric that charges all prefill to
+     * a decode bar is measuring mostly prefill. `stoke batch --timing`
+     * already reports decode-only (`n_decode / decode_ms`), so the fixed
+     * number here is also what makes the static referent comparable.
+     *
+     * BOTH are printed. End-to-end is the honest what-a-user-waited figure
+     * and it is the one to read when TTFT is the story; it is simply not
+     * the figure the bars were drawn from.
+     * =================================================================== */
+    double m0_first = 0.0, m0_last = 0.0;
+    bool   m0_any = false;
+    u64    decode_ids = 0;
+    for (u32 i = 0; i < n_seq; i++) {
+        if (got[i] == 0) continue;
+        double f = t_tok[(size_t)i * n_gen];
+        double l = t_tok[(size_t)i * n_gen + got[i] - 1];
+        if (!m0_any || f < m0_first) m0_first = f;
+        if (!m0_any || l > m0_last) m0_last = l;
+        m0_any = true;
+        decode_ids += got[i] - 1;
+    }
+    double m0_span_s = m0_any ? (m0_last - m0_first) / 1000.0 : 0.0;
+    double m0_agg = (m0_span_s > 0.0) ? (double)decode_ids / m0_span_s : 0.0;
+
+    /* TTFT, so a missed bar is attributable rather than merely observed: on
+     * this shape prefill and decode are separable costs and the M0 table
+     * carries both columns. */
+    double* ttft = (double*)xcalloc(n_seq, sizeof(double));
+    u32     n_ttft = 0;
+    for (u32 i = 0; i < n_seq; i++)
+        if (got[i] > 0) ttft[n_ttft++] = t_tok[(size_t)i * n_gen] - t0;
+    qsort(ttft, n_ttft, sizeof(double), cmp_double);
+
     double wall_s = (t1 - t0) / 1000.0;
     printf("serve: %u seqs x %u gen over %u prompt(s), ctx %u, kv %s, "
            "%u pool blocks\n",
            n_seq, n_gen, n_src, ctx, (kv_dt == KV_Q8_0) ? "q8" : "f32",
            capacity);
-    printf("  wall %.1f ms | %llu ids | AGGREGATE %.3f tok/s\n", t1 - t0,
-           (unsigned long long)total_ids,
-           (wall_s > 0.0) ? (double)total_ids / wall_s : 0.0);
+    printf("  AGGREGATE(M0) %.3f tok/s  = %llu decode ids / %.1f ms span "
+           "(first token to last)\n",
+           m0_agg, (unsigned long long)decode_ids, m0_last - m0_first);
+    printf("  end-to-end %.3f tok/s  = %llu ids / %.1f ms wall "
+           "(all prefill charged)\n",
+           (wall_s > 0.0) ? (double)total_ids / wall_s : 0.0,
+           (unsigned long long)total_ids, t1 - t0);
+    printf("  TTFT p50 %.0f  p95 %.0f  max %.0f ms\n",
+           pct(ttft, n_ttft, 0.50), pct(ttft, n_ttft, 0.95),
+           n_ttft ? ttft[n_ttft - 1] : 0.0);
     printf("  ITL  p50 %.1f  p95 %.1f  max %.1f ms  (n=%u)\n",
            pct(gaps, n_gap, 0.50), pct(gaps, n_gap, 0.95),
            n_gap ? gaps[n_gap - 1] : 0.0, n_gap);
@@ -909,6 +968,7 @@ static void cmd_bench_serve(int argc, char** argv) {
                (unsigned long long)((u64)n_seq * n_gen));
     }
 
+    free(ttft);
     free(gaps);
     free(comp);
     free(t_tok);
