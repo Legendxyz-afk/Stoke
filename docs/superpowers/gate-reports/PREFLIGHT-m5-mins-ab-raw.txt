@@ -1,0 +1,5 @@
+﻿2026-08-20T14:41:45  mins-term A/B. A=M:\New Drive\Desktop\Programming\stoke\build\ab\mins-scalar.exe  B=M:\New Drive\Desktop\Programming\stoke\build\ab\mins-simd.exe
+2026-08-20T14:41:45  ctx 704  kv f32  t8 cycles 1  t1 cycles 0
+2026-08-20T14:42:09    t8-c1-A     25.4680 tok/s =  215.5 GFLOP/s  (24.1s)
+2026-08-20T14:42:32    t8-c1-B     24.3821 tok/s =  206.3 GFLOP/s  (23.1s)
+2026-08-20T14:42:32  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\PREFLIGHT-m5-mins-ab-report.md

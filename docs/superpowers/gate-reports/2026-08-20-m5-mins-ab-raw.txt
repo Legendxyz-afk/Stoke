@@ -1,0 +1,15 @@
+﻿2026-08-20T14:42:46  mins-term A/B. A=M:\New Drive\Desktop\Programming\stoke\build\ab\mins-scalar.exe  B=M:\New Drive\Desktop\Programming\stoke\build\ab\mins-simd.exe
+2026-08-20T14:42:46  ctx 704  kv f32  t8 cycles 4  t1 cycles 2
+2026-08-20T14:43:11    t8-c1-A     24.6641 tok/s =  208.7 GFLOP/s  (25.2s)
+2026-08-20T14:43:35    t8-c1-B     25.9717 tok/s =  219.7 GFLOP/s  (24.1s)
+2026-08-20T14:44:00    t8-c2-B     26.3178 tok/s =  222.6 GFLOP/s  (24.1s)
+2026-08-20T14:44:24    t8-c2-A     24.2890 tok/s =  205.5 GFLOP/s  (24.1s)
+2026-08-20T14:44:49    t8-c3-A     22.6843 tok/s =  191.9 GFLOP/s  (25.1s)
+2026-08-20T14:45:11    t8-c3-B     26.1360 tok/s =  221.1 GFLOP/s  (22.1s)
+2026-08-20T14:45:34    t8-c4-B     24.8776 tok/s =  210.5 GFLOP/s  (23.1s)
+2026-08-20T14:45:58    t8-c4-A     24.0134 tok/s =  203.2 GFLOP/s  (24.1s)
+2026-08-20T14:47:38    t1-c1-A      5.4689 tok/s =   46.3 GFLOP/s  (100.2s)
+2026-08-20T14:49:13    t1-c1-B      5.7710 tok/s =   48.8 GFLOP/s  (95.2s)
+2026-08-20T14:50:48    t1-c2-B      5.8453 tok/s =   49.5 GFLOP/s  (94.2s)
+2026-08-20T14:52:27    t1-c2-A      5.4589 tok/s =   46.2 GFLOP/s  (99.2s)
+2026-08-20T14:52:27  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-20-m5-mins-ab-report.md

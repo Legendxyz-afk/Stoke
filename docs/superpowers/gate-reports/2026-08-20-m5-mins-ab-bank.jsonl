@@ -1,0 +1,12 @@
+﻿{"rate":24.6641,"id":"t8-c1-A","kind":"cell","arm":"A","gflops":208.7,"utc":"2026-08-20T14:43:11","threads":8,"cycle":1,"secs":25.2}
+{"rate":25.9717,"id":"t8-c1-B","kind":"cell","arm":"B","gflops":219.7,"utc":"2026-08-20T14:43:35","threads":8,"cycle":1,"secs":24.1}
+{"rate":26.3178,"id":"t8-c2-B","kind":"cell","arm":"B","gflops":222.6,"utc":"2026-08-20T14:44:00","threads":8,"cycle":2,"secs":24.1}
+{"rate":24.289,"id":"t8-c2-A","kind":"cell","arm":"A","gflops":205.5,"utc":"2026-08-20T14:44:24","threads":8,"cycle":2,"secs":24.1}
+{"rate":22.6843,"id":"t8-c3-A","kind":"cell","arm":"A","gflops":191.9,"utc":"2026-08-20T14:44:49","threads":8,"cycle":3,"secs":25.1}
+{"rate":26.136,"id":"t8-c3-B","kind":"cell","arm":"B","gflops":221.1,"utc":"2026-08-20T14:45:11","threads":8,"cycle":3,"secs":22.1}
+{"rate":24.8776,"id":"t8-c4-B","kind":"cell","arm":"B","gflops":210.5,"utc":"2026-08-20T14:45:34","threads":8,"cycle":4,"secs":23.1}
+{"rate":24.0134,"id":"t8-c4-A","kind":"cell","arm":"A","gflops":203.2,"utc":"2026-08-20T14:45:58","threads":8,"cycle":4,"secs":24.1}
+{"rate":5.4689,"id":"t1-c1-A","kind":"cell","arm":"A","gflops":46.3,"utc":"2026-08-20T14:47:38","threads":1,"cycle":1,"secs":100.2}
+{"rate":5.771,"id":"t1-c1-B","kind":"cell","arm":"B","gflops":48.8,"utc":"2026-08-20T14:49:13","threads":1,"cycle":1,"secs":95.2}
+{"rate":5.8453,"id":"t1-c2-B","kind":"cell","arm":"B","gflops":49.5,"utc":"2026-08-20T14:50:48","threads":1,"cycle":2,"secs":94.2}
+{"rate":5.4589,"id":"t1-c2-A","kind":"cell","arm":"A","gflops":46.2,"utc":"2026-08-20T14:52:27","threads":1,"cycle":2,"secs":99.2}

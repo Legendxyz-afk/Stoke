@@ -1,0 +1,2 @@
+﻿{"rate":25.468,"id":"t8-c1-A","kind":"cell","arm":"A","gflops":215.5,"utc":"2026-08-20T14:42:09","threads":8,"cycle":1,"secs":24.1}
+{"rate":24.3821,"id":"t8-c1-B","kind":"cell","arm":"B","gflops":206.3,"utc":"2026-08-20T14:42:32","threads":8,"cycle":1,"secs":23.1}

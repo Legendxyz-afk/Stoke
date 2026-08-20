@@ -574,6 +574,20 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
         memcpy(&dmraw, blk + 2, sizeof dmraw);
         const f32 dw = f16_to_f32(draw);
         const f32 dm = f16_to_f32(dmraw);
+#if STOKE_MINS_SIMD
+        /* ── HOISTED, because `mins8` IS WEIGHT-ONLY. The duplicated vector
+         * depends on nothing per-sequence, so building it inside the sequence
+         * loop rebuilt an identical value N times -- and this loop already
+         * holds `wnib[8]`, half the register file, live across it, so the extra
+         * live vectors were a plausible way to CAUSE spills while removing
+         * uops. [m0,m0,m1,m1,...] so vpmaddwd's pair-sum is exactly
+         * mins8[k]*(bs[2k]+bs[2k+1]). */
+        static const i8 dup[16] = {0, 0, 1, 1, 2, 2, 3, 3,
+                                   4, 4, 5, 5, 6, 6, 7, 7};
+        const __m256i m16 = _mm256_cvtepu8_epi16(_mm_shuffle_epi8(
+            _mm_loadl_epi64((const __m128i*)(const void*)mins8),
+            _mm_loadu_si128((const __m128i*)(const void*)dup)));
+#endif
 
         /* ── PER-SEQUENCE WORK, byte-for-byte the solo kernel's, in its
          * order. Nothing below regroups anything; it only runs N times. */
@@ -614,20 +628,11 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
              * bit rather than merely closely. */
             i32 sumi;
 #if STOKE_MINS_SIMD
-            {
-                /* [m0,m0,m1,m1,...,m7,m7] so lane 2k and 2k+1 both carry
-                 * mins8[k], making vpmaddwd's pair-sum exactly
-                 * mins8[k]*(bs[2k]+bs[2k+1]). */
-                static const i8 dup[16] = {0, 0, 1, 1, 2, 2, 3, 3,
-                                           4, 4, 5, 5, 6, 6, 7, 7};
-                __m128i m8 = _mm_loadl_epi64((const __m128i*)(const void*)mins8);
-                __m128i m8d = _mm_shuffle_epi8(
-                    m8, _mm_loadu_si128((const __m128i*)(const void*)dup));
-                __m256i m16 = _mm256_cvtepu8_epi16(m8d);
-                __m256i bs16 =
-                    _mm256_loadu_si256((const __m256i*)(const void*)bsums);
-                sumi = kq_hsum_i32(_mm256_madd_epi16(m16, bs16));
-            }
+            /* `m16` is hoisted above with the weight-only work; all that is
+             * per-sequence here is the bsums load, one vpmaddwd and the
+             * reduction. */
+            sumi = kq_hsum_i32(_mm256_madd_epi16(
+                m16, _mm256_loadu_si256((const __m256i*)(const void*)bsums)));
 #else
             sumi = 0;
             for (u32 j = 0; j < KERNELS_Q8_K_BLOCK_ELEMS / 16u; ++j) {
