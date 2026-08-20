@@ -11,10 +11,15 @@ that was wrong is the more important finding.
 
 ## 1. The verdict
 
-| cell | AGGREGATE(M0) | bar | |
-|---|---|---|---|
-| serve N=8, f32 KV | **6.378** | 17.7 | **MISS, 0.36×** |
-| serve N=16, f32 KV | **5.905** | 16.8 | **MISS, 0.35×** |
+| cell | AGGREGATE(M0) | bar | | at thermal equilibrium (§2b) |
+|---|---|---|---|---|
+| serve N=8, f32 KV | **6.378** | 17.7 | **MISS, 0.36×** | 4.659 → 0.26× |
+| serve N=16, f32 KV | **5.905** | 16.8 | **MISS, 0.35×** | 4.594 → 0.27× |
+
+The bar is missed by 2.8× on a cool box and by 3.8× on a box held under
+sustained load — which is the condition a serving engine actually runs in, and
+worth stating because the gate's methodology line says "quiesced" and a quiesced
+box is the *kindest* state, not the operating one.
 
 M0's counting throughout: decode-only ids over the span from the first token
 anywhere to the last token anywhere, which is how the 17.7 / 14.2 / 10.8 / 16.8
@@ -60,16 +65,79 @@ the weights once but does N × 8.46 GFLOP, and arithmetic does not amortise.**
 **A third control, and it fell out of the matrix rather than being designed
 for.** The gate cells run f32 KV and Q8 KV. `--kv q8` cuts KV bytes per context
 position from 512 to 136 — **3.76× less traffic through the term that grows
-with N and ctx** — and the static decode at N=8 measured **23.071 f32 vs 22.980
-q8: 0.4% apart.** A traffic-bound engine cannot absorb a 3.76× cut in its
-dominant growing term and not move. So the discriminator runs three ways now:
-the SHAPE is flat where traffic says it rises, the LEVEL matches a ceiling
-predicted from a rate measured on another day and another workload, and
-removing three quarters of the traffic changes nothing.
+with N and ctx**, worth 1.41× if traffic bound and 1.00× if compute bound — and
+the static decode at N=8 measured **23.071 f32 vs 22.980 q8, 0.4% apart**.
 
-*(Incidentally this is the entry note's §6 Q8-KV call, confirmed by
-measurement: "`--kv q8` is documented as the answer to RAM, not to speed" —
-0.4% is what "not to speed" looks like.)*
+### 2a. ⚠ AND THEN THE BOX THROTTLED, WHICH COSTS ME TWO OF THE THREE
+
+**Measured, not suspected.** `% Processor Performance` read 143.1 → 132.6 →
+126.0 across three consecutive one-second samples 45 minutes into the run —
+throttling in progress — while core occupancy held at 6.70 against block 1's
+6.71. Same cores, same occupancy, fewer cycles. The llama arm, which is in the
+matrix precisely to be a non-stoke thermometer, splits exactly as clock
+throttling predicts and contention does not:
+
+| | early | 50 min in | |
+|---|---|---|---|
+| llama `pp512` (compute-dense) | 91.30 | 71.29 | **−22%** |
+| llama `tg128` (memory-bound) | 18.12 | 17.03 | −6% |
+| stoke `8f32-S` b1 → b2 | 6.378 | 4.659 | **−27%** |
+
+**Cells run sequentially, so every CROSS-CELL comparison in §2 spans 6–19
+minutes of a monotonically heating box.** Correcting with llama's pp curve
+(≈0.44%/min, provisional — two points, and a different workload):
+
+| comparison | raw | drift-corrected | traffic says | compute says |
+|---|---|---|---|---|
+| N=16 ÷ N=8 | 0.982× | **≈1.04×** | 1.23× | 1.00× |
+| q8 KV ÷ f32 KV | 0.996× | **≈1.10×** | 1.41× | 1.00× |
+
+**Both still land far nearer compute than traffic, and neither is now clean
+enough to quote as "flat" or "0.4%".** I wrote both of those before the
+thermometer had two points; that was wrong, and the raw numbers are kept above
+rather than edited away. What survives untouched is the comparison that needs
+no cross-cell arithmetic: **the LEVEL**. `b1-8f32-B` was taken 15 minutes in at
+≈6.6% drift, and 23.071 against a 23.1 ceiling predicted from a different day's
+workload is not a ratio between two of my own cells.
+
+**⇒ OWED: a counterbalanced re-run** — B arm only, short prompts so a cell is
+under 90 s, cell order reversed on alternate passes so linear drift cancels
+between a forward and a reverse pass rather than accumulating
+(`tests/tooling/run_m5_flatness.ps1`, with the clock banked per unit).
+
+### 2b. AND THEN THE BOX STOPPED DRIFTING, WHICH GIVES THE CLEAN ANSWER ANYWAY
+
+The llama arm runs once per block, so it dates the drift as well as measuring
+it: **`b1-L` pp 71.29 → `b2-L` pp 72.24, 49 minutes apart — 1.3%.** The box hit
+thermal equilibrium during block 1 and stayed there. So block 1 is the warming
+transient and **block 2 is a stable-clock replicate in which every cell is
+comparable to every other**, which is precisely the design the sequential
+matrix could not otherwise supply.
+
+Block 2, decode-only aggregate, all four configurations at one clock:
+
+| N | KV | measured | traffic predicts |
+|---|---|---|---|
+| 8 | f32 | **17.367** | 83.9 |
+| 16 | f32 | **17.936** | 119.9 |
+| 8 | q8 | **16.130** | 118.7 |
+| 16 | q8 | **18.219** | 206.4 |
+
+**Traffic predicts these four spread over 2.46×. They span 1.13×.** Doubling the
+rows and cutting KV traffic 3.76× — which between them are worth 2.46× if
+bandwidth binds — move the number by 13%, and not monotonically. At N=8, Q8 KV
+is **7% SLOWER** than f32 despite 3.76× less traffic, which is what a compute
+wall plus Q8's extra unpack work looks like and is not something a
+bandwidth-bound engine can do at all.
+
+The LEVEL agrees too, and by an independent route: stoke's own cool-vs-plateau
+ratio is 17.367/23.071 = 0.753 and llama's is 72.24/91.30 = 0.791 — one cause,
+both engines. Scaling the cool-box compute ceiling of 23.1 by that gives
+**≈17.4–18.3 against a measured mean of 17.41**.
+
+*(The entry note's §6 Q8-KV call — "the answer to RAM, not to speed" — is
+confirmed outright: at N=8 it is 7% slower, and the note's justification was
+capacity.)*
 
 **⇒ THE AGGREGATE TRAFFIC CEILINGS IN THE M5 ENTRY NOTE — 57.8 at N=8, 72.9 at
 N=16 — DESCRIBE A MACHINE THAT DOES NOT EXIST FROM N=2 UP.** `m5_traffic_budget.py`
