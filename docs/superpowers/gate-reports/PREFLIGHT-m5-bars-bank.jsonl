@@ -1,0 +1,4 @@
+﻿{"standby_gb":0.29,"cpu_busy":3,"utc":"2026-08-20T09:34:36","id":"quiesce","kind":"quiesce"}
+{"block":1,"itl50":69.4,"steps":24,"cpu_busy":23,"ttft50":34845,"preempt":0,"chunks":10,"e2e":0.453,"cpu_s":0,"seqs":2,"kind":"cell","ttft95":34845,"secs":37.9,"itl95":70.9,"arm":"S","standby_gb":0,"kv":"f32","id":"b1-2f32-S","span_ms":16694.6,"utc":"2026-08-20T09:35:21","itlmax":91.2,"cell":"2f32","gate":0.839}
+{"cpu_busy":17,"arm":"B","seqs":2,"kv":"f32","standby_gb":0,"kind":"cell","secs":38.1,"pf_rate":30.925,"dec_tok":14,"pf_ms":33953.2,"pf_tok":1050,"cpu_s":0,"block":1,"cell":"2f32","utc":"2026-08-20T09:36:02","gate":18.218,"dec_ms":768.5,"id":"b1-2f32-B"}
+{"id":"b1-L","kind":"cell","arm":"L","cpu_s":0,"utc":"2026-08-20T09:36:42","cpu_busy":18,"block":1,"pp":91.3,"standby_gb":0,"secs":36.7,"cell":"llama","gate":18.12}

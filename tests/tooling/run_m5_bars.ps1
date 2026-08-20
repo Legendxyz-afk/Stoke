@@ -65,6 +65,15 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# >> SPLIT ON COMMA OURSELVES. `powershell -File script.ps1 -Cells a,b,c` hands
+# the whole thing over as ONE string -- only in-process invocation binds a
+# comma list to [string[]]. Found by this script's own bad-cell guard four
+# minutes into a two-hour run, which is the only reason the guard is a `throw`
+# and not a `continue`.
+$Cells = @($Cells | ForEach-Object { $_ -split ',' } |
+           ForEach-Object { $_.Trim() } | Where-Object { $_ })
+
 $root  = "M:\New Drive\Desktop\Programming\stoke"
 $exe   = "$root\build\win\stoke.exe"
 $LB    = "$root\bench\vendor\llama-b10037\llama-bench.exe"
@@ -122,6 +131,13 @@ function RunCapture($e, $argList, $errPath, $outPath) {
                        -RedirectStandardError $errPath `
                        -RedirectStandardOutput $outPath `
                        -NoNewWindow -PassThru
+    # >> TOUCH .Handle ONCE, OR CPU-SECONDS ARE SILENTLY ZERO. Found in this
+    # file's own pre-flight: every unit banked cpu_s = 0. A Process object from
+    # -PassThru has no cached handle, so TotalProcessorTime throws, the
+    # try/catch swallows it, and the EcoQoS tell -- the one check that is
+    # INDEPENDENT of whether a rate "looks low" -- reads zero for every arm at
+    # once, which is exactly how it would fail to fire when it mattered.
+    try { $null = $p.Handle } catch {}
     $cpu = 0.0
     while (-not $p.HasExited) {
         try { $p.Refresh(); $cpu = $p.TotalProcessorTime.TotalSeconds } catch {}
@@ -234,11 +250,27 @@ Say "exe: $exe"
 @{ total = ($Cells.Count * $Blocks * 2 + $Blocks); stamp = $Stamp } |
     ConvertTo-Json -Compress | Out-File -Encoding utf8 $status
 
+# ISLC. The Intelligent Standby List Cleaner purges the standby list on a
+# timer, so between legs the model is evicted and every run re-reads it from
+# disk -- and worse, the standby guard below then flags every block as
+# disk-bound and stops meaning anything. Stop it ONCE for a chain and restore
+# it after the last leg (the 08-19 lesson: a leg that restores it purges the
+# cache the NEXT leg depends on). This only WARNS -- stopping someone's
+# program is not a benchmark script's decision to take unattended.
+if (@(Get-Process | Where-Object { $_.Name -match 'ISLC' }).Count -gt 0) {
+    Say "  !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless"
+}
+
 # QUIESCE GATE. One sample is not a quiesce check -- the 08-14 harness bug
 # was exactly that -- so require two consecutive quiet reads.
+# >> AND IT SAYS WHICH HAPPENED. The pre-flight version printed "quiesced:
+# cpu 17%" after running out of tries at 17% > 12%: a gate that reports its
+# own name rather than its own result is worse than no gate.
 $quiet = 0
+$seen = @()
 for ($try = 0; $try -lt $QuietTries; $try++) {
     $busy = CpuBusy
+    $seen += $busy
     if ($busy -le $QUIET_CPU) {
         $quiet++
         if ($quiet -ge 2) { break }
@@ -249,9 +281,19 @@ for ($try = 0; $try -lt $QuietTries; $try++) {
     Start-Sleep -Seconds 20
 }
 $sb0 = StandbyGB
-Say "quiesced: cpu $(CpuBusy)%, standby $sb0 GB"
-Bank @{ id = "quiesce"; kind = "quiesce"; cpu_busy = (CpuBusy); standby_gb = $sb0;
-        utc = (Get-Date -Format s) }
+$quiesced = ($quiet -ge 2)
+# Report the readings the GATE USED, not a fresh sample: the first version
+# printed "QUIESCE GATE PASSED: cpu 39%", which is a sentence that argues
+# against itself and would have been read as a broken gate.
+$last2 = ($seen | Select-Object -Last 2) -join "%, "
+if ($quiesced) {
+    Say "QUIESCE GATE PASSED on cpu $last2% (<= $QUIET_CPU% twice), standby $sb0 GB"
+} else {
+    Say "!! QUIESCE GATE NOT MET after $QuietTries tries -- last reads $last2%, standby $sb0 GB."
+    Say "!! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not."
+}
+Bank @{ id = "quiesce"; kind = "quiesce"; passed = $quiesced; reads = $seen;
+        standby_gb = $sb0; utc = (Get-Date -Format s) }
 
 for ($blk = 1; $blk -le $Blocks; $blk++) {
     $sbNow = StandbyGB
@@ -369,6 +411,12 @@ foreach ($u in $all) {
 $lines += ""
 $lines += "Any block whose standby cache summed under the 2.33 GB model was reading the"
 $lines += "model from DISK and is not comparable; all three buckets are summed (the"
-$lines += "Normal-only guard cried wolf on 3/3 good blocks on 2026-08-18)."
+$lines += "Normal-only guard cried wolf on 3/3 good blocks on 2026-08-18). If the raw log"
+$lines += "carries an ISLC warning, read the standby column as unavailable rather than low."
+$q = @(Banked | Where-Object { $_.kind -eq "quiesce" })
+if ($q.Count -gt 0 -and $q[0].passed -ne $true) {
+    $lines += ""
+    $lines += "**THE QUIESCE GATE DID NOT PASS.** Every absolute rate here is INDICATIVE."
+}
 $lines | Out-File -Encoding utf8 $report
 Say "report: $report"

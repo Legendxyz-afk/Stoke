@@ -1,0 +1,11 @@
+﻿2026-08-20T09:34:04  M5 gate [2] -- the bars. stamp PREFLIGHT-m5-bars
+2026-08-20T09:34:04  cells: 2f32  blocks: 1  threads: 8  ctx: 544  n: 8
+2026-08-20T09:34:04  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-20T09:34:11    waiting: cpu 71% > 12%
+2026-08-20T09:34:36  quiesced: cpu 17%, standby 0.29 GB
+2026-08-20T09:34:39  BLOCK 1 starting (cpu 29%, standby 0.27 GB)
+2026-08-20T09:35:21    b1-2f32-S         0.839 tok/s   (37.9s wall, 0s cpu)
+2026-08-20T09:36:02    b1-2f32-B        18.218 tok/s   (38.1s wall, 0s cpu)
+2026-08-20T09:36:42    b1-L           tg  18.120  pp  91.300 tok/s  (36.7s)
+2026-08-20T09:36:42  all blocks done -- writing report
+2026-08-20T09:36:42  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\PREFLIGHT-m5-bars-report.md
