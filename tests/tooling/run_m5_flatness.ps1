@@ -104,8 +104,19 @@ function RunCapture($e, $argList, $errPath, $outPath) {
                        -NoNewWindow -PassThru
     try { $null = $p.Handle } catch {}   # or TotalProcessorTime is silently 0
     $cpu = 0.0
+    $script:MidClock = $null
+    $t0 = Get-Date
     while (-not $p.HasExited) {
         try { $p.Refresh(); $cpu = $p.TotalProcessorTime.TotalSeconds } catch {}
+        # ▶ SAMPLE THE CLOCK MID-RUN, NOT BEFORE. The first version sampled
+        # before and after each cell and averaged. Between cells the box is
+        # IDLE, so the "before" sample reads an idle clock -- p1-n1 banked 98.5%
+        # while the box under load was well above that. A covariate measured
+        # while the load is not running is not a covariate for the load. One
+        # sample, taken ~3 s in once the pool is up to speed.
+        if ($null -eq $script:MidClock -and ((Get-Date) - $t0).TotalSeconds -ge 3.0) {
+            $script:MidClock = ClockPct
+        }
         Start-Sleep -Milliseconds 250
     }
     try { $p.Refresh(); $cpu = $p.TotalProcessorTime.TotalSeconds } catch {}
@@ -144,18 +155,20 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
 
     foreach ($n in $order) {
         $id = "p$pass-n$n"
-        $c0 = ClockPct
         $t0 = Get-Date
         $r = BatchDecode ([int]$n)
         $secs = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
-        $c1 = ClockPct
+        $c0 = $script:MidClock          # sampled ~3 s INTO the run, under load
+        $c1 = ClockPct                  # and once immediately after, still warm
         if ($null -eq $r) {
             Say "  $id PARSE-FAIL after ${secs}s"
             Bank @{ id = $id; kind = "fail"; pass = $pass; seqs = [int]$n; utc = (Get-Date -Format s) }
             continue
         }
-        $clock = $null
-        if ($null -ne $c0 -and $null -ne $c1) { $clock = [math]::Round(($c0 + $c1) / 2.0, 1) }
+        # Prefer the under-load sample; fall back to the after-sample only if
+        # the cell was too short to take one.
+        $clock = $c0
+        if ($null -eq $clock) { $clock = $c1 }
         Bank @{ id = $id; kind = "cell"; pass = $pass; dir = $dir; seqs = [int]$n
                 rate = $r.rate; dec_tok = $r.dec_tok; secs = $secs
                 cpu_s = $script:LastCpuS; clock_pct = $clock
@@ -209,8 +222,10 @@ foreach ($u in $all) {
 }
 $lines += ""
 $lines += "Clock is ``\Processor Information(_Total)\% Processor Performance``, sampled"
-$lines += "before and after each cell and averaged. This box boosts to ~175% of nominal"
-$lines += "cool and was measured at 126% after 45 minutes of sustained load, so a unit's"
-$lines += "clock is a covariate, not a constant."
+$lines += "~3 s INTO each cell so it is taken under load. (The first version averaged a"
+$lines += "before-sample with an after-sample; between cells the box is idle, so the"
+$lines += "before-sample measured an idle clock and dragged every reading down.) This box"
+$lines += "was measured at 126% of nominal after 45 minutes of sustained load, so a"
+$lines += "unit's clock is a covariate, not a constant."
 $lines | Out-File -Encoding utf8 $report
 Say "report: $report"

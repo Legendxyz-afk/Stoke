@@ -2,3 +2,26 @@
 2026-08-20T12:08:24  seqs: 1,2,4,8,16  passes: 4 (counterbalanced)  threads: 8  ctx: 192  n: 128  kv: f32
 2026-08-20T12:08:24  PASS 1 (up): 1 -> 2 -> 4 -> 8 -> 16
 2026-08-20T12:08:37    p1-n1     N=1    15.258 tok/s   (10.6s wall, 58.2s cpu, clock 98.5%)
+2026-08-20T12:08:59    p1-n2     N=2    15.499 tok/s   (19.6s wall, 122.4s cpu, clock 112.8%)
+2026-08-20T12:09:33    p1-n4     N=4    18.617 tok/s   (32.7s wall, 209.9s cpu, clock 101.3%)
+2026-08-20T12:10:34    p1-n8     N=8    21.125 tok/s   (58.2s wall, 383.4s cpu, clock 101.9%)
+2026-08-20T12:12:29    p1-n16    N=16   21.820 tok/s   (113s wall, 760.2s cpu, clock 96.9%)
+2026-08-20T12:12:29  PASS 2 (down): 16 -> 8 -> 4 -> 2 -> 1
+2026-08-20T12:14:23    p2-n16    N=16   21.767 tok/s   (112.7s wall, 754.3s cpu, clock 105.6%)
+2026-08-20T12:15:23    p2-n8     N=8    21.193 tok/s   (57.8s wall, 383.9s cpu, clock 99.6%)
+2026-08-20T12:15:58    p2-n4     N=4    18.918 tok/s   (32.2s wall, 205.5s cpu, clock 101%)
+2026-08-20T12:16:19    p2-n2     N=2    15.626 tok/s   (19.7s wall, 122.5s cpu, clock 97.2%)
+2026-08-20T12:16:32    p2-n1     N=1    14.898 tok/s   (10.6s wall, 61.7s cpu, clock 106%)
+2026-08-20T12:16:32  PASS 3 (up): 1 -> 2 -> 4 -> 8 -> 16
+2026-08-20T12:16:45    p3-n1     N=1    14.479 tok/s   (10.8s wall, 63.5s cpu, clock 98.4%)
+2026-08-20T12:17:06    p3-n2     N=2    15.544 tok/s   (19.6s wall, 123.8s cpu, clock 98.2%)
+2026-08-20T12:17:41    p3-n4     N=4    18.748 tok/s   (32.7s wall, 209.6s cpu, clock 111.7%)
+2026-08-20T12:18:45    p3-n8     N=8    19.872 tok/s   (61.9s wall, 403.4s cpu, clock 101.8%)
+2026-08-20T12:20:47    p3-n16    N=16   20.396 tok/s   (120.2s wall, 800.9s cpu, clock 109.2%)
+2026-08-20T12:20:47  PASS 4 (down): 16 -> 8 -> 4 -> 2 -> 1
+2026-08-20T12:22:52    p4-n16    N=16   20.211 tok/s   (122.4s wall, 820.6s cpu, clock 130.2%)
+2026-08-20T12:23:56    p4-n8     N=8    19.518 tok/s   (62.4s wall, 414.6s cpu, clock 116.8%)
+2026-08-20T12:24:33    p4-n4     N=4    17.704 tok/s   (34.5s wall, 219.2s cpu, clock 106.5%)
+2026-08-20T12:24:55    p4-n2     N=2    14.401 tok/s   (20.9s wall, 130.5s cpu, clock 105.7%)
+2026-08-20T12:25:09    p4-n1     N=1    14.568 tok/s   (11.1s wall, 65s cpu, clock 132.9%)
+2026-08-20T12:25:09  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-20-m5-flatness-report.md

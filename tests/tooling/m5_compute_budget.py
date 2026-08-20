@@ -91,11 +91,17 @@ def main():
     ap.add_argument("--referent-pp", type=float, default=None,
                     help="llama-bench pp512 tok/s from the SAME sitting, to "
                          "convert into an effective GFLOP/s for comparison")
+    ap.add_argument("--stoke-pp", type=float, default=32.229,
+                    help="stoke's own prefill tok/s from the same sitting. The "
+                         "referent gap must be prefill-against-PREFILL: "
+                         "comparing llama's prefill to stoke's DECODE published "
+                         "3.96x where the like-for-like figure is 2.83x")
     a = ap.parse_args()
 
     f = GGUFFile(a.model)
     arch = f.kv["general.architecture"]
     n_layer = f.kv[f"{arch}.block_count"]
+    n_head = f.kv[f"{arch}.attention.head_count"]
     n_head_kv = f.kv[f"{arch}.attention.head_count_kv"]
     head_dim = f.kv[f"{arch}.attention.key_length"]
     weights = os.path.getsize(a.model)
@@ -112,13 +118,55 @@ def main():
     print(f"stoke measured effective rate: {a.gflops:.0f} GFLOP/s")
     print(f"  => {flops/(a.gflops*1e9)*1e3:.1f} ms per token of arithmetic, "
           f"and it does NOT amortise across rows")
-    print(f"  => a COMPUTE ceiling of {a.gflops*1e9/flops:.1f} tok/s aggregate, "
-          "flat in N\n")
+    print(f"  => a COMPUTE ceiling of {a.gflops*1e9/flops:.1f} tok/s aggregate\n")
+
+    # ▶ THIS CEILING IS NOT FLAT IN N, AND SAYING SO COST A FALSIFIER.
+    # The default 195 GFLOP/s comes from E3's prefill at 128-row chunks: a
+    # FULLY SATURATED 16-wide kernel tile and a FULLY SATURATED 8-thread pool.
+    # At small N neither is saturated, so the effective rate is a function of N
+    # and this line is an ASYMPTOTE, not a constant. Measured 2026-08-20
+    # (`gate-reports/2026-08-20-m5-flatness-report.md`, 4 counterbalanced
+    # passes, ctx 192, on a thermally-plateaued box):
+    #
+    #     N        1     2     4     8    16
+    #     GFLOP/s 120   127   152   167   172      <- rises 1.43x
+    #     cores  5.80  6.26  6.39  6.60  6.70      <- and 1.155x of that is
+    #                                                 just thread occupancy
+    #
+    # A prediction of "flat from N=2" was falsified by N=8 landing 32% over
+    # N=2. What the data does support: the curve SATURATES, and it is already
+    # saturated where the gate measures -- N=8 to N=16 buys 2.9% against the
+    # 1.88x that traffic-only reasoning predicts for the same step.
+    # >> THE CURVE WAS MEASURED AT ctx 192, SO ITS TRAFFIC COLUMN IS COMPUTED AT
+    # ctx 192 -- NOT at --ctx. Pricing a measured rate against a traffic ceiling
+    # from a different context length is a mixed basis, which is the error this
+    # project's tooling exists to prevent.
+    OCC_CTX = 192
+    OCC = {1: 120.0, 2: 127.0, 4: 152.0, 8: 167.0, 16: 172.0}
+    occ_flops = matvec + 4 * n_layer * n_head * head_dim * OCC_CTX
+    kv_ctx_tok = n_layer * n_head_kv * (head_dim * 4) * 2
+    print(f"OCCUPANCY-CORRECTED, from the measured curve (plateaued box, ctx {OCC_CTX}):")
+    print("   N   measured GFLOP/s   tok/s measured   traffic ceiling   ratio")
+    for N in (1, 2, 4, 8, 16):
+        g = OCC[N]
+        t_traffic = (weights + N * OCC_CTX * kv_ctx_tok) / W_BYTES_PER_S
+        meas, traf = g * 1e9 / occ_flops, N / t_traffic
+        print(f"  {N:2d}   {g:14.0f}   {meas:14.1f}   {traf:15.1f}   {traf/meas:5.1f}x")
+    lo, hi = OCC[1] / occ_flops, OCC[16] / occ_flops
+    t_lo = 1 / ((weights + 1 * OCC_CTX * kv_ctx_tok) / W_BYTES_PER_S)
+    t_hi = 16 / ((weights + 16 * OCC_CTX * kv_ctx_tok) / W_BYTES_PER_S)
+    print(f"  ^ across N=1..16 the MEASURED gain is {hi/lo:.2f}x; traffic-only")
+    print(f"    reasoning predicts {t_hi/t_lo:.1f}x. The curve saturates, and it is")
+    print("    already saturated where the gate measures: N=8 -> N=16 buys 2.9%.")
+    print("    The levels are not clock-corrected -- read the SHAPES.\n")
 
     if a.referent_pp:
         ref = a.referent_pp * flops / 1e9
-        print(f"referent: llama-bench pp512 = {a.referent_pp} tok/s "
-              f"=> {ref:.0f} GFLOP/s effective ({ref/a.gflops:.2f}x stoke)\n")
+        mine = a.stoke_pp * flops / 1e9
+        print(f"referent, PREFILL against PREFILL, same sitting:")
+        print(f"  llama-bench pp512 {a.referent_pp:6.2f} tok/s => {ref:5.0f} GFLOP/s")
+        print(f"  stoke prefill     {a.stoke_pp:6.2f} tok/s => {mine:5.0f} GFLOP/s")
+        print(f"  gap {ref/mine:.2f}x   (uniform speedup needed for the 17.7 bar: 2.75x)\n")
 
     # KV read per context token, kv-head-outer f32 -- post-E2, the shipping path
     kv_per_ctx_tok = n_layer * n_head_kv * (head_dim * 4) * 2
