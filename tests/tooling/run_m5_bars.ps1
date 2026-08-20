@@ -363,6 +363,10 @@ $lines += "## Medians by cell"
 $lines += ""
 $lines += "| cell | S serve AGG(M0) | S decode-only (N/ITL p50) | S TTFT p50 s | B batch decode | B prefill tok/s | bar | verdict |"
 $lines += "|---|---|---|---|---|---|---|---|"
+# `B batch decode` IS the static path's M0 number: a lockstep batch finishes
+# every prefill before any first token, so its span carries no prefill. That is
+# why it is NOT an A/B of the scheduler against S -- compare S's decode-only
+# column to it, and S's AGG(M0) to the bar.
 foreach ($cell in $Cells) {
     $m = [regex]::Match($cell, '^(\d+)(f32|q8)$')
     $seqs = [int]$m.Groups[1].Value
@@ -375,12 +379,25 @@ foreach ($cell in $Cells) {
     $bPf  = Median (@($B | ForEach-Object { [double]$_.pf_rate }))
     $sDec = $null
     if ($sItl -and $sItl -gt 0) { $sDec = [math]::Round($seqs / ($sItl / 1000.0), 2) }
-    # Both families apply at both N; the binding bar is the higher one.
-    $bar = 17.7
-    if ($seqs -eq 16) { $bar = 16.8 }
+
+    # GATE BARS exist only at N=8 and N=16 -- both families apply at both, and
+    # the binding one is the higher (llamacpp-tuned 17.7 at 8; 2x-ollama 16.8
+    # at 16, where the inversion makes it the harder bar).
+    #
+    # >> EVERY OTHER N IS GRADED AGAINST M0's llamacpp-tuned CELL AND LABELLED
+    # `ref`. An N-sweep exists to show the SHAPE of the curve, and inventing a
+    # gate bar for a width the gate never named would turn a diagnostic into a
+    # verdict -- which is how a measurement stops being read as one.
+    $GATE = @{ 8 = 17.7; 16 = 16.8 }
+    $REF  = @{ 1 = 15.6; 2 = 23.5; 4 = 33.6; 8 = 17.7; 16 = 14.2 }   # M0 07-17
+    $isGate = $GATE.ContainsKey($seqs)
+    if ($isGate) { $bar = $GATE[$seqs] } else { $bar = $REF[$seqs] }
+    $barTxt = "-"
+    if ($null -ne $bar) { if ($isGate) { $barTxt = ">=$bar" } else { $barTxt = "$bar ref" } }
     $verdict = "-"
-    if ($null -ne $sAgg) {
-        if ($sAgg -ge $bar) { $verdict = "**MET**" }
+    if ($null -ne $sAgg -and $null -ne $bar) {
+        if (-not $isGate) { $verdict = ("{0:n2}x ref" -f ($sAgg / $bar)) }
+        elseif ($sAgg -ge $bar) { $verdict = "**MET**" }
         else { $verdict = ("MISS ({0:n2}x)" -f ($sAgg / $bar)) }
     }
     $lines += ("| {0} | {1} | {2} | {3} | {4} | {5} | >={6} | {7} |" -f $cell,
@@ -389,7 +406,7 @@ foreach ($cell in $Cells) {
         $(if ($null -ne $sTtf) { "{0:n1}" -f ($sTtf / 1000.0) } else { "-" }),
         $(if ($null -ne $bDec) { "{0:n3}" -f $bDec } else { "-" }),
         $(if ($null -ne $bPf)  { "{0:n2}" -f $bPf }  else { "-" }),
-        $bar, $verdict)
+        $barTxt, $verdict)
 }
 $lines += ""
 $L = @($all | Where-Object { $_.arm -eq "L" })

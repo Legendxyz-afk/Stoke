@@ -57,6 +57,20 @@ table plus **E3's 195 GFLOP/s, measured a day earlier on a different workload
 Predicted 23.1, measured 23.071 and 22.653. **A decode step at N rows streams
 the weights once but does N × 8.46 GFLOP, and arithmetic does not amortise.**
 
+**A third control, and it fell out of the matrix rather than being designed
+for.** The gate cells run f32 KV and Q8 KV. `--kv q8` cuts KV bytes per context
+position from 512 to 136 — **3.76× less traffic through the term that grows
+with N and ctx** — and the static decode at N=8 measured **23.071 f32 vs 22.980
+q8: 0.4% apart.** A traffic-bound engine cannot absorb a 3.76× cut in its
+dominant growing term and not move. So the discriminator runs three ways now:
+the SHAPE is flat where traffic says it rises, the LEVEL matches a ceiling
+predicted from a rate measured on another day and another workload, and
+removing three quarters of the traffic changes nothing.
+
+*(Incidentally this is the entry note's §6 Q8-KV call, confirmed by
+measurement: "`--kv q8` is documented as the answer to RAM, not to speed" —
+0.4% is what "not to speed" looks like.)*
+
 **⇒ THE AGGREGATE TRAFFIC CEILINGS IN THE M5 ENTRY NOTE — 57.8 at N=8, 72.9 at
 N=16 — DESCRIBE A MACHINE THAT DOES NOT EXIST FROM N=2 UP.** `m5_traffic_budget.py`
 ends its ceiling table with the words "upper bounds: traffic only, no compute,
@@ -138,20 +152,62 @@ quiesce gate passing at 11%/7% — the 08-19 memo reached the same conclusion fr
 an indicative 4-seq run. Make the arithmetic 2.75× cheaper and the chunk's step
 shrinks with it.
 
-**⇒ The decision I need from you is one decision, not three: does stoke keep
-bit-exactness with the M3/M4 parity lineage, or does it buy the arithmetic?**
-Everything above is downstream of that. I have not started either.
+**⇒ These three collapse into one question: does stoke keep bit-exactness with
+the M3/M4 parity lineage, or does it buy the arithmetic?** — but see §5b, which
+I wrote after reading the kernel and which argues that question is **premature**.
+The constraint binds a narrower region than the framing above assumes, and the
+3.96× is measured but not yet attributed. I have not started either path.
 
-**A narrower option worth naming, because it may not cost bit-exactness at
-all:** blocking over ROWS reuses a weight load across several rows without
-touching the order in which any single output accumulates over K. K-blocking is
-what breaks bit-exactness; row-blocking need not. M4.5's rung A′ tried a 4-row
-variant here and **measured 0.907× — a 9.3% slowdown** — and was rejected on
-that measurement, with the recorded hypothesis that maddubs had already removed
-the latency-bound regime the win came from. That result is against the idea,
-honestly, and it was measured at N=1 where traffic binds. Whether it changes
-sign in the compute-bound regime is unmeasured and is the cheapest experiment
-on this page.
+### 5a. Two guesses I made about WHERE the gap lives, and both are wrong
+
+I wrote them down, then read `vec_dot_q4_k_q8_k_xn_avx2` and
+`matvec_batch`. Recording the corrections because they narrow the question.
+
+**Guess 1 — "llama.cpp repacks to amortise the Q4_K unpack across eight rows;
+stoke unpacks per row." Wrong: stoke already amortises it, across SEQUENCES.**
+That is what M4.5's rung B did, and the kernel says so at the seam —
+`WEIGHT-ONLY WORK, ONCE PER ROW instead of once per sequence`: the scales, mins
+and nibbles are unpacked once per weight row and reused for up to 16
+activations. At N ≥ 2 there is no unexploited unpack-amortisation lever on the
+sequence axis. (llama's repack works the *output-row* axis, which stoke does
+not, and which also helps at N=1 where stoke has only one sequence to amortise
+over. M4.5's rung A′ tried 4-row blocking and measured **0.907×, a 9.3%
+slowdown**, rejected on that measurement — taken at N=1, where traffic binds
+and the regime is not this one.)
+
+**Guess 2 — "run a Q8_0 file to separate unpack cost from multiply cost."
+Invalid, and I nearly burned box time on it.** `matvec_batch`'s Q8_0 path still
+delegates one call per sequence; only the K-quants got rung B's fused twin. A
+Q8_0 batch at N=8 would re-read the weights eight times and I would have
+measured traffic while believing I was measuring unpack.
+
+### 5b. The constraint is narrower than "the arithmetic", and that may matter
+
+Inside one super-block this kernel is **entirely integer**: `maddubs` →
+`madd` → `mullo_epi32` → `add`, then one `hsum`. Floats appear only at the
+super-block boundary, twice: `sumf += (dw·ad)·S_b` and `sumf -= (dm·ad)·sumi`.
+
+Integer addition is associative and exact, so **any regrouping inside a
+super-block is bit-exact by construction; only the f32 accumulation ACROSS
+super-blocks is pinned.** This is not my observation — it is the codebase's own
+founding principle for these twins, written at `simd.c:75`: *"Exact at any
+order -- integer addition is associative, which is the entire reason the
+integer core makes a bit-exact SIMD twin possible at all."*
+
+So "keep bit-exactness or buy the arithmetic" — which is how I framed §5 — is
+**too pessimistic as a dichotomy**. An unknown share of the 3.96× sits inside
+the integer core, where it is reachable without giving up a bit. One visible
+candidate, unmeasured and named only as a candidate: the per-sequence
+per-super-block `sumi` loop is **16 scalar iterations** (`sumi += bs[j] *
+mins8[j/2]`) sitting next to 8 vector ones, and it is a pure integer sum whose
+operands cannot overflow i32 (|bs| ≤ 2032, mins ≤ 63, 16 terms ⇒ ≤ 2,048,256).
+
+**⇒ REVISED RECOMMENDATION: do not make the bit-exactness decision yet.** It
+should be made against an attribution of the 3.96×, and there isn't one — I
+have the gap measured and its location unattributed. An attribution pass on the
+kernel is a day's work with the existing bit-exactness tests as the guardrail,
+and it would tell you how much of the 2.75× is available for free before you
+are asked to trade anything for the rest.
 
 ## 6. What is NOT in doubt
 
@@ -173,12 +229,13 @@ on this page.
 Nothing above needs deciding today for the milestone to keep moving:
 
 1. Finish [2]'s medians and the q8 cells (running).
-2. Measure the B arm at N ∈ {2, 4, 8, 16} in one sitting — three points already
-   say flat, four would draw the line and make this memo's central claim a
-   figure rather than a pair.
-3. Land [4] (S3 fanout ≥ 13.3) and [5] (the 1 h ASan/TSan soak), neither of
-   which depends on this.
-4. Re-anchor the bars, or don't — **that is your headline and your call.** The
+2. Measure the B arm at N ∈ {2, 4, 8, 16} in one sitting — the flat claim rests
+   on two points plus a KV-traffic control, and four would draw the line.
+3. **Attribute the 3.96×** (§5b) — the piece that would let you decide with
+   numbers instead of with a principle.
+4. Land [4] (S3 fanout ≥ 13.3) and [5] (the 1 h ASan/TSan soak), neither of
+   which depends on any of this.
+5. Re-anchor the bars, or don't — **that is your headline and your call.** The
    playbook already contemplated re-anchoring for the N=16 inversion; this is a
    larger version of the same question, and I am not going to move a bar to fit
    a measurement.
