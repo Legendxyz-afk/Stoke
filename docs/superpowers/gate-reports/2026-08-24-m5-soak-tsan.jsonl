@@ -236,3 +236,11 @@
 {"leg":"tsan","kind":"chunk","seed":558704,"next":561084,"steps":200050,"preemptions":1032,"elapsed":1370}
 {"leg":"tsan","kind":"chunk","seed":561084,"next":563457,"steps":200222,"preemptions":1033,"elapsed":1375}
 {"leg":"tsan","kind":"chunk","seed":563457,"next":565832,"steps":200020,"preemptions":1028,"elapsed":1380}
+{"leg":"tsan","kind":"chunk","seed":565832,"next":568198,"steps":200013,"preemptions":1028,"elapsed":1386}
+{"leg":"tsan","kind":"chunk","seed":568198,"next":570569,"steps":200021,"preemptions":1033,"elapsed":1391}
+{"leg":"tsan","kind":"chunk","seed":570569,"next":572940,"steps":200018,"preemptions":1027,"elapsed":1397}
+{"leg":"tsan","kind":"chunk","seed":572940,"next":575319,"steps":200017,"preemptions":1034,"elapsed":1403}
+{"leg":"tsan","kind":"chunk","seed":575319,"next":577688,"steps":200027,"preemptions":1033,"elapsed":1408}
+{"leg":"tsan","kind":"chunk","seed":577688,"next":580068,"steps":200042,"preemptions":1031,"elapsed":1413}
+{"leg":"tsan","kind":"chunk","seed":580068,"next":582450,"steps":200004,"preemptions":1037,"elapsed":1419}
+{"leg":"tsan","kind":"chunk","seed":582450,"next":584828,"steps":200161,"preemptions":1032,"elapsed":1425}
