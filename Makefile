@@ -37,7 +37,19 @@ endif
 # `gcc -Q --help=common` reports `fast` on BOTH legs and is therefore the
 # wrong instrument here -- it prints the raw option default, not the
 # language-adjusted value codegen actually uses.
-CFLAGS  := -std=c11 -Wall -Wextra -Werror -g -O3 -ffp-contract=off -Isrc
+#
+# EXTRA_CFLAGS is the A/B ARM HOOK, and it exists so an arm is never built by
+# restating CFLAGS on the command line. A make command-line `CFLAGS=...`
+# REPLACES the line above rather than extending it, so one omitted flag (-O3,
+# -ffp-contract=off) silently builds an arm that differs from the shipping
+# binary in more than the thing under test -- a confound that would read as a
+# kernel result. Appended last so an arm's -D cannot be overridden by anything
+# above it. Use:
+#     mingw32-make BUILDDIR=build/win-mins-simd EXTRA_CFLAGS=-DSTOKE_MINS_SIMD=1
+# Makefile is already a prerequisite of every object, so changing this forces
+# the rebuild it should force.
+EXTRA_CFLAGS ?=
+CFLAGS  := -std=c11 -Wall -Wextra -Werror -g -O3 -ffp-contract=off -Isrc $(EXTRA_CFLAGS)
 LDFLAGS :=
 LIBS    := -lm -lpthread
 SAN     ?=

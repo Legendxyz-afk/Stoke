@@ -1,0 +1,16 @@
+2026-08-24T09:43:03  === M5 mins-term SIMD verification, branch m5-entry
+2026-08-24T09:43:03      n=24  commit=72dbf84
+2026-08-24T09:43:03      scalar=M:\New Drive\Desktop\Programming\stoke\build\win-mins-scalar\stoke.exe
+2026-08-24T09:43:03      simd  =M:\New Drive\Desktop\Programming\stoke\build\win-mins-simd\stoke.exe   (-DSTOKE_MINS_SIMD=1 via EXTRA_CFLAGS)
+2026-08-24T09:43:03      mutant=M:\New Drive\Desktop\Programming\stoke\build\win-mins-mutant\stoke.exe (dup[5]=3, power check only -- a SAME here voids the gate)
+2026-08-24T09:43:03      newest source simd.c 08/24/2026 09:31:40
+2026-08-24T09:43:03      *** -Quick: PRE-FLIGHT ONLY. NOT a gate. ***
+2026-08-24T09:43:03  
+2026-08-24T09:43:03  --- LEG 1: run path, chunk 128, vs the archives (10 cases) ---
+2026-08-24T09:43:58    Q4_K_M p00  kv=f32 t=6  ref=607a06f9d46c  scalar=SAME  simd=SAME  mutant=DIFFER(good)
+2026-08-24T09:44:32    Q4_K_M p00  kv=q8  t=6  ref=e74362853134  scalar=SAME  simd=SAME
+2026-08-24T09:44:32  
+2026-08-24T09:44:32  --- LEG 2: batch path, p00, n_seq in {2,8,16}, vs the m45 archive ---
+2026-08-24T09:46:49    batch  seqs=8  kv=f32 t=6  ref=28b3887a0898  scalar=SAME  simd=SAME  mutant=DIFFER(good)
+2026-08-24T09:46:49  
+2026-08-24T09:46:49  PRE-FLIGHT GREEN, power 2/2 -- run WITHOUT -Quick for the gate evidence.

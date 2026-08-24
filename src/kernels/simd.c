@@ -30,16 +30,36 @@
 #error "simd.c requires -mavxvnni (K0 P-B: neither toolchain rejects the wrong intrinsic spelling, so this guard is the only protection)"
 #endif
 
-/* ▶ THE MINS TERM'S A/B SWITCH, AND IT DEFAULTS TO THE OLD SPELLING.
- * `vec_dot_q4_k_q8_k_xn_avx2` computes its per-sequence mins term with a
- * scalar loop that objdump shows is ~40-45% of the emitted per-sequence work.
- * The SIMD spelling is bit-exact by construction (integer, associative, proved
- * non-overflowing at the site), but "bit-exact by construction" is an argument
- * and this project ships on measurement: the default stays 0 until the
- * byte-compare gate is green AND an interleaved A/B says it is faster.
- * Build the B arm with -DSTOKE_MINS_SIMD=1. */
+/* ▶ THE MINS TERM'S SPELLING. IT DEFAULTS TO SIMD SINCE 2026-08-24.
+ * `vec_dot_q4_k_q8_k_xn_avx2` computed its per-sequence mins term with a scalar
+ * loop that objdump showed was ~40-45% of the emitted per-sequence work. The
+ * SIMD spelling is bit-exact by construction (integer, associative, proved
+ * non-overflowing at the site) -- but "bit-exact by construction" is an
+ * ARGUMENT, and this project ships on measurement. Both stated bars were met
+ * before this default moved:
+ *
+ *   SPEED -- interleaved A/B, arm order alternating per cycle: 1.063x (v1) and
+ *   1.099x (v2) at t=1, 1.079x / 1.071x at t=8, B winning 6 of 6 pairings in
+ *   each run. `gate-reports/2026-08-20-m5-mins-ab-v2-report.md`.
+ *
+ *   EXACTNESS -- the 10-case lineage grid on the `run` path plus 4 `batch`
+ *   cases, every arm against an ARCHIVED binary rather than against each other:
+ *   14 cases x 2 arms, all bit-identical.
+ *   `gate-reports/2026-08-24-m5-mins-verify.txt`.
+ *
+ * ⚠ AND THAT GATE CARRIES ITS OWN PROOF THAT IT COULD HAVE FAILED. A third
+ * binary built from this file with ONE WRONG LANE in `dup` ran inside the gate
+ * on one case per leg and DIFFERED on both. Without that, 28 SAMEs would have
+ * been consistent with a kernel that never executed -- which was a live worry,
+ * because the 08-20 memo believed `stoke run` could not reach this kernel at
+ * all. It can: E3 chunks prefill through `model_forward_batch` (default
+ * STOKE_PREFILL_CHUNK=128) and vec.c tiles at KERNELS_BATCH_TILE=16, so `run`
+ * enters here at n_seq=16 and then the chunk remainder. Decode does not.
+ *
+ * Build the old arm with -DSTOKE_MINS_SIMD=0 (Makefile: EXTRA_CFLAGS). It is
+ * kept so the A/B can be re-run and so a toolchain regression has a referent. */
 #ifndef STOKE_MINS_SIMD
-#define STOKE_MINS_SIMD 0
+#define STOKE_MINS_SIMD 1
 #endif
 
 /* ---------------------------------------------------------------- feature */

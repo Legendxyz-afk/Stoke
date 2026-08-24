@@ -1,0 +1,29 @@
+2026-08-24T09:50:49  === M5 mins-term SIMD verification, branch m5-entry
+2026-08-24T09:50:49      n=24  commit=72dbf84
+2026-08-24T09:50:49      scalar=M:\New Drive\Desktop\Programming\stoke\build\win-mins-scalar\stoke.exe
+2026-08-24T09:50:49      simd  =M:\New Drive\Desktop\Programming\stoke\build\win-mins-simd\stoke.exe   (-DSTOKE_MINS_SIMD=1 via EXTRA_CFLAGS)
+2026-08-24T09:50:49      mutant=M:\New Drive\Desktop\Programming\stoke\build\win-mins-mutant\stoke.exe (dup[5]=3, power check only -- a SAME here voids the gate)
+2026-08-24T09:50:49      newest source simd.c 08/24/2026 09:31:40
+2026-08-24T09:50:49  
+2026-08-24T09:50:49  --- LEG 1: run path, chunk 128, vs the archives (10 cases) ---
+2026-08-24T09:52:18    Q4_K_M p00  kv=f32 t=2  ref=607a06f9d46c  scalar=SAME  simd=SAME  mutant=DIFFER(good)
+2026-08-24T09:53:04    Q4_K_M p00  kv=f32 t=6  ref=607a06f9d46c  scalar=SAME  simd=SAME
+2026-08-24T09:59:42    Q4_K_M p41  kv=f32 t=2  ref=c2f87654ef2e  scalar=SAME  simd=SAME
+2026-08-24T10:01:06    Q4_K_M p41  kv=f32 t=6  ref=c2f87654ef2e  scalar=SAME  simd=SAME
+2026-08-24T10:01:46    Q4_K_M p00  kv=q8  t=2  ref=e74362853134  scalar=SAME  simd=SAME
+2026-08-24T10:02:03    Q4_K_M p00  kv=q8  t=6  ref=e74362853134  scalar=SAME  simd=SAME
+2026-08-24T10:11:30    Q4_K_M p41  kv=q8  t=2  ref=2352f053a79e  scalar=SAME  simd=SAME
+2026-08-24T10:18:57    Q4_K_M p41  kv=q8  t=6  ref=2352f053a79e  scalar=SAME  simd=SAME
+2026-08-24T10:24:54    Q8_0   p41  vs m3   t=2  ref=e48b907c43e5  scalar=SAME  simd=SAME   [CONTROL: no K-quant tensor, kernel unreachable]
+2026-08-24T10:30:56    Q8_0   p41  vs m3   t=6  ref=e48b907c43e5  scalar=SAME  simd=SAME   [CONTROL: no K-quant tensor, kernel unreachable]
+2026-08-24T10:30:56  
+2026-08-24T10:30:56  --- LEG 2: batch path, p00, n_seq in {2,8,16}, vs the m45 archive ---
+2026-08-24T10:32:15    batch  seqs=2  kv=f32 t=6  ref=d733051bb755  scalar=SAME  simd=SAME  mutant=DIFFER(good)
+2026-08-24T10:34:32    batch  seqs=8  kv=f32 t=6  ref=28b3887a0898  scalar=SAME  simd=SAME
+2026-08-24T10:36:19    batch  seqs=16 kv=f32 t=6  ref=ad3f59cdab7b  scalar=SAME  simd=SAME
+2026-08-24T10:37:17    batch  seqs=8  kv=q8  t=6  ref=420dda695550  scalar=SAME  simd=SAME
+2026-08-24T10:37:17  
+2026-08-24T10:37:17  ALL ARMS BIT-IDENTICAL TO THE ARCHIVES, power 2/2 confirmed by the
+2026-08-24T10:37:17  mutant on BOTH legs. STOKE_MINS_SIMD=1 moves no arithmetic.
+2026-08-24T10:37:17  Speed is a SEPARATE question and is NOT measured here: that is the
+2026-08-24T10:37:17  interleaved A/B, already banked at 2026-08-20-m5-mins-ab-v2-report.md.
