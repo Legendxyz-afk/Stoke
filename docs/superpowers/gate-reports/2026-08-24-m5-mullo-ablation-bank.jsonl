@@ -1,0 +1,16 @@
+﻿{"rate":30.4457,"id":"t8-c1-A","kind":"cell","arm":"A","gflops":257.6,"utc":"2026-08-24T14:11:59","threads":8,"cycle":1,"secs":20.1}
+{"rate":31.6088,"id":"t8-c1-B","kind":"cell","arm":"B","gflops":267.4,"utc":"2026-08-24T14:12:19","threads":8,"cycle":1,"secs":20}
+{"rate":31.6639,"id":"t8-c2-B","kind":"cell","arm":"B","gflops":267.9,"utc":"2026-08-24T14:12:39","threads":8,"cycle":2,"secs":20}
+{"rate":30.7217,"id":"t8-c2-A","kind":"cell","arm":"A","gflops":259.9,"utc":"2026-08-24T14:12:58","threads":8,"cycle":2,"secs":19}
+{"rate":30.3626,"id":"t8-c3-A","kind":"cell","arm":"A","gflops":256.9,"utc":"2026-08-24T14:13:18","threads":8,"cycle":3,"secs":20}
+{"rate":32.3356,"id":"t8-c3-B","kind":"cell","arm":"B","gflops":273.6,"utc":"2026-08-24T14:13:37","threads":8,"cycle":3,"secs":18}
+{"rate":33.6923,"id":"t8-c4-B","kind":"cell","arm":"B","gflops":285,"utc":"2026-08-24T14:13:56","threads":8,"cycle":4,"secs":19.1}
+{"rate":30.4187,"id":"t8-c4-A","kind":"cell","arm":"A","gflops":257.3,"utc":"2026-08-24T14:14:16","threads":8,"cycle":4,"secs":20}
+{"rate":6.208,"id":"t1-c1-A","kind":"cell","arm":"A","gflops":52.5,"utc":"2026-08-24T14:15:46","threads":1,"cycle":1,"secs":90.1}
+{"rate":6.8625,"id":"t1-c1-B","kind":"cell","arm":"B","gflops":58.1,"utc":"2026-08-24T14:17:08","threads":1,"cycle":1,"secs":82.1}
+{"rate":6.8225,"id":"t1-c2-B","kind":"cell","arm":"B","gflops":57.7,"utc":"2026-08-24T14:18:30","threads":1,"cycle":2,"secs":82.1}
+{"rate":5.982,"id":"t1-c2-A","kind":"cell","arm":"A","gflops":50.6,"utc":"2026-08-24T14:20:02","threads":1,"cycle":2,"secs":92.1}
+{"rate":6.2497,"id":"t1-c3-A","kind":"cell","arm":"A","gflops":52.9,"utc":"2026-08-24T14:21:30","threads":1,"cycle":3,"secs":88.1}
+{"rate":6.8432,"id":"t1-c3-B","kind":"cell","arm":"B","gflops":57.9,"utc":"2026-08-24T14:22:50","threads":1,"cycle":3,"secs":80.1}
+{"rate":6.7832,"id":"t1-c4-B","kind":"cell","arm":"B","gflops":57.4,"utc":"2026-08-24T14:24:11","threads":1,"cycle":4,"secs":81.1}
+{"rate":5.912,"id":"t1-c4-A","kind":"cell","arm":"A","gflops":50,"utc":"2026-08-24T14:25:44","threads":1,"cycle":4,"secs":92.1}

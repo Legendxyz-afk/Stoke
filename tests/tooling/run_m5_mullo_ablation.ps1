@@ -46,8 +46,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root   = "M:\New Drive\Desktop\Programming\stoke"
-$armA   = "$root\build\win-mins-simd\stoke.exe"
-$armB   = "$root\build\win-mullo-ablate\stoke.exe"
+# ▶ THE BUILD DIRECTORY NAMES ARE THE SAME LENGTH ON PURPOSE, and this is a
+# control, not tidiness. mingw embeds each object's path in the binary, and PE
+# here is not position-independent -- so a longer directory name lengthens the
+# embedded strings, shifts .rdata, and shifts every absolute address in .text
+# with it. Measured this session: two builds of IDENTICAL source out of
+# `build/win` and `build/ab` differ in 15,264 bytes while their .text sections
+# are identical, and two builds out of DIFFERENT-length directories differ in
+# .text itself. Code layout moves a hot loop by a few percent through alignment
+# and branch prediction alone; this A/B's pre-registered discriminator sits at
+# 1.08x, so a layout artifact could decide it. `win-mullo-a` and `win-mullo-b`
+# are the same length, so the two arms differ in the one line under test.
+$armA   = "$root\build\win-mullo-a\stoke.exe"
+$armB   = "$root\build\win-mullo-b\stoke.exe"
 $mdl    = "$root\models\Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 $prompt = "$root\tests\data\bench_prompts\s2-512-c00.txt"
 $gr     = "$root\docs\superpowers\gate-reports"
