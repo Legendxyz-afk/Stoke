@@ -21,11 +21,36 @@ text is exported -- that is also the byte-exact form recorded in
 `bench/scenarios.py`'s docstring. Cost: ~6 tokens of prefix that the salted
 baselines also paid.
 
-Usage: python tests/tooling/export_bench_prompts.py [--clients 16]
-Writes tests/data/bench_prompts/s2-512-cNN.txt (one per client).
+S3 (added 2026-08-24, for gate item [4] "fanout >= llamacpp-default's 13.3").
+S3 is 8 closed-loop clients, 200 user tokens, 300 generated, over a **1024-token
+SHARED system prefix** -- the shared prefix IS the scenario, and it is why
+`build_messages` returns TWO messages there where S2 returns one. That is exactly
+what this exporter used to assert against, which is why S3 was never exported.
+
+⚠ THE FLATTENING, AND WHY IT IS NOT ARBITRARY. `stoke bench --serve` reads one
+file as one prompt and applies no chat template (the S2 export above writes the
+user content verbatim for the same reason). So the two messages are joined as
+`system + "\n" + user`, which gives the property the scenario actually needs:
+**the shared text is a byte-identical PREFIX of all 8 files**, so it is a shared
+TOKEN prefix, so M4's block dedup can adopt it.
+
+⚠ AND THE BLOCK-ALIGNMENT CONSEQUENCE, stated rather than discovered later. KV
+blocks are 16 tokens and dedup registers only FULL blocks, so what is adoptable
+is floor(shared_tokens / 16) blocks. 1024 = 64 blocks exactly. The "\n" separator
+is itself shared, so the shared run is 1025 tokens; the 65th block straddles the
+separator and the per-client "[client N]" text and is correctly NOT adoptable.
+Net: 64 blocks / 1024 positions per client, which is the whole system prefix.
+**This is verified against `stoke tokenize`, not assumed** -- see
+`--verify`, which refuses to write a set whose common token prefix is not >= the
+scenario's shared_prefix_tokens.
+
+Usage: python tests/tooling/export_bench_prompts.py [--scenario s2|s3|all]
+                                                    [--clients 16] [--verify PATH_TO_STOKE_EXE]
+Writes tests/data/bench_prompts/s2-512-cNN.txt and/or s3-fanout-cNN.txt.
 """
 import argparse
 import pathlib
+import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -33,14 +58,44 @@ sys.path.insert(0, str(ROOT / "bench"))
 
 import scenarios  # noqa: E402  (path set above)
 
+BLOCK_TOKENS = 16  # BP_BLOCK_TOKENS; dedup registers only FULL blocks
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--clients", type=int, default=16,
-                    help="how many per-client prompts to export (N=16 is the "
-                         "widest gate cell; --seqs 8 uses files 00..07)")
-    args = ap.parse_args()
 
+def _write(path: pathlib.Path, text: str) -> None:
+    # Binary write with no trailing newline: the driver reads the whole file as
+    # the prompt, and a stray "\n" is a real token.
+    path.write_bytes(text.encode("utf-8"))
+    print(f"{path.name}: {len(text.split())} words, {len(text)} bytes")
+
+
+def _token_ids(exe: str, model: str, path: pathlib.Path) -> list[int]:
+    """Token ids for one prompt file, via `stoke tokenize` -- the engine's own
+    tokenizer, not a Python re-implementation. A verification that models the
+    thing it is verifying is not a verification."""
+    out = subprocess.run([exe, "tokenize", model, str(path)],
+                         capture_output=True, text=True, check=True).stdout
+    # `stoke tokenize` prints a bracketed comma list: "[840, 20772, ...]".
+    # Parsed strictly and asserted non-empty: a lenient parser that skipped
+    # unparsable fields returned ZERO ids here and the verification would have
+    # compared two empty lists and declared a common prefix of 0 -- or, with the
+    # comparison written the other way, declared success. Caught by the
+    # non-empty check, which is the only reason this note exists.
+    body = out.strip().strip("[]")
+    ids = [int(t.strip()) for t in body.split(",") if t.strip()]
+    if not ids:
+        raise SystemExit(f"STOP: `stoke tokenize` produced no ids for {path}")
+    return ids
+
+
+def _common_prefix_len(seqs: list[list[int]]) -> int:
+    n = min(len(s) for s in seqs)
+    for i in range(n):
+        if any(s[i] != seqs[0][i] for s in seqs):
+            return i
+    return n
+
+
+def export_s2(out_dir: pathlib.Path, clients: int) -> list[pathlib.Path]:
     # `scenarios.S2` is the locked family (N = 1/2/4/8/16). Any member gives
     # the prompt SHAPE -- prompt_tokens/max_tokens are identical across it and
     # only n_clients differs, and n_clients is not read here: the per-client
@@ -49,21 +104,89 @@ def main() -> int:
     assert s2.prompt_tokens == 512 and s2.max_tokens == 128 \
         and s2.shared_prefix_tokens == 0, \
         f"S2's shape moved since the bars were drawn: {s2}"
+    paths = []
+    for cid in range(clients):
+        msgs = scenarios.build_messages(s2, client_id=cid, salt=None)
+        assert len(msgs) == 1 and msgs[0]["role"] == "user", \
+            "S2 has no shared prefix -- one user message is the whole prompt"
+        p = out_dir / f"s2-512-c{cid:02d}.txt"
+        _write(p, msgs[0]["content"])
+        paths.append(p)
+    return paths
+
+
+def export_s3(out_dir: pathlib.Path, clients: int) -> list[pathlib.Path]:
+    s3 = scenarios.S3
+    assert s3.prompt_tokens == 200 and s3.max_tokens == 300 \
+        and s3.shared_prefix_tokens == 1024, \
+        f"S3's shape moved since the 13.3 bar was drawn: {s3}"
+    paths = []
+    for cid in range(clients):
+        msgs = scenarios.build_messages(s3, client_id=cid, salt=None)
+        assert len(msgs) == 2 and msgs[0]["role"] == "system" \
+            and msgs[1]["role"] == "user", \
+            "S3 is a shared system prefix plus a per-client user message"
+        # See the module docstring: system + "\n" + user, so the shared text is
+        # a byte-identical PREFIX of every file and therefore a shared TOKEN
+        # prefix that block dedup can adopt.
+        p = out_dir / f"s3-fanout-c{cid:02d}.txt"
+        _write(p, msgs[0]["content"] + "\n" + msgs[1]["content"])
+        paths.append(p)
+    return paths
+
+
+def verify_shared_prefix(exe: str, model: str, paths: list[pathlib.Path],
+                         want_shared: int) -> int:
+    """Refuse to bless a set whose COMMON TOKEN PREFIX is shorter than the
+    scenario's shared_prefix_tokens. Without this the export could look right and
+    share nothing -- one merged token at the seam and dedup adopts 63 blocks
+    instead of 64, or none. Same shape as every other anti-vacuity check here:
+    the property is asserted, not argued."""
+    seqs = [_token_ids(exe, model, p) for p in paths]
+    common = _common_prefix_len(seqs)
+    blocks = common // BLOCK_TOKENS
+    print(f"\nverify: {len(paths)} files, lengths "
+          f"{min(len(s) for s in seqs)}..{max(len(s) for s in seqs)} tokens")
+    print(f"verify: common token prefix = {common} tokens "
+          f"= {blocks} full {BLOCK_TOKENS}-token blocks adoptable by dedup")
+    if common < want_shared:
+        print(f"STOP: common prefix {common} < scenario's shared_prefix_tokens "
+              f"{want_shared} -- the shared prefix did not survive flattening, "
+              f"and S3 measured on this set would measure nothing it claims to.")
+        return 1
+    print(f"verify: OK (>= {want_shared})")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--scenario", choices=("s2", "s3", "all"), default="all")
+    ap.add_argument("--clients", type=int, default=16,
+                    help="how many per-client prompts to export (N=16 is the "
+                         "widest S2 gate cell; --seqs 8 uses files 00..07). "
+                         "S3 is locked at 8 clients and ignores this.")
+    ap.add_argument("--verify", metavar="STOKE_EXE", default=None,
+                    help="tokenize the exported set with this stoke binary and "
+                         "assert the common token prefix covers the scenario's "
+                         "shared prefix")
+    ap.add_argument("--model", default=str(
+        ROOT / "models" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"))
+    args = ap.parse_args()
 
     out_dir = ROOT / "tests" / "data" / "bench_prompts"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for cid in range(args.clients):
-        msgs = scenarios.build_messages(s2, client_id=cid, salt=None)
-        assert len(msgs) == 1 and msgs[0]["role"] == "user", \
-            "S2 has no shared prefix -- one user message is the whole prompt"
-        text = msgs[0]["content"]
-        path = out_dir / f"s2-512-c{cid:02d}.txt"
-        # Binary write with no trailing newline: the driver reads the whole
-        # file as the prompt, and a stray "\n" is a real token.
-        path.write_bytes(text.encode("utf-8"))
-        print(f"{path.name}: {len(text.split())} words, {len(text)} bytes")
-    return 0
+    rc = 0
+    if args.scenario in ("s2", "all"):
+        export_s2(out_dir, args.clients)
+    if args.scenario in ("s3", "all"):
+        # S3's n_clients is part of the scenario, not a knob: the 13.3 bar is a
+        # measurement at 8 clients.
+        s3_paths = export_s3(out_dir, scenarios.S3.n_clients)
+        if args.verify:
+            rc |= verify_shared_prefix(args.verify, args.model, s3_paths,
+                                       scenarios.S3.shared_prefix_tokens)
+    return rc
 
 
 if __name__ == "__main__":

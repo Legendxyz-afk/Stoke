@@ -1,0 +1,7 @@
+{"leg":"tsan","kind":"chunk","seed":1,"next":1189,"steps":100229,"preemptions":519,"elapsed":0}
+{"leg":"tsan","kind":"chunk","seed":1189,"next":2377,"steps":100021,"preemptions":513,"elapsed":3}
+{"leg":"tsan","kind":"chunk","seed":2377,"next":3562,"steps":100143,"preemptions":515,"elapsed":6}
+{"leg":"tsan","kind":"chunk","seed":3562,"next":4758,"steps":100008,"preemptions":513,"elapsed":9}
+{"leg":"tsan","kind":"chunk","seed":4758,"next":5942,"steps":100048,"preemptions":515,"elapsed":12}
+{"leg":"tsan","kind":"chunk","seed":5942,"next":7132,"steps":100094,"preemptions":516,"elapsed":15}
+{"leg":"tsan","kind":"chunk","seed":7132,"next":8324,"steps":100007,"preemptions":514,"elapsed":18}

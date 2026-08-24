@@ -1,0 +1,9 @@
+=== tsan soak: 20s target, 100000 steps/chunk, from seed 1 ===
+  tsan chunk 1: seeds [1,1189) 100229 steps 519 preemptions (0s)
+  tsan chunk 2: seeds [1189,2377) 100021 steps 513 preemptions (3s)
+  tsan chunk 3: seeds [2377,3562) 100143 steps 515 preemptions (6s)
+  tsan chunk 4: seeds [3562,4758) 100008 steps 513 preemptions (9s)
+  tsan chunk 5: seeds [4758,5942) 100048 steps 515 preemptions (12s)
+  tsan chunk 6: seeds [5942,7132) 100094 steps 516 preemptions (15s)
+  tsan chunk 7: seeds [7132,8324) 100007 steps 514 preemptions (18s)
+tsan: GREEN -- 21s, 7 chunks, 700550 steps, seeds up to 8324

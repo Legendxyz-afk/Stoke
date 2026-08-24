@@ -623,8 +623,18 @@ static void test_unadmittable_is_refused_at_the_door(void) {
 /* THE SOAK: the gate's x1e6 floor, as STEPS. Every invariant after every one of
  * them -- not sampled, because a violation that appears once in 400 steps and
  * is checked every 500 does not exist as far as this harness is concerned. */
-static void soak(u64 want_steps) {
-    u64  done = 0, seed = 1, preemptions = 0, traces = 0;
+/* `seed0` EXISTS SO A MULTI-HOUR SOAK CAN BANK AND RESUME. The seed walk is
+ * deterministic (seed 1, 2, 3, ... each generating a different trace), so a
+ * longer run explores STRICTLY MORE traces rather than repeating; but this
+ * function prints only when it finishes, and gate item [5] is a 1 h run. An
+ * unattended job that banks nothing until it completes is the shape that cost
+ * this project 76 minutes of probe compute on 2026-08-12. The runner therefore
+ * calls this in chunks and records the next seed after each one, which also
+ * makes a failure REPRODUCIBLE IN SECONDS: the printed seed is the whole input.
+ * Defaults are unchanged (seed0 = 1), so the per-commit suite and gate [1]'s
+ * banked 1,000,130-step result are byte-for-byte the same run. */
+static void soak(u64 want_steps, u64 seed0) {
+    u64  done = 0, seed = seed0, preemptions = 0, traces = 0;
     bool green = true;
 
     while (done < want_steps && green) {
@@ -649,6 +659,12 @@ static void soak(u64 want_steps) {
     printf("  soak: %llu steps over %llu traces, %llu preemptions\n",
            (unsigned long long)done, (unsigned long long)traces,
            (unsigned long long)preemptions);
+    /* The resume point, machine-readable for the chunked runner. Printed even
+     * on failure: a red chunk's NEXT seed is what a re-run must skip past, and
+     * the FAIL line above already carries the offending seed itself. */
+    printf("  soak: seeds [%llu,%llu) next=%llu\n",
+           (unsigned long long)seed0, (unsigned long long)seed,
+           (unsigned long long)seed);
 }
 
 int main(int argc, char** argv) {
@@ -658,14 +674,24 @@ int main(int argc, char** argv) {
      * that only holds when someone remembers to pass a flag is a gate item that
      * will eventually be reported green without having run. */
     u64 want = 1000000;
+    u64 seed0 = 1;
     if (argc > 1) want = strtoull(argv[1], NULL, 10);
+    if (argc > 2) seed0 = strtoull(argv[2], NULL, 10);
+    if (seed0 == 0) {
+        /* seed 0 would make gen_trace's `seed % TR__COUNT` pick trace 0 with a
+         * zero seed and, worse, would silently look like "resume from the
+         * start" to a runner whose bank file was empty or unparsed. Refuse it
+         * rather than run a soak that is not the one anyone asked for. */
+        printf("test_sched: seed0 must be >= 1\n");
+        return 1;
+    }
 
     test_unadmittable_is_refused_at_the_door();
     test_trace_matrix();
     test_preempt_replay_is_lossless();
     test_cost_model_cannot_change_a_decision();
     test_cancel_returns_every_block();
-    soak(want);
+    soak(want, seed0);
 
     printf("test_sched: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
