@@ -11,26 +11,23 @@ M4's I1–I12 via `bp_check`, plus M5's S1–S8.
 
 ## Result
 
-| leg | chunks | steps | preemptions | seeds covered | failures |
-|---|---|---|---|---|---|
-| **ASan + UBSan** | 2,090 | **418,237,658** | 2,155,823 | 1 … 4,968,585 | **0** |
-| **TSan** | 232 | 46,427,233 | 239,351 | 1 … 551,578 | **0** |
+| leg | wall | chunks | steps | preemptions | seeds covered | failures |
+|---|---|---|---|---|---|---|
+| **ASan + UBSan** | 1799 s | 2,090 | **418,237,658** | 2,155,823 | 1 … 4,968,585 | **0** |
+| **TSan** | 1798 s | 313 | **62,636,849** | 322,901 | 1 … 744,113 | **0** |
 
-**The ASan leg is COMPLETE and GREEN** — a full 1800 s, `418×` the gate's 1e6
-step floor.
+**BOTH LEGS COMPLETE AND GREEN.** 1 h of wall clock, **480,874,507 steps over
+5.71 M distinct traces, 2,478,724 preemptions, zero findings** — `418×` and `62×`
+the gate's 1e6 step floor respectively.
 
-⚠ **THE TSan LEG IS A PARTIAL AND IS LABELLED AS ONE.** The numbers above are
-what it had banked at 1347 s of its 1800 s when the box had to be shut down. It
-is green over every step it ran (`46×` the floor, 2.4 M preemptions across both
-legs exercising the preemption path hard), but **it is not the 30-minute leg the
-gate asks for, and this report does not claim it is.** Because the runner banks
-each chunk's next seed, finishing it is a resume, not a re-run:
+⇒ **GATE ITEM [5] IS MET.**
 
-```
-sh tests/tooling/run_m5_soak.sh 1800 200000     # resumes tsan from seed 551578
-```
-
-⇒ **Gate item [5] is NOT closed.** ASan's half is done; TSan owes ~8 minutes.
+*(An earlier revision of this report recorded the TSan leg as a partial at
+1347 s, written when the box was about to be shut down. It was allowed to finish;
+the numbers above are the complete run. The partial is left described here rather
+than erased, because the runner's resumability is the reason a truncated leg
+would have cost 8 minutes instead of 30 — and that is the property worth
+recording.)*
 
 ## Why the numbers are this large, and why that is the point
 
@@ -42,7 +39,7 @@ traces". The seed walk answers it: seed *n* generates a different trace, so
 
 Preemptions are the number to watch, not steps — gate [1]'s note records that the
 watermark is effective enough that a `pressure` trace had to be made deliberately
-adversarial or it would bank a passing S6 test proving nothing. **2.4 M
+adversarial or it would bank a passing S6 test proving nothing. **2,478,724
 preemptions across the two legs** says the preemption path was genuinely
 exercised, not merely reachable.
 
