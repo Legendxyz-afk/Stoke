@@ -133,3 +133,43 @@
 2026-08-25T15:30:08  -- leg 4: serve (1 seq, no dedup) vs the m4.5 archive's `stoke run`
 2026-08-25T15:30:09    !! exit 1: fatal: stoke bench --serve: request 0 refused -- the pool cannot hold prompt 0 (23 tokens) plus -n 24
 
+2026-08-25T15:34:27  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T15:34:27      commit 729ebfc  seqs=8  n=24
+2026-08-25T15:34:27      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T15:34:27  -- leg s3: arm A (no dedup), 8 seqs x 24 gen
+2026-08-25T15:34:27     s3-A-s8n24 resumed from bank (hash A4B638CC)
+2026-08-25T15:34:27     A: 10024 rows, 339.4s
+2026-08-25T15:34:27     A: 1 distinct streams over 8 clients -- EXPECTED 1
+2026-08-25T15:34:27        (M0's clients differ by one digit; this leg cannot see a cross-client error)
+2026-08-25T15:34:27  -- leg s3: arm B (--dedup)
+2026-08-25T15:34:27     s3-B-s8n24 resumed from bank (hash A4B638CC)
+2026-08-25T15:34:27     B: 2856 rows, adopted 7168 of 9840, 110.1s
+2026-08-25T15:34:27     RESULT leg s3: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T15:34:27  -- leg s3: mutant 'kv' (recorded)
+2026-08-25T15:34:27     s3-M-kv-s8n24 resumed from bank (hash A0117C29)
+2026-08-25T15:34:27     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T15:34:27  -- leg s3: mutant 'skip16' (recorded)
+2026-08-25T15:34:27     s3-M-skip16-s8n24 resumed from bank (hash A4B638CC)
+2026-08-25T15:34:27     'skip16' is invisible on this leg -- recorded, not a failure
+2026-08-25T15:34:27        (the sched.c residency guard and the sim ledger are what cover it)
+2026-08-25T15:34:27  -- leg hetero: arm A (no dedup), 8 seqs x 24 gen
+2026-08-25T15:34:27     hetero-A-s8n24 resumed from bank (hash 83B2FFBA)
+2026-08-25T15:34:27     A: 9541 rows, 343.4s
+2026-08-25T15:34:27     A: all 8 client streams distinct -- the leg has power
+2026-08-25T15:34:27  -- leg hetero: arm B (--dedup)
+2026-08-25T15:34:27     hetero-B-s8n24 resumed from bank (hash 83B2FFBA)
+2026-08-25T15:34:27     B: 1477 rows, adopted 8064 of 9357, 58.1s
+2026-08-25T15:34:27     RESULT leg hetero: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T15:34:27  -- leg hetero: mutant 'kv' (MUST differ)
+2026-08-25T15:34:27     hetero-M-kv-s8n24 resumed from bank (hash EB6E2DF7)
+2026-08-25T15:34:27     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T15:34:27  -- leg hetero: mutant 'skip16' (recorded)
+2026-08-25T15:35:18    !! exit 1: fatal: stoke bench --serve: step budget exhausted -- livelock
+
+2026-08-25T15:35:18     'skip16' ABORTED: STOP: 'M:\New Drive\Desktop\Programming\stoke\build\win-dedup-mutant\stoke.exe' exited 1
+2026-08-25T15:35:18     'skip16' does not reproduce A (aborted) -- the comparison can fail
+2026-08-25T15:35:18  -- leg 4: serve (1 seq, no dedup) vs the m4.5 archive's `stoke run`
+2026-08-25T15:36:02     archive produced 24 ids (of 24 asked; fewer means it hit EOS), serve 24
+2026-08-25T15:36:02     serve == the archive's `stoke run` on p00: SAME
+2026-08-25T15:36:02  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-25-m5-dedup-verify-report.md
+2026-08-25T15:36:02  GREEN: dedup on the serve path is bit-identical to no dedup, on a set that could tell.
