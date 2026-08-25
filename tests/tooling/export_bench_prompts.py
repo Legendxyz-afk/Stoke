@@ -44,11 +44,28 @@ Net: 64 blocks / 1024 positions per client, which is the whole system prefix.
 `--verify`, which refuses to write a set whose common token prefix is not >= the
 scenario's shared_prefix_tokens.
 
-Usage: python tests/tooling/export_bench_prompts.py [--scenario s2|s3|all]
+HETERO (added 2026-08-25) IS NOT A SCENARIO AND IS NOT MEASURED AGAINST A BAR.
+It exists because of something the S3 export makes visible only when you diff two
+of its files: **M0's clients differ from each other by ONE DIGIT.** `[client 0]`
+vs `[client 1]`, inside an otherwise byte-identical word list -- for S2 as well
+as S3. That is fine for a throughput baseline and it is what the bars were
+measured on, but it makes the set BLIND as a correctness fixture: all eight
+clients generate the same ids, so a dedup bug that gave client 1 client 0's
+blocks would produce exactly the output the comparison expects.
+
+So `--scenario hetero` writes a set that keeps S3's REAL shared system prefix
+(same source, same `build_messages`, so the adoptable prefix is the same 64
+blocks) and gives every client a genuinely different body. Its streams diverge
+per client, which is what lets a byte-compare over it see a cross-client
+adoption error at all.
+
+Usage: python tests/tooling/export_bench_prompts.py [--scenario s2|s3|hetero|all]
                                                     [--clients 16] [--verify PATH_TO_STOKE_EXE]
-Writes tests/data/bench_prompts/s2-512-cNN.txt and/or s3-fanout-cNN.txt.
+Writes tests/data/bench_prompts/s2-512-cNN.txt, s3-fanout-cNN.txt and/or
+fanout-hetero-cNN.txt.
 """
 import argparse
+import json
 import pathlib
 import subprocess
 import sys
@@ -135,6 +152,146 @@ def export_s3(out_dir: pathlib.Path, clients: int) -> list[pathlib.Path]:
     return paths
 
 
+# ▶▶ THE FACTS BLOCK, AND WHY THE FIXTURE WOULD BE POWERLESS WITHOUT IT.
+#
+# Measured 2026-08-25, and it is the finding that shaped this file: a mutant that
+# ZEROED THE ENTIRE 1024-POSITION ADOPTED K/V -- every layer, every kv head --
+# produced the SAME ids as a clean run on the S3 prompts. Not a bug in the
+# mutant: those positions hold a filler word list, the continuation is driven by
+# the ~200 recent tokens, and a zeroed key scores q.k = 0, which softmax weights
+# exp(0) against exp(large) for every real position. **A prompt whose answer does
+# not depend on its prefix cannot detect a prefix that is wrong.**
+#
+# So the shared half of this fixture ends with facts, and every client's question
+# needs one of them. Now "the adopted KV is correct" is observable in the output:
+# destroy it and the model cannot produce the code, the name or the number.
+HETERO_FACTS = (
+    "Before you answer anything below, memorise these eight records.\n"
+    "Record 1: the vault code is ZEBRA-SEVEN-FOUR.\n"
+    "Record 2: the courier's surname is Halloran.\n"
+    "Record 3: the delivery window is Tuesday at three in the afternoon.\n"
+    "Record 4: the warehouse stands on Quarry Street.\n"
+    "Record 5: the password hint is seventeen sparrows.\n"
+    "Record 6: the site manager's initials are R.T.K.\n"
+    "Record 7: the truck's plate is BX-4419.\n"
+    "Record 8: the spare key is behind the blue cabinet.\n"
+)
+
+# Eight bodies that share NOTHING with each other and that each need a DIFFERENT
+# one of the records above. Both properties matter: different from each other, so
+# a cross-client adoption error changes the answer; dependent on the shared
+# prefix, so a wrong adopted K/V changes it too.
+HETERO_BODIES = [
+    "Ignore the word list above. Answer from the records only. "
+    "Question: what is the vault code?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: what is the courier's surname?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: on which day and at what time is the delivery window?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: on which street does the warehouse stand?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: what is the password hint?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: what are the site manager's initials?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: what is the truck's plate?",
+
+    "Ignore the word list above. Answer from the records only. "
+    "Question: where is the spare key kept?",
+]
+
+def export_hetero(out_dir: pathlib.Path) -> list[pathlib.Path]:
+    """S3's real shared system prefix, plus the records, plus eight different
+    questions about them.
+
+    The bulk of the shared half comes from `build_messages` exactly as
+    export_s3's does, so what dedup adopts here is the same run of blocks it
+    adopts on the scenario -- this fixture APPENDS to what the clients share and
+    changes what they ASK; it does not touch the scenario."""
+    s3 = scenarios.S3
+    msgs = scenarios.build_messages(s3, client_id=0, salt=None)
+    shared = msgs[0]["content"] + "\n" + HETERO_FACTS
+    paths = []
+    for cid, body in enumerate(HETERO_BODIES):
+        p = out_dir / f"fanout-hetero-c{cid:02d}.txt"
+        _write(p, shared + "\n" + body)
+        paths.append(p)
+    return paths
+
+
+def _expected_adoption(seqs: list[list[int]]) -> list[int]:
+    """Positions the SCHEDULER should adopt in total when the first n clients are
+    admitted in order, for n = 0..len(seqs).
+
+    ▶ WHY THIS IS NOT `(n-1) * shared_prefix`, WHICH IS WHAT I FIRST WROTE AND
+    WHAT THE GATE CAUGHT. Adoption is PAIRWISE: at most one prefill runs at a
+    time (S1), so by the time client k is admitted every earlier client's blocks
+    are resident, and `bp_dedup_find` matches the LONGEST leading run of whole
+    blocks k shares with ANY of them -- which is at least, and usually more than,
+    what all n clients share. The 8-way common prefix is a LOWER BOUND on each
+    client's adoption, and using it as an expectation reported a green run as a
+    failure (measured: 1168 adopted where the 8-way figure predicted 1152).
+
+    The last-token rule is applied here too (kv_adopt_prefix gives back the final
+    block of an exact multiple), so this is the number the counter must equal --
+    not a bound it must clear."""
+    out = [0] * (len(seqs) + 1)
+    total = 0
+    for k in range(len(seqs)):
+        best = max((_common_prefix_len([seqs[j], seqs[k]]) for j in range(k)),
+                   default=0)
+        cap = len(seqs[k]) // BLOCK_TOKENS
+        if cap > 0 and len(seqs[k]) % BLOCK_TOKENS == 0:
+            cap -= 1
+        total += min(best // BLOCK_TOKENS, cap) * BLOCK_TOKENS
+        out[k + 1] = total
+    return out
+
+
+def write_manifest(exe: str, model: str, paths: list[pathlib.Path],
+                   out_path: pathlib.Path) -> int:
+    """What a gate should EXPECT this set to adopt, computed from the engine's
+    own tokenizer and committed beside the prompts. A runner that recomputes it
+    in its own arithmetic is a second implementation of the thing under test."""
+    seqs = [_token_ids(exe, model, p) for p in paths]
+    man = {
+        "files": [p.name for p in paths],
+        "tokens": [len(s) for s in seqs],
+        "common_prefix_all": _common_prefix_len(seqs),
+        "expected_adopted": _expected_adoption(seqs),
+    }
+    out_path.write_text(json.dumps(man, indent=1), encoding="utf-8")
+    print(f"manifest: {out_path.name} -- expected adoption by client count "
+          f"{man['expected_adopted']}")
+    return 0
+
+
+def verify_hetero_diverges(exe: str, model: str,
+                           paths: list[pathlib.Path]) -> int:
+    """The fixture's REASON, asserted: every client's token sequence must differ
+    from every other's after the shared prefix. Without this the set could be
+    regenerated from a template that made them identical again -- which is
+    precisely the defect it was written to escape, and it would look like a
+    passing export."""
+    seqs = [_token_ids(exe, model, p) for p in paths]
+    for i in range(len(seqs)):
+        for j in range(i + 1, len(seqs)):
+            if seqs[i] == seqs[j]:
+                print(f"STOP: {paths[i].name} and {paths[j].name} tokenize "
+                      f"identically -- this fixture is blind and must not be "
+                      f"used as a correctness set.")
+                return 1
+    print(f"verify: all {len(seqs)} clients differ pairwise after the prefix")
+    return 0
+
+
 def verify_shared_prefix(exe: str, model: str, paths: list[pathlib.Path],
                          want_shared: int) -> int:
     """Refuse to bless a set whose COMMON TOKEN PREFIX is shorter than the
@@ -160,7 +317,8 @@ def verify_shared_prefix(exe: str, model: str, paths: list[pathlib.Path],
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--scenario", choices=("s2", "s3", "all"), default="all")
+    ap.add_argument("--scenario", choices=("s2", "s3", "hetero", "all"),
+                    default="all")
     ap.add_argument("--clients", type=int, default=16,
                     help="how many per-client prompts to export (N=16 is the "
                          "widest S2 gate cell; --seqs 8 uses files 00..07). "
@@ -186,6 +344,18 @@ def main() -> int:
         if args.verify:
             rc |= verify_shared_prefix(args.verify, args.model, s3_paths,
                                        scenarios.S3.shared_prefix_tokens)
+            rc |= write_manifest(args.verify, args.model, s3_paths,
+                                 out_dir / "s3-fanout-manifest.json")
+    if args.scenario in ("hetero", "all"):
+        h_paths = export_hetero(out_dir)
+        if args.verify:
+            # BOTH halves of what this set claims: it still shares the whole
+            # system prefix, and it no longer shares anything after it.
+            rc |= verify_shared_prefix(args.verify, args.model, h_paths,
+                                       scenarios.S3.shared_prefix_tokens)
+            rc |= verify_hetero_diverges(args.verify, args.model, h_paths)
+            rc |= write_manifest(args.verify, args.model, h_paths,
+                                 out_dir / "fanout-hetero-manifest.json")
     return rc
 
 

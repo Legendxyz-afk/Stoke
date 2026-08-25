@@ -685,10 +685,12 @@ static void cmd_bench_serve(int argc, char** argv) {
     if (argc < 4) {
         fatal("usage: stoke bench --serve <model.gguf> [--raw] [-n N] "
               "(-p text | -f file)... [--seqs N] [--ctx N] [--threads N] "
-              "[--kv f32|q8]");
+              "[--kv f32|q8] [--dedup] [--ids <file>]");
     }
     const char* model_path = argv[3];
     bool        raw = false;
+    bool        dedup = false;
+    const char* ids_path = NULL;
     long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
     long long   stagger_long = 0;
     KvDtype     kv_dt = KV_F32;
@@ -699,6 +701,12 @@ static void cmd_bench_serve(int argc, char** argv) {
     for (int i = 4; i < argc; i++) {
         if (strcmp(argv[i], "--raw") == 0) {
             raw = true;
+        } else if (strcmp(argv[i], "--dedup") == 0) {
+            dedup = true;
+        } else if (strcmp(argv[i], "--ids") == 0) {
+            if (i + 1 >= argc)
+                fatal("stoke bench --serve: --ids needs a file path");
+            ids_path = argv[++i];
         } else if (strcmp(argv[i], "--kv") == 0) {
             if (i + 1 >= argc) fatal("stoke bench --serve: --kv needs f32 or q8");
             const char* w = argv[++i];
@@ -799,7 +807,7 @@ static void cmd_bench_serve(int argc, char** argv) {
                                    model_head_dim(model), kv_dt);
     ServeHost* host = serve_host_open(model);
     SchedHost  sh = serve_host(host);
-    Sched*     s = sched_open(store, ctx, &sh);
+    Sched*     s = sched_open(store, ctx, &sh, dedup);
 
     double* t_tok = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
     u32*    got = (u32*)xcalloc(n_seq, sizeof(u32));
@@ -960,12 +968,55 @@ static void cmd_bench_serve(int argc, char** argv) {
            (unsigned long long)st.prefill_chunks,
            (unsigned long long)st.preemptions,
            (unsigned long long)st.prefill_yields);
+    /* ALWAYS PRINTED WHEN --dedup IS ON, and for `stoke batch --dedup`'s
+     * reason: "dedup was enabled" and "dedup fired" are different claims, and a
+     * gate that cannot tell them apart passes while testing nothing. The
+     * denominator is summed over ADMISSIONS, so a preempted request that
+     * re-adopts counts in both -- which is what makes the ratio readable under
+     * pressure instead of exceeding 100%. */
+    if (dedup) {
+        printf("  dedup: %llu of %llu admitted prompt positions adopted\n",
+               (unsigned long long)st.adopted_positions,
+               (unsigned long long)st.admitted_prompt_positions);
+    }
     /* ANTI-VACUITY, printed rather than assumed: a run where every request
      * generated nothing would still report a tidy aggregate of 0. */
     if (total_ids != (u64)n_seq * n_gen) {
         printf("  ! only %llu of %llu expected ids -- read nothing else here\n",
                (unsigned long long)total_ids,
                (unsigned long long)((u64)n_seq * n_gen));
+    }
+
+    /* ▶ THE STREAMS, TO A FILE, IN `stoke batch`'s EXACT OUTPUT SHAPE.
+     *
+     * A FILE rather than stdout because this driver's stats already own stdout
+     * and run_m5_bars.ps1 parses them -- mixing 2,400 ids into that stream would
+     * make the correctness artifact and the measurement artifact the same
+     * artifact, and a regex is a poor place to keep them apart. The shape is
+     * `batch`'s so the two drivers' outputs are directly comparable: same
+     * header, ids one per line, `---`, then the decoded text. */
+    if (ids_path) {
+        FILE* fh = fopen(ids_path, "w");
+        if (!fh) fatal("stoke bench --serve: cannot open --ids file '%s'", ids_path);
+        for (u32 i = 0; i < n_seq; i++) {
+            const u32* row = out_ids + (size_t)i * n_gen;
+            fprintf(fh, "== seq %u ==\n", i);
+            for (u32 k = 0; k < got[i]; k++) fprintf(fh, "%u\n", row[k]);
+            fprintf(fh, "---\n");
+            u32   dcap = got[i] * 256u + 16u;
+            char* dec = (char*)xcalloc(dcap, 1);
+            u32   w = 0;
+            for (u32 k = 0; k < got[i]; k++)
+                w += tok_decode(tok, row[k], dec + w, dcap - w);
+            fwrite(dec, 1, w, fh);
+            fprintf(fh, "\n");
+            free(dec);
+        }
+        /* Checked, for finish_stdout_or_fatal's reason: a stream that fails to
+         * flush would otherwise leave a SHORT file that compares as a DIFFER
+         * and reads as an engine bug. */
+        if (fclose(fh) != 0)
+            fatal("stoke bench --serve: writing '%s' failed", ids_path);
     }
 
     free(ttft);

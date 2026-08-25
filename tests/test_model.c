@@ -1173,7 +1173,10 @@ TEST(m5_scheduler_output_equals_solo_generation) {
                                    model_head_dim(m), KV_F32);
     ServeHost* host = serve_host_open(m);
     SchedHost  sh = serve_host(host);
-    Sched*     s = sched_open(store, model_max_ctx(m), &sh);
+    /* dedup OFF: these prompts are 5-9 tokens, i.e. not one whole block, so
+     * adoption could not fire and an ON arm here would be vacuous. The serve
+     * path's dedup is gated on the real model against the S3 prompts. */
+    Sched*     s = sched_open(store, model_max_ctx(m), &sh, false);
 
     for (u32 i = 0; i < NREQ; i++) {
         SchedRequest r = {100 + i, prompts[i], nprompt[i], NGEN, -1};

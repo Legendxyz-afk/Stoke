@@ -36,6 +36,15 @@
  * prefill computes 0..n_prompt-1 and its last row yields id 0, so n_done is
  * n_prompt with n_gen 1; each decode adds one of each.
  *
+ * ▶ PREFIX ADOPTION AMENDS THE DERIVATION AND NOT THE IDENTITY. With dedup on,
+ * n_done starts at the number of positions found RESIDENT rather than at 0, so
+ * prefill computes [adopted, n_prompt) and the positions below `adopted` are
+ * shared rather than computed. n_done still reaches n_prompt at the end of the
+ * prefill, so everything downstream reads the same. Worth stating because
+ * "n_done counts positions this request computed" was true until 2026-08-25 and
+ * is now false; what it counts is positions BACKED AND VALID, which is what
+ * every use of it actually needs.
+ *
  * ▶ AND THE ONE FORMULA THAT MAKES REPLAY FREE. The token at position p is
  * prompt_ids[p] while p < n_prompt and gen[p - n_prompt] after -- so a
  * re-prefill after preemption feeds exactly the recorded ids without a second
@@ -83,6 +92,7 @@ struct Sched {
     u32  chunk;   /* SCHED_CHUNK_TOKENS, or STOKE_SCHED_CHUNK */
     u64  last_preempted;
     bool ever_preempted;
+    bool dedup;   /* prefix adoption at admission -- see sched.h */
 
     /* The submit queue: the ONE place a foreign thread touches this object.
      * Plain mutex, per the forward note's instruction not to get clever --
@@ -196,7 +206,8 @@ static u32 running_count(const Sched* s) {
 
 /* ---- lifecycle --------------------------------------------------------- */
 
-Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host) {
+Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host,
+                  bool dedup_prefix) {
     if (!store) fatal("sched: sched_open -- store must be non-NULL");
     if (max_ctx == 0) fatal("sched: sched_open -- max_ctx must be > 0");
     if (!host || !host->step || !host->now_ms) {
@@ -234,6 +245,7 @@ Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host) {
     s->store = store;
     s->max_ctx = max_ctx;
     s->host = *host;
+    s->dedup = dedup_prefix;
     pthread_mutex_init(&s->mu, NULL);
     return s;
 }
@@ -448,6 +460,51 @@ static void admit_if_possible(Sched* s) {
     r->kv = kv;
     r->state = SCHED_PREFILLING;
     if (r->target == 0) r->target = r->spec.n_prompt;
+
+    /* ▶▶ PREFIX ADOPTION, AND IT BELONGS EXACTLY HERE.
+     *
+     * kv_adopt_prefix is ADMISSION-TIME ONLY -- it splices shared blocks in from
+     * ordinal 0 and returns 0 for a sequence that has already been written -- so
+     * the moment between opening the Kv and building the first row is the only
+     * one at which it can fire. Starting n_done at what it returns is the whole
+     * of the change downstream: the prefill loop already takes
+     * `chunk = target - n_done`, so adopted positions are skipped with nothing
+     * else to adjust, and `start` is a whole number of blocks so S-ALIGN still
+     * holds by construction.
+     *
+     * ▶ A PREEMPTED REQUEST RE-ADOPTS, and that falls out rather than needing a
+     * second path: preempt() closes the victim's Kv and resets n_done to 0, so
+     * readmission arrives here with a FRESH sequence -- which is the one state
+     * kv_adopt_prefix accepts. It re-adopts only what is still resident (a
+     * donor may have retired meanwhile), and recomputing is always correct.
+     *
+     * ▶ AND IT NEVER SKIPS THE WHOLE PROMPT: kv_adopt_prefix gives back the last
+     * block of an exact multiple, so adopted <= n_prompt - 1 <= target - 1 and
+     * there is always at least one row left to compute. A request cannot be
+     * admitted into a state where it can never complete its prefill.
+     *
+     * ▶ THE WATERMARK ABOVE IS DELIBERATELY NOT ADJUSTED. It is checked before
+     * the Kv exists, so what adoption will find is not yet knowable; admitting
+     * on the un-adopted size is conservative in the only direction that matters.
+     *
+     * ▶ THE SCHEDULER DOES NOT TAKE ADOPTION'S WORD FOR IT -- model.c's
+     * generate_batch does not either, and for the reason kv.h names: skipping
+     * positions that were REPORTED resident but are not BACKED is the one
+     * failure on this path that leaves the run alive and merely wrong. Attention
+     * reads whatever the blocks hold, the stream stays fluent, and nothing
+     * crashes. A measured mutation on the batch path confirmed a fixture-level
+     * token comparison cannot see it. */
+    s->st.admitted_prompt_positions += r->spec.n_prompt;
+    if (s->dedup) {
+        u32 adopted = kv_adopt_prefix(kv, r->spec.prompt_ids, r->spec.n_prompt);
+        if (kv_len(kv) != adopted) {
+            fatal("sched: admit -- request %llu adoption reported %u resident "
+                  "positions but the sequence is backed to %u",
+                  (unsigned long long)r->spec.id, adopted, kv_len(kv));
+        }
+        r->n_done = adopted;
+        s->st.adopted_positions += adopted;
+    }
     s->prefilling = r;
 }
 

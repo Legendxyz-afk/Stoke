@@ -121,8 +121,22 @@ typedef struct {
  * every other KV accessor fatals on an unbackable position. So this file must
  * prove every row's position is backed BEFORE handing the batch to host->step.
  * Preemption is decided before the forward -- by the time a forward writes K/V,
- * the step is already running. */
-Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host);
+ * the step is already running.
+ *
+ * ▶ `dedup_prefix` TURNS ON PREFIX ADOPTION AT ADMISSION (kv.h's
+ * kv_adopt_prefix): a request whose leading whole blocks are already resident in
+ * the pool shares them by refcount and starts its prefill past them. This is the
+ * same capability `stoke batch --dedup` has had since M4 gate item [3]; M5's
+ * serving driver is a NEW CALLER of it, which is why it is gated again rather
+ * than inherited (memo 2026-08-24-m5-gate4-s3-status.md).
+ *
+ * A PARAMETER RATHER THAN A DEFAULT, in either direction: on, it changes how
+ * much work a prompt costs and therefore every timing this scheduler produces;
+ * off, gate item [4] is measured against an engine (llama-server, whose
+ * slot-prompt-similarity and prompt cache are ON by default) that is doing it.
+ * Every caller states which of those two runs it is. */
+Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host,
+                  bool dedup_prefix);
 void   sched_close(Sched* s);
 
 /* Queues a request. Returns false (and queues nothing) if `id` is already live,
@@ -202,6 +216,16 @@ typedef struct {
     u64 chunk_misaligned;
     u64 decode_rows;    /* total decode rows stepped                         */
     u64 finished;       /* requests retired, for any reason                  */
+    /* ---- prefix adoption, and WHY BOTH NUMBERS.
+     * "dedup was enabled" and "dedup fired" are different claims, and a gate
+     * that cannot tell them apart is not a gate -- `stoke batch --dedup` has
+     * reported the pair since M4 for exactly this reason. `adopted_positions`
+     * counts positions found resident at admission; `admitted_prompt_positions`
+     * is the denominator, summed over the SAME admissions (so a re-admitted
+     * request counts again in both, which is what makes the ratio readable
+     * under preemption). Both stay 0 when dedup is off. */
+    u64 adopted_positions;
+    u64 admitted_prompt_positions;
 } SchedStats;
 
 void sched_stats(const Sched* s, SchedStats* out);

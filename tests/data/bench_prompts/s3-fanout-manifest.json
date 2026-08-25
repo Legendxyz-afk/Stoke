@@ -1,0 +1,34 @@
+{
+ "files": [
+  "s3-fanout-c00.txt",
+  "s3-fanout-c01.txt",
+  "s3-fanout-c02.txt",
+  "s3-fanout-c03.txt",
+  "s3-fanout-c04.txt",
+  "s3-fanout-c05.txt",
+  "s3-fanout-c06.txt",
+  "s3-fanout-c07.txt"
+ ],
+ "tokens": [
+  1230,
+  1230,
+  1230,
+  1230,
+  1230,
+  1230,
+  1230,
+  1230
+ ],
+ "common_prefix_all": 1028,
+ "expected_adopted": [
+  0,
+  0,
+  1024,
+  2048,
+  3072,
+  4096,
+  5120,
+  6144,
+  7168
+ ]
+}

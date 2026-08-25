@@ -1,0 +1,34 @@
+{
+ "files": [
+  "fanout-hetero-c00.txt",
+  "fanout-hetero-c01.txt",
+  "fanout-hetero-c02.txt",
+  "fanout-hetero-c03.txt",
+  "fanout-hetero-c04.txt",
+  "fanout-hetero-c05.txt",
+  "fanout-hetero-c06.txt",
+  "fanout-hetero-c07.txt"
+ ],
+ "tokens": [
+  1168,
+  1169,
+  1174,
+  1170,
+  1168,
+  1170,
+  1169,
+  1169
+ ],
+ "common_prefix_all": 1162,
+ "expected_adopted": [
+  0,
+  0,
+  1152,
+  2304,
+  3456,
+  4608,
+  5760,
+  6912,
+  8064
+ ]
+}

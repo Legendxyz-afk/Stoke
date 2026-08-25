@@ -1,0 +1,120 @@
+2026-08-25T14:17:04  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T14:17:04      commit dadce3a  seqs=2  n=4
+2026-08-25T14:17:04      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=M:\New Drive\Desktop\Programming\stoke\build\win-dedup-mutant\stoke.exe
+2026-08-25T14:17:04      *** -Quick: PRE-FLIGHT ONLY (2 seqs, n 4, leg 1). NOT a gate. ***
+2026-08-25T14:17:04  -- leg s3: arm A (no dedup), 2 seqs x 4 gen
+2026-08-25T14:18:32     A: 2482 rows, 88.5s
+2026-08-25T14:18:33     A: 1 distinct streams over 2 clients -- EXPECTED 1
+2026-08-25T14:18:33        (M0's clients differ by one digit; this leg cannot see a cross-client error)
+2026-08-25T14:18:33  -- leg s3: arm B (--dedup)
+2026-08-25T14:19:26     B: 1458 rows, adopted 1024 of 2476, 53.1s
+2026-08-25T14:19:26     RESULT leg s3: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T14:19:26  -- leg s3: MUTANT (adopted + 16), must DIFFER
+2026-08-25T14:20:22     !! MUTANT PRODUCED THE SAME STREAM AS A -- this gate has NO POWER. STOP.
+2026-08-25T14:20:22  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-25-m5-dedup-verify-report.md
+2026-08-25T14:20:22  1 CHECK(S) FAILED -- STOP.
+2026-08-25T14:24:07  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T14:24:08      commit dadce3a  seqs=2  n=4
+2026-08-25T14:24:08      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T14:24:08      *** -Quick: PRE-FLIGHT ONLY (2 seqs, n 4, leg 1). NOT a gate. ***
+2026-08-25T14:24:08  -- leg s3: arm A (no dedup), 2 seqs x 4 gen
+2026-08-25T14:25:36     A: 2482 rows, 88s
+2026-08-25T14:25:36     A: 1 distinct streams over 2 clients -- EXPECTED 1
+2026-08-25T14:25:36        (M0's clients differ by one digit; this leg cannot see a cross-client error)
+2026-08-25T14:25:36  -- leg s3: arm B (--dedup)
+2026-08-25T14:26:30     B: 1458 rows, adopted 1024 of 2476, 54.1s
+2026-08-25T14:26:30     RESULT leg s3: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T14:26:30  -- leg s3: mutant 'kv' (MUST differ)
+2026-08-25T14:27:29     !! 'kv' PRODUCED THE SAME STREAM AS A -- this gate has NO POWER. STOP.
+2026-08-25T14:27:29  -- leg s3: mutant 'skip16' (recorded)
+2026-08-25T14:28:22     'skip16' is invisible to this comparison -- recorded, not a failure
+2026-08-25T14:28:22        (the sched.c residency guard and the sim ledger are what cover it)
+2026-08-25T14:28:22  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-25-m5-dedup-verify-report.md
+2026-08-25T14:28:22  1 CHECK(S) FAILED -- STOP.
+2026-08-25T14:32:57  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T14:32:57      commit dadce3a  seqs=2  n=8
+2026-08-25T14:32:57      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T14:32:57      *** -Quick: PRE-FLIGHT ONLY (2 seqs, n 8, hetero leg). NOT a gate. ***
+2026-08-25T14:32:58  -- leg hetero: arm A (no dedup), 2 seqs x 8 gen
+2026-08-25T14:34:21     A: 2367 rows, 83.1s
+2026-08-25T14:34:21     A: all 2 client streams distinct -- the leg has power
+2026-08-25T14:34:21  -- leg hetero: arm B (--dedup)
+2026-08-25T14:35:04     B: 1199 rows, adopted 1168 of 2353, 43.1s
+2026-08-25T14:35:04     !! adoption was 1168, expected 1152 -- the comparison below is not the one intended
+2026-08-25T14:35:04     RESULT leg hetero: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T14:35:04  -- leg hetero: mutant 'kv' (MUST differ)
+2026-08-25T14:35:50     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T14:35:50  -- leg hetero: mutant 'skip16' (recorded)
+2026-08-25T14:37:14     'skip16' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T14:37:14  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-25-m5-dedup-verify-report.md
+2026-08-25T14:37:14  1 CHECK(S) FAILED -- STOP.
+2026-08-25T14:42:03  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T14:42:03      commit dadce3a  seqs=2  n=8
+2026-08-25T14:42:03      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T14:42:03      *** -Quick: PRE-FLIGHT ONLY (2 seqs, n 8, hetero leg). NOT a gate. ***
+2026-08-25T14:42:03  -- leg hetero: arm A (no dedup), 2 seqs x 8 gen
+2026-08-25T14:43:25     A: 2351 rows, 81.2s
+2026-08-25T14:43:25     A: all 2 client streams distinct -- the leg has power
+2026-08-25T14:43:25  -- leg hetero: arm B (--dedup)
+2026-08-25T14:44:10     B: 1199 rows, adopted 1152 of 2337, 45.1s
+2026-08-25T14:44:10     RESULT leg hetero: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T14:44:10  -- leg hetero: mutant 'kv' (MUST differ)
+2026-08-25T14:44:52     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T14:44:52  -- leg hetero: mutant 'skip16' (recorded)
+2026-08-25T14:45:34     'skip16' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T14:45:34  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-25-m5-dedup-verify-report.md
+2026-08-25T14:45:34  PRE-FLIGHT GREEN -- run without -Quick for the gate evidence.
+2026-08-25T14:45:45  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T14:45:46      commit dadce3a  seqs=8  n=24
+2026-08-25T14:45:46      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T14:45:46  -- leg s3: arm A (no dedup), 8 seqs x 24 gen
+2026-08-25T14:51:27     A: 10024 rows, 341.4s
+2026-08-25T14:51:27     A: 1 distinct streams over 8 clients -- EXPECTED 1
+2026-08-25T14:51:27        (M0's clients differ by one digit; this leg cannot see a cross-client error)
+2026-08-25T14:51:27  -- leg s3: arm B (--dedup)
+2026-08-25T14:53:17     B: 2856 rows, adopted 7168 of 9840, 110.2s
+2026-08-25T14:53:17     RESULT leg s3: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T14:53:17  -- leg s3: mutant 'kv' (recorded)
+2026-08-25T14:55:06     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T14:55:06  -- leg s3: mutant 'skip16' (recorded)
+2026-08-25T14:56:51     'skip16' is invisible on this leg -- recorded, not a failure
+2026-08-25T14:56:51        (the sched.c residency guard and the sim ledger are what cover it)
+2026-08-25T14:56:51  -- leg hetero: arm A (no dedup), 8 seqs x 24 gen
+2026-08-25T15:02:07     A: 9541 rows, 316.4s
+2026-08-25T15:02:07     A: all 8 client streams distinct -- the leg has power
+2026-08-25T15:02:07  -- leg hetero: arm B (--dedup)
+2026-08-25T15:03:02     B: 1477 rows, adopted 8064 of 9357, 55.1s
+2026-08-25T15:03:02     RESULT leg hetero: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T15:03:02  -- leg hetero: mutant 'kv' (MUST differ)
+2026-08-25T15:06:49  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T15:06:49      commit dadce3a  seqs=2  n=8
+2026-08-25T15:06:49      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T15:06:49      *** -Quick: PRE-FLIGHT ONLY (2 seqs, n 8, hetero leg). NOT a gate. ***
+2026-08-25T15:06:49  -- leg hetero: arm A (no dedup), 2 seqs x 8 gen
+2026-08-25T15:08:12     A: 2351 rows, 83.1s
+2026-08-25T15:08:12     A: all 2 client streams distinct -- the leg has power
+2026-08-25T15:08:12  -- leg hetero: arm B (--dedup)
+2026-08-25T15:08:58     B: 1199 rows, adopted 1152 of 2337, 45.1s
+2026-08-25T15:08:58     RESULT leg hetero: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T15:08:58  -- leg hetero: mutant 'kv' (MUST differ)
+2026-08-25T15:09:41     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T15:09:41  -- leg hetero: mutant 'skip16' (recorded)
+2026-08-25T15:10:23     'skip16' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T15:10:23  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-25-m5-dedup-verify-report.md
+2026-08-25T15:10:23  PRE-FLIGHT GREEN -- run without -Quick for the gate evidence.
+2026-08-25T15:10:34  === M5 dedup-on-serve verification, branch m5-entry
+2026-08-25T15:10:34      commit dadce3a  seqs=8  n=24
+2026-08-25T15:10:34      new=M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  mutant=
+2026-08-25T15:10:34  -- leg s3: arm A (no dedup), 8 seqs x 24 gen
+2026-08-25T15:16:14     A: 10024 rows, 339.4s
+2026-08-25T15:16:14     A: 1 distinct streams over 8 clients -- EXPECTED 1
+2026-08-25T15:16:14        (M0's clients differ by one digit; this leg cannot see a cross-client error)
+2026-08-25T15:16:14  -- leg s3: arm B (--dedup)
+2026-08-25T15:18:04     B: 2856 rows, adopted 7168 of 9840, 110.1s
+2026-08-25T15:18:04     RESULT leg s3: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T15:18:04  -- leg s3: mutant 'kv' (recorded)
+2026-08-25T15:19:52     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T15:19:52  -- leg s3: mutant 'skip16' (recorded)
+2026-08-25T15:21:38     'skip16' is invisible on this leg -- recorded, not a failure
+2026-08-25T15:21:38        (the sched.c residency guard and the sim ledger are what cover it)
+2026-08-25T15:21:38  -- leg hetero: arm A (no dedup), 8 seqs x 24 gen
