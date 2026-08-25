@@ -118,3 +118,18 @@
 2026-08-25T15:21:38     'skip16' is invisible on this leg -- recorded, not a failure
 2026-08-25T15:21:38        (the sched.c residency guard and the sim ledger are what cover it)
 2026-08-25T15:21:38  -- leg hetero: arm A (no dedup), 8 seqs x 24 gen
+2026-08-25T15:27:22     A: 9541 rows, 343.4s
+2026-08-25T15:27:22     A: all 8 client streams distinct -- the leg has power
+2026-08-25T15:27:22  -- leg hetero: arm B (--dedup)
+2026-08-25T15:28:20     B: 1477 rows, adopted 8064 of 9357, 58.1s
+2026-08-25T15:28:20     RESULT leg hetero: dedup vs no-dedup = SAME (bit-identical)
+2026-08-25T15:28:20  -- leg hetero: mutant 'kv' (MUST differ)
+2026-08-25T15:29:18     'kv' does not reproduce A (DIFFERS) -- the comparison can fail
+2026-08-25T15:29:18  -- leg hetero: mutant 'skip16' (recorded)
+2026-08-25T15:30:08    !! exit 1: fatal: stoke bench --serve: step budget exhausted -- livelock
+
+2026-08-25T15:30:08     'skip16' ABORTED: STOP: 'M:\New Drive\Desktop\Programming\stoke\build\win-dedup-mutant\stoke.exe' exited 1
+2026-08-25T15:30:08     'skip16' does not reproduce A (aborted) -- the comparison can fail
+2026-08-25T15:30:08  -- leg 4: serve (1 seq, no dedup) vs the m4.5 archive's `stoke run`
+2026-08-25T15:30:09    !! exit 1: fatal: stoke bench --serve: request 0 refused -- the pool cannot hold prompt 0 (23 tokens) plus -n 24
+

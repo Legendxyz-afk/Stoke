@@ -385,9 +385,14 @@ if (-not $Quick) {
     Say '-- leg 4: serve (1 seq, no dedup) vs the m4.5 archive''s `stoke run`'
     $prompt = "$root\tests\data\parity\p00.txt"
     $sIds = "$tmp\lineage-serve.txt"
+    # ▶ --ctx IS NOT OPTIONAL HERE, and leaving it out cost this leg a run.
+    # Without it the driver sizes the pool as longest_prompt + n_gen -- for p00
+    # that is 47 positions = 3 blocks -- and then `sched_submit` correctly
+    # refuses the request, because admission needs blocks(prompt) + W with W's
+    # FLOOR of 8. A one-sequence run still has to clear the decode watermark.
     $a = @("bench", "--serve", ('"' + $Q4 + '"'), "-f", ('"' + $prompt + '"'),
-           "--raw", "--seqs", "1", "-n", "$NGen", "--threads", "6",
-           "--ids", ('"' + $sIds + '"'))
+           "--raw", "--seqs", "1", "--ctx", "256", "-n", "$NGen",
+           "--threads", "6", "--ids", ('"' + $sIds + '"'))
     $null = RunCapture $NEW $a "$tmp\stdout.txt"
     $env:STOKE_PREFILL_CHUNK = "1"
     $runOut = RunCapture $archiveQ4 @("run", ('"' + $Q4 + '"'), "--raw", "-n", "$NGen",
