@@ -77,7 +77,17 @@ $gr    = "$root\docs\superpowers\gate-reports"
 $BAR = 13.3
 
 if ($Quick) { $NGen = 16; $Seqs = 2; $Blocks = 1 }
-if (-not $Stamp) { $Stamp = "{0}-m5-gate4" -f (Get-Date -Format "yyyy-MM-dd") }
+# ⚠ THE PRE-FLIGHT GETS ITS OWN STAMP, AND ITS UNITS CARRY THEIR SHAPE.
+# Without this, `-Quick` writes b1-Sd/b1-Sn/b1-B/b1-L into the SAME bank the
+# gate resumes from, and the gate then "resumes" 2-seq/16-token pre-flight
+# numbers as its own 8-seq/300-token units -- a pre-flight that poisons the
+# result it was run to protect. run_m5_dedup_verify.ps1 already keys its units
+# `-s${seqs}n${NGen}` for exactly this reason; both belts are worn here.
+if (-not $Stamp) {
+    $Stamp = "{0}-m5-gate4{1}" -f (Get-Date -Format "yyyy-MM-dd"),
+                                  $(if ($Quick) { "-quick" } else { "" })
+}
+$SHAPE = "s${Seqs}n${NGen}"
 $log    = "$gr\$Stamp-raw.txt"
 $bank   = "$gr\$Stamp-bank.jsonl"
 $report = "$gr\$Stamp-report.md"
@@ -102,6 +112,13 @@ function Say($m) {
     Write-Output $line
 }
 function Bank($obj) { ($obj | ConvertTo-Json -Compress) | Out-File -Append -Encoding utf8 $bank }
+$script:Done = 0
+function Progress() {
+    $script:Done++
+    @{ total = ($Blocks * 4); done = $script:Done; stamp = $Stamp; shape = $SHAPE
+       updated = (Get-Date -Format s) } | ConvertTo-Json -Compress |
+        Out-File -Encoding utf8 $status
+}
 function Banked() {
     if (-not (Test-Path $bank)) { return @() }
     $out = @()
@@ -113,8 +130,13 @@ function Banked() {
 function HasUnit($id) {
     foreach ($b in (Banked)) {
         if ($b.id -eq $id) {
+            # A BANKED FAILURE IS NOT A BANKED UNIT. The failure path says "will
+            # re-run on resume" and an unqualified `else { return $true }` made
+            # that a lie: a parse-fail or a rejected no-adoption unit would be
+            # skipped forever, and the gate would quietly grade on 2 of 3 blocks
+            # while the report's row count looked deliberate.
             if ($b.kind -eq "cell") { if ($null -ne $b.gate) { return $true } }
-            else { return $true }
+            elseif ($b.kind -ne "fail") { return $true }
         }
     }
     return $false
@@ -247,11 +269,25 @@ function LlamaCell() {
 }
 
 # ------------------------------------------------------------------- run
+# STALENESS, BEFORE ANYTHING IS MEASURED. Every measurement bug this project
+# has recorded was caught by a pre-flight, and "the binary predates the feature
+# under test" is the cheapest of them to check: --dedup landed in `729ebfc` and
+# an exe older than src/ is not the engine this gate names.
+$newestSrc = (Get-ChildItem "$root\src" -Include *.c, *.h -Recurse |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+if ((Get-Item -LiteralPath $exe).LastWriteTime -lt $newestSrc.LastWriteTime) {
+    throw ("STOP: $exe is OLDER than $($newestSrc.Name) -- rebuild before gating")
+}
+
 Say "M5 gate [4] -- S3 fanout. stamp $Stamp"
 Say "seqs $Seqs x n $NGen, ctx $Ctx, threads $Threads, blocks $Blocks, bar $BAR"
 Say "exe: $exe  commit $(git -C $root rev-parse --short HEAD)"
+Say "exe built $((Get-Item -LiteralPath $exe).LastWriteTime.ToString('s')), newest src $($newestSrc.Name) $($newestSrc.LastWriteTime.ToString('s'))"
 if ($Quick) { Say "*** -Quick: NOT a gate (2 seqs, n 16, 1 block) ***" }
-@{ total = ($Blocks * 3); stamp = $Stamp; started = (Get-Date -Format s) } |
+# 4 arms per block, not 3 -- L is a unit too, and a total that undercounts is a
+# progress figure that reads done while a block is still running.
+@{ total = ($Blocks * 4); done = 0; stamp = $Stamp; shape = $SHAPE
+   started = (Get-Date -Format s) } |
     ConvertTo-Json -Compress | Out-File -Encoding utf8 $status
 
 if (@(Get-Process | Where-Object { $_.Name -match 'ISLC' }).Count -gt 0) {
@@ -297,7 +333,7 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
     Say "  order: $($order -join ' then ')"
 
     foreach ($arm in $order) {
-        $id = "b$blk-$arm"
+        $id = "b$blk-$arm-$SHAPE"
         if (HasUnit $id) { Say "  $id already banked, skipping"; continue }
         $ids = "$tmp\$id-ids.txt"
         $t0 = Get-Date
@@ -312,7 +348,7 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
         # a no-dedup run wearing a flag, and it would read as "dedup does not
         # help" rather than as a broken unit.
         if (($arm -eq "Sd" -or $arm -eq "B") -and (-not $r.adopted -or $r.adopted -le 0)) {
-            Say "  !! $id: --dedup was passed and NOTHING was adopted -- unit REJECTED"
+            Say "  !! ${id}: --dedup was passed and NOTHING was adopted -- unit REJECTED"
             Bank @{ id = $id; kind = "fail"; arm = $arm; reason = "no adoption"
                     secs = $secs; utc = (Get-Date -Format s) }
             continue
@@ -320,16 +356,28 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
         $r.id = $id; $r.kind = "cell"; $r.arm = $arm; $r.block = $blk
         $r.secs = $secs; $r.cpu_s = $script:LastCpuS; $r.cpu_busy = (CpuBusy)
         $r.standby_gb = (StandbyGB); $r.utc = (Get-Date -Format s)
+        # THE SHAPE TRAVELS WITH THE UNIT, so the report can refuse to median
+        # across shapes even if a bank is ever hand-merged.
+        $r.shape = $SHAPE; $r.seqs = $Seqs; $r.ngen = $NGen; $r.ctx = $Ctx
         if ($arm -ne "B") {
             $r.ids_file = $ids
-            $r.ids_hash = (Get-FileHash -LiteralPath $ids).Hash
+            # NOT bare Get-FileHash: $ErrorActionPreference is Stop, so a
+            # missing ids file would kill a sitting mid-block over a unit that
+            # otherwise measured fine. Bank it hashless and let the stream
+            # check below report a gap instead of the run dying at minute 40.
+            if (Test-Path -LiteralPath $ids) {
+                $r.ids_hash = (Get-FileHash -LiteralPath $ids).Hash
+            } else {
+                Say "  !! ${id}: no ids file at $ids -- banked without a stream hash"
+            }
         }
         Bank $r
+        Progress
         Say ("  {0,-10} AGG(M0) {1,7:n3} tok/s  TTFT p50 {2,6:n0} ms  adopted {3}  ({4}s wall, {5}s cpu)" -f
              $id, $r.gate, $r.ttft50, $(if ($r.adopted) { $r.adopted } else { 0 }), $secs, $r.cpu_s)
     }
 
-    $id = "b$blk-L"
+    $id = "b$blk-L-$SHAPE"
     if (-not (HasUnit $id)) {
         $t0 = Get-Date
         $r = LlamaCell
@@ -341,7 +389,9 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
             $r.id = $id; $r.kind = "cell"; $r.arm = "L"; $r.block = $blk
             $r.secs = $secs; $r.cpu_s = $script:LastCpuS; $r.cpu_busy = (CpuBusy)
             $r.standby_gb = (StandbyGB); $r.utc = (Get-Date -Format s)
+            $r.shape = $SHAPE; $r.seqs = $Seqs; $r.ngen = $NGen; $r.ctx = $Ctx
             Bank $r
+            Progress
             Say ("  {0,-10} tg128 {1,7:n3}  pp512 {2,7:n3} tok/s  ({3}s)" -f $id, $r.gate, $r.pp, $secs)
         }
     }
@@ -349,7 +399,13 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
 
 # ---------------------------------------------------------------- report
 Say "all blocks done -- writing report"
-$all = @(Banked | Where-Object { $_.kind -eq "cell" })
+# ⚠ THE REPORT GRADES ONE SHAPE. The id key stops a differently-shaped unit
+# being RESUMED; this stops one being MEDIANED. A unit banked before shapes were
+# recorded has no .shape and is excluded rather than assumed -- a gate that
+# guesses what it is averaging is the thing this file exists to prevent.
+$all = @(Banked | Where-Object { $_.kind -eq "cell" -and $_.shape -eq $SHAPE })
+$skipped = @(Banked | Where-Object { $_.kind -eq "cell" -and $_.shape -ne $SHAPE }).Count
+if ($skipped -gt 0) { Say "  !! $skipped banked cell(s) of another shape EXCLUDED from this report" }
 $Sd = @($all | Where-Object { $_.arm -eq "Sd" })
 $Sn = @($all | Where-Object { $_.arm -eq "Sn" })
 $B  = @($all | Where-Object { $_.arm -eq "B" })
@@ -367,7 +423,7 @@ $streamsAgree = (@($hashes | Sort-Object -Unique).Count -le 1)
 $lines = @()
 $lines += "# M5 gate item [4] -- S3 fanout, measured"
 $lines += ""
-$lines += "Run ``$Stamp``. S3 = 8 clients x ~200 user tokens over a 1024-token SHARED system"
+$lines += "Run ``$Stamp``. S3 = $Seqs clients x ~200 user tokens over a 1024-token SHARED system"
 $lines += "prefix, $NGen generated, ctx $Ctx, threads $Threads, kv f32, unpinned. Bar **$BAR**"
 $lines += "(M0's llamacpp-default cell). Raw ``$Stamp-raw.txt``, bank ``$Stamp-bank.jsonl``."
 $lines += ""
@@ -378,22 +434,51 @@ $lines += "prefills of the shared prefix. **Sn is the FLOOR, not a gate result.*
 $lines += ""
 $lines += "| arm | AGGREGATE(M0) tok/s | vs bar $BAR | TTFT p50 s | ITL p50 ms | ITL max ms | rows | adopted |"
 $lines += "|---|---|---|---|---|---|---|---|"
+# ⚠ EVERY MEDIAN IS COMPUTED INTO A VARIABLE FIRST, and that is not style.
+# `Median (@(...)), (Median (@(...)))` inside a -f argument list is parsed as a
+# COMMAND invocation: the first Median swallows the rest of the comma list as
+# its own arguments, the format string is handed fewer args than it has
+# placeholders, and the whole report dies AFTER every unit has been paid for.
+# It killed the first pre-flight (2026-08-26) at exactly that point.
 foreach ($pair in @(@{n = "Sd (dedup) -- GATE"; u = $Sd; m = $mSd },
                     @{n = "Sn (no dedup) -- floor"; u = $Sn; m = $mSn })) {
     if ($pair.u.Count -eq 0) { continue }
+    $uTtft   = Median (@($pair.u | ForEach-Object { [double]$_.ttft50 }))
+    $uItl    = Median (@($pair.u | ForEach-Object { [double]$_.itl50 }))
+    $uItlMax = Median (@($pair.u | ForEach-Object { [double]$_.itlmax }))
+    $uRows   = Median (@($pair.u | ForEach-Object { [double]$_.rows }))
+    $uAdopt  = Median (@($pair.u | ForEach-Object { [double]$_.adopted }))
+    $uRatio  = 0.0
+    if ($pair.m) { $uRatio = $pair.m / $BAR }
+    $uTtftS  = 0.0
+    if ($null -ne $uTtft) { $uTtftS = $uTtft / 1000.0 }
     $lines += ("| {0} | {1:n3} | {2:n2}x | {3:n1} | {4:n1} | {5:n0} | {6} | {7} |" -f
-        $pair.n, $pair.m,
-        $(if ($pair.m) { $pair.m / $BAR } else { 0 }),
-        (Median (@($pair.u | ForEach-Object { [double]$_.ttft50 }))) / 1000.0,
-        (Median (@($pair.u | ForEach-Object { [double]$_.itl50 }))),
-        (Median (@($pair.u | ForEach-Object { [double]$_.itlmax }))),
-        (Median (@($pair.u | ForEach-Object { [double]$_.rows }))),
-        (Median (@($pair.u | ForEach-Object { [double]$_.adopted }))))
+        $pair.n, $pair.m, $uRatio, $uTtftS, $uItl, $uItlMax, $uRows, $uAdopt)
 }
 $lines += ""
 if ($mSd -and $mSn -and $mSn -gt 0) {
     $lines += ("**What dedup bought: {0:n2}x** ({1:n3} -> {2:n3} tok/s aggregate)." -f
                ($mSd / $mSn), $mSn, $mSd)
+    $lines += ""
+}
+# ANTI-VACUITY THAT COSTS NOTHING AND CHECKS THE ARMS AGAINST EACH OTHER: the
+# rows the dedup arm did NOT run must equal the positions it reported adopting,
+# and the steps it saved must be those positions divided by the prefill chunk.
+# An arm that "adopted" without skipping work would pass every check above.
+$rSd = Median (@($Sd | ForEach-Object { [double]$_.rows }))
+$rSn = Median (@($Sn | ForEach-Object { [double]$_.rows }))
+$aSd = Median (@($Sd | ForEach-Object { [double]$_.adopted }))
+$cSd = Median (@($Sd | ForEach-Object { [double]$_.chunks }))
+$cSn = Median (@($Sn | ForEach-Object { [double]$_.chunks }))
+if ($rSd -and $rSn -and $aSd) {
+    $delta = $rSn - $rSd
+    $ok = $(if ($delta -eq $aSd) { "matches exactly" } else { "**DOES NOT MATCH -- $delta rows vs $aSd adopted**" })
+    $lines += ("**Rows the gate arm did not run: {0:n0} ({1:n0} -> {2:n0}), against {3:n0} positions reported adopted -- {4}.**" -f
+               $delta, $rSn, $rSd, $aSd, $ok)
+    if ($cSd -and $cSn -and ($cSn - $cSd) -gt 0) {
+        $lines += ("Prefill chunks {0:n0} -> {1:n0}: {2:n0} chunks removed at {3:n0} tokens each = {4:n0}." -f
+                   $cSn, $cSd, ($cSn - $cSd), ($delta / ($cSn - $cSd)), $delta)
+    }
     $lines += ""
 }
 $verdict = "-"
@@ -420,11 +505,51 @@ if ($B.Count -gt 0) {
 }
 $lines += "## VERDICT (gate arm Sd): $verdict"
 $lines += ""
+# THE VERDICT RESTS ON THE MEDIAN, but "every block cleared it" and "the median
+# cleared it and one block did not" are different results and the reader is
+# entitled to know which one this is.
+$sdVals = @($Sd | ForEach-Object { [double]$_.gate } | Sort-Object)
+if ($sdVals.Count -gt 1) {
+    $lines += ("Gate-arm blocks, worst to best: {0}. **{1} of {2} clear the bar on their own.**" -f
+               (($sdVals | ForEach-Object { "{0:n3}" -f $_ }) -join ", "),
+               @($sdVals | Where-Object { $_ -ge $BAR }).Count, $sdVals.Count)
+    $lines += ""
+}
 $lines += ("**Streams across every stoke unit: {0}.**" -f
            $(if ($streamsAgree) { "IDENTICAL" } else { "**THEY DIFFER -- read this before any rate above**" }))
 $lines += "Both arms wrote their ids; a dedup arm that moved the stream would make every"
-$lines += "rate here a rate for a different computation."
+$lines += "rate here a rate for a different computation. Each file carries per-sequence"
+$lines += "ids AND the decoded text, so the compare covers both."
 $lines += ""
+# ASCII ONLY IN EMITTED STRINGS: this file is UTF-8 with NO BOM, so PowerShell
+# 5.1 decodes it as the ANSI codepage and any non-ASCII literal reaches the
+# report as mojibake. Comments can carry whatever they like; $lines cannot.
+$lines += "!! **THIS IS NOT AN INDEPENDENT CORRECTNESS GATE, AND MUST NOT BE QUOTED AS ONE.**"
+$lines += "S3's eight clients differ by ONE DIGIT, so all eight streams inside a file are"
+$lines += "the same stream, and the continuation is a reply to a filler word list that does"
+$lines += "not depend on the shared prefix. Measured 2026-08-25: on S3 a mutant that zeroes"
+$lines += "the whole adopted K/V is visible only from 8x24 up, and a mutant that skips 16"
+$lines += "unwritten positions is NEVER visible here. The dedup correctness gate is the"
+# SINGLE-QUOTED, and that is load-bearing: in a double-quoted PowerShell string
+# a markdown backtick before r/n/t/b/a/f/v/0 IS AN ESCAPE. `run_... emitted a
+# carriage return followed by "un_...", and the report said so.
+$lines += 'HETERO fixture (`run_m5_dedup_verify.ps1`, green on all four legs at `4dd7e2f`),'
+$lines += "where both mutants differ. What this check buys is that the two arms above priced"
+$lines += "the same computation."
+$lines += ""
+# THE GATE IS A THROUGHPUT GATE, AND THE SAME UNITS PRICE THE LATENCY ONE.
+# Reported here so nobody reads "[4] MET" as "S3 is served well".
+$itlP50 = Median (@($Sd | ForEach-Object { [double]$_.itl50 }))
+$itlMax = Median (@($Sd | ForEach-Object { [double]$_.itlmax }))
+$ttftP50 = Median (@($Sd | ForEach-Object { [double]$_.ttft50 }))
+if ($itlP50) {
+    $lines += ("**And what the same units say about gate [3], which is a different gate:** the")
+    $lines += ("gate arm's ITL p50 is **{0:n0} ms** and its max **{1:n0} ms** against a 250 ms bound," -f $itlP50, $itlMax)
+    $lines += ("with TTFT p50 **{0:n0} s**. [4] is throughput; on this same data [3] MISSES on the" -f ($ttftP50 / 1000.0))
+    $lines += "median as well as the max. Item [4] being met says the fanout is SERVED, not that"
+    $lines += "it is served interactively."
+    $lines += ""
+}
 $blks = @($all | ForEach-Object { [int]$_.block } | Sort-Object -Unique)
 if ($blks.Count -gt 1) {
     $lines += "## By block (column 1 against the rest: block 1 is the warming transient)"
@@ -442,9 +567,11 @@ if ($blks.Count -gt 1) {
     $lines += ""
 }
 if ($L.Count -gt 0) {
+    # Same command-form trap as the arm table above -- precomputed, not inlined.
+    $lTg = Median (@($L | ForEach-Object { [double]$_.gate }))
+    $lPp = Median (@($L | ForEach-Object { [double]$_.pp }))
     $lines += ("**Box health (llama-bench b10037, t $Threads):** tg128 median {0}, pp512 median {1} tok/s." -f
-               (Median (@($L | ForEach-Object { [double]$_.gate }))),
-               (Median (@($L | ForEach-Object { [double]$_.pp }))))
+               $lTg, $lPp)
     $lines += "A stoke-only collapse would move both stoke arms and leave this one alone."
     $lines += ""
 }

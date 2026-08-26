@@ -1,0 +1,33 @@
+﻿2026-08-26T09:27:16  M5 gate [4] -- S3 fanout. stamp 2026-08-26-m5-gate4-quick
+2026-08-26T09:27:16  seqs 2 x n 16, ctx 1600, threads 8, blocks 1, bar 13.3
+2026-08-26T09:27:16  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 7e815c7
+2026-08-26T09:27:16  exe built 2026-08-25T14:24:07, newest src sched.c 2026-08-25T14:22:44
+2026-08-26T09:27:16  *** -Quick: NOT a gate (2 seqs, n 16, 1 block) ***
+2026-08-26T09:27:16    !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless
+2026-08-26T09:27:19    free physical 7.59 GB + standby 0.9 GB (pool needs ~3.8 GB + 2.33 GB model)
+2026-08-26T09:27:20    waiting: cpu 24% > 12%
+2026-08-26T09:28:00    waiting: cpu 24% > 12%
+2026-08-26T09:28:41  QUIESCE GATE PASSED on cpu 9%, 8% (<= 12% twice)
+2026-08-26T09:28:44  BLOCK 1 starting (cpu 19%, standby 0.93 GB)
+2026-08-26T09:28:44    order: Sd then Sn then B
+2026-08-26T09:29:44    b1-Sd-s2n16 AGG(M0)   3.028 tok/s  TTFT p50 50,777 ms  adopted 1024  (56.6s wall, 340.5s cpu)
+2026-08-26T09:31:16    b1-Sn-s2n16 AGG(M0)   0.724 tok/s  TTFT p50 82,016 ms  adopted 0  (87.4s wall, 550.8s cpu)
+2026-08-26T09:32:14    b1-B-s2n16 AGG(M0)  15.708 tok/s  TTFT p50        ms  adopted 1024  (55.1s wall, 335.2s cpu)
+2026-08-26T09:33:11    b1-L-s2n16 tg128  18.240  pp512  93.400 tok/s  (53.6s)
+2026-08-26T09:33:11  all blocks done -- writing report
+2026-08-26T09:35:25  M5 gate [4] -- S3 fanout. stamp 2026-08-26-m5-gate4-quick
+2026-08-26T09:35:25  seqs 2 x n 16, ctx 1600, threads 8, blocks 1, bar 13.3
+2026-08-26T09:35:25  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 7e815c7
+2026-08-26T09:35:25  exe built 2026-08-25T14:24:07, newest src sched.c 2026-08-25T14:22:44
+2026-08-26T09:35:25  *** -Quick: NOT a gate (2 seqs, n 16, 1 block) ***
+2026-08-26T09:35:25    !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless
+2026-08-26T09:35:29    free physical 7.9 GB + standby 0.12 GB (pool needs ~3.8 GB + 2.33 GB model)
+2026-08-26T09:35:50  QUIESCE GATE PASSED on cpu 10%, 11% (<= 12% twice)
+2026-08-26T09:35:53  BLOCK 1 starting (cpu 4%, standby 0.18 GB)
+2026-08-26T09:35:53    order: Sd then Sn then B
+2026-08-26T09:35:53    b1-Sd-s2n16 already banked, skipping
+2026-08-26T09:35:53    b1-Sn-s2n16 already banked, skipping
+2026-08-26T09:35:53    b1-B-s2n16 already banked, skipping
+2026-08-26T09:35:54  all blocks done -- writing report
+2026-08-26T09:35:54  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate4-quick-report.md
+2026-08-26T09:35:54  VERDICT: Sd median 3.028 vs bar 13.3
