@@ -214,6 +214,13 @@ Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host,
         fatal("sched: sched_open -- host must supply both step and now_ms; a "
               "scheduler with no way to step is a caller error");
     }
+#ifdef STOKE_MUT_PREEMPT
+    /* A MUTANT ANNOUNCES ITSELF. The whole point of this build is to be WRONG,
+     * so the one thing it must never do is look like the shipping binary in a
+     * log somebody reads later. */
+    fprintf(stderr, "!! STOKE_MUT_PREEMPT BUILD -- preempt replay is "
+                    "DELIBERATELY off by one. Never ship this binary.\n");
+#endif
     Sched* s = (Sched*)xcalloc(1, sizeof(Sched));
     /* STOKE_SCHED_CHUNK overrides the locked 128, for MEASURING the co-run
      * tradeoff rather than for shipping a different value. A chunk amortises
@@ -396,7 +403,23 @@ static void preempt(Sched* s, Req* victim) {
     victim->n_done = 0;
     /* Recompute prompt + everything generated except the last id, whose logits
      * the final replayed row reproduces. See Req's header. */
+#ifdef STOKE_MUT_PREEMPT
+    /* ▶▶ A DELIBERATE OFF-BY-ONE, BUILT ONLY VIA EXTRA_CFLAGS, AND IT EXISTS SO
+     * GATE [6] CAN PROVE IT COULD FAIL. Replaying one row too few makes the
+     * final replayed row reproduce the logits of the WRONG position, so the
+     * stream continues fluently and is merely wrong -- the failure class kv.h
+     * names as the dangerous one. A byte-compare that cannot distinguish this
+     * from correct behaviour is testing nothing, and on this project a fixture
+     * that could not tell has happened before ([[fixture-can-be-blind]]).
+     *
+     * It can never be in a shipping binary: nothing defines this macro, the
+     * default build does not, and the banner below makes a mutant announce
+     * itself on every run. */
+    victim->target = victim->spec.n_prompt + victim->n_gen - 2u;
+    if (victim->n_gen < 2u) victim->target = victim->spec.n_prompt;
+#else
     victim->target = victim->spec.n_prompt + victim->n_gen - 1u;
+#endif
     if (victim->target == 0) victim->target = victim->spec.n_prompt;
     waiting_push_front(s, victim);
     s->last_preempted = victim->spec.id;

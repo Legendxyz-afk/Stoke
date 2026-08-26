@@ -1,0 +1,14 @@
+﻿2026-08-26T13:55:43  M5 gate [6] -- preempt-lossless on a forced-preemption REAL-MODEL trace. stamp 2026-08-26-m5-gate6-quick
+2026-08-26T13:55:43  seqs 2 x n 200, ctx 1600, threads 8, squeezed pool 168, fixture fanout-hetero, dedup OFF
+2026-08-26T13:55:43  exe commit 85c91c1
+2026-08-26T13:55:43  *** -Quick: NOT a gate ***
+2026-08-26T13:58:05    R   preemptions 0    steps 219   rows 2735   pool default (142.1s)
+2026-08-26T13:58:50  M5 gate [6] -- preempt-lossless on a forced-preemption REAL-MODEL trace. stamp 2026-08-26-m5-gate6-quick
+2026-08-26T13:58:50  seqs 2 x n 200, ctx 1600, threads 8, squeezed pool 168, fixture fanout-hetero, dedup OFF
+2026-08-26T13:58:50  exe commit 85c91c1
+2026-08-26T13:58:50  *** -Quick: NOT a gate ***
+2026-08-26T13:58:50    R already banked, skipping
+2026-08-26T14:02:04    P   preemptions 1    steps 253   rows 4070   pool 168   (193.2s)
+2026-08-26T14:05:18    M   preemptions 1    steps 253   rows 4069   pool 168   (194.1s)
+2026-08-26T14:05:18  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate6-quick-report.md
+2026-08-26T14:05:18  VERDICT: gate [6] MET -- R 0 preemptions, P 1, streams IDENTICAL, mutant DIFFERS (good)

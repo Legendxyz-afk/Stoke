@@ -704,7 +704,7 @@ static void cmd_bench_serve(int argc, char** argv) {
     bool        dedup = true;
     const char* ids_path = NULL;
     long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
-    long long   stagger_long = 0;
+    long long   stagger_long = 0, pool_blocks_long = 0;
     KvDtype     kv_dt = KV_F32;
     const char* src[BATCH_MAX_PROMPTS];
     bool        src_is_file[BATCH_MAX_PROMPTS];
@@ -718,6 +718,22 @@ static void cmd_bench_serve(int argc, char** argv) {
                              * pre-flip command line still means what it said */
         } else if (strcmp(argv[i], "--no-dedup") == 0) {
             dedup = false;
+        } else if (strcmp(argv[i], "--pool-blocks") == 0) {
+            /* ▶ WHY THIS EXISTS: gate item [6] wants preempt-losslessness shown
+             * on a FORCED-PREEMPTION REAL-MODEL trace, and without this the
+             * driver cannot produce one. The pool is `n_seq * blocks(ctx)`, so
+             * every sequence can always reach its own context and decode-time
+             * exhaustion is UNREACHABLE -- which is why every serve measurement
+             * this project has banked reports preemptions 0. Squeezing the pool
+             * below `n_seq * blocks(prompt + n_gen)` is what makes the
+             * preemption path execute at all.
+             *
+             * A MEASUREMENT KNOB, like STOKE_SCHED_CHUNK: the default is the
+             * derived capacity and the header line always prints the effective
+             * value, so a squeezed run cannot be mistaken for a normal one. */
+            if (i + 1 >= argc)
+                fatal("stoke bench --serve: --pool-blocks needs a count");
+            pool_blocks_long = strtoll(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--ids") == 0) {
             if (i + 1 >= argc)
                 fatal("stoke bench --serve: --ids needs a file path");
@@ -817,6 +833,17 @@ static void cmd_bench_serve(int argc, char** argv) {
      * measurement is meant to be comparable with `stoke batch --seqs N`, and a
      * scheduler that won by being given more memory would not have won. */
     u32      capacity = n_seq * kv_blocks_for_ctx(ctx);
+    bool     pool_squeezed = false;
+    if (pool_blocks_long > 0) {
+        if (pool_blocks_long > (long long)capacity) {
+            fatal("stoke bench --serve: --pool-blocks %lld exceeds the derived "
+                  "capacity %u -- a LARGER pool changes nothing, because no "
+                  "sequence may pass --ctx",
+                  pool_blocks_long, capacity);
+        }
+        pool_squeezed = ((u32)pool_blocks_long != capacity);
+        capacity = (u32)pool_blocks_long;
+    }
     KvStore* store = kv_store_open(model_n_layer(model), capacity,
                                    model_n_head_kv(model),
                                    model_head_dim(model), kv_dt);
@@ -984,9 +1011,10 @@ static void cmd_bench_serve(int argc, char** argv) {
 
     double wall_s = (t1 - t0) / 1000.0;
     printf("serve: %u seqs x %u gen over %u prompt(s), ctx %u, kv %s, "
-           "%u pool blocks, dedup %s\n",
+           "%u pool blocks%s, dedup %s\n",
            n_seq, n_gen, n_src, ctx, (kv_dt == KV_Q8_0) ? "q8" : "f32",
-           capacity, dedup ? "on" : "OFF");
+           capacity, pool_squeezed ? " (SQUEEZED by --pool-blocks)" : "",
+           dedup ? "on" : "OFF");
     printf("  AGGREGATE(M0) %.3f tok/s  = %llu decode ids / %.1f ms span "
            "(first token to last)\n",
            m0_agg, (unsigned long long)decode_ids, m0_last - m0_first);
