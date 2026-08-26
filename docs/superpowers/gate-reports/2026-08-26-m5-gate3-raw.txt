@@ -1,0 +1,20 @@
+﻿2026-08-26T12:31:56  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-26-m5-gate3
+2026-08-26T12:31:56  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-26T12:31:56  exe commit 23fcb35; predictions pre-registered at 23fcb35
+2026-08-26T12:35:40    Sd     stall p50  4,843.3  n=56    (2.3% of gaps) | cadence p50  401.9 | pooled p50  402.8 p95   428.1 | 223.1s
+2026-08-26T12:43:27    Sn     stall p50  4,383.2  n=280   (11.7% of gaps) | cadence p50  430.0 | pooled p50  431.9 p95 4,495.2 | 467.3s
+2026-08-26T12:47:58    C16    stall p50  1,108.2  n=392   (16.4% of gaps) | cadence p50  495.2 | pooled p50  499.6 p95 1,138.2 | 271.2s
+2026-08-26T12:57:33    Sn2    stall p50  5,463.7  n=280   (11.7% of gaps) | cadence p50  528.6 | pooled p50  532.8 p95 5,576.3 | 574.3s
+2026-08-26T13:02:15    Sd2    stall p50  5,835.4  n=56    (2.3% of gaps) | cadence p50  515.7 | pooled p50  516.8 p95   571.0 | 282.2s
+2026-08-26T13:02:15  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate3-report.md
+2026-08-26T13:02:15  VERDICT: **MISS** -- the smallest stall p50 measured is 1,108 ms = 4.4x the 250 ms bound
+2026-08-26T13:03:39  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-26-m5-gate3
+2026-08-26T13:03:39  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-26T13:03:39  exe commit 23fcb35; predictions pre-registered at 23fcb35
+2026-08-26T13:03:39    Sd already banked, skipping
+2026-08-26T13:03:39    Sn already banked, skipping
+2026-08-26T13:03:39    C16 already banked, skipping
+2026-08-26T13:03:39    Sn2 already banked, skipping
+2026-08-26T13:03:39    Sd2 already banked, skipping
+2026-08-26T13:03:40  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate3-report.md
+2026-08-26T13:03:40  VERDICT: **MISS** -- the smallest stall p50 measured is 1,108 ms = 4.4x the 250 ms bound

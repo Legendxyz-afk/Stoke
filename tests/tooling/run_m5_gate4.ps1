@@ -548,10 +548,18 @@ $itlMax = Median (@($Sd | ForEach-Object { [double]$_.itlmax }))
 $ttftP50 = Median (@($Sd | ForEach-Object { [double]$_.ttft50 }))
 if ($itlP50) {
     $lines += ("**And what the same units say about gate [3], which is a different gate:** the")
-    $lines += ("gate arm's ITL p50 is **{0:n0} ms** and its max **{1:n0} ms** against a 250 ms bound," -f $itlP50, $itlMax)
-    $lines += ("with TTFT p50 **{0:n0} s**. [4] is throughput; on this same data [3] MISSES on the" -f ($ttftP50 / 1000.0))
-    $lines += "median as well as the max. Item [4] being met says the fanout is SERVED, not that"
-    $lines += "it is served interactively."
+    $lines += ("gate arm's pooled ITL p50 is **{0:n0} ms** and its max **{1:n0} ms**, with TTFT p50" -f $itlP50, $itlMax)
+    $lines += ("**{0:n0} s**. Item [4] being met says the fanout is SERVED, not that it is served" -f ($ttftP50 / 1000.0))
+    $lines += "interactively."
+    $lines += ""
+    $lines += "!! **DO NOT GRADE [3] OFF THESE NUMBERS.** [3] is worded 'no decode stall >250ms"
+    $lines += "DURING CO-RUNNING PREFILL', and the pooled line above mixes two populations: the"
+    $lines += "cadence (a throughput quantity item [2] grades) and the stall (item [3]'s subject)."
+    $lines += "Where a percentile of the pooled line falls depends on how many prefill chunks the"
+    $lines += "run happened to have, not on any bound. An earlier version of this report read"
+    $lines += "'[3] misses on the median as well as the max' off it; that is WITHDRAWN -- the"
+    $lines += "median is the cadence. [3] is graded on the driver's ``ITL stall`` line by"
+    $lines += 'run_m5_gate3.ps1 (ruling: `memos/2026-08-26-m5-gate3-criterion-RULING-OPUS.md`).'
     $lines += ""
 }
 $blks = @($all | ForEach-Object { [int]$_.block } | Sort-Object -Unique)

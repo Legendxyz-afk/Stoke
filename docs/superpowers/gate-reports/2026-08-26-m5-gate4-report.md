@@ -49,10 +49,18 @@ where both mutants differ. What this check buys is that the two arms above price
 the same computation.
 
 **And what the same units say about gate [3], which is a different gate:** the
-gate arm's ITL p50 is **403 ms** and its max **5,118 ms** against a 250 ms bound,
-with TTFT p50 **75 s**. [4] is throughput; on this same data [3] MISSES on the
-median as well as the max. Item [4] being met says the fanout is SERVED, not that
-it is served interactively.
+gate arm's pooled ITL p50 is **403 ms** and its max **5,118 ms**, with TTFT p50
+**75 s**. Item [4] being met says the fanout is SERVED, not that it is served
+interactively.
+
+!! **DO NOT GRADE [3] OFF THESE NUMBERS.** [3] is worded 'no decode stall >250ms
+DURING CO-RUNNING PREFILL', and the pooled line above mixes two populations: the
+cadence (a throughput quantity item [2] grades) and the stall (item [3]'s subject).
+Where a percentile of the pooled line falls depends on how many prefill chunks the
+run happened to have, not on any bound. An earlier version of this report read
+'[3] misses on the median as well as the max' off it; that is WITHDRAWN -- the
+median is the cadence. [3] is graded on the driver's `ITL stall` line by
+run_m5_gate3.ps1 (ruling: `memos/2026-08-26-m5-gate3-criterion-RULING-OPUS.md`).
 
 ## By block (column 1 against the rest: block 1 is the warming transient)
 

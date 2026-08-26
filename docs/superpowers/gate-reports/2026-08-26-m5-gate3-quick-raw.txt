@@ -1,0 +1,11 @@
+﻿2026-08-26T12:24:54  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-26-m5-gate3-quick
+2026-08-26T12:24:54  seqs 2 x n 24, ctx 1600, threads 8, bound 250 ms
+2026-08-26T12:24:54  exe commit 23fcb35; predictions pre-registered at 23fcb35
+2026-08-26T12:24:54  *** -Quick: NOT a gate ***
+2026-08-26T12:25:52    Sd     stall p50  4,837.1  n=2     (4.3% of gaps) | cadence p50  126.5 | pooled p50  126.5 p95   128.4 | 57.8s
+2026-08-26T12:27:19    Sn     stall p50  4,084.6  n=10    (21.7% of gaps) | cadence p50  130.0 | pooled p50  130.4 p95 4,424.9 | 87.1s
+2026-08-26T12:28:17    C16    stall p50    669.5  n=14    (30.4% of gaps) | cadence p50  130.0 | pooled p50  131.3 p95   681.6 | 58.1s
+2026-08-26T12:29:46    Sn2    stall p50  4,146.3  n=10    (21.7% of gaps) | cadence p50  130.1 | pooled p50  130.4 p95 4,573.8 | 88.1s
+2026-08-26T12:30:44    Sd2    stall p50  4,846.2  n=2     (4.3% of gaps) | cadence p50  127.2 | pooled p50  127.2 p95   128.7 | 58.1s
+2026-08-26T12:30:44  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate3-quick-report.md
+2026-08-26T12:30:44  VERDICT: **MISS** -- the smallest stall p50 measured is 670 ms = 2.7x the 250 ms bound
