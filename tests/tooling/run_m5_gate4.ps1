@@ -195,7 +195,11 @@ function ServeCell($dedup, $idsPath) {
          @("--seqs", "$Seqs", "--ctx", "$Ctx", "-n", "$NGen",
            "--threads", "$Threads", "--kv", "f32",
            "--ids", ('"' + $idsPath + '"'))
-    if ($dedup) { $a += "--dedup" }
+    # BOTH ARMS STATE THEMSELVES. Dedup became the serve DEFAULT on 2026-08-26,
+    # so "no --dedup flag" stopped meaning "no dedup" -- the FLOOR arm would have
+    # silently become a second gate arm and the report would have said dedup
+    # bought 1.00x. Neither arm relies on an absent flag any more.
+    if ($dedup) { $a += "--dedup" } else { $a += "--no-dedup" }
     RunCapture $exe $a "$tmp\e.txt" "$tmp\o.txt"
     $t = (Get-Content "$tmp\o.txt" -Raw)
     if (-not $t) { return $null }

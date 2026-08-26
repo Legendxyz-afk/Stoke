@@ -185,7 +185,11 @@ function ServeRun($exe, $stem, $seqs, $dedup, $idsPath) {
     $a = @("bench", "--serve", ('"' + $Q4 + '"')) + (PromptArgs $stem $seqs) +
          @("--raw", "--seqs", "$seqs", "--ctx", "1600", "-n", "$NGen",
            "--threads", "8", "--ids", ('"' + $idsPath + '"'))
-    if ($dedup) { $a += "--dedup" }
+    # EXPLICIT IN BOTH DIRECTIONS since dedup became the serve default on
+    # 2026-08-26: arm A is the arm that must NOT adopt, and this gate is exactly
+    # the place where "no flag" quietly becoming "dedup on" would turn a
+    # comparison of two different runs into a comparison of one run with itself.
+    if ($dedup) { $a += "--dedup" } else { $a += "--no-dedup" }
     return RunCapture $exe $a "$tmp\stdout.txt"
 }
 
@@ -390,8 +394,13 @@ if (-not $Quick) {
     # that is 47 positions = 3 blocks -- and then `sched_submit` correctly
     # refuses the request, because admission needs blocks(prompt) + W with W's
     # FLOOR of 8. A one-sequence run still has to clear the decode watermark.
+    # --no-dedup SPELLED OUT: dedup is the serve default since 2026-08-26, and
+    # this leg's whole claim is "the serve path computes what the ARCHIVE
+    # computes". One sequence against an empty store adopts nothing either way,
+    # but a lineage comparison whose label and command line disagree is worth
+    # nothing at all.
     $a = @("bench", "--serve", ('"' + $Q4 + '"'), "-f", ('"' + $prompt + '"'),
-           "--raw", "--seqs", "1", "--ctx", "256", "-n", "$NGen",
+           "--raw", "--seqs", "1", "--ctx", "256", "-n", "$NGen", "--no-dedup",
            "--threads", "6", "--ids", ('"' + $sIds + '"'))
     $null = RunCapture $NEW $a "$tmp\stdout.txt"
     $env:STOKE_PREFILL_CHUNK = "1"

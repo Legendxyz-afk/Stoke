@@ -183,8 +183,15 @@ function PromptArgs($n) {
 
 # ------------------------------------------------------------------ arms
 function ServeCell($seqs, $kv) {
+    # ⚠ --no-dedup IS LOAD-BEARING AND IT IS NOT A PREFERENCE. Gate [2]'s banked
+    # bars (4.938 @8, 4.594 @16 on S2, 2026-08-20) were measured with prefix
+    # dedup OFF, because it did not exist on the serve path yet. Dedup became
+    # the DEFAULT on 2026-08-26, and S2's clients differ by one digit -- so
+    # without this flag a re-run would adopt nearly every prompt position and
+    # report numbers that cannot be compared to the ones on record. This runner
+    # reproduces a banked measurement; it does not get to change the workload.
     $a = @("bench", "--serve", ('"' + $model + '"')) + (PromptArgs $seqs) +
-         @("--seqs", "$seqs", "--ctx", "$Ctx", "-n", "$NGen",
+         @("--seqs", "$seqs", "--ctx", "$Ctx", "-n", "$NGen", "--no-dedup",
            "--threads", "$Threads", "--kv", $kv)
     RunCapture $exe $a $tmp $tmpOut
     $t = (Get-Content $tmpOut -Raw)

@@ -685,11 +685,23 @@ static void cmd_bench_serve(int argc, char** argv) {
     if (argc < 4) {
         fatal("usage: stoke bench --serve <model.gguf> [--raw] [-n N] "
               "(-p text | -f file)... [--seqs N] [--ctx N] [--threads N] "
-              "[--kv f32|q8] [--dedup] [--ids <file>]");
+              "[--kv f32|q8] [--no-dedup] [--ids <file>]");
     }
     const char* model_path = argv[3];
     bool        raw = false;
-    bool        dedup = false;
+    /* ▶ PREFIX DEDUP IS ON BY DEFAULT ON THE SERVING PATH (2026-08-26, Kabir's
+     * call). It is bit-exact -- gated against a fixture that can SEE a dedup
+     * defect, `run_m5_dedup_verify.ps1` green on four legs -- and on the S3
+     * fanout it is worth 2.284x aggregate and 9.8x on ITL p95, removing 73% of
+     * prefill rows. The engine that set M0's S3 bar has the equivalent on by
+     * default (`--slot-prompt-similarity` 0.10), so OFF was the setting that
+     * made stoke unlike its referent.
+     *
+     * `--dedup` is still ACCEPTED and still means on, so every banked runner,
+     * report and command line from before the flip reproduces verbatim.
+     * `--no-dedup` is how you turn it off, and the measurement runners that
+     * mean OFF now say so out loud rather than relying on an absent flag. */
+    bool        dedup = true;
     const char* ids_path = NULL;
     long long   n_long = 64, threads_long = 0, seqs_long = 0, ctx_long = 0;
     long long   stagger_long = 0;
@@ -702,7 +714,10 @@ static void cmd_bench_serve(int argc, char** argv) {
         if (strcmp(argv[i], "--raw") == 0) {
             raw = true;
         } else if (strcmp(argv[i], "--dedup") == 0) {
-            dedup = true;
+            dedup = true;   /* the default since 2026-08-26; kept so that every
+                             * pre-flip command line still means what it said */
+        } else if (strcmp(argv[i], "--no-dedup") == 0) {
+            dedup = false;
         } else if (strcmp(argv[i], "--ids") == 0) {
             if (i + 1 >= argc)
                 fatal("stoke bench --serve: --ids needs a file path");
@@ -942,9 +957,9 @@ static void cmd_bench_serve(int argc, char** argv) {
 
     double wall_s = (t1 - t0) / 1000.0;
     printf("serve: %u seqs x %u gen over %u prompt(s), ctx %u, kv %s, "
-           "%u pool blocks\n",
+           "%u pool blocks, dedup %s\n",
            n_seq, n_gen, n_src, ctx, (kv_dt == KV_Q8_0) ? "q8" : "f32",
-           capacity);
+           capacity, dedup ? "on" : "OFF");
     printf("  AGGREGATE(M0) %.3f tok/s  = %llu decode ids / %.1f ms span "
            "(first token to last)\n",
            m0_agg, (unsigned long long)decode_ids, m0_last - m0_first);
@@ -974,9 +989,18 @@ static void cmd_bench_serve(int argc, char** argv) {
      * denominator is summed over ADMISSIONS, so a preempted request that
      * re-adopts counts in both -- which is what makes the ratio readable under
      * pressure instead of exceeding 100%. */
+    /* ▶ PRINTED IN BOTH DIRECTIONS SINCE THE 2026-08-26 DEFAULT FLIP. While
+     * dedup was opt-in, an absent line meant "off"; now an absent line would
+     * mean nothing at all, and a log that cannot say which run it was is not a
+     * measurement record. The OFF wording carries no "N of M" so the runners'
+     * `dedup: (\d+) of` anti-vacuity regexes still match only the ON case. */
     if (dedup) {
         printf("  dedup: %llu of %llu admitted prompt positions adopted\n",
                (unsigned long long)st.adopted_positions,
+               (unsigned long long)st.admitted_prompt_positions);
+    } else {
+        printf("  dedup: DISABLED by --no-dedup (%llu admitted prompt "
+               "positions, none adopted)\n",
                (unsigned long long)st.admitted_prompt_positions);
     }
     /* ANTI-VACUITY, printed rather than assumed: a run where every request
