@@ -825,6 +825,10 @@ static void cmd_bench_serve(int argc, char** argv) {
     Sched*     s = sched_open(store, ctx, &sh, dedup);
 
     double* t_tok = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
+    /* Per token: was a prefill chunk co-running in the step that produced it?
+     * This is what makes item [3] gradeable as written -- see the step loop. */
+    unsigned char* tok_pf = (unsigned char*)xcalloc((size_t)n_seq * n_gen, 1);
+    u64            prev_chunks = 0;
     u32*    got = (u32*)xcalloc(n_seq, sizeof(u32));
     u32*    out_ids = (u32*)xcalloc((size_t)n_seq * n_gen, sizeof(u32));
     double* t_done = (double*)xcalloc(n_seq, sizeof(double));
@@ -863,6 +867,16 @@ static void cmd_bench_serve(int argc, char** argv) {
         if (!sched_pending(s) && submitted >= n_seq) break;
         if (guard++ >= guard_max) break;
         sched_step(s);
+        /* ▶ DID THIS STEP CARRY PREFILL ROWS? Gate item [3] is worded "no decode
+         * stall >250ms DURING CO-RUNNING PREFILL", and a pooled ITL distribution
+         * cannot answer that: it mixes the steady-state cadence (a throughput
+         * quantity, graded by item [2]) with the stall a decode suffers when a
+         * prefill chunk shares its step (the quantity [3] names). The chunk
+         * counter moving across a step is exactly "a prefill co-ran in it". */
+        SchedStats st_now;
+        sched_stats(s, &st_now);
+        bool step_had_prefill = (st_now.prefill_chunks > prev_chunks);
+        prev_chunks = st_now.prefill_chunks;
         double t = now_ms();
         for (u32 i = 0; i < n_seq; i++) {
             SchedFinish f;
@@ -870,8 +884,10 @@ static void cmd_bench_serve(int argc, char** argv) {
             got[i] += sched_poll(s, 1000 + i,
                                  out_ids + (size_t)i * n_gen + got[i],
                                  n_gen - got[i], &f);
-            for (u32 k = before; k < got[i]; k++)
+            for (u32 k = before; k < got[i]; k++) {
                 t_tok[(size_t)i * n_gen + k] = t;
+                tok_pf[(size_t)i * n_gen + k] = step_had_prefill ? 1u : 0u;
+            }
             if (f != SCHED_FINISH_NONE && t_done[i] == 0.0) t_done[i] = t;
         }
     }
@@ -891,13 +907,24 @@ static void cmd_bench_serve(int argc, char** argv) {
      * one long wait into many short ones. */
     u32     n_gap = 0;
     double* gaps = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
+    /* THE SAME GAPS, SPLIT BY WHAT THE STEP WAS DOING. A gap is attributed to
+     * the step that produced its ENDING token: that is the step the decode
+     * waited through. `stall` is item [3]'s subject; `pure` is the cadence. */
+    u32     n_stall = 0, n_pure = 0;
+    double* stall = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
+    double* pure  = (double*)xcalloc((size_t)n_seq * n_gen, sizeof(double));
     for (u32 i = 0; i < n_seq; i++) {
         for (u32 k = 1; k < got[i]; k++) {
-            gaps[n_gap++] = t_tok[(size_t)i * n_gen + k] -
-                            t_tok[(size_t)i * n_gen + k - 1];
+            double g = t_tok[(size_t)i * n_gen + k] -
+                       t_tok[(size_t)i * n_gen + k - 1];
+            gaps[n_gap++] = g;
+            if (tok_pf[(size_t)i * n_gen + k]) stall[n_stall++] = g;
+            else                               pure[n_pure++]   = g;
         }
     }
     qsort(gaps, n_gap, sizeof(double), cmp_double);
+    qsort(stall, n_stall, sizeof(double), cmp_double);
+    qsort(pure, n_pure, sizeof(double), cmp_double);
 
     double* comp = (double*)xcalloc(n_seq, sizeof(double));
     for (u32 i = 0; i < n_seq; i++) comp[i] = t_done[i] - t0;
@@ -973,6 +1000,26 @@ static void cmd_bench_serve(int argc, char** argv) {
     printf("  ITL  p50 %.1f  p95 %.1f  max %.1f ms  (n=%u)\n",
            pct(gaps, n_gap, 0.50), pct(gaps, n_gap, 0.95),
            n_gap ? gaps[n_gap - 1] : 0.0, n_gap);
+    /* ▶ THE SPLIT, AND WHICH LINE GRADES ITEM [3].
+     *
+     * The pooled line above is ONE distribution over two populations, and
+     * reading a percentile off it answers neither question cleanly: its median
+     * is the cadence, its tail is the stalls, and where the boundary falls
+     * depends on HOW MANY prefill chunks the run happened to have. That is not
+     * a bound being met or missed -- it is a mixing ratio.
+     *
+     *   stall   gaps whose step also carried a prefill chunk. THIS is item
+     *           [3]'s "decode stall during co-running prefill".
+     *   cadence gaps in pure-decode steps. A throughput quantity: it is
+     *           N / decode-rate, and item [2] already grades that. */
+    printf("  ITL  stall   p50 %.1f  p95 %.1f  max %.1f ms  (n=%u, %.1f%% of "
+           "gaps)  <- gate [3]\n",
+           pct(stall, n_stall, 0.50), pct(stall, n_stall, 0.95),
+           n_stall ? stall[n_stall - 1] : 0.0, n_stall,
+           n_gap ? 100.0 * (double)n_stall / (double)n_gap : 0.0);
+    printf("  ITL  cadence p50 %.1f  p95 %.1f  max %.1f ms  (n=%u)\n",
+           pct(pure, n_pure, 0.50), pct(pure, n_pure, 0.95),
+           n_pure ? pure[n_pure - 1] : 0.0, n_pure);
     printf("  completion p50 %.0f  p95 %.0f  max %.0f ms\n",
            pct(comp, n_seq, 0.50), pct(comp, n_seq, 0.95),
            n_seq ? comp[n_seq - 1] : 0.0);
@@ -1044,6 +1091,9 @@ static void cmd_bench_serve(int argc, char** argv) {
     }
 
     free(ttft);
+    free(stall);
+    free(pure);
+    free(tok_pf);
     free(gaps);
     free(comp);
     free(t_tok);
