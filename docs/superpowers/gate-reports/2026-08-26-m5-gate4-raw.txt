@@ -103,3 +103,28 @@
 2026-08-26T10:47:21  all blocks done -- writing report
 2026-08-26T10:47:21  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate4-report.md
 2026-08-26T10:47:21  VERDICT: Sd median 13.535 vs bar 13.3
+2026-08-26T13:04:50  M5 gate [4] -- S3 fanout. stamp 2026-08-26-m5-gate4
+2026-08-26T13:04:50  seqs 8 x n 300, ctx 1600, threads 8, blocks 3, bar 13.3
+2026-08-26T13:04:50  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 23fcb35
+2026-08-26T13:04:50  exe built 2026-08-26T12:22:11, newest src main.c 2026-08-26T12:22:05
+2026-08-26T13:04:50    !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless
+2026-08-26T13:04:53    free physical 8.79 GB + standby 0.41 GB (pool needs ~3.8 GB + 2.33 GB model)
+2026-08-26T13:05:15  QUIESCE GATE PASSED on cpu 7%, 12% (<= 12% twice)
+2026-08-26T13:05:19  BLOCK 1 starting (cpu 18%, standby 0.43 GB)
+2026-08-26T13:05:19    order: Sd then Sn then B
+2026-08-26T13:05:19    b1-Sd-s8n300 already banked, skipping
+2026-08-26T13:05:19    b1-Sn-s8n300 already banked, skipping
+2026-08-26T13:05:19    b1-B-s8n300 already banked, skipping
+2026-08-26T13:05:22  BLOCK 2 starting (cpu 10%, standby 0.43 GB)
+2026-08-26T13:05:22    order: Sn then B then Sd
+2026-08-26T13:05:22    b2-Sn-s8n300 already banked, skipping
+2026-08-26T13:05:22    b2-B-s8n300 already banked, skipping
+2026-08-26T13:05:22    b2-Sd-s8n300 already banked, skipping
+2026-08-26T13:05:25  BLOCK 3 starting (cpu 11%, standby 0.43 GB)
+2026-08-26T13:05:25    order: B then Sd then Sn
+2026-08-26T13:05:25    b3-B-s8n300 already banked, skipping
+2026-08-26T13:05:25    b3-Sd-s8n300 already banked, skipping
+2026-08-26T13:05:25    b3-Sn-s8n300 already banked, skipping
+2026-08-26T13:05:25  all blocks done -- writing report
+2026-08-26T13:05:26  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-26-m5-gate4-report.md
+2026-08-26T13:05:26  VERDICT: Sd median 13.535 vs bar 13.3

@@ -14,3 +14,4 @@
 {"ngen":300,"id":"b3-L-s8n300","ctx":1600,"block":3,"cpu_busy":9,"cpu_s":348.2,"seqs":8,"utc":"2026-08-26T10:41:58","pp":93.74,"secs":50.3,"kind":"cell","standby_gb":0.4,"shape":"s8n300","arm":"L","gate":18.4}
 {"id":"quiesce","passed":true,"reads":[15,18,20,12,10],"free_gb":8.07,"kind":"quiesce","utc":"2026-08-26T10:46:10","standby_gb":0.45}
 {"id":"quiesce","passed":true,"reads":[8,5],"free_gb":8.14,"kind":"quiesce","utc":"2026-08-26T10:47:10","standby_gb":0.59}
+{"id":"quiesce","passed":true,"reads":[7,12],"free_gb":8.79,"kind":"quiesce","utc":"2026-08-26T13:05:15","standby_gb":0.41}
