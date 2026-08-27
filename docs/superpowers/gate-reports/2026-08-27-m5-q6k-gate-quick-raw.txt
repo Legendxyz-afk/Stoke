@@ -1,0 +1,18 @@
+﻿2026-08-27T20:29:52  Q6_K stream gate. stamp 2026-08-27-m5-q6k-gate-quick
+2026-08-27T20:29:52  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T20:29:52  mut M:\New Drive\Desktop\Programming\stoke\build\win-mut-q6k\stoke.exe   *** DELIBERATELY WRONG: scale lanes swapped ***
+2026-08-27T20:29:52  archive M:\New Drive\Desktop\Programming\stoke\build\stoke-m45-gate-fddd12cd.exe  (predates this kernel -- the referent)
+2026-08-27T20:29:52  exe commit c0cd7eb
+2026-08-27T20:29:52  *** -Quick: 2 cases, NOT a gate ***
+2026-08-27T20:31:02    run-p00-f32-t2     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:31:39    batch-s2           ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:32:21  Q6_K stream gate. stamp 2026-08-27-m5-q6k-gate-quick
+2026-08-27T20:32:21  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T20:32:21  mut M:\New Drive\Desktop\Programming\stoke\build\win-mut-q6k\stoke.exe   *** DELIBERATELY WRONG: scale lanes swapped ***
+2026-08-27T20:32:21  archive M:\New Drive\Desktop\Programming\stoke\build\stoke-m45-gate-fddd12cd.exe  (predates this kernel -- the referent)
+2026-08-27T20:32:21  exe commit c0cd7eb
+2026-08-27T20:32:21  *** -Quick: 2 cases, NOT a gate ***
+2026-08-27T20:32:21    run-p00-f32-t2     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:32:21    batch-s2           ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:32:21  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-gate-quick-report.md
+2026-08-27T20:32:21  VERDICT: ref MATCH, maddubs MATCH, mutant differs 2/2, dispatched 2/2 -- NOT GRADED (pre-flight)

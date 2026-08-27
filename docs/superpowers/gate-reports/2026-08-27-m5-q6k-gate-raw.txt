@@ -1,0 +1,18 @@
+﻿2026-08-27T20:32:43  Q6_K stream gate. stamp 2026-08-27-m5-q6k-gate
+2026-08-27T20:32:43  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T20:32:43  mut M:\New Drive\Desktop\Programming\stoke\build\win-mut-q6k\stoke.exe   *** DELIBERATELY WRONG: scale lanes swapped ***
+2026-08-27T20:32:43  archive M:\New Drive\Desktop\Programming\stoke\build\stoke-m45-gate-fddd12cd.exe  (predates this kernel -- the referent)
+2026-08-27T20:32:43  exe commit c0cd7eb
+2026-08-27T20:33:46    run-p00-f32-t2     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:34:20    run-p00-f32-t6     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:35:27    run-p00-q8-t2      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:35:55    run-p00-q8-t6      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:39:34    run-p41-f32-t2     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:41:17    run-p41-f32-t6     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:45:02    run-p41-q8-t2      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:46:49    run-p41-q8-t6      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:47:28    batch-s2           ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:48:42    batch-s8           ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:50:45    batch-s16          ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:50:45  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-gate-report.md
+2026-08-27T20:50:45  VERDICT: ref MATCH, maddubs MATCH, mutant differs 11/11, dispatched 11/11 -- MAY FLIP
