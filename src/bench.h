@@ -33,6 +33,24 @@
  * that guesses provenance corrupts the history it is meant to inform. */
 void bench_ops(const char* model_path, u32 reps_override, int jsonl);
 
+/* `stoke bench --matvec-batch` -- the BATCHED K-quant kernel, timed directly,
+ * with the activation-reuse ablation as its second arm.
+ *
+ * ▶ WHY IT IS SEPARATE FROM bench_ops RATHER THAN A ROW IN ITS TABLE. Two
+ * reasons, both about not damaging an instrument that already works: the
+ * standing table feeds `bench/history.jsonl`, whose only value is row-for-row
+ * comparability across commits, and its capture array is bounded
+ * (BENCH_MAX_CAPTURED) -- adding fifteen cells would either overflow it or
+ * silently change what a historical row means. And this mode is an A/B, whose
+ * output is a RATIO between two arms rather than a rate: it belongs beside the
+ * ablations, not beside the projections.
+ *
+ * `cycles` is the interleaved A/B pairs per cell (0 = 8). `max_seqs` is the
+ * largest n_seq swept, doubling from 1 (0 or > KERNELS_BATCH_TILE = the tile).
+ * The full contract, the two power checks and the reason the alias lives in
+ * the CALLER are in bench.c beside the code. */
+void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs);
+
 /* ---- pure helpers, EXPOSED FOR TESTS ----
  *
  * Same rationale as model.h's model_check_tensor_shape: these two functions

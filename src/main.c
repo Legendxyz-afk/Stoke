@@ -1433,8 +1433,36 @@ int main(int argc, char** argv) {
             finish_stdout_or_fatal();
             return 0;
         }
+        if (argc >= 4 && strcmp(argv[2], "--matvec-batch") == 0) {
+            /* The BATCHED K-quant kernel, timed directly. Its own mode for the
+             * reason `--serve` has one: a bare `bench` and `--ops` must keep
+             * measuring exactly what they always measured, and this one's
+             * output is a RATIO between two arms rather than a table of rates
+             * feeding `bench/history.jsonl`. */
+            u32 cycles = 0, max_seqs = 0;
+            for (int i = 4; i < argc; i++) {
+                if ((strcmp(argv[i], "--cycles") == 0 ||
+                     strcmp(argv[i], "--seqs") == 0) && i + 1 < argc) {
+                    const char* flag = argv[i];
+                    long v = strtol(argv[++i], NULL, 10);
+                    if (v <= 0) {
+                        fatal("stoke bench --matvec-batch: %s must be "
+                              "positive, got '%s'", flag, argv[i]);
+                    }
+                    if (strcmp(flag, "--cycles") == 0) cycles = (u32)v;
+                    else                               max_seqs = (u32)v;
+                } else {
+                    fatal("stoke bench --matvec-batch: unexpected argument "
+                          "'%s'", argv[i]);
+                }
+            }
+            bench_matvec_batch(argv[3], cycles, max_seqs);
+            finish_stdout_or_fatal();
+            return 0;
+        }
         if (argc < 4 || strcmp(argv[2], "--ops") != 0) {
-            fatal("usage: stoke bench --ops <path.gguf> [--reps N] [--jsonl]");
+            fatal("usage: stoke bench (--ops <path.gguf> [--reps N] [--jsonl] "
+                  "| --matvec-batch <path.gguf> [--cycles N] [--seqs N])");
         }
         u32 reps  = 0;   /* 0 = adaptive, see bench.c Decision 3 */
         int jsonl = 0;

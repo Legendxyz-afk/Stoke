@@ -164,6 +164,12 @@
 #include "bench.h"
 #include "gguf.h"
 #include "kernels/kernels.h"
+/* For KERNELS_BATCH_TILE alone -- `bench --matvec-batch` sizes its per-sequence
+ * arrays at the tile the batched path is defined over, and a caller that picks
+ * its own number gets to be wrong about it (kernels.h makes the same argument
+ * for kv_blocks_for_ctx). This TU calls no twin and is compiled without the ISA
+ * flags; simd.h declares and includes nothing that needs them. */
+#include "kernels/simd.h"
 
 /* Practical streaming ceiling quoted by the forward note for this class of
  * box. Printed as CONTEXT ONLY -- Decision 2 explains why the same-run
@@ -964,5 +970,242 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     free(x2);
     free(y);
     free(ref_buf);
+    gguf_close(f);
+}
+
+/* =====================================================================
+ * `stoke bench --matvec-batch` -- THE BATCHED K-QUANT KERNEL, MEASURED
+ * DIRECTLY, AND THE ACTIVATION-REUSE ABLATION.
+ *
+ * ▶▶ WHY THIS EXISTS, AND IT IS A RECORDED INSTRUMENT GAP BEING CLOSED.
+ * The PROJECTIONS table above times `matvec` -- ONE sequence. Every kernel
+ * change M4.5 and M5 have made (`STOKE_MINS_SIMD`, the `vpmulld` ablation)
+ * lands in `vec_dot_q4_k_q8_k_xn_avx2`, which is reachable ONLY through
+ * `matvec_batch` at n_seq > 1. Nothing in this file measured it, so every
+ * kernel ratio this project has published is an END-TO-END PREFILL ratio
+ * diluted by an unmeasured factor -- ~1.16x behind the 1.121x reported for
+ * `vpmulld`, on an estimate nobody could check. This makes the kernel's own
+ * rate directly readable.
+ *
+ * ▶▶ AND THE ABLATION IT WAS BUILT FOR. Two negative results (removing ~40% of
+ * emitted instructions bought ~7%; deleting half the p01 uops bought 12.1%)
+ * killed the front-end and port-throughput theories for a 3.22x gap to
+ * llama.cpp, leaving a MEMORY hypothesis: per super-block this kernel reads
+ * 144 B of weights against n_seq x 292 B of activations, and re-reads that
+ * whole activation tile FOR EVERY OUTPUT ROW. At n_in 2560 with n_seq 16 that
+ * is 45.6 KiB per row -- the edge of L1 -- and at n_in 9728 it is 173 KiB.
+ *
+ *   arm A  n_seq distinct activation-scratch buffers -- the real case.
+ *   arm B  all n_seq scratch POINTERS aliased to ONE buffer. Identical
+ *          instruction stream, identical load count, identical arithmetic;
+ *          the ONLY difference is which cache lines the loads touch.
+ *
+ * ▶ THE ALIAS IS DONE IN THE CALLER, WHICH IS WHY THERE IS NO MUTANT BINARY.
+ * Editing the kernel to read `arows[0]` would make the whole per-sequence body
+ * loop-invariant and GCC would hoist it, crediting the ablation with 15/16 of
+ * the work removed -- an ablation that measures its own compiler. Sixteen
+ * pointers that happen to be equal cannot be proven equal at compile time, so
+ * every load still issues. One binary, one code path, two inputs.
+ *
+ * ⚠ ARM B COMPUTES THE WRONG ANSWER BY CONSTRUCTION (every sequence reads the
+ * last-quantized activation). That is ASSERTED below, not assumed: an arm that
+ * agreed with A would mean the aliasing never took effect, and a 1.00x would be
+ * one input measured twice. The fixture's own distinctness is asserted too --
+ * if the activations did not differ from each other, BOTH checks would pass
+ * vacuously, which is this project's recorded way of banking a green nothing.
+ *
+ * ▶ ARMS ALTERNATE WITHIN EACH CYCLE AND THE ORDER FLIPS PER CYCLE, so a box
+ * warming across the run cannot charge one arm the warmer half. Being ONE
+ * PROCESS also makes this immune to the code-layout artifact that forced the
+ * `vpmulld` arms into equal-length build directories.
+ * ===================================================================== */
+
+typedef struct {
+    const GgufTensor* w;
+    const f32* const* x;
+    u64               n_in;
+    f32* const*       y;
+    u64               n_out;
+    void* const*      aq;
+    u32               n_seq;
+} BatchCtx;
+
+static void run_matvec_batch(void* p) {
+    BatchCtx* c = (BatchCtx*)p;
+    matvec_batch(c->w, c->x, c->n_in, c->y, c->n_out, c->aq, c->n_seq);
+}
+
+/* Deterministic, and DIFFERENT PER SEQUENCE -- see the fixture note above.
+ * The range is roughly a post-rmsnorm activation's; the integer core is
+ * data-independent in timing, so this only has to be non-degenerate. */
+static void fill_activation(f32* x, u64 n, u32 seed) {
+    u32 s = seed * 2654435761u + 1u;
+    for (u64 i = 0; i < n; i++) {
+        s = s * 1664525u + 1013904223u;
+        x[i] = ((f32)(s >> 8) / (f32)(1u << 23)) * 8.0f - 4.0f;
+    }
+}
+
+static int rows_differ(const f32* a, const f32* b, u64 n) {
+    for (u64 i = 0; i < n; i++) {
+        if (a[i] != b[i]) return 1;
+    }
+    return 0;
+}
+
+/* One (tensor, n_seq) cell: both arms, interleaved, counterbalanced. */
+static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
+                       u32 cycles, f32** x, f32** yA, f32** yB, void** aqA,
+                       void** aqB) {
+    u64 n_in  = w->dims[0];
+    u64 n_out = w->dims[1];
+
+    BatchCtx cA = { w, (const f32* const*)x, n_in, (f32* const*)yA, n_out,
+                    (void* const*)aqA, n_seq };
+    BatchCtx cB = { w, (const f32* const*)x, n_in, (f32* const*)yB, n_out,
+                    (void* const*)aqB, n_seq };
+
+    /* ---- the two power checks, BEFORE anything is timed ---- */
+    run_matvec_batch(&cA);
+    run_matvec_batch(&cB);
+    if (n_seq > 1u) {
+        if (!rows_differ(yA[0], yA[n_seq - 1u], n_out)) {
+            fatal("bench --matvec-batch: the fixture is DEGENERATE -- sequence "
+                  "0 and sequence %u produced identical output, so an aliasing "
+                  "ablation over it could not show anything",
+                  n_seq - 1u);
+        }
+        if (!rows_differ(yA[0], yB[0], n_out)) {
+            fatal("bench --matvec-batch: arm B REPRODUCED arm A -- the alias "
+                  "never took effect, and a 1.00x here would be one input "
+                  "measured twice");
+        }
+    }
+
+    double* sa = (double*)xmalloc((size_t)cycles * sizeof(double));
+    double* sb = (double*)xmalloc((size_t)cycles * sizeof(double));
+    u32     b_wins = 0;
+    for (u32 c = 0; c < cycles; c++) {
+        double a_ms, b_ms, t0;
+        if ((c & 1u) == 0u) {
+            t0 = now_ms(); run_matvec_batch(&cA); a_ms = now_ms() - t0;
+            t0 = now_ms(); run_matvec_batch(&cB); b_ms = now_ms() - t0;
+        } else {
+            t0 = now_ms(); run_matvec_batch(&cB); b_ms = now_ms() - t0;
+            t0 = now_ms(); run_matvec_batch(&cA); a_ms = now_ms() - t0;
+        }
+        sa[c] = a_ms;
+        sb[c] = b_ms;
+        if (b_ms < a_ms) b_wins++;
+    }
+    /* bench_spread SORTS IN PLACE, so the pairing count above is taken first --
+     * a median hides whether a win is consistent or is one lucky cycle. */
+    BenchTiming ta = bench_spread(sa, cycles);
+    BenchTiming tb = bench_spread(sb, cycles);
+
+    u64    nb   = n_in / KERNELS_Q8_K_BLOCK_ELEMS;
+    double actA = (double)nb * (double)KERNELS_Q8_K_BLOCK_BYTES * (double)n_seq;
+    double flop = 2.0 * (double)n_in * (double)n_out * (double)n_seq;
+    double gfA  = (ta.med_ms > 0.0) ? flop / (ta.med_ms * 1e6) : 0.0;
+    double gfB  = (tb.med_ms > 0.0) ? flop / (tb.med_ms * 1e6) : 0.0;
+
+    printf("  %-10s %5llu x %-6llu %3u  %8.1f  %9.3f %9.3f  %6.3f  %7.2f %7.2f"
+           "   %u/%u\n",
+           label, (unsigned long long)n_in, (unsigned long long)n_out, n_seq,
+           actA / 1024.0, ta.med_ms, tb.med_ms,
+           (tb.med_ms > 0.0) ? ta.med_ms / tb.med_ms : 0.0, gfA, gfB, b_wins,
+           cycles);
+    free(sa);
+    free(sb);
+}
+
+void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
+    if (cycles == 0u) cycles = 8u;
+    if (max_seqs == 0u || max_seqs > KERNELS_BATCH_TILE) {
+        max_seqs = KERNELS_BATCH_TILE;
+    }
+
+    GgufFile*   f         = gguf_open(model_path);
+    const char* names[3]  = { "blk.0.attn_q.weight", "blk.0.ffn_gate.weight",
+                              "blk.0.ffn_down.weight" };
+    const char* labels[3] = { "attn_q", "ffn_gate", "ffn_down" };
+
+    u64 n_in_max = 0, n_out_max = 0;
+    for (u32 i = 0; i < 3u; i++) {
+        const GgufTensor* w = need(f, names[i]);
+        if (w->dims[0] > n_in_max)  n_in_max  = w->dims[0];
+        if (w->dims[1] > n_out_max) n_out_max = w->dims[1];
+    }
+    u64 aq_bytes =
+        (n_in_max / KERNELS_Q8_K_BLOCK_ELEMS) * KERNELS_Q8_K_BLOCK_BYTES;
+
+    f32*  x[KERNELS_BATCH_TILE];
+    f32*  yA[KERNELS_BATCH_TILE];
+    f32*  yB[KERNELS_BATCH_TILE];
+    void* aqA[KERNELS_BATCH_TILE];
+    void* aqB[KERNELS_BATCH_TILE];
+    void* aq_shared = xmalloc((size_t)aq_bytes);
+    for (u32 s = 0; s < KERNELS_BATCH_TILE; s++) {
+        x[s]   = (f32*)xmalloc((size_t)n_in_max * sizeof(f32));
+        yA[s]  = (f32*)xmalloc((size_t)n_out_max * sizeof(f32));
+        yB[s]  = (f32*)xmalloc((size_t)n_out_max * sizeof(f32));
+        aqA[s] = xmalloc((size_t)aq_bytes);
+        aqB[s] = aq_shared; /* <-- the entire ablation */
+        fill_activation(x[s], n_in_max, s + 1u);
+    }
+
+    printf("stoke bench --matvec-batch\n");
+    printf("  model   : %s\n", model_path);
+    printf("  cycles  : %u per arm per cell, arms interleaved, order flipped "
+           "each cycle\n",
+           cycles);
+    printf("  threads : 1 -- this file never starts the pool, so the ratio is "
+           "the kernel's own\n");
+    printf("\n");
+    printf("  A = %u distinct activation buffers (the real case).\n", max_seqs);
+    printf("  B = the same call with every activation pointer ALIASED to one "
+           "buffer:\n");
+    printf("      same loads, same arithmetic, ONE cache-resident working "
+           "set.\n");
+    printf("      *** B COMPUTES THE WRONG ANSWER BY CONSTRUCTION *** and each "
+           "cell\n");
+    printf("      refuses to run if it does not.\n");
+    printf("\n");
+    printf("  A/B > 1 means the activation RE-READS cost time. A/B ~ 1 means "
+           "they do not,\n");
+    printf("  and the 3.22x kernel gap to llama.cpp is not this.\n");
+    printf("\n");
+    printf("  %-10s %-14s %3s  %8s  %9s %9s  %6s  %7s %7s   %s\n", "tensor",
+           "n_in x n_out", "N", "act KiB", "A med ms", "B med ms", "A/B",
+           "A GF/s", "B GF/s", "B won");
+    printf("  %-10s %-14s %3s  %8s  %9s %9s  %6s  %7s %7s   %s\n", "----------",
+           "--------------", "---", "--------", "---------", "---------",
+           "------", "-------", "-------", "-----");
+
+    for (u32 i = 0; i < 3u; i++) {
+        const GgufTensor* w = need(f, names[i]);
+        warm_tensor(w);
+        for (u32 n_seq = 1u; n_seq <= max_seqs; n_seq <<= 1) {
+            batch_cell(w, labels[i], n_seq, cycles, x, yA, yB, aqA, aqB);
+        }
+        printf("\n");
+    }
+    printf("  act KiB is the activation tile RE-READ FOR EVERY OUTPUT ROW in "
+           "arm A:\n");
+    printf("    n_seq * (n_in/%u) * %u bytes. Arm B's is that divided by "
+           "n_seq.\n",
+           KERNELS_Q8_K_BLOCK_ELEMS, KERNELS_Q8_K_BLOCK_BYTES);
+    printf("  N=1 IS A DIFFERENT KERNEL -- vec.c routes n_seq==1 to the solo "
+           "worker --\n");
+    printf("    so its A/B is a CONTROL: there is nothing to alias and it must "
+           "read ~1.00.\n");
+
+    for (u32 s = 0; s < KERNELS_BATCH_TILE; s++) {
+        free(x[s]);
+        free(yA[s]);
+        free(yB[s]);
+        free(aqA[s]);
+    }
+    free(aq_shared);
     gguf_close(f);
 }
