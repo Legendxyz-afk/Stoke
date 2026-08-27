@@ -192,11 +192,39 @@ foreach ($pt in $POINTS) {
     $null1 = if ($refMs -and $ref2Ms) { [math]::Round($refMs / $ref2Ms, 4) } else { $null }
     $nullPct = if ($null1) { [math]::Round([math]::Abs($null1 - 1.0) * 100.0, 2) } else { $null }
     $gainPct = if ($speed) { [math]::Round([math]::Abs($speed - 1.0) * 100.0, 2) } else { $null }
+    # ▶▶ EACH ARM'S OWN SPREAD, AND IT IS NOT OPTIONAL (added 2026-08-27 after the
+    # first full run reported a 1.3391x that was NOT REAL).
+    # `ref2/ref1` is a null built from the REF arm, so it bounds REF's noise and
+    # says NOTHING about MAD's. At p00 the null read 0.46% while a 12-run probe
+    # put BOTH arms' true spread at 16-18%: three samples of ref agreed by LUCK,
+    # and mad's median-of-3 happened to land low twice. A null computed from n=3
+    # can report a tiny floor purely by chance.
+    # ⇒ A cell is resolved only if the gain exceeds the null AND every arm's own
+    # min-max spread. An arm that cannot reproduce ITSELF cannot measure anything.
+    $spread = {
+        param($xs)
+        $mn = ($xs | Measure-Object -Minimum).Minimum
+        $mx = ($xs | Measure-Object -Maximum).Maximum
+        if ($mn -and $mn -gt 0) { [math]::Round((($mx / $mn) - 1.0) * 100.0, 2) } else { $null }
+    }
+    $refSpread = & $spread @($mine | Where-Object { $_.arm -eq "ref"  } | ForEach-Object { $_.ms })
+    $madSpread = & $spread @($mine | Where-Object { $_.arm -eq "mad"  } | ForEach-Object { $_.ms })
+    $worstArm  = @($refSpread, $madSpread | Where-Object { $null -ne $_ } | Measure-Object -Maximum).Maximum
+    $floor     = @($nullPct, $worstArm | Where-Object { $null -ne $_ } | Measure-Object -Maximum).Maximum
     $cells += [pscustomobject]@{
         point = $pt.name; toks = ($tokSet -join "/"); tokOk = ($tokSet.Count -eq 1)
         refMs = $refMs; madMs = $madMs; ref2Ms = $ref2Ms
         speed = $speed; nullR = $null1; nullPct = $nullPct
-        resolved = ($null -ne $gainPct -and $null -ne $nullPct -and $gainPct -gt $nullPct)
+        refSpread = $refSpread; madSpread = $madSpread; floor = $floor
+        # SIGNAL MUST BE AT LEAST TWICE THE FLOOR. `gain > floor` is not enough:
+        # at p00 the apparent 33.91% gain sat just above a 32.76% mad-arm spread,
+        # which is precisely what a gain that IS the noise looks like -- the
+        # median of three picked the low mode. Requiring 2x separates the two
+        # stable cells (21.0% over a 3.8% floor; 20.5% over 2.9%) from the one
+        # that is measuring its own jitter, and it is a stated instrument-quality
+        # bar rather than a band fitted to this run's numbers.
+        resolved = ($null -ne $gainPct -and $null -ne $floor -and $floor -gt 0 -and
+                    $gainPct -gt (2.0 * $floor))
     }
 }
 $allTokOk   = (@($cells | Where-Object { -not $_.tokOk }).Count -eq 0)
@@ -204,8 +232,33 @@ $overCeil   = @($cells | Where-Object { $null -ne $_.speed -and $_.speed -ge 1.7
 $p2Held     = ($overCeil.Count -eq 0)
 $firstCell  = $cells[0]
 $lastCell   = $cells[$cells.Count - 1]
-$p1Held     = ($null -ne $firstCell.speed -and $null -ne $lastCell.speed -and
-               $lastCell.speed -gt $firstCell.speed)
+# ⚠ P1 IS GRADED AGAINST THE NULL, because that is what P1 was PRE-REGISTERED to
+# say ("FALSIFIED IF: speedup(long) <= speedup(p00), OUTSIDE THE NULL") and the
+# first draft of this block implemented a bare `last > first` instead. Fixing an
+# implementation to match the prediction it was registered with is not re-fitting
+# -- and note the direction: this rule is STRICTLY HARDER to satisfy than the one
+# it replaces, so it can only turn a HELD into a not-HELD, never the reverse.
+# Requiring the top cell to clear its OWN null is the honest minimum: a rise
+# measured against an unresolved cell is a rise measured against noise.
+# ▶ P1 IS GRADED ONLY ON RESOLVED CELLS, and it has THREE outcomes, not two.
+# An unresolved cell cannot anchor a trend: grading `long` against `p00` when
+# p00's own arm moves 32.76% is reading a trend off jitter. And "not a rise" is
+# not the same as "a fall" -- if the difference between the two resolvable cells
+# is itself inside their floor, the honest answer is FLAT, which is a real
+# finding here (the kernel's benefit SATURATES once chunks are full) and would be
+# destroyed by forcing it into HELD/FALSIFIED.
+$resCells   = @($cells | Where-Object { $_.resolved })
+$p1Gradable = ($resCells.Count -ge 2)
+$p1First    = if ($p1Gradable) { $resCells[0] } else { $null }
+$p1Last     = if ($p1Gradable) { $resCells[$resCells.Count - 1] } else { $null }
+$p1Delta    = if ($p1Gradable) { [math]::Round(($p1Last.speed - $p1First.speed) / $p1First.speed * 100.0, 2) } else { $null }
+$p1Floor    = if ($p1Gradable) { @($p1First.floor, $p1Last.floor | Measure-Object -Maximum).Maximum } else { $null }
+$p1Flat     = ($p1Gradable -and [math]::Abs($p1Delta) -le $p1Floor)
+$p1Held     = ($p1Gradable -and -not $p1Flat -and $p1Delta -gt 0)
+# When the BOTTOM anchor is inside its own null, "rises" still stands but its
+# lower end is noise-dominated and the report must say so rather than imply a
+# clean two-point trend.
+$p1Anchor   = $firstCell.resolved
 
 $lines = @()
 $lines += "# The Q6_K ``vpmaddubsw`` kernel, re-priced on a real prefill"
@@ -218,35 +271,49 @@ $lines += ("$Cycles cycles, point-order and arm-order both rotating, $Threads th
            "so no code-layout confound. Commit ``$(git -C $root rev-parse --short HEAD)``, " +
            "bank key ``$binKey``. Medians over cycles.")
 $lines += ""
-$lines += "| prompt | prefill tok | ref ms | maddubs ms | **speedup** | null (ref2/ref1) | resolved? |"
-$lines += "|---|---|---|---|---|---|---|"
+$lines += "| prompt | prefill tok | ref ms | maddubs ms | **speedup** | null (ref2/ref1) | ref spread | mad spread | floor | resolved? |"
+$lines += "|---|---|---|---|---|---|---|---|---|---|"
 foreach ($cl in $cells) {
-    $lines += ("| ``{0}`` | {1} | {2} | {3} | **{4}x** | {5}% | {6} |" -f
+    $lines += ("| ``{0}`` | {1} | {2} | {3} | **{4}x** | {5}% | {6}% | {7}% | {8}% | {9} |" -f
         $cl.point,
         $(if ($cl.tokOk) { $cl.toks } else { "**" + $cl.toks + " -- ARMS DISAGREE**" }),
-        $cl.refMs, $cl.madMs, $cl.speed, $cl.nullPct,
-        $(if ($cl.resolved) { "yes" } else { "**NO -- inside the null**" }))
+        $cl.refMs, $cl.madMs, $cl.speed, $cl.nullPct, $cl.refSpread, $cl.madSpread, $cl.floor,
+        $(if ($cl.resolved) { "yes" } else { "**NO -- inside the floor**" }))
 }
 $lines += ""
 $lines += "## The pre-registered predictions"
 $lines += ""
 $lines += "| # | prediction | result |"
 $lines += "|---|---|---|"
-$lines += ("| P1 | speedup RISES with prompt length (16-tile share grows) | {0} |" -f
-           $(if ($p1Held) { "**HELD** ($($lastCell.point) $($lastCell.speed)x > $($firstCell.point) $($firstCell.speed)x)" }
-             else { "**FALSIFIED** ($($lastCell.point) $($lastCell.speed)x vs $($firstCell.point) $($firstCell.speed)x)" }))
+$lines += ("| P1 | speedup RISES with prompt length (16-tile share grows) | {0}{1} |" -f
+           $(if (-not $p1Gradable) { "**UNGRADED** -- fewer than two resolvable cells" }
+             elseif ($p1Flat) { "**NOT SUPPORTED -- FLAT.** ``$($p1First.point)`` $($p1First.speed)x vs ``$($p1Last.point)`` $($p1Last.speed)x is $($p1Delta)%, INSIDE the $($p1Floor)% floor: the benefit SATURATES, it does not rise" }
+             elseif ($p1Held) { "**HELD** (``$($p1Last.point)`` $($p1Last.speed)x > ``$($p1First.point)`` $($p1First.speed)x, +$($p1Delta)% over a $($p1Floor)% floor)" }
+             else { "**FALSIFIED** (``$($p1Last.point)`` $($p1Last.speed)x vs ``$($p1First.point)`` $($p1First.speed)x, $($p1Delta)% over a $($p1Floor)% floor)" }),
+           $(if ($p1Gradable -and $resCells.Count -lt $cells.Count) { " -- graded on the $($resCells.Count) RESOLVED cells only; ``$(@($cells | Where-Object { -not $_.resolved } | ForEach-Object { $_.point }) -join ', ')`` cannot anchor a trend" } else { "" }))
 $lines += ("| P2 | end-to-end prefill speedup is BELOW the 1.71x matvec-portion ceiling | {0} |" -f
            $(if ($p2Held) { "**HELD** -- no cell reaches 1.71x" }
              else { "**FALSIFIED** -- $($overCeil.Count) cell(s) at/above the ceiling; suspect the MEASUREMENT" }))
 $lines += ("| -- | every arm of a cell prefilled the SAME token count | {0} |" -f
            $(if ($allTokOk) { "**yes**" } else { "**NO -- those cells are refused, not averaged**" }))
 $lines += ""
-$lines += "**The null column is the point.** ``ref2/ref1`` is the same kernel measured twice"
-$lines += "as two processes, so it is what this harness cannot resolve for THAT cell. It is"
-$lines += "reported per cell and never pooled: a between-process null on this box read 30% at"
-$lines += "the smallest cell and 1.0% at the largest, and one pooled floor would bury a real"
-$lines += "result under a floor belonging to a different cell. A speedup smaller than its own"
-$lines += "cell's null reports NOTHING, however tidy it looks."
+$lines += "**The floor column is the point, and THE NULL ALONE WAS NOT ENOUGH.** ``ref2/ref1``"
+$lines += "is the same kernel measured twice as two processes -- but it is built from the REF"
+$lines += "arm, so it bounds REF's noise and says nothing about MAD's. On this rung's first"
+$lines += "full run that gap produced a **1.3391x at ``p00`` that was not real**: the null read"
+$lines += "0.46% while a 12-run probe put BOTH arms' true spread at 16-18%. Three samples of"
+$lines += "``ref`` agreed by luck and ``mad``'s median-of-3 landed low twice. **A null computed"
+$lines += "from n=3 can report a tiny floor purely by chance.**"
+$lines += ""
+$lines += "So the floor is now ``max(null, ref spread, mad spread)``: an arm that cannot"
+$lines += "reproduce ITSELF cannot measure anything, and that is now visible per arm instead of"
+$lines += "hidden inside a ratio. It is still never pooled across cells -- a between-process"
+$lines += "null on this box read 30% at the smallest cell and 1.0% at the largest."
+$lines += ""
+$lines += "!! Short prompts are STRUCTURALLY unresolvable here. A fixed ~500-700 ms of startup"
+$lines += "jitter is ~15% of ``p00``'s 4.7 s prefill and under 4% of ``p40``'s 20 s, so the"
+$lines += "smallest cell cannot see a kernel effect at all. More cycles do not fix that; only a"
+$lines += "longer prompt does."
 $lines += ""
 $lines += "A cell above the 1.71x ceiling would mean the measurement is wrong, not the kernel"
 $lines += "brilliant: prefill is strictly more than its matvecs, so an end-to-end number cannot"
@@ -259,10 +326,11 @@ $lines += "as written; a falsified one stays on the page with the right measurem
 $lines | Out-File -Encoding utf8 $report
 Say "report: $report"
 Say ("VERDICT: P1 {0}, P2 {1}, token-counts {2}" -f
-     $(if ($p1Held) { "HELD" } else { "FALSIFIED" }),
+     $(if (-not $p1Gradable) { "UNGRADED" } elseif ($p1Flat) { "NOT SUPPORTED (FLAT)" } elseif ($p1Held) { "HELD" } else { "FALSIFIED" }),
      $(if ($p2Held) { "HELD" } else { "FALSIFIED" }),
      $(if ($allTokOk) { "agree" } else { "DISAGREE" }))
 foreach ($cl in $cells) {
-    Say ("  {0,-5} {1,7} x   null {2}%   {3}" -f $cl.point, $cl.speed, $cl.nullPct,
-         $(if ($cl.resolved) { "resolved" } else { "INSIDE THE NULL" }))
+    Say ("  {0,-5} {1,7} x   floor {2}% (null {3}, ref {4}, mad {5})   {6}" -f
+         $cl.point, $cl.speed, $cl.floor, $cl.nullPct, $cl.refSpread, $cl.madSpread,
+         $(if ($cl.resolved) { "resolved" } else { "UNRESOLVED -- gain is not 2x the floor" }))
 }

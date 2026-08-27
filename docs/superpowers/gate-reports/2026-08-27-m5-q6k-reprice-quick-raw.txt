@@ -1,0 +1,16 @@
+﻿2026-08-27T21:15:20  Q6_K re-pricing. stamp 2026-08-27-m5-q6k-reprice-quick
+2026-08-27T21:15:20  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 418f88f
+2026-08-27T21:15:20  bank C:\Users\Kabir\AppData\Local\Temp\stoke-q6k-reprice-n4-t6-B1E99988-quick
+2026-08-27T21:15:20  cycles 1  n_gen 4  threads 6  affinity 0xFFF (P-cores)
+2026-08-27T21:15:20  *** -Quick: 2 points, NOT the full rung ***
+2026-08-27T21:15:20  CYCLE 1
+2026-08-27T21:15:28    c1 p00   ref   23 tok in 4554.7 ms
+2026-08-27T21:15:37    c1 p00   mad   23 tok in 4708.3 ms
+2026-08-27T21:15:44    c1 p00   ref2  23 tok in 3910.2 ms
+2026-08-27T21:16:05    c1 p40   ref   490 tok in 20084 ms
+2026-08-27T21:16:23    c1 p40   mad   490 tok in 17013.7 ms
+2026-08-27T21:16:45    c1 p40   ref2  490 tok in 20771.7 ms
+2026-08-27T21:16:46  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-reprice-quick-report.md
+2026-08-27T21:16:46  VERDICT: P1 HELD, P2 HELD, token-counts agree
+2026-08-27T21:16:46    p00    0.9674 x   null 16.48%   INSIDE THE NULL
+2026-08-27T21:16:46    p40    1.1805 x   null 3.31%   resolved

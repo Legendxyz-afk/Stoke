@@ -1,0 +1,156 @@
+﻿2026-08-27T21:17:11  Q6_K re-pricing. stamp 2026-08-27-m5-q6k-reprice
+2026-08-27T21:17:11  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 418f88f
+2026-08-27T21:17:11  bank C:\Users\Kabir\AppData\Local\Temp\stoke-q6k-reprice-n4-t6-B1E99988
+2026-08-27T21:17:11  cycles 3  n_gen 4  threads 6  affinity 0xFFF (P-cores)
+2026-08-27T21:17:11  CYCLE 1
+2026-08-27T21:17:19    c1 p00   ref   23 tok in 4702.8 ms
+2026-08-27T21:17:25    c1 p00   mad   23 tok in 4659 ms
+2026-08-27T21:17:31    c1 p00   ref2  23 tok in 4696.4 ms
+2026-08-27T21:17:54    c1 p40   ref   490 tok in 20146.7 ms
+2026-08-27T21:18:15    c1 p40   mad   490 tok in 16889.9 ms
+2026-08-27T21:18:39    c1 p40   ref2  490 tok in 19834.2 ms
+2026-08-27T21:19:45    c1 long  ref   1436 tok in 64400.3 ms
+2026-08-27T21:20:40    c1 long  mad   1436 tok in 53461.7 ms
+2026-08-27T21:21:45    c1 long  ref2  1436 tok in 63488 ms
+2026-08-27T21:21:45  CYCLE 2
+2026-08-27T21:22:52    c2 long  ref2  1436 tok in 63998.5 ms
+2026-08-27T21:23:48    c2 long  mad   1436 tok in 53651.1 ms
+2026-08-27T21:24:54    c2 long  ref   1436 tok in 64392.3 ms
+2026-08-27T21:25:19    c2 p40   ref2  490 tok in 20091.2 ms
+2026-08-27T21:25:38    c2 p40   mad   490 tok in 16648.3 ms
+2026-08-27T21:26:01    c2 p40   ref   490 tok in 20378.2 ms
+2026-08-27T21:26:09    c2 p00   ref2  23 tok in 4817.7 ms
+2026-08-27T21:26:16    c2 p00   mad   23 tok in 3541.8 ms
+2026-08-27T21:26:24    c2 p00   ref   23 tok in 4760.6 ms
+2026-08-27T21:26:24  CYCLE 3
+2026-08-27T21:26:31    c3 p00   ref   23 tok in 4743 ms
+2026-08-27T21:26:38    c3 p00   mad   23 tok in 3509.4 ms
+2026-08-27T21:26:46    c3 p00   ref2  23 tok in 4764.8 ms
+2026-08-27T21:27:10    c3 p40   ref   490 tok in 19624.3 ms
+2026-08-27T21:27:30    c3 p40   mad   490 tok in 16606.9 ms
+2026-08-27T21:27:54    c3 p40   ref2  490 tok in 20340.6 ms
+2026-08-27T21:29:00    c3 long  ref   1436 tok in 62605.1 ms
+2026-08-27T21:29:56    c3 long  mad   1436 tok in 52447.5 ms
+2026-08-27T21:31:02    c3 long  ref2  1436 tok in 62847.4 ms
+2026-08-27T21:31:03  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-reprice-report.md
+2026-08-27T21:31:03  VERDICT: P1 FALSIFIED, P2 HELD, token-counts agree
+2026-08-27T21:31:03    p00    1.3391 x   null 0.46%   resolved
+2026-08-27T21:31:03    p40    1.2101 x   null 0.28%   resolved
+2026-08-27T21:31:03    long   1.2045 x   null 1.42%   resolved
+2026-08-27T21:36:14  Q6_K re-pricing. stamp 2026-08-27-m5-q6k-reprice
+2026-08-27T21:36:14  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 418f88f
+2026-08-27T21:36:14  bank C:\Users\Kabir\AppData\Local\Temp\stoke-q6k-reprice-n4-t6-B1E99988
+2026-08-27T21:36:14  cycles 3  n_gen 4  threads 6  affinity 0xFFF (P-cores)
+2026-08-27T21:36:14  CYCLE 1
+2026-08-27T21:36:14    c1 p00   ref   23 tok in 4702.8 ms
+2026-08-27T21:36:14    c1 p00   mad   23 tok in 4659 ms
+2026-08-27T21:36:14    c1 p00   ref2  23 tok in 4696.4 ms
+2026-08-27T21:36:14    c1 p40   ref   490 tok in 20146.7 ms
+2026-08-27T21:36:14    c1 p40   mad   490 tok in 16889.9 ms
+2026-08-27T21:36:14    c1 p40   ref2  490 tok in 19834.2 ms
+2026-08-27T21:36:14    c1 long  ref   1436 tok in 64400.3 ms
+2026-08-27T21:36:14    c1 long  mad   1436 tok in 53461.7 ms
+2026-08-27T21:36:14    c1 long  ref2  1436 tok in 63488 ms
+2026-08-27T21:36:14  CYCLE 2
+2026-08-27T21:36:14    c2 long  ref2  1436 tok in 63998.5 ms
+2026-08-27T21:36:14    c2 long  mad   1436 tok in 53651.1 ms
+2026-08-27T21:36:14    c2 long  ref   1436 tok in 64392.3 ms
+2026-08-27T21:36:14    c2 p40   ref2  490 tok in 20091.2 ms
+2026-08-27T21:36:14    c2 p40   mad   490 tok in 16648.3 ms
+2026-08-27T21:36:14    c2 p40   ref   490 tok in 20378.2 ms
+2026-08-27T21:36:14    c2 p00   ref2  23 tok in 4817.7 ms
+2026-08-27T21:36:14    c2 p00   mad   23 tok in 3541.8 ms
+2026-08-27T21:36:14    c2 p00   ref   23 tok in 4760.6 ms
+2026-08-27T21:36:14  CYCLE 3
+2026-08-27T21:36:14    c3 p00   ref   23 tok in 4743 ms
+2026-08-27T21:36:14    c3 p00   mad   23 tok in 3509.4 ms
+2026-08-27T21:36:14    c3 p00   ref2  23 tok in 4764.8 ms
+2026-08-27T21:36:14    c3 p40   ref   490 tok in 19624.3 ms
+2026-08-27T21:36:14    c3 p40   mad   490 tok in 16606.9 ms
+2026-08-27T21:36:14    c3 p40   ref2  490 tok in 20340.6 ms
+2026-08-27T21:36:14    c3 long  ref   1436 tok in 62605.1 ms
+2026-08-27T21:36:14    c3 long  mad   1436 tok in 52447.5 ms
+2026-08-27T21:36:14    c3 long  ref2  1436 tok in 62847.4 ms
+2026-08-27T21:36:14  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-reprice-report.md
+2026-08-27T21:36:14  VERDICT: P1 FALSIFIED, P2 HELD, token-counts agree
+2026-08-27T21:36:14    p00    1.3391 x   null 0.46%   resolved
+2026-08-27T21:36:14    p40    1.2101 x   null 0.28%   resolved
+2026-08-27T21:36:14    long   1.2045 x   null 1.42%   resolved
+2026-08-27T21:37:28  Q6_K re-pricing. stamp 2026-08-27-m5-q6k-reprice
+2026-08-27T21:37:28  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 418f88f
+2026-08-27T21:37:28  bank C:\Users\Kabir\AppData\Local\Temp\stoke-q6k-reprice-n4-t6-B1E99988
+2026-08-27T21:37:28  cycles 3  n_gen 4  threads 6  affinity 0xFFF (P-cores)
+2026-08-27T21:37:28  CYCLE 1
+2026-08-27T21:37:28    c1 p00   ref   23 tok in 4702.8 ms
+2026-08-27T21:37:28    c1 p00   mad   23 tok in 4659 ms
+2026-08-27T21:37:28    c1 p00   ref2  23 tok in 4696.4 ms
+2026-08-27T21:37:28    c1 p40   ref   490 tok in 20146.7 ms
+2026-08-27T21:37:28    c1 p40   mad   490 tok in 16889.9 ms
+2026-08-27T21:37:28    c1 p40   ref2  490 tok in 19834.2 ms
+2026-08-27T21:37:28    c1 long  ref   1436 tok in 64400.3 ms
+2026-08-27T21:37:28    c1 long  mad   1436 tok in 53461.7 ms
+2026-08-27T21:37:28    c1 long  ref2  1436 tok in 63488 ms
+2026-08-27T21:37:28  CYCLE 2
+2026-08-27T21:37:28    c2 long  ref2  1436 tok in 63998.5 ms
+2026-08-27T21:37:28    c2 long  mad   1436 tok in 53651.1 ms
+2026-08-27T21:37:28    c2 long  ref   1436 tok in 64392.3 ms
+2026-08-27T21:37:28    c2 p40   ref2  490 tok in 20091.2 ms
+2026-08-27T21:37:28    c2 p40   mad   490 tok in 16648.3 ms
+2026-08-27T21:37:28    c2 p40   ref   490 tok in 20378.2 ms
+2026-08-27T21:37:28    c2 p00   ref2  23 tok in 4817.7 ms
+2026-08-27T21:37:28    c2 p00   mad   23 tok in 3541.8 ms
+2026-08-27T21:37:28    c2 p00   ref   23 tok in 4760.6 ms
+2026-08-27T21:37:28  CYCLE 3
+2026-08-27T21:37:28    c3 p00   ref   23 tok in 4743 ms
+2026-08-27T21:37:28    c3 p00   mad   23 tok in 3509.4 ms
+2026-08-27T21:37:28    c3 p00   ref2  23 tok in 4764.8 ms
+2026-08-27T21:37:28    c3 p40   ref   490 tok in 19624.3 ms
+2026-08-27T21:37:28    c3 p40   mad   490 tok in 16606.9 ms
+2026-08-27T21:37:28    c3 p40   ref2  490 tok in 20340.6 ms
+2026-08-27T21:37:28    c3 long  ref   1436 tok in 62605.1 ms
+2026-08-27T21:37:28    c3 long  mad   1436 tok in 52447.5 ms
+2026-08-27T21:37:28    c3 long  ref2  1436 tok in 62847.4 ms
+2026-08-27T21:37:28  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-reprice-report.md
+2026-08-27T21:37:28  VERDICT: P1 FALSIFIED, P2 HELD, token-counts agree
+2026-08-27T21:37:28    p00    1.3391 x   floor 32.76% (null 0.46, ref 1.23, mad 32.76)   UNRESOLVED -- gain is not 2x the floor
+2026-08-27T21:37:28    p40    1.2101 x   floor 3.84% (null 0.28, ref 3.84, mad 1.7)   resolved
+2026-08-27T21:37:28    long   1.2045 x   floor 2.87% (null 1.42, ref 2.87, mad 2.29)   resolved
+2026-08-27T21:38:17  Q6_K re-pricing. stamp 2026-08-27-m5-q6k-reprice
+2026-08-27T21:38:17  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe  commit 418f88f
+2026-08-27T21:38:17  bank C:\Users\Kabir\AppData\Local\Temp\stoke-q6k-reprice-n4-t6-B1E99988
+2026-08-27T21:38:17  cycles 3  n_gen 4  threads 6  affinity 0xFFF (P-cores)
+2026-08-27T21:38:17  CYCLE 1
+2026-08-27T21:38:17    c1 p00   ref   23 tok in 4702.8 ms
+2026-08-27T21:38:17    c1 p00   mad   23 tok in 4659 ms
+2026-08-27T21:38:17    c1 p00   ref2  23 tok in 4696.4 ms
+2026-08-27T21:38:17    c1 p40   ref   490 tok in 20146.7 ms
+2026-08-27T21:38:17    c1 p40   mad   490 tok in 16889.9 ms
+2026-08-27T21:38:17    c1 p40   ref2  490 tok in 19834.2 ms
+2026-08-27T21:38:17    c1 long  ref   1436 tok in 64400.3 ms
+2026-08-27T21:38:17    c1 long  mad   1436 tok in 53461.7 ms
+2026-08-27T21:38:17    c1 long  ref2  1436 tok in 63488 ms
+2026-08-27T21:38:17  CYCLE 2
+2026-08-27T21:38:17    c2 long  ref2  1436 tok in 63998.5 ms
+2026-08-27T21:38:17    c2 long  mad   1436 tok in 53651.1 ms
+2026-08-27T21:38:17    c2 long  ref   1436 tok in 64392.3 ms
+2026-08-27T21:38:17    c2 p40   ref2  490 tok in 20091.2 ms
+2026-08-27T21:38:17    c2 p40   mad   490 tok in 16648.3 ms
+2026-08-27T21:38:17    c2 p40   ref   490 tok in 20378.2 ms
+2026-08-27T21:38:17    c2 p00   ref2  23 tok in 4817.7 ms
+2026-08-27T21:38:17    c2 p00   mad   23 tok in 3541.8 ms
+2026-08-27T21:38:17    c2 p00   ref   23 tok in 4760.6 ms
+2026-08-27T21:38:17  CYCLE 3
+2026-08-27T21:38:17    c3 p00   ref   23 tok in 4743 ms
+2026-08-27T21:38:17    c3 p00   mad   23 tok in 3509.4 ms
+2026-08-27T21:38:17    c3 p00   ref2  23 tok in 4764.8 ms
+2026-08-27T21:38:17    c3 p40   ref   490 tok in 19624.3 ms
+2026-08-27T21:38:17    c3 p40   mad   490 tok in 16606.9 ms
+2026-08-27T21:38:17    c3 p40   ref2  490 tok in 20340.6 ms
+2026-08-27T21:38:17    c3 long  ref   1436 tok in 62605.1 ms
+2026-08-27T21:38:17    c3 long  mad   1436 tok in 52447.5 ms
+2026-08-27T21:38:17    c3 long  ref2  1436 tok in 62847.4 ms
+2026-08-27T21:38:17  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-reprice-report.md
+2026-08-27T21:38:17  VERDICT: P1 NOT SUPPORTED (FLAT), P2 HELD, token-counts agree
+2026-08-27T21:38:17    p00    1.3391 x   floor 32.76% (null 0.46, ref 1.23, mad 32.76)   UNRESOLVED -- gain is not 2x the floor
+2026-08-27T21:38:17    p40    1.2101 x   floor 3.84% (null 0.28, ref 3.84, mad 1.7)   resolved
+2026-08-27T21:38:17    long   1.2045 x   floor 2.87% (null 1.42, ref 2.87, mad 2.29)   resolved
