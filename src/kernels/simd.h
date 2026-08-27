@@ -258,9 +258,22 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
  * layout alone can move a hot loop by a few percent.
  *
  * An unrecognised value is REFUSED rather than ignored: a typo that silently
- * selected the default would make an A/B measure one kernel twice. */
+ * selected the default would make an A/B measure one kernel twice.
+ *
+ * ▶▶ FLIPPED TO 1 ON 2026-08-27, AND WHAT PAID FOR IT.
+ * `tests/test_simd.c` asserts the maddubs twin bit-identical to the reference
+ * twin AND to the solo kernel over random tensors -- but that grades the KERNEL,
+ * not the ENGINE, and a perfect twin reached through the wrong dispatch is still
+ * a wrong engine. So the flip waited on a STREAM gate:
+ * gate-reports/2026-08-27-m5-q6k-gate-report.md, 11 cases (both prompts, kv f32
+ * and q8, 2 and 6 threads, `batch --seqs` 2/8/16), every one byte-compared to
+ * build/stoke-m45-gate-fddd12cd.exe -- a binary built BEFORE this kernel
+ * existed. ref MATCH 11/11 (so nothing else moved), maddubs MATCH 11/11, the
+ * lane-swapped mutant DIFFERS 11/11, and the mutant's banner proves the batched
+ * Q6_K kernel was DISPATCHED in all 11 -- a case that never reached it would
+ * have compared EQUAL and graded nothing. */
 #ifndef STOKE_Q6K_MADDUBS
-#define STOKE_Q6K_MADDUBS 0
+#define STOKE_Q6K_MADDUBS 1
 #endif
 
 #endif /* STOKE_KERNELS_SIMD_H */

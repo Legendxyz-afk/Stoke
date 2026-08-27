@@ -68,18 +68,36 @@ $gr   = "$root\docs\superpowers\gate-reports"
 if (-not $Stamp) { $Stamp = "{0}-m5-q6k-gate{1}" -f (Get-Date -Format "yyyy-MM-dd"), $(if ($Quick) { "-quick" } else { "" }) }
 $log    = "$gr\$Stamp-raw.txt"
 $report = "$gr\$Stamp-report.md"
+
+# Existence FIRST: everything below hashes these paths, and a curated
+# "missing: <path>" beats Get-FileHash's stack trace.
+foreach ($p in @($exe, $mut, $arch, $mdl, $par)) {
+    if (-not (Test-Path $p)) { throw "missing: $p" }
+}
+
 # ⚠ THE BANK IS KEYED BY THE RUN'S SHAPE, NOT JUST BY -Quick. RunCase resumes any
 # case whose output file already exists, and `n_gen` is not in the case id -- so a
 # bank shared across -NGen values would silently serve a 24-token capture as a
 # 48-token result. That is the 2026-08-26 defect ("keyed units without their
 # shape") with a different variable in it, and it is fixed the same way: the shape
 # goes in the key.
-$tmp    = "$env:TEMP\stoke-q6k-gate-n$NGen$(if ($Quick) { '-quick' } else { '' })"
+#
+# ⚠⚠ AND THE BANK IS KEYED BY THE BINARIES' CONTENT, WHICH IS THE ONE THAT WOULD
+# HAVE MANUFACTURED A GREEN GATE (found 2026-08-27, right after the flip).
+# The freshness check below compares each BINARY against the newest source. Nothing
+# compared the BANK against the binary -- so after `STOKE_Q6K_MADDUBS` was flipped
+# and both binaries rebuilt, a re-run would have resumed all 44 banked units and
+# reported 11/11 GREEN about binaries that no longer existed. That is the
+# 2026-08-17 stale-artifact episode ("it was GREEN -- about the wrong binary")
+# moved one level in, and it is worse there, because a bank is invisible: the
+# report would name the new commit while grading the old code.
+# Hashing both binaries into the key makes a rebuild start a new bank by
+# construction, and leaves the old one intact rather than trusting a cleanup step.
+$binKey = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.Substring(0, 6) +
+          (Get-FileHash -Algorithm SHA256 -LiteralPath $mut).Hash.Substring(0, 6)
+$tmp    = "$env:TEMP\stoke-q6k-gate-n$NGen-$binKey$(if ($Quick) { '-quick' } else { '' })"
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
-foreach ($p in @($exe, $mut, $arch, $mdl, $par)) {
-    if (-not (Test-Path $p)) { throw "missing: $p" }
-}
 # The archive is EXEMPT from the newest-source check by construction -- it is
 # older than the source on purpose, which is the whole point of an archive. The
 # two live binaries are not.
@@ -187,6 +205,9 @@ Say "exe $exe"
 Say "mut $mut   *** DELIBERATELY WRONG: scale lanes swapped ***"
 Say "archive $arch  (predates this kernel -- the referent)"
 Say "exe commit $(git -C $root rev-parse --short HEAD)"
+# The bank key is LOGGED, not just used: a resumed run must be able to say which
+# binaries its banked units were measured against.
+Say "bank $tmp  (keyed by n_gen AND both binaries' content)"
 if ($Quick) { Say "*** -Quick: $($cases.Count) cases, NOT a gate ***" }
 
 $rows = @()
@@ -235,6 +256,11 @@ $lines += "``stoke-m45-gate-fddd12cd.exe`` -- a binary built BEFORE this kernel 
 $lines += "streams the M3/M4/M4.5 gates already certified. **An arm is graded against an"
 $lines += "ARCHIVE, never against another arm of the same build**, because agreement among"
 $lines += "new arms is also consistent with all of them being wrong together."
+$lines += ""
+$lines += ("Binaries under test: ``{0}`` / ``{1}`` (bank key ``{2}``), commit ``{3}``. **The bank is" -f
+           (Split-Path $exe -Leaf), (Split-Path $mut -Leaf), $binKey, (git -C $root rev-parse --short HEAD))
+$lines += "keyed by both binaries' content**, so a rebuild starts a new bank instead of"
+$lines += "resuming units measured against code that no longer exists."
 $lines += ""
 $lines += "| case | ref vs archive | maddubs vs archive | mutant | kernel dispatched | archive sha |"
 $lines += "|---|---|---|---|---|---|"

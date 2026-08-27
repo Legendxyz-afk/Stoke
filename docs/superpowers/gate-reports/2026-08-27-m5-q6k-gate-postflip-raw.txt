@@ -1,0 +1,19 @@
+﻿2026-08-27T20:56:25  Q6_K stream gate. stamp 2026-08-27-m5-q6k-gate-postflip
+2026-08-27T20:56:25  exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T20:56:25  mut M:\New Drive\Desktop\Programming\stoke\build\win-mut-q6k\stoke.exe   *** DELIBERATELY WRONG: scale lanes swapped ***
+2026-08-27T20:56:25  archive M:\New Drive\Desktop\Programming\stoke\build\stoke-m45-gate-fddd12cd.exe  (predates this kernel -- the referent)
+2026-08-27T20:56:25  exe commit 1000e37
+2026-08-27T20:56:25  bank C:\Users\Kabir\AppData\Local\Temp\stoke-q6k-gate-n24-B1E99979A25D  (keyed by n_gen AND both binaries' content)
+2026-08-27T20:57:33    run-p00-f32-t2     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:58:06    run-p00-f32-t6     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:59:19    run-p00-q8-t2      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T20:59:57    run-p00-q8-t6      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:03:33    run-p41-f32-t2     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:05:16    run-p41-f32-t6     ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:08:49    run-p41-q8-t2      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:10:36    run-p41-q8-t6      ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:11:11    batch-s2           ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:12:24    batch-s8           ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:14:26    batch-s16          ref MATCH  maddubs MATCH  mutant DIFFERS (good)  dispatched YES
+2026-08-27T21:14:26  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-gate-postflip-report.md
+2026-08-27T21:14:26  VERDICT: ref MATCH, maddubs MATCH, mutant differs 11/11, dispatched 11/11 -- MAY FLIP
