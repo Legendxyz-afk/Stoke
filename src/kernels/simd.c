@@ -916,8 +916,25 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
         /* A chunk of 32 elements spans scale groups 2c and 2c+1, and within a
          * 128-bit lane every scale lane holds the same value -- see simd.h. */
         for (u32 c = 0; c < KERNELS_Q6_K_BLOCK_ELEMS / 32u; ++c) {
+#ifdef STOKE_MUT_Q6K
+            /* ▶▶ A DELIBERATE LANE-ORDER ERROR, BUILT ONLY VIA EXTRA_CFLAGS, AND
+             * IT TARGETS THE ONE STRUCTURALLY NEW RISK IN THIS KERNEL. Q4_K's
+             * eight scales line up with its eight 32-byte chunks exactly; Q6_K
+             * has SIXTEEN, so a chunk spans TWO scale groups and the halves of
+             * `scv[c]` must match the halves `vpmaddubsw` produced. Swapping
+             * them is the mistake this formulation invites, it is invisible in
+             * a diff that does not know the lane layout, and it leaves the run
+             * ALIVE AND MERELY WRONG -- the class kv.h names as dangerous.
+             *
+             * It can never be in a shipping binary: nothing defines this macro,
+             * the default build does not, and the banner in sched_open's
+             * neighbour below announces a mutant on every run. */
+            const i16 s0 = (i16)sc[2u * c + 1u];
+            const i16 s1 = (i16)sc[2u * c];
+#else
             const i16 s0 = (i16)sc[2u * c];
             const i16 s1 = (i16)sc[2u * c + 1u];
+#endif
             scv[c] = _mm256_set_epi16(s1, s1, s1, s1, s1, s1, s1, s1,
                                       s0, s0, s0, s0, s0, s0, s0, s0);
         }

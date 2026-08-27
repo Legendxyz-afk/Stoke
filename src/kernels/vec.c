@@ -187,6 +187,13 @@ static int g_q6k_maddubs = -1;
 
 static void q6k_select(void) {
     if (g_q6k_maddubs >= 0) return;
+#ifdef STOKE_MUT_Q6K
+    /* A MUTANT ANNOUNCES ITSELF, and it announces itself the FIRST time the
+     * mutated kernel could possibly be reached rather than at startup -- so a
+     * log that contains this line is a log where the defect was live. */
+    fprintf(stderr, "!! STOKE_MUT_Q6K BUILD -- the Q6_K maddubs kernel's scale "
+                    "lanes are DELIBERATELY swapped. Never ship this binary.\n");
+#endif
     const char* e = getenv("STOKE_Q6K_KERNEL");
     if (e == NULL || e[0] == '\0') {
         g_q6k_maddubs = STOKE_Q6K_MADDUBS ? 1 : 0;
