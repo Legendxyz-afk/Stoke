@@ -1,0 +1,42 @@
+﻿2026-08-27T14:36:52  transpose / n_in isolation. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T14:36:52  cycles 24, 4 blocks, one tensor per PROCESS, affinity 0x1
+2026-08-27T14:36:52  exe commit 366dee6
+2026-08-27T14:36:54    block 1 attn_q done (2.1s)
+2026-08-27T14:36:56    block 1 attn_out done (2s)
+2026-08-27T14:36:59    block 1 ffn_gate done (3.1s)
+2026-08-27T14:37:08    block 1 ffn_down done (9.2s)
+2026-08-27T14:37:17    block 2 ffn_down done (9.2s)
+2026-08-27T14:37:21    block 2 ffn_gate done (3s)
+2026-08-27T14:37:23    block 2 attn_out done (2s)
+2026-08-27T14:37:25    block 2 attn_q done (2s)
+2026-08-27T14:37:26    block 3 attn_q done (1s)
+2026-08-27T14:37:28    block 3 attn_out done (2s)
+2026-08-27T14:37:31    block 3 ffn_gate done (3.1s)
+2026-08-27T14:37:41    block 3 ffn_down done (10.2s)
+2026-08-27T14:37:50    block 4 ffn_down done (9.2s)
+2026-08-27T14:37:53    block 4 ffn_gate done (2.3s)
+2026-08-27T14:37:54    block 4 attn_out done (1s)
+2026-08-27T14:37:55    block 4 attn_q done (1s)
+2026-08-27T14:37:55  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-transpose-report.md
+2026-08-27T14:37:55  VERDICT: transpose ratio 1.057x isolated (was 1.78x contaminated) -- H-ARTIFACT -- the four-tensor table's rates were contaminated and the observation dies with them
+2026-08-27T14:40:03  transpose / n_in isolation. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T14:40:03  cycles 24, 4 blocks, one tensor per PROCESS, affinity 0x1
+2026-08-27T14:40:04  exe commit 366dee6
+2026-08-27T14:40:04    block 1 attn_q already banked, skipping
+2026-08-27T14:40:04    block 1 attn_out already banked, skipping
+2026-08-27T14:40:04    block 1 ffn_gate already banked, skipping
+2026-08-27T14:40:04    block 1 ffn_down already banked, skipping
+2026-08-27T14:40:04    block 2 ffn_down already banked, skipping
+2026-08-27T14:40:04    block 2 ffn_gate already banked, skipping
+2026-08-27T14:40:04    block 2 attn_out already banked, skipping
+2026-08-27T14:40:04    block 2 attn_q already banked, skipping
+2026-08-27T14:40:04    block 3 attn_q already banked, skipping
+2026-08-27T14:40:04    block 3 attn_out already banked, skipping
+2026-08-27T14:40:04    block 3 ffn_gate already banked, skipping
+2026-08-27T14:40:04    block 3 ffn_down already banked, skipping
+2026-08-27T14:40:04    block 4 ffn_down already banked, skipping
+2026-08-27T14:40:04    block 4 ffn_gate already banked, skipping
+2026-08-27T14:40:04    block 4 attn_out already banked, skipping
+2026-08-27T14:40:04    block 4 attn_q already banked, skipping
+2026-08-27T14:40:04  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-transpose-report.md
+2026-08-27T14:40:04  VERDICT: transpose ratio 1.057x isolated (was 1.78x contaminated) -- H-ARTIFACT -- the four-tensor table's rates were contaminated and the observation dies with them

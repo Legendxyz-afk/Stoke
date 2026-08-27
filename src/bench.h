@@ -45,11 +45,14 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl);
  * output is a RATIO between two arms rather than a rate: it belongs beside the
  * ablations, not beside the projections.
  *
- * `cycles` is the interleaved A/B pairs per cell (0 = 8). `max_seqs` is the
+ * `cycles` is the interleaved A/B/C cycles per cell (0 = 8). `max_seqs` is the
  * largest n_seq swept, doubling from 1 (0 or > KERNELS_BATCH_TILE = the tile).
- * The full contract, the two power checks and the reason the alias lives in
+ * `only` restricts the run to one tensor by label (NULL = all four), which also
+ * sizes the scratch buffers to THAT tensor -- two confounds, not one.
+ * The full contract, the three power checks and the reason the alias lives in
  * the CALLER are in bench.c beside the code. */
-void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs);
+void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs,
+                        const char* only);
 
 /* ---- pure helpers, EXPOSED FOR TESTS ----
  *

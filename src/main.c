@@ -1439,7 +1439,8 @@ int main(int argc, char** argv) {
              * measuring exactly what they always measured, and this one's
              * output is a RATIO between two arms rather than a table of rates
              * feeding `bench/history.jsonl`. */
-            u32 cycles = 0, max_seqs = 0;
+            u32         cycles = 0, max_seqs = 0;
+            const char* only = NULL;
             for (int i = 4; i < argc; i++) {
                 if ((strcmp(argv[i], "--cycles") == 0 ||
                      strcmp(argv[i], "--seqs") == 0) && i + 1 < argc) {
@@ -1451,12 +1452,14 @@ int main(int argc, char** argv) {
                     }
                     if (strcmp(flag, "--cycles") == 0) cycles = (u32)v;
                     else                               max_seqs = (u32)v;
+                } else if (strcmp(argv[i], "--tensor") == 0 && i + 1 < argc) {
+                    only = argv[++i];
                 } else {
                     fatal("stoke bench --matvec-batch: unexpected argument "
                           "'%s'", argv[i]);
                 }
             }
-            bench_matvec_batch(argv[3], cycles, max_seqs);
+            bench_matvec_batch(argv[3], cycles, max_seqs, only);
             finish_stdout_or_fatal();
             return 0;
         }

@@ -1046,6 +1046,27 @@ static void fill_activation(f32* x, u64 n, u32 seed) {
     }
 }
 
+/* ▶▶ THE TABLE PRINTS THE QUANT TYPE BECAUSE OMITTING IT COST A FINDING.
+ * The first run of this instrument compared `ffn_gate` with `ffn_down` as
+ * "identical FLOP, identical weight bytes, identical body count" and reported a
+ * 6.5x gap. They are not comparable at all: in a Q4_K_M model `ffn_down` is
+ * **Q6_K** -- 210 bytes per super-block against 144, and a different kernel
+ * (`vec_dot_q6_k_q8_k_xn_avx2`). Nothing in the table said so, because a
+ * fixture drawn BY NAME from a real model can differ in a property the
+ * comparison depends on. A local copy of main.c's mapping rather than a shared
+ * one: three lines here beats exporting a printing helper across a module
+ * boundary for one caller. */
+static const char* batch_type_name(u32 t) {
+    switch (t) {
+    case GGUF_GGML_TYPE_F32:  return "F32";
+    case GGUF_GGML_TYPE_Q8_0: return "Q8_0";
+    case GGUF_GGML_TYPE_Q4_K: return "Q4_K";
+    case GGUF_GGML_TYPE_Q6_K: return "Q6_K";
+    default: break;
+    }
+    return "?";
+}
+
 static int rows_differ(const f32* a, const f32* b, u64 n) {
     for (u64 i = 0; i < n; i++) {
         if (a[i] != b[i]) return 1;
@@ -1141,10 +1162,11 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
     double flop = 2.0 * (double)n_in * (double)n_out * (double)n_seq;
     double gfA  = (ta.med_ms > 0.0) ? flop / (ta.med_ms * 1e6) : 0.0;
 
-    printf("  %-10s %5llu x %-6llu %3u  %8.1f  %9.3f %9.3f %9.3f  %6.3f %6.3f"
-           "  %7.2f   %u/%u %u/%u\n",
-           label, (unsigned long long)n_in, (unsigned long long)n_out, n_seq,
-           actA / 1024.0, ta.med_ms, tb.med_ms, tc.med_ms,
+    printf("  %-10s %-5s %5llu x %-6llu %3u  %8.1f  %9.3f %9.3f %9.3f  %6.3f "
+           "%6.3f  %7.2f   %u/%u %u/%u\n",
+           label, batch_type_name(w->type), (unsigned long long)n_in,
+           (unsigned long long)n_out, n_seq, actA / 1024.0, ta.med_ms,
+           tb.med_ms, tc.med_ms,
            (tb.med_ms > 0.0) ? ta.med_ms / tb.med_ms : 0.0,
            (tc.med_ms > 0.0) ? ta.med_ms / tc.med_ms : 0.0, gfA,
            b_wins, cycles, c_wins, cycles);
@@ -1153,7 +1175,8 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
     free(sc);
 }
 
-void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
+void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs,
+                        const char* only) {
     if (cycles == 0u) cycles = 8u;
     if (max_seqs == 0u || max_seqs > KERNELS_BATCH_TILE) {
         max_seqs = KERNELS_BATCH_TILE;
@@ -1171,9 +1194,26 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
         "blk.0.attn_output.weight", "blk.0.ffn_down.weight" };
     const char* labels[N_BATCH_TENSORS] = { "attn_q", "ffn_gate", "attn_out",
                                             "ffn_down" };
+    /* ▶ --tensor RESTRICTS THE RUN TO ONE TENSOR, AND IT REMOVES TWO CONFOUNDS
+     * AT ONCE, not just measurement order. The scratch buffers are sized to
+     * `n_in_max` OVER THE TENSORS BEING RUN -- so in a four-tensor run the 16
+     * activation regions are spaced 11 KB apart (ffn_down's size) even while
+     * measuring a tensor that touches 2.9 KB of each. One tensor per process
+     * packs them to their own size AND leaves nothing else in L3. */
+    int sel[N_BATCH_TENSORS];
+    u32 n_sel = 0;
+    for (u32 i = 0; i < N_BATCH_TENSORS; i++) {
+        sel[i] = (only == NULL) || (strcmp(only, labels[i]) == 0);
+        if (sel[i]) n_sel++;
+    }
+    if (n_sel == 0u) {
+        fatal("stoke bench --matvec-batch: --tensor '%s' matches none of "
+              "attn_q, ffn_gate, attn_out, ffn_down", only);
+    }
 
     u64 n_in_max = 0, n_out_max = 0;
     for (u32 i = 0; i < N_BATCH_TENSORS; i++) {
+        if (!sel[i]) continue;
         const GgufTensor* w = need(f, names[i]);
         if (w->dims[0] > n_in_max)  n_in_max  = w->dims[0];
         if (w->dims[1] > n_out_max) n_out_max = w->dims[1];
@@ -1235,17 +1275,27 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
            "they do not,\n");
     printf("  and the 3.22x kernel gap to llama.cpp is not this.\n");
     printf("\n");
-    printf("  %-10s %-14s %3s  %8s  %9s %9s %9s  %6s %6s  %7s   %s\n", "tensor",
-           "n_in x n_out", "N", "act KiB", "A med ms", "B med ms", "C med ms",
-           "A/B", "A/C", "A GF/s", "B won  C won");
-    printf("  %-10s %-14s %3s  %8s  %9s %9s %9s  %6s %6s  %7s   %s\n",
-           "----------", "--------------", "---", "--------", "---------",
-           "---------", "---------", "------", "------", "-------",
-           "-----  -----");
+    printf("  %-10s %-5s %-14s %3s  %8s  %9s %9s %9s  %6s %6s  %7s   %s\n",
+           "tensor", "type", "n_in x n_out", "N", "act KiB", "A med ms",
+           "B med ms", "C med ms", "A/B", "A/C", "A GF/s", "B won  C won");
+    printf("  %-10s %-5s %-14s %3s  %8s  %9s %9s %9s  %6s %6s  %7s   %s\n",
+           "----------", "-----", "--------------", "---", "--------",
+           "---------", "---------", "---------", "------", "------",
+           "-------", "-----  -----");
 
     for (u32 i = 0; i < N_BATCH_TENSORS; i++) {
+        if (!sel[i]) continue;
         const GgufTensor* w = need(f, names[i]);
         warm_tensor(w);
+        /* ▶ THE TYPE AND THE WEIGHT BYTES, ANNOUNCED BEFORE THE CELLS. Two
+         * tensors are only comparable if these match, and reading it off the
+         * table beats assuming it from the name -- which is the mistake this
+         * instrument's first run actually made. */
+        printf("  -- %s: %s, %llu x %llu, %llu super-blocks/row, %.1f MB\n",
+               labels[i], batch_type_name(w->type),
+               (unsigned long long)w->dims[0], (unsigned long long)w->dims[1],
+               (unsigned long long)(w->dims[0] / KERNELS_Q8_K_BLOCK_ELEMS),
+               (double)w->nbytes / 1e6);
         for (u32 n_seq = 1u; n_seq <= max_seqs; n_seq <<= 1) {
             batch_cell(w, labels[i], n_seq, cycles, x, yA, yB, yC, aqA, aqB,
                        aqC);
