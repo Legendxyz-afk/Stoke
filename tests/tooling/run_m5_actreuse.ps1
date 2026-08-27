@@ -90,7 +90,7 @@ try {
         # first version of this ablation had two arms and a different table
         # width, and its banked blocks are unparseable here rather than
         # silently half-parsed.
-        $out = "$tmp\b$b-cy$Cycles-a3.txt"
+        $out = "$tmp\b$b-cy$Cycles-a3f2.txt"
         if (Test-Path $out) {
             $t = Get-Content $out -Raw
             if ($t -match 'attn_q') { Say "  block $b already banked, skipping"; $blockFiles += $out; continue }
@@ -120,28 +120,31 @@ $cells = @{}
 $order = @()
 foreach ($bf in $blockFiles) {
     foreach ($ln in (Get-Content $bf)) {
+        # Group 2 is the QUANT TYPE, added to the instrument on 2026-08-27 after
+        # a comparison was published between a Q4_K tensor and a Q6_K one.
         $m = [regex]::Match($ln,
-            '^\s+(\w+)\s+(\d+) x (\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)/(\d+)\s+(\d+)/(\d+)')
+            '^\s+(\w+)\s+(\S+)\s+(\d+) x (\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)/(\d+)\s+(\d+)/(\d+)')
         if (-not $m.Success) { continue }
-        $key = "{0}|{1}" -f $m.Groups[1].Value, $m.Groups[4].Value
+        $key = "{0}|{1}" -f $m.Groups[1].Value, $m.Groups[5].Value
         if (-not $cells.ContainsKey($key)) {
-            $cells[$key] = @{ tensor = $m.Groups[1].Value; n_in = [int]$m.Groups[2].Value
-                              n_out = [int]$m.Groups[3].Value; n = [int]$m.Groups[4].Value
-                              act = [double]$m.Groups[5].Value
+            $cells[$key] = @{ tensor = $m.Groups[1].Value; type = $m.Groups[2].Value
+                              n_in = [int]$m.Groups[3].Value
+                              n_out = [int]$m.Groups[4].Value; n = [int]$m.Groups[5].Value
+                              act = [double]$m.Groups[6].Value
                               a = @(); b = @(); cc = @(); ab = @(); ac = @(); gfa = @()
                               bwon = 0; cwon = 0; pairs = 0 }
             $order += $key
         }
         $c = $cells[$key]
-        $c.a    += [double]$m.Groups[6].Value
-        $c.b    += [double]$m.Groups[7].Value
-        $c.cc   += [double]$m.Groups[8].Value
-        $c.ab   += [double]$m.Groups[9].Value
-        $c.ac   += [double]$m.Groups[10].Value
-        $c.gfa  += [double]$m.Groups[11].Value
-        $c.bwon += [int]$m.Groups[12].Value
-        $c.pairs += [int]$m.Groups[13].Value
-        $c.cwon += [int]$m.Groups[14].Value
+        $c.a    += [double]$m.Groups[7].Value
+        $c.b    += [double]$m.Groups[8].Value
+        $c.cc   += [double]$m.Groups[9].Value
+        $c.ab   += [double]$m.Groups[10].Value
+        $c.ac   += [double]$m.Groups[11].Value
+        $c.gfa  += [double]$m.Groups[12].Value
+        $c.bwon += [int]$m.Groups[13].Value
+        $c.pairs += [int]$m.Groups[14].Value
+        $c.cwon += [int]$m.Groups[15].Value
     }
 }
 if ($order.Count -eq 0) { throw "STOP: parsed no cells -- the instrument's table shape moved" }
