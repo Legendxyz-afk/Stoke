@@ -104,6 +104,14 @@ param(
     [int]$Pool    = 200,
     [int]$Threads = 8,
     [int]$Ctx     = 1600,
+    # ▶ ARM-AT-A-TIME, BECAUSE AN UNATTENDED LONG RUN ON THIS BOX HAS BEEN KILLED
+    # MID-SITTING THREE TIMES (2026-08-26) with no user message. Every arm banks
+    # its own ids + stdout under a shape-keyed name and a later invocation
+    # RESUMES from them, so `-Arms R` then `-Arms P` then a bare invocation to
+    # assemble is the same gate as one long call, minus what a kill would cost.
+    # A subset invocation runs its arms and STOPS: grading against arms that were
+    # never run is the failure this parameter exists to make impossible.
+    [string]$Arms = "R,P,MP,MK",
     [switch]$Quick
 )
 
@@ -118,6 +126,12 @@ $pdir  = "$root\tests\data\bench_prompts"
 $gr    = "$root\docs\superpowers\gate-reports"
 
 if ($Quick) { $Seqs = 2; $NGen = 16 }
+# ⚠ ASSIGNED HERE, NOT BESIDE THE FUNCTION THAT USES IT. It was first written
+# next to MarkP, which sits AFTER the claim block -- so $green read $null and
+# every claim PASSED under a NOT DEMONSTRATED verdict. Caught by reading the
+# first assembled report, which is where this project has caught every one of
+# its harness bugs; a run FINISHING has never caught one.
+$PRESSURED = -not $Quick
 $BASE  = "s${Seqs}n${NGen}c${Ctx}t${Threads}"
 $Stamp = "{0}-m5-gate6-dedup{1}" -f (Get-Date -Format "yyyy-MM-dd"),
                                     $(if ($Quick) { "-quick" } else { "" })
@@ -175,7 +189,7 @@ function PromptArgs($n) {
 # 2026-08-26 flip's lesson was that an ABSENT flag changes meaning when a
 # default moves, and three runners had encoded "off" by omission. A measuring
 # site states its direction.
-function Arm($id, $binary, $pool, $mustSucceed) {
+function Arm($id, $binary, $pool, $mustSucceed, $mayRun) {
     $key = "$id-$BASE-p$(if ($pool -gt 0) { $pool } else { 'd' })"
     $ids = "$tmp\$key.txt"
     $out = "$tmp\$key-stdout.txt"
@@ -186,6 +200,7 @@ function Arm($id, $binary, $pool, $mustSucceed) {
             return @{ ids = $ids; text = $t; ok = $true }
         }
     }
+    if (-not $mayRun) { return $null }
     $a = @("bench", "--serve", ('"' + $model + '"')) + (PromptArgs $Seqs) +
          @("--raw", "--seqs", "$Seqs", "--ctx", "$Ctx", "-n", "$NGen",
            "--threads", "$Threads", "--kv", "f32", "--dedup",
@@ -233,10 +248,26 @@ for ($i = 0; $i -lt $Seqs; $i++) {
 }
 Say ("P1 band before adoption: peak = [{0},{1}] - adopted/16" -f $sumLo, $sumHi)
 
-$R = Arm "R"  $exe  0     $true    # reference: derived pool, must NOT preempt
-$P = Arm "P"  $exe  $Pool $true    # pressure:  squeezed pool, MUST preempt
-$MP = Arm "MP" $mutP $Pool $false  # mutant: replay off by one,  MUST differ
-$MK = Arm "MK" $mutK $Pool $false  # mutant: adopted K/V zeroed, MUST differ
+$want = @($Arms.Split(",") | ForEach-Object { $_.Trim() })
+$plan = @(
+    @{ id = "R";  exe = $exe;  pool = 0;     must = $true },   # derived pool, must NOT preempt
+    @{ id = "P";  exe = $exe;  pool = $Pool; must = $true },   # squeezed pool, MUST preempt
+    @{ id = "MP"; exe = $mutP; pool = $Pool; must = $false },  # replay off by one,  MUST differ
+    @{ id = "MK"; exe = $mutK; pool = $Pool; must = $false })  # adopted K/V zeroed, MUST differ
+foreach ($id in $want) {
+    if ($plan.id -notcontains $id) { throw "STOP: -Arms names '$id'; known arms are R,P,MP,MK" }
+}
+$got = @{}
+$missing = @()
+foreach ($a in $plan) {
+    $r = Arm $a.id $a.exe $a.pool $a.must ($want -contains $a.id)
+    if ($null -eq $r) { $missing += $a.id } else { $got[$a.id] = $r }
+}
+if ($missing.Count -gt 0) {
+    Say ("arms neither run nor banked: {0} -- NO REPORT WRITTEN. Run them, then invoke with no -Arms to assemble." -f ($missing -join ","))
+    exit 0
+}
+$R = $got["R"]; $P = $got["P"]; $MP = $got["MP"]; $MK = $got["MK"]
 
 $preR = Grp $R.text 'preemptions (\d+)' 1
 $preP = Grp $P.text 'preemptions (\d+)' 1
@@ -250,6 +281,30 @@ $hR = (Get-FileHash -LiteralPath $R.ids).Hash
 $hP = (Get-FileHash -LiteralPath $P.ids).Hash
 $hMP = $(if ($MP.ok -and (Test-Path $MP.ids)) { (Get-FileHash -LiteralPath $MP.ids).Hash } else { "ABORTED" })
 $hMK = $(if ($MK.ok -and (Test-Path $MK.ids)) { (Get-FileHash -LiteralPath $MK.ids).Hash } else { "ABORTED" })
+
+# ▶ THE COMPARISON, RE-DONE WITHOUT THE HASH. A sha256 says SAME or DIFFERENT
+# and nothing else -- it cannot say "differed at the 2,068th id" or "and both
+# still produced all 2,400", and those are the two facts that separate a real
+# result from a truncated arm that hashed differently because it died early.
+# Gate [6] checked this by hand in its report; doing it here makes it part of
+# the artifact, so a re-run reproduces the check instead of the conclusion.
+function IdsOf($path) {
+    return @(Get-Content -LiteralPath $path | Where-Object { $_ -match '^\d+$' })
+}
+function FirstDiff($a, $b) {
+    $n = [math]::Min($a.Count, $b.Count)
+    for ($i = 0; $i -lt $n; $i++) { if ($a[$i] -ne $b[$i]) { return $i + 1 } }
+    if ($a.Count -ne $b.Count) { return $n + 1 }
+    return 0   # identical
+}
+$idR = IdsOf $R.ids
+$idP = IdsOf $P.ids
+$idMP = $(if ($MP.ok) { IdsOf $MP.ids } else { @() })
+$idMK = $(if ($MK.ok) { IdsOf $MK.ids } else { @() })
+$expectIds = $Seqs * $NGen
+$dP = FirstDiff $idR $idP
+$dMP = FirstDiff $idR $idMP
+$dMK = FirstDiff $idR $idMK
 
 # P1: the band, now closed with R's OWN measured adoption.
 $adBlocks = [math]::Floor($adR / 16)
@@ -276,7 +331,6 @@ function Mark($b, $yes, $no) { if ($b) { return $yes } else { return $no } }
 # "FALSIFIED" for two predictions whose bands were arithmetic in n_gen and N; the
 # banner was there and the table still said FALSIFIED. Items that depend on a
 # preemption window this shape cannot open render `n/a` instead.
-$PRESSURED = -not $Quick
 function MarkP($b, $yes, $no) {
     if (-not $PRESSURED) { return "n/a -- ungradeable at this shape" }
     if ($b) { return $yes } else { return $no }
@@ -314,6 +368,22 @@ foreach ($x in @(@{n = "R (reference)"; r = $R; b = "win";             p = "deri
         $(if ($x.h -eq "ABORTED") { "ABORTED" } else { $x.h.Substring(0, 16) }))
 }
 $lines += ""
+$lines += "### The same comparison without the hash"
+$lines += ""
+$lines += "A sha256 says SAME or DIFFERENT and nothing else. This is the id streams read"
+$lines += "back and compared position by position, which is what separates a real DIFFER"
+$lines += "from an arm that merely died early:"
+$lines += ""
+$lines += "| arm | ids produced (expect $expectIds) | first id that differs from R |"
+$lines += "|---|---|---|"
+foreach ($x in @(@{n = "P (pressure)"; c = $idP.Count;  d = $dP },
+                 @{n = "MP (mutant)";  c = $idMP.Count; d = $dMP },
+                 @{n = "MK (mutant)";  c = $idMK.Count; d = $dMK })) {
+    $lines += ("| {0} | {1}{2} | {3} |" -f $x.n, $x.c,
+        $(if ($x.c -eq $expectIds) { "" } else { " **SHORT**" }),
+        $(if ($x.d -eq 0) { "none -- identical" } else { "#$($x.d) of $expectIds" }))
+}
+$lines += ""
 $lines += "## Pre-registered before the first arm ran"
 $lines += ""
 $lines += "| # | prediction | band | measured | result |"
@@ -349,6 +419,11 @@ $lines += "leave the run alive and the output merely wrong: the class ``kv.h`` n
 $lines += "dangerous one, and the class a weaker mutant could not show -- ``skip16`` (16"
 $lines += "backed-but-unwritten positions) was MEASURED SAME on 2026-08-25."
 $lines += ""
+$lines += ("MP's defect is legible in the LEDGER as well as in the stream: it stepped {0}" -f (Grp $MP.text 'rows (\d+)' 1))
+$lines += ("rows against P's {0}, exactly one fewer per preemption. That is the off-by-one" -f (Grp $P.text 'rows (\d+)' 1))
+$lines += "counted rather than argued, and it is also why the mutant is not merely a"
+$lines += "different binary that happened to disagree."
+$lines += ""
 $lines += "## Why the dedup path needed a different window, not a smaller pool"
 $lines += ""
 $lines += "Gate [6] squeezed to 170 with 4 clients and no dedup. The same reasoning at"
@@ -374,6 +449,26 @@ $lines += "| footprint once all $Seqs are admitted, before a token is generated 
 $lines += "| **residency at completion -- R's measured peak** | **$pkR** |"
 $lines += "| squeezed pool | $Pool |"
 $lines += "| P's own peak (it cannot exceed its pool) | $pkP |"
+$lines += ""
+$lines += "## A finding this trace hands over for free: adoption makes PREEMPTION cheap"
+$lines += ""
+$rowsR = Grp $R.text 'rows (\d+)' 1
+$rowsP = Grp $P.text 'rows (\d+)' 1
+$reRows = $rowsP - $rowsR
+$perPre = $(if ($preP -gt 0) { [math]::Round($reRows / $preP, 1) } else { 0 })
+$perAdopt = $(if ($preP -gt 0) { ($adP - $adR) / $preP } else { 0 })
+$lines += "Decode rows are the SAME in both arms -- every request emits its first id from"
+$lines += "its first prefill and a replay re-emits nothing -- so **P's extra rows are"
+$lines += "entirely re-prefill**: $rowsP - $rowsR = **$reRows rows over $preP preemptions = ~$perPre each**."
+$lines += "Each readmission adopted $perAdopt positions (P's adoption total less R's, over the"
+$lines += "same preemptions), so the victim replayed a target of ~$($perPre + $perAdopt) positions and"
+$lines += "**recomputed only $perPre of them**."
+$lines += ""
+$lines += "Prefix dedup is normally argued for at ADMISSION. This measures it at"
+$lines += "PREEMPTION: the re-prefill a victim pays is cut by the whole shared prefix,"
+$lines += "because ``preempt()`` closes the Kv and resets ``n_done`` to 0, so readmission"
+$lines += "arrives at ``kv_adopt_prefix`` as a FRESH sequence -- the one state it accepts."
+$lines += "The victim's blocks came back and the shared ones never left."
 $lines += ""
 $lines += "## What this does NOT cover"
 $lines += ""

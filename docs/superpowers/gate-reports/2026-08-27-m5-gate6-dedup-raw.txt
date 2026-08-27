@@ -1,0 +1,59 @@
+﻿2026-08-27T09:55:59  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup
+2026-08-27T09:55:59  seqs 8 x n 300, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T09:55:59  fixture: prompts 1168,1169,1174,1170,1168,1170,1169,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T09:55:59  exe commit d8e1c34
+2026-08-27T09:55:59  P1 band before adoption: peak = [736,737] - adopted/16
+2026-08-27T09:58:42    R   preempt 0    steps 316   rows 3685   adopted 8064   peak 232  pool derived  (163.2s)
+2026-08-27T09:58:42  arms neither run nor banked: P,MP,MK -- NO REPORT WRITTEN. Run them, then invoke with no -Arms to assemble.
+2026-08-27T09:58:51  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup
+2026-08-27T09:58:51  seqs 8 x n 300, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T09:58:51  fixture: prompts 1168,1169,1174,1170,1168,1170,1169,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T09:58:51  exe commit d8e1c34
+2026-08-27T09:58:51  P1 band before adoption: peak = [736,737] - adopted/16
+2026-08-27T09:58:51    R already banked, skipping
+2026-08-27T10:02:01    P   preempt 2    steps 388   rows 4214   adopted 10368  peak 200  pool 200      (189.2s)
+2026-08-27T10:02:01  arms neither run nor banked: MP,MK -- NO REPORT WRITTEN. Run them, then invoke with no -Arms to assemble.
+2026-08-27T10:02:15  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup
+2026-08-27T10:02:15  seqs 8 x n 300, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T10:02:15  fixture: prompts 1168,1169,1174,1170,1168,1170,1169,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T10:02:15  exe commit d8e1c34
+2026-08-27T10:02:15  P1 band before adoption: peak = [736,737] - adopted/16
+2026-08-27T10:02:15    R already banked, skipping
+2026-08-27T10:02:15    P already banked, skipping
+2026-08-27T10:05:24    MP  preempt 2    steps 388   rows 4212   adopted 10368  peak 200  pool 200      (188.2s)
+2026-08-27T10:08:32    MK  preempt 2    steps 388   rows 4214   adopted 10368  peak 200  pool 200      (188.2s)
+2026-08-27T10:08:32  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-gate6-dedup-report.md
+2026-08-27T10:08:32  VERDICT: dedup-path preempt-losslessness NOT DEMONSTRATED -- R 0 preempt / peak 232, P 2 preempt, adopted 8064->10368, streams IDENTICAL, MP DIFFERS (good), MK DIFFERS (good)
+2026-08-27T10:09:11  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup
+2026-08-27T10:09:11  seqs 8 x n 300, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T10:09:11  fixture: prompts 1168,1169,1174,1170,1168,1170,1169,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T10:09:11  exe commit d8e1c34
+2026-08-27T10:09:11  P1 band before adoption: peak = [736,737] - adopted/16
+2026-08-27T10:09:11    R already banked, skipping
+2026-08-27T10:09:11    P already banked, skipping
+2026-08-27T10:09:11    MP already banked, skipping
+2026-08-27T10:09:11    MK already banked, skipping
+2026-08-27T10:09:11  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-gate6-dedup-report.md
+2026-08-27T10:09:11  VERDICT: dedup-path preempt-losslessness DEMONSTRATED -- R 0 preempt / peak 232, P 2 preempt, adopted 8064->10368, streams IDENTICAL, MP DIFFERS (good), MK DIFFERS (good)
+2026-08-27T10:10:32  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup
+2026-08-27T10:10:32  seqs 8 x n 300, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T10:10:32  fixture: prompts 1168,1169,1174,1170,1168,1170,1169,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T10:10:33  exe commit d8e1c34
+2026-08-27T10:10:33  P1 band before adoption: peak = [736,737] - adopted/16
+2026-08-27T10:10:33    R already banked, skipping
+2026-08-27T10:10:33    P already banked, skipping
+2026-08-27T10:10:33    MP already banked, skipping
+2026-08-27T10:10:33    MK already banked, skipping
+2026-08-27T10:10:33  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-gate6-dedup-report.md
+2026-08-27T10:10:33  VERDICT: dedup-path preempt-losslessness DEMONSTRATED -- R 0 preempt / peak 232, P 2 preempt, adopted 8064->10368, streams IDENTICAL, MP DIFFERS (good), MK DIFFERS (good)
+2026-08-27T10:11:02  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup
+2026-08-27T10:11:02  seqs 8 x n 300, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T10:11:02  fixture: prompts 1168,1169,1174,1170,1168,1170,1169,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T10:11:02  exe commit d8e1c34
+2026-08-27T10:11:02  P1 band before adoption: peak = [736,737] - adopted/16
+2026-08-27T10:11:02    R already banked, skipping
+2026-08-27T10:11:02    P already banked, skipping
+2026-08-27T10:11:02    MP already banked, skipping
+2026-08-27T10:11:02    MK already banked, skipping
+2026-08-27T10:11:03  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-gate6-dedup-report.md
+2026-08-27T10:11:03  VERDICT: dedup-path preempt-losslessness DEMONSTRATED -- R 0 preempt / peak 232, P 2 preempt, adopted 8064->10368, streams IDENTICAL, MP DIFFERS (good), MK DIFFERS (good)
