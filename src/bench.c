@@ -1053,10 +1053,27 @@ static int rows_differ(const f32* a, const f32* b, u64 n) {
     return 0;
 }
 
-/* One (tensor, n_seq) cell: both arms, interleaved, counterbalanced. */
+/* One (tensor, n_seq) cell: THREE arms, interleaved, order rotated per cycle.
+ *
+ * ▶▶ ARM C IS A NULL ARM AND IT EXISTS BECAUSE THE FIRST RUN'S CONTROL FIRED.
+ * At n_seq == 1 there is nothing to alias -- `vec.c` routes to the solo worker
+ * and both arms read one buffer -- so A/B must read 1.00. It read 1.038 on
+ * `ffn_down` (2026-08-27), and the pre-registration's withdrawal condition 3
+ * says no cell is readable until that is EXPLAINED rather than waved away.
+ *
+ * C is a SECOND SET OF DISTINCT BUFFERS: the identical computation to A at
+ * different addresses. A/C therefore measures the harness's own floor --
+ * allocation placement, page colouring, and run-to-run noise -- with the
+ * physics held constant. **A/B only means something to the extent it exceeds
+ * A/C**, and that is a measured floor rather than a band I chose.
+ *
+ * It also gives the cell a check in BOTH directions, which is what makes the
+ * pair trustworthy: C must AGREE with A byte for byte (address changes alone
+ * cannot change an answer) while B must DIFFER. An instrument where both hold
+ * cannot be silently comparing one input with itself. */
 static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
-                       u32 cycles, f32** x, f32** yA, f32** yB, void** aqA,
-                       void** aqB) {
+                       u32 cycles, f32** x, f32** yA, f32** yB, f32** yC,
+                       void** aqA, void** aqB, void** aqC) {
     u64 n_in  = w->dims[0];
     u64 n_out = w->dims[1];
 
@@ -1064,10 +1081,18 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
                     (void* const*)aqA, n_seq };
     BatchCtx cB = { w, (const f32* const*)x, n_in, (f32* const*)yB, n_out,
                     (void* const*)aqB, n_seq };
+    BatchCtx cC = { w, (const f32* const*)x, n_in, (f32* const*)yC, n_out,
+                    (void* const*)aqC, n_seq };
 
-    /* ---- the two power checks, BEFORE anything is timed ---- */
+    /* ---- the power checks, BEFORE anything is timed ---- */
     run_matvec_batch(&cA);
     run_matvec_batch(&cB);
+    run_matvec_batch(&cC);
+    if (rows_differ(yA[0], yC[0], n_out)) {
+        fatal("bench --matvec-batch: the NULL arm disagreed with arm A -- the "
+              "same computation at different addresses returned different "
+              "numbers, so nothing in this table can be trusted");
+    }
     if (n_seq > 1u) {
         if (!rows_differ(yA[0], yA[n_seq - 1u], n_out)) {
             fatal("bench --matvec-batch: the fixture is DEGENERATE -- sequence "
@@ -1084,39 +1109,48 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
 
     double* sa = (double*)xmalloc((size_t)cycles * sizeof(double));
     double* sb = (double*)xmalloc((size_t)cycles * sizeof(double));
-    u32     b_wins = 0;
+    double* sc = (double*)xmalloc((size_t)cycles * sizeof(double));
+    u32     b_wins = 0, c_wins = 0;
     for (u32 c = 0; c < cycles; c++) {
-        double a_ms, b_ms, t0;
-        if ((c & 1u) == 0u) {
-            t0 = now_ms(); run_matvec_batch(&cA); a_ms = now_ms() - t0;
-            t0 = now_ms(); run_matvec_batch(&cB); b_ms = now_ms() - t0;
-        } else {
-            t0 = now_ms(); run_matvec_batch(&cB); b_ms = now_ms() - t0;
-            t0 = now_ms(); run_matvec_batch(&cA); a_ms = now_ms() - t0;
+        double ms[3], t0;
+        /* THE ORDER ROTATES THROUGH ALL THREE POSITIONS. A box warms across a
+         * cycle, so any fixed order charges one arm the warmer slot every
+         * time -- and with three arms alternating is not enough to balance it. */
+        static const u8 rot[3][3] = { {0, 1, 2}, {1, 2, 0}, {2, 0, 1} };
+        const u8*       ord = rot[c % 3u];
+        for (u32 k = 0; k < 3u; k++) {
+            BatchCtx* ctx = (ord[k] == 0u) ? &cA : (ord[k] == 1u) ? &cB : &cC;
+            t0 = now_ms();
+            run_matvec_batch(ctx);
+            ms[ord[k]] = now_ms() - t0;
         }
-        sa[c] = a_ms;
-        sb[c] = b_ms;
-        if (b_ms < a_ms) b_wins++;
+        sa[c] = ms[0];
+        sb[c] = ms[1];
+        sc[c] = ms[2];
+        if (ms[1] < ms[0]) b_wins++;
+        if (ms[2] < ms[0]) c_wins++;
     }
-    /* bench_spread SORTS IN PLACE, so the pairing count above is taken first --
-     * a median hides whether a win is consistent or is one lucky cycle. */
+    /* bench_spread SORTS IN PLACE, so the pairing counts above are taken first
+     * -- a median hides whether a win is consistent or is one lucky cycle. */
     BenchTiming ta = bench_spread(sa, cycles);
     BenchTiming tb = bench_spread(sb, cycles);
+    BenchTiming tc = bench_spread(sc, cycles);
 
     u64    nb   = n_in / KERNELS_Q8_K_BLOCK_ELEMS;
     double actA = (double)nb * (double)KERNELS_Q8_K_BLOCK_BYTES * (double)n_seq;
     double flop = 2.0 * (double)n_in * (double)n_out * (double)n_seq;
     double gfA  = (ta.med_ms > 0.0) ? flop / (ta.med_ms * 1e6) : 0.0;
-    double gfB  = (tb.med_ms > 0.0) ? flop / (tb.med_ms * 1e6) : 0.0;
 
-    printf("  %-10s %5llu x %-6llu %3u  %8.1f  %9.3f %9.3f  %6.3f  %7.2f %7.2f"
-           "   %u/%u\n",
+    printf("  %-10s %5llu x %-6llu %3u  %8.1f  %9.3f %9.3f %9.3f  %6.3f %6.3f"
+           "  %7.2f   %u/%u %u/%u\n",
            label, (unsigned long long)n_in, (unsigned long long)n_out, n_seq,
-           actA / 1024.0, ta.med_ms, tb.med_ms,
-           (tb.med_ms > 0.0) ? ta.med_ms / tb.med_ms : 0.0, gfA, gfB, b_wins,
-           cycles);
+           actA / 1024.0, ta.med_ms, tb.med_ms, tc.med_ms,
+           (tb.med_ms > 0.0) ? ta.med_ms / tb.med_ms : 0.0,
+           (tc.med_ms > 0.0) ? ta.med_ms / tc.med_ms : 0.0, gfA,
+           b_wins, cycles, c_wins, cycles);
     free(sa);
     free(sb);
+    free(sc);
 }
 
 void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
@@ -1125,13 +1159,21 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
         max_seqs = KERNELS_BATCH_TILE;
     }
 
-    GgufFile*   f         = gguf_open(model_path);
-    const char* names[3]  = { "blk.0.attn_q.weight", "blk.0.ffn_gate.weight",
-                              "blk.0.ffn_down.weight" };
-    const char* labels[3] = { "attn_q", "ffn_gate", "ffn_down" };
+    GgufFile* f = gguf_open(model_path);
+    /* ▶ THE LIST IS AN n_in AXIS, not a sample of interesting tensors.
+     * `attn_q` and `ffn_gate` share n_in 2560 with very different n_out, which
+     * separates "contraction length" from "row count"; `attn_out` sits at 4096
+     * and `ffn_down` at 9728. The activation tile a row re-reads is a function
+     * of n_in ALONE, so a hypothesis about it has to move along this axis. */
+#define N_BATCH_TENSORS 4u
+    const char* names[N_BATCH_TENSORS]  = {
+        "blk.0.attn_q.weight", "blk.0.ffn_gate.weight",
+        "blk.0.attn_output.weight", "blk.0.ffn_down.weight" };
+    const char* labels[N_BATCH_TENSORS] = { "attn_q", "ffn_gate", "attn_out",
+                                            "ffn_down" };
 
     u64 n_in_max = 0, n_out_max = 0;
-    for (u32 i = 0; i < 3u; i++) {
+    for (u32 i = 0; i < N_BATCH_TENSORS; i++) {
         const GgufTensor* w = need(f, names[i]);
         if (w->dims[0] > n_in_max)  n_in_max  = w->dims[0];
         if (w->dims[1] > n_out_max) n_out_max = w->dims[1];
@@ -1142,14 +1184,23 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
     f32*  x[KERNELS_BATCH_TILE];
     f32*  yA[KERNELS_BATCH_TILE];
     f32*  yB[KERNELS_BATCH_TILE];
+    f32*  yC[KERNELS_BATCH_TILE];
     void* aqA[KERNELS_BATCH_TILE];
     void* aqB[KERNELS_BATCH_TILE];
-    void* aq_shared = xmalloc((size_t)aq_bytes);
+    void* aqC[KERNELS_BATCH_TILE];
+    /* aq_shared is allocated INSIDE the same loop, at the same point in the
+     * allocation sequence as every other scratch buffer. Hoisting it out put it
+     * at a different offset and page colour from aqA[0], which is a plausible
+     * source of exactly the ~4% the first run's N=1 control reported. */
+    void* aq_shared = NULL;
     for (u32 s = 0; s < KERNELS_BATCH_TILE; s++) {
         x[s]   = (f32*)xmalloc((size_t)n_in_max * sizeof(f32));
         yA[s]  = (f32*)xmalloc((size_t)n_out_max * sizeof(f32));
         yB[s]  = (f32*)xmalloc((size_t)n_out_max * sizeof(f32));
+        yC[s]  = (f32*)xmalloc((size_t)n_out_max * sizeof(f32));
         aqA[s] = xmalloc((size_t)aq_bytes);
+        aqC[s] = xmalloc((size_t)aq_bytes);   /* the NULL arm: distinct again */
+        if (s == 0u) aq_shared = xmalloc((size_t)aq_bytes);
         aqB[s] = aq_shared; /* <-- the entire ablation */
         fill_activation(x[s], n_in_max, s + 1u);
     }
@@ -1170,23 +1221,34 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
     printf("      *** B COMPUTES THE WRONG ANSWER BY CONSTRUCTION *** and each "
            "cell\n");
     printf("      refuses to run if it does not.\n");
+    printf("  C = the NULL arm: a SECOND set of distinct buffers. Same "
+           "computation as A\n");
+    printf("      at different addresses -- it must AGREE with A byte for "
+           "byte, and each\n");
+    printf("      cell refuses to run if it does not. **A/C IS THE HARNESS'S "
+           "OWN FLOOR**\n");
+    printf("      (allocation placement, page colour, run-to-run noise), so "
+           "A/B only\n");
+    printf("      means something to the extent it EXCEEDS A/C.\n");
     printf("\n");
-    printf("  A/B > 1 means the activation RE-READS cost time. A/B ~ 1 means "
+    printf("  A/B > 1 means the activation RE-READS cost time. A/B ~ A/C means "
            "they do not,\n");
     printf("  and the 3.22x kernel gap to llama.cpp is not this.\n");
     printf("\n");
-    printf("  %-10s %-14s %3s  %8s  %9s %9s  %6s  %7s %7s   %s\n", "tensor",
-           "n_in x n_out", "N", "act KiB", "A med ms", "B med ms", "A/B",
-           "A GF/s", "B GF/s", "B won");
-    printf("  %-10s %-14s %3s  %8s  %9s %9s  %6s  %7s %7s   %s\n", "----------",
-           "--------------", "---", "--------", "---------", "---------",
-           "------", "-------", "-------", "-----");
+    printf("  %-10s %-14s %3s  %8s  %9s %9s %9s  %6s %6s  %7s   %s\n", "tensor",
+           "n_in x n_out", "N", "act KiB", "A med ms", "B med ms", "C med ms",
+           "A/B", "A/C", "A GF/s", "B won  C won");
+    printf("  %-10s %-14s %3s  %8s  %9s %9s %9s  %6s %6s  %7s   %s\n",
+           "----------", "--------------", "---", "--------", "---------",
+           "---------", "---------", "------", "------", "-------",
+           "-----  -----");
 
-    for (u32 i = 0; i < 3u; i++) {
+    for (u32 i = 0; i < N_BATCH_TENSORS; i++) {
         const GgufTensor* w = need(f, names[i]);
         warm_tensor(w);
         for (u32 n_seq = 1u; n_seq <= max_seqs; n_seq <<= 1) {
-            batch_cell(w, labels[i], n_seq, cycles, x, yA, yB, aqA, aqB);
+            batch_cell(w, labels[i], n_seq, cycles, x, yA, yB, yC, aqA, aqB,
+                       aqC);
         }
         printf("\n");
     }
@@ -1204,7 +1266,9 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs) {
         free(x[s]);
         free(yA[s]);
         free(yB[s]);
+        free(yC[s]);
         free(aqA[s]);
+        free(aqC[s]);
     }
     free(aq_shared);
     gguf_close(f);

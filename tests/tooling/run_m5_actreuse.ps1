@@ -36,7 +36,7 @@
 #        [-Cycles 12] [-Blocks 3] [-Mask 1]
 # =====================================================================
 param(
-    [int]$Cycles = 12,
+    [int]$Cycles = 24,
     [int]$Blocks = 3,
     [int]$Mask   = 1,
     [string]$Stamp = ""
@@ -81,14 +81,19 @@ Say "cycles $Cycles per arm per cell, $Blocks blocks, affinity mask 0x$('{0:X}' 
 Say "exe commit $(git -C $root rev-parse --short HEAD)"
 Say "pre-registration: $(Split-Path -Leaf $memo)"
 
-$blocks = @()
+$blockFiles = @()
 try {
     (Get-Process -Id $PID).ProcessorAffinity = [IntPtr]$Mask
     for ($b = 1; $b -le $Blocks; $b++) {
-        $out = "$tmp\block$b.txt"
+        # SHAPE-KEYED, so a bank written by a different instrument shape can
+        # never be RESUMED as this run's own. The `a3` is the arm count: the
+        # first version of this ablation had two arms and a different table
+        # width, and its banked blocks are unparseable here rather than
+        # silently half-parsed.
+        $out = "$tmp\b$b-cy$Cycles-a3.txt"
         if (Test-Path $out) {
             $t = Get-Content $out -Raw
-            if ($t -match 'attn_q') { Say "  block $b already banked, skipping"; $blocks += $out; continue }
+            if ($t -match 'attn_q') { Say "  block $b already banked, skipping"; $blockFiles += $out; continue }
         }
         $t0 = Get-Date
         $p = Start-Process -FilePath $exe `
@@ -102,37 +107,41 @@ try {
             throw "STOP: a broken arm must stop, never report a ratio"
         }
         Say "  block $b done (${secs}s)"
-        $blocks += $out
+        $blockFiles += $out
     }
 } finally {
     (Get-Process -Id $PID).ProcessorAffinity = $prev
 }
 
 # ---- parse every block's table into cells -----------------------------------
-# The instrument's row shape:
-#   attn_q      2560 x 4096     16     45.6      3.142     2.980   1.054   ...   7/12
+# The instrument's row shape (three arms):
+#  attn_q   2560 x 4096   16   45.6   4.526  4.341  4.480  1.054 1.010  74.13  31/36 18/36
 $cells = @{}
 $order = @()
-for ($i = 0; $i -lt $blocks.Count; $i++) {
-    foreach ($ln in (Get-Content $blocks[$i])) {
+foreach ($bf in $blockFiles) {
+    foreach ($ln in (Get-Content $bf)) {
         $m = [regex]::Match($ln,
-            '^\s+(\w+)\s+(\d+) x (\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)/(\d+)')
+            '^\s+(\w+)\s+(\d+) x (\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)/(\d+)\s+(\d+)/(\d+)')
         if (-not $m.Success) { continue }
         $key = "{0}|{1}" -f $m.Groups[1].Value, $m.Groups[4].Value
         if (-not $cells.ContainsKey($key)) {
             $cells[$key] = @{ tensor = $m.Groups[1].Value; n_in = [int]$m.Groups[2].Value
                               n_out = [int]$m.Groups[3].Value; n = [int]$m.Groups[4].Value
                               act = [double]$m.Groups[5].Value
-                              a = @(); b = @(); ratio = @(); gfa = @(); won = 0; pairs = 0 }
+                              a = @(); b = @(); cc = @(); ab = @(); ac = @(); gfa = @()
+                              bwon = 0; cwon = 0; pairs = 0 }
             $order += $key
         }
         $c = $cells[$key]
-        $c.a     += [double]$m.Groups[6].Value
-        $c.b     += [double]$m.Groups[7].Value
-        $c.ratio += [double]$m.Groups[8].Value
-        $c.gfa   += [double]$m.Groups[9].Value
-        $c.won   += [int]$m.Groups[11].Value
-        $c.pairs += [int]$m.Groups[12].Value
+        $c.a    += [double]$m.Groups[6].Value
+        $c.b    += [double]$m.Groups[7].Value
+        $c.cc   += [double]$m.Groups[8].Value
+        $c.ab   += [double]$m.Groups[9].Value
+        $c.ac   += [double]$m.Groups[10].Value
+        $c.gfa  += [double]$m.Groups[11].Value
+        $c.bwon += [int]$m.Groups[12].Value
+        $c.pairs += [int]$m.Groups[13].Value
+        $c.cwon += [int]$m.Groups[14].Value
     }
 }
 if ($order.Count -eq 0) { throw "STOP: parsed no cells -- the instrument's table shape moved" }
@@ -145,17 +154,26 @@ function Median($xs) {
 }
 
 # ---- the pre-registered checks ---------------------------------------------
+# ▶ THE FLOOR IS MEASURED, NOT ASSUMED. A/C is the same computation at different
+# addresses, so whatever it reports is what this harness cannot resolve. The
+# ablation's effect is A/B ABOVE that floor, and the floor is reported beside
+# every ratio rather than folded into a band chosen after the fact.
+$floor = 0.0
+foreach ($k in $order) {
+    $d = [math]::Abs((Median $cells[$k].ac) - 1.0)
+    if ($d -gt $floor) { $floor = $d }
+}
 $worst = 0.0; $worstCell = ""
 $ctrlBad = @()
 foreach ($k in $order) {
     $c = $cells[$k]
-    $r = Median $c.ratio
+    $r = Median $c.ab
     if ($c.n -eq 1) {
         if ([math]::Abs($r - 1.0) -gt 0.03) { $ctrlBad += ("{0} N=1 A/B {1:n3}" -f $c.tensor, $r) }
     } elseif ($r -gt $worst) { $worst = $r; $worstCell = "$($c.tensor) N=$($c.n)" }
 }
-$p1 = (Median $cells["attn_q|16"].ratio)
-$p2 = (Median $cells["ffn_down|16"].ratio)
+$p1 = (Median $cells["attn_q|16"].ab)
+$p2 = (Median $cells["ffn_down|16"].ab)
 
 $verdict = "the memory hypothesis is DEAD -- no named lever remains"
 if ($worst -ge 2.0)      { $verdict = "the memory hypothesis IS the gap -- cache-block the row loop" }
@@ -172,20 +190,31 @@ $lines += ""
 $lines += "**A** = ``matvec_batch`` with N distinct activation buffers -- the real case."
 $lines += "**B** = the same call with every activation pointer ALIASED to one buffer:"
 $lines += "same loads, same arithmetic, one cache-resident working set."
-$lines += "**B computes the wrong answer by construction**, and each cell refuses to run"
-$lines += "unless it does AND unless the N activations differ from each other."
+$lines += "**C** = the NULL arm: a SECOND set of distinct buffers -- the same computation"
+$lines += "as A at different addresses. **A/C is the harness's own floor**, measured rather"
+$lines += "than assumed, and A/B only means something to the extent it EXCEEDS it."
+$lines += ""
+$lines += "Each cell refuses to run unless **B differs from A** (the alias took effect),"
+$lines += "**C agrees with A byte for byte** (addresses alone cannot change an answer), and"
+$lines += "**the N activations differ from each other** (or both other checks pass"
+$lines += "vacuously). A broken cell stops the run; it never reports a ratio."
 $lines += ""
 $lines += "``act KiB`` is the activation tile arm A RE-READS FOR EVERY OUTPUT ROW."
 $lines += "**A/B is an upper bound**: a real redesign still has to read each activation once."
 $lines += ""
-$lines += "| tensor | n_in x n_out | N | act KiB | A med ms | B med ms | **A/B** | A GF/s | B won pairings |"
-$lines += "|---|---|---|---|---|---|---|---|---|"
+$lines += "| tensor | n_in x n_out | N | act KiB | A med ms | B med ms | **A/B** | A/C (floor) | A GF/s | B won | C won |"
+$lines += "|---|---|---|---|---|---|---|---|---|---|---|"
 foreach ($k in $order) {
     $c = $cells[$k]
-    $lines += ("| {0} | {1} x {2} | {3} | {4:n1} | {5:n3} | {6:n3} | **{7:n3}** | {8:n2} | {9}/{10} |" -f
+    $lines += ("| {0} | {1} x {2} | {3} | {4:n1} | {5:n3} | {6:n3} | **{7:n3}** | {8:n3} | {9:n2} | {10}/{11} | {12}/{11} |" -f
         $c.tensor, $c.n_in, $c.n_out, $c.n, $c.act,
-        (Median $c.a), (Median $c.b), (Median $c.ratio), (Median $c.gfa), $c.won, $c.pairs)
+        (Median $c.a), (Median $c.b), (Median $c.ab), (Median $c.ac),
+        (Median $c.gfa), $c.bwon, $c.pairs, $c.cwon)
 }
+$lines += ""
+$lines += ("**Measured harness floor: the null arm deviates from A by up to {0:p1} across every cell.**" -f $floor)
+$lines += "An A/B inside that is not an effect. A pairing count near half the cycles is not"
+$lines += "one either, whatever the median says."
 $lines += ""
 $lines += "## The pre-registered predictions"
 $lines += ""
@@ -205,15 +234,54 @@ $lines += ("| A/B >= 2.0 anywhere | the memory hypothesis IS the gap | {0} |" -f
 $lines += ("| A/B in [1.25, 2.0) | real but partial | {0} |" -f $(if ($worst -ge 1.25 -and $worst -lt 2.0) { "**YES**" } else { "no" }))
 $lines += ("| A/B <= 1.15 everywhere | the hypothesis is DEAD | {0} |" -f $(if ($worst -le 1.15) { "**YES**" } else { "no" }))
 $lines += ""
-$lines += "**⇒ $verdict.**"
+$lines += "**=> $verdict.**"
 $lines += ""
 if ($ctrlBad.Count -gt 0) {
-    $lines += "> ⚠ **WITHDRAWAL CONDITION 3 FIRED**: the N=1 control is not 1.00 +- 0.03"
+    $lines += "> !! **WITHDRAWAL CONDITION 3 FIRED**: the N=1 control is not 1.00 +- 0.03"
     $lines += "> ($($ctrlBad -join '; ')). ``vec.c`` routes ``n_seq == 1`` to the solo worker, so"
     $lines += "> there is nothing to alias and this deviation is HARNESS BIAS, not physics."
-    $lines += "> No cell in the table above is readable until it is explained."
+    $lines += "> Read it against the measured floor above before reading any other cell:"
+    $lines += ("> if it sits inside +-{0:p1}, the control is reporting the harness and not the code." -f $floor)
     $lines += ""
 }
+$lines += "## POST-HOC OBSERVATION -- NOT PRE-REGISTERED, NOT GRADED, AND NOT YET A FINDING"
+$lines += ""
+$lines += "The ``A GF/s`` column is the thing the instrument gap was hiding, and it shows"
+$lines += "something the ablation was not looking for. Read the N=16 rows against ``n_in``:"
+$lines += ""
+$lines += "| tensor | n_in | n_out | super-blocks per row | FLOP | weight bytes | A GF/s @ N=16 |"
+$lines += "|---|---|---|---|---|---|---|"
+foreach ($k in $order) {
+    $c = $cells[$k]
+    if ($c.n -ne 16) { continue }
+    $lines += ("| {0} | {1} | {2} | {3} | {4:n0} M | {5:n1} MB | **{6:n2}** |" -f
+        $c.tensor, $c.n_in, $c.n_out, ($c.n_in / 256),
+        (2.0 * $c.n_in * $c.n_out * 16 / 1e6), ($c.n_in / 256 * 144 * $c.n_out / 1e6),
+        (Median $c.gfa))
+}
+$lines += ""
+$lines += "``attn_q`` and ``attn_out`` are TRANSPOSES of each other: identical FLOP, identical"
+$lines += "weight bytes, identical (row x super-block x sequence) body count. So are"
+$lines += "``ffn_gate`` and ``ffn_down``. Within each pair the only thing that differs is the"
+$lines += "LOOP SHAPE -- how many super-blocks sit inside one row -- and the one with more"
+$lines += "of them is much slower."
+$lines += ""
+$lines += "**The activation side is already RULED OUT as the cause by arm B**, which collapses"
+$lines += "the activation working set to 1/N and does not move any of these cells. Whatever"
+$lines += "this is, it is not activation locality, not the activation TLB footprint, and not"
+$lines += "the number of activation streams."
+$lines += ""
+$lines += "!! **AND ITS MAGNITUDE IS NOT PINNED DOWN.** An earlier configuration of this same"
+$lines += "instrument (3 tensors, 2 arms) measured ``ffn_down`` at N=16 at **19.76 GF/s**;"
+$lines += "this one (4 tensors, 3 arms) reads **$('{0:n2}' -f (Median $cells['ffn_down|16'].gfa))**. The A/B RATIO is robust because the arms are"
+$lines += "interleaved inside the timing loop -- the ABSOLUTE rate is not, and it moved by"
+$lines += "1.8x on a harness change alone. **The direction reproduces in both runs; the size"
+$lines += "does not, and nothing should be built on the size until it does.**"
+$lines += ""
+$lines += "Next experiment, and it is cheap: sweep ``n_out`` at fixed ``n_in`` to separate"
+$lines += "weight-cache residency from per-row structure, and re-measure with one tensor per"
+$lines += "process so no earlier tensor can be sitting in L3."
+$lines += ""
 $lines += "## What this measures, and what it does not"
 $lines += ""
 $lines += "- It is an **upper bound**, not a projected speedup. Perfect reuse is unbuildable;"

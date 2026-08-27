@@ -1,0 +1,31 @@
+﻿2026-08-27T12:26:12  activation-reuse ablation. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T12:26:12  cycles 12 per arm per cell, 3 blocks, affinity mask 0x1 (was 0xFFFF)
+2026-08-27T12:26:12  exe commit 1b879a7
+2026-08-27T12:26:12  pre-registration: 2026-08-27-m5-activation-reuse-PREREGISTERED.md
+2026-08-27T12:26:31  activation-reuse ablation. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T12:26:31  cycles 12 per arm per cell, 3 blocks, affinity mask 0x1 (was 0xFFFF)
+2026-08-27T12:26:31  exe commit 1b879a7
+2026-08-27T12:26:31  pre-registration: 2026-08-27-m5-activation-reuse-PREREGISTERED.md
+2026-08-27T12:26:35    block 1 done (4.1s)
+2026-08-27T12:26:40    block 2 done (4.1s)
+2026-08-27T12:26:44    block 3 done (4.2s)
+2026-08-27T12:26:44  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-actreuse-report.md
+2026-08-27T12:26:44  VERDICT: worst A/B 1.058 (ffn_down N=4) -- the memory hypothesis is DEAD -- no named lever remains
+2026-08-27T12:31:18  activation-reuse ablation. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T12:31:18  cycles 24 per arm per cell, 3 blocks, affinity mask 0x1 (was 0xFFFF)
+2026-08-27T12:31:18  exe commit 1b879a7
+2026-08-27T12:31:18  pre-registration: 2026-08-27-m5-activation-reuse-PREREGISTERED.md
+2026-08-27T12:31:34    block 1 done (16.2s)
+2026-08-27T12:31:50    block 2 done (16.2s)
+2026-08-27T12:32:06    block 3 done (16.2s)
+2026-08-27T12:32:07  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-actreuse-report.md
+2026-08-27T12:32:07  VERDICT: worst A/B 1.111 (attn_out N=16) -- the memory hypothesis is DEAD -- no named lever remains
+2026-08-27T12:34:22  activation-reuse ablation. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T12:34:22  cycles 24 per arm per cell, 3 blocks, affinity mask 0x1 (was 0xFFFF)
+2026-08-27T12:34:22  exe commit 1b879a7
+2026-08-27T12:34:22  pre-registration: 2026-08-27-m5-activation-reuse-PREREGISTERED.md
+2026-08-27T12:34:22    block 1 already banked, skipping
+2026-08-27T12:34:22    block 2 already banked, skipping
+2026-08-27T12:34:22    block 3 already banked, skipping
+2026-08-27T12:34:22  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-actreuse-report.md
+2026-08-27T12:34:22  VERDICT: worst A/B 1.111 (attn_out N=16) -- the memory hypothesis is DEAD -- no named lever remains
