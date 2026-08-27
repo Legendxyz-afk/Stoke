@@ -185,6 +185,19 @@ typedef struct {
     u32 n_waiting, n_running;
     u32 n_prefilling;   /* 0 or 1 -- S1 asserts it is never 2                */
     u32 free_blocks;    /* at the last step boundary                         */
+    /* HIGH-WATER MARK of blocks in use, sampled at the moment of MAXIMUM
+     * DEMAND: after every row of a step is backed and after any preemption that
+     * backing forced, and BEFORE the step's retirements hand blocks back.
+     *
+     * ▶ WHY IT IS TAKEN INSIDE sched_step AND NOT BY THE DRIVER. A driver can
+     * only read free_blocks at a step BOUNDARY, which is after retirement -- so
+     * the step that first retires a sequence hides the peak by that sequence's
+     * whole residency, and the number a memory-pressure gate most needs is
+     * exactly the one that sampling would miss. This is what makes "the pool was
+     * squeezed BELOW what the workload needs" a measurement rather than an
+     * arithmetic claim: run the same shape at the derived pool, read the peak,
+     * and every squeezed pool below it is forced to preempt by construction. */
+    u32 peak_blocks_used;
     u64 steps;          /* sched_step calls that carried >= 1 row            */
     u64 preemptions;    /* thrash metric: RECORDED, never gated              */
     /* Of those preemptions, the ones whose victim was the in-flight PREFILL

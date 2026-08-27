@@ -221,6 +221,10 @@ Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host,
     fprintf(stderr, "!! STOKE_MUT_PREEMPT BUILD -- preempt replay is "
                     "DELIBERATELY off by one. Never ship this binary.\n");
 #endif
+#ifdef STOKE_MUT_ADOPT_KV
+    fprintf(stderr, "!! STOKE_MUT_ADOPT_KV BUILD -- the adopted prefix's K/V is "
+                    "DELIBERATELY zeroed. Never ship this binary.\n");
+#endif
     Sched* s = (Sched*)xcalloc(1, sizeof(Sched));
     /* STOKE_SCHED_CHUNK overrides the locked 128, for MEASURING the co-run
      * tradeoff rather than for shipping a different value. A chunk amortises
@@ -527,6 +531,36 @@ static void admit_if_possible(Sched* s) {
         }
         r->n_done = adopted;
         s->st.adopted_positions += adopted;
+#ifdef STOKE_MUT_ADOPT_KV
+        /* ▶▶ A DELIBERATELY WRONG ADOPTION, BUILT ONLY VIA EXTRA_CFLAGS, AND IT
+         * ASKS THE ONE QUESTION EVERY DEDUP GATE RESTS ON: if the adopted blocks
+         * held the WRONG K/V, would a byte-compare of the id streams notice?
+         *
+         * A SAME from this arm means the comparison is powerless over adopted-KV
+         * correctness and the gate around it is testing nothing -- which is not
+         * hypothetical here: the `skip16` mutant (16 backed-but-unwritten
+         * positions) was MEASURED SAME on 2026-08-25, because K = 0 scores
+         * exp(0) against a thousand real keys and greedy argmax does not resolve
+         * it. Zeroing the WHOLE adopted prefix is the version with power.
+         *
+         * It writes through the shared blocks on purpose: adoption is by
+         * refcount, so this damages the donor too, which is exactly the shape of
+         * the failure a preemption-plus-re-adoption path could have.
+         *
+         * It can never be in a shipping binary: nothing defines this macro, the
+         * default build does not, and sched_open's banner makes a mutant
+         * announce itself on every run. */
+        if (adopted > 0) {
+            u32  n_l = kv_n_layer(kv), n_h = kv_n_head_kv(kv);
+            u32  hd = kv_head_dim(kv);
+            f32* z = (f32*)xcalloc(hd, sizeof(f32));
+            for (u32 l = 0; l < n_l; l++)
+                for (u32 h = 0; h < n_h; h++)
+                    for (u32 p = 0; p < adopted; p++)
+                        kv_write(kv, l, h, p, z, z);
+            free(z);
+        }
+#endif
     }
     s->prefilling = r;
 }
@@ -609,6 +643,16 @@ u32 sched_step(Sched* s) {
             n++;
         }
         completes = (pf->n_done + chunk == pf->target) && (pf->n_gen == 0);
+    }
+
+    /* ---- the high-water mark, taken HERE and nowhere else. Every row of this
+     * step is now backed and every preemption that backing forced has happened;
+     * nothing has retired yet. That is the instant of maximum demand, and it is
+     * the one a driver polling at step boundaries cannot see. See SchedStats. */
+    {
+        u32 cap  = bp_capacity(kv_store_pool(s->store));
+        u32 used = cap - kv_store_free_blocks(s->store);
+        if (used > s->st.peak_blocks_used) s->st.peak_blocks_used = used;
     }
 
     if (n == 0) return 0;

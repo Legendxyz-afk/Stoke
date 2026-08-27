@@ -1,0 +1,24 @@
+﻿2026-08-27T09:32:54  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup-quick
+2026-08-27T09:32:54  seqs 2 x n 16, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T09:32:54  fixture: prompts 1168,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T09:32:54  exe commit baf3efe
+2026-08-27T09:32:54  *** -Quick: PLUMBING PRE-FLIGHT, NOT A GATE -- claims 2,4,5,6,7 are ungradeable at this shape ***
+2026-08-27T09:32:54  P1 band before adoption: peak = [148,149] - adopted/16
+2026-08-27T09:33:40    R   preempt 0    steps 26    rows 1215   adopted 1152   peak 76   pool derived  (45.1s)
+2026-08-27T09:34:23    P   preempt 0    steps 26    rows 1215   adopted 1152   peak 76   pool 200      (43.1s)
+2026-08-27T09:35:10    MP  preempt 0    steps 26    rows 1215   adopted 1152   peak 76   pool 200      (47.1s)
+2026-08-27T09:35:53    MK  preempt 0    steps 26    rows 1215   adopted 1152   peak 76   pool 200      (43.1s)
+2026-08-27T09:35:53  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-gate6-dedup-quick-report.md
+2026-08-27T09:35:53  VERDICT: dedup-path preempt-losslessness NOT DEMONSTRATED -- R 0 preempt / peak 76, P 0 preempt, adopted 1152->1152, streams IDENTICAL, MP SAME (bad), MK DIFFERS (good)
+2026-08-27T09:37:26  M5 gate [6] on the SHIPPING DEFAULT -- preempt-lossless with DEDUP ON. stamp 2026-08-27-m5-gate6-dedup-quick
+2026-08-27T09:37:26  seqs 2 x n 16, ctx 1600, threads 8, squeezed pool 200, fixture fanout-hetero, dedup ON
+2026-08-27T09:37:26  fixture: prompts 1168,1169 tokens, common prefix 1162 (72 blocks)
+2026-08-27T09:37:26  exe commit baf3efe
+2026-08-27T09:37:26  *** -Quick: PLUMBING PRE-FLIGHT, NOT A GATE -- claims 2,4,5,6,7 are ungradeable at this shape ***
+2026-08-27T09:37:26  P1 band before adoption: peak = [148,149] - adopted/16
+2026-08-27T09:37:26    R already banked, skipping
+2026-08-27T09:37:26    P already banked, skipping
+2026-08-27T09:37:26    MP already banked, skipping
+2026-08-27T09:37:26    MK already banked, skipping
+2026-08-27T09:37:26  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-gate6-dedup-quick-report.md
+2026-08-27T09:37:26  VERDICT: dedup-path preempt-losslessness NOT GRADED (pre-flight) -- R 0 preempt / peak 76, P 0 preempt, adopted 1152->1152, streams IDENTICAL, MP SAME (bad), MK DIFFERS (good)

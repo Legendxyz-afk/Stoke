@@ -1058,6 +1058,20 @@ static void cmd_bench_serve(int argc, char** argv) {
            (unsigned long long)st.prefill_chunks,
            (unsigned long long)st.preemptions,
            (unsigned long long)st.prefill_yields);
+    /* ▶ WHAT THE WORKLOAD ACTUALLY NEEDED, so a pressure claim stops being an
+     * arithmetic argument. `--pool-blocks` forces preemption by squeezing the
+     * pool below the workload's residency -- but "below" was, until this line,
+     * DERIVED (blocks(prompt+n_gen) per sequence, less whatever adoption
+     * shares), and a derivation is exactly the kind of thing that is wrong by
+     * one block-rounding and reports a gate arm that never pressured anything.
+     * Run the shape once at the derived pool, read the peak, and every squeezed
+     * pool below it is forced to preempt BY MEASUREMENT. The peak is sampled
+     * inside the step at maximum demand, not here -- see SchedStats. */
+    printf("  pool: peak %u of %u blocks used (%.1f%%), %u free at end\n",
+           st.peak_blocks_used, capacity,
+           capacity ? 100.0 * (double)st.peak_blocks_used / (double)capacity
+                    : 0.0,
+           st.free_blocks);
     /* ALWAYS PRINTED WHEN --dedup IS ON, and for `stoke batch --dedup`'s
      * reason: "dedup was enabled" and "dedup fired" are different claims, and a
      * gate that cannot tell them apart passes while testing nothing. The
