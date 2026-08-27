@@ -1,0 +1,7 @@
+﻿2026-08-27T21:56:34  M5 gate [2] -- the bars. stamp 2026-08-27-m5-bars-postq6k
+2026-08-27T21:56:34  cells: 8f32,16f32,8q8,16q8  blocks: 3  threads: 8  ctx: 704  n: 128
+2026-08-27T21:56:34  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T21:56:34    !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless
+2026-08-27T21:56:37    waiting: cpu 27% > 12%
+2026-08-27T21:57:21  QUIESCE GATE PASSED on cpu 9%, 9% (<= 12% twice), standby 0.39 GB
+2026-08-27T21:57:24  BLOCK 1 starting (cpu 11%, standby 0.39 GB)
