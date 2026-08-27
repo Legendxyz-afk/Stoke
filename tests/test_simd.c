@@ -563,3 +563,111 @@ TEST(simd_k_quant_twins_match_scalar_on_a_zero_activation_block) {
     ASSERT_TRUE(s4 == 0.0f);
     ASSERT_TRUE(s6 == 0.0f);
 }
+
+/* ▶▶ THE Q6_K MADDUBS TWIN, AND THIS IS THE FIRST DIRECT TEST ANY `_xn_` KERNEL
+ * HAS HAD. Until now the batched kernels were covered only through
+ * `matvec_batch`'s byte-identity test and the end-to-end gates -- which is real
+ * coverage, but it grades a whole matvec and cannot say WHICH of the two
+ * spellings of a dot product disagreed, or exercise n_seq and n independently.
+ *
+ * Two claims, and the second is the one that makes the first mean anything:
+ *
+ *   1. the maddubs twin equals the reference twin, BIT FOR BIT, for every
+ *      sequence -- which is what licenses shipping it, since simd.h's
+ *      acceptance criterion for an integer path is exactness, not closeness;
+ *   2. BOTH equal the SOLO kernel per sequence -- the `_xn_` contract that
+ *      nothing was checking directly. A batched kernel that agreed with another
+ *      batched kernel while both drifted from the solo one would pass claim 1
+ *      and be wrong.
+ *
+ * The fixture varies n_seq across 1, 2, 3, 8, 15 and 16 rather than just the
+ * tile: 1 exercises the degenerate case, 3 and 15 are not powers of two, and 16
+ * is the tile boundary. `n` covers one, two and three super-blocks plus the
+ * model's real contraction lengths.
+ *
+ * ⚠ THE ACTIVATIONS MUST DIFFER PER SEQUENCE. If every sequence held the same
+ * quantized activation, a kernel that ignored `s` entirely and returned
+ * sequence 0's answer sixteen times would pass every assertion here -- the
+ * project has banked a green fixture that could not see its own defect before
+ * ([[fixture-can-be-blind-to-the-defect]]), and the check below is what makes
+ * this one unable to. */
+TEST(simd_q6_k_xn_maddubs_is_bit_exact_vs_reference_and_solo) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        fprintf(stderr, "FAIL %s:%d: no AVX-VNNI -- the K4 exact-diff gate "
+                        "cannot run on this box\n", __FILE__, __LINE__);
+        g_test_case_failed = 1;
+        return;
+    }
+    static const u64 lens[] = {256, 512, 768, 2560, 9728};
+    static const u32 seqs[] = {1u, 2u, 3u, 8u, 15u, 16u};
+    const u32 n_lens = (u32)(sizeof lens / sizeof lens[0]);
+    const u32 n_seqs = (u32)(sizeof seqs / sizeof seqs[0]);
+    const u32 iters = 600;
+    const u64 nmax = 9728u;
+
+    rng_reset();
+    u8*  w = (u8*)xmalloc((size_t)(nmax / QK_ELEMS) * Q6K_BYTES);
+    f32* x = (f32*)xmalloc((size_t)nmax * sizeof(f32));
+    u8*  aq[KERNELS_BATCH_TILE];
+    const void* aqp[KERNELS_BATCH_TILE];
+    for (u32 s = 0; s < KERNELS_BATCH_TILE; s++) {
+        aq[s] = (u8*)xmalloc((size_t)(nmax / QK_ELEMS) *
+                             KERNELS_Q8_K_BLOCK_BYTES);
+        aqp[s] = aq[s];
+    }
+    f32 got[KERNELS_BATCH_TILE], want[KERNELS_BATCH_TILE];
+
+    u32 mismatch_twin = 0, mismatch_solo = 0, degenerate = 0;
+    for (u32 it = 0; it < iters; it++) {
+        u64 n = lens[it % n_lens];
+        u32 ns = seqs[(it / n_lens) % n_seqs];
+        u64 blocks = n / QK_ELEMS;
+        for (u64 b = 0; b < blocks; b++) fill_q6_k_block(w + b * Q6K_BYTES);
+        for (u32 s = 0; s < ns; s++) fill_q8_k_activation(x, aq[s], n);
+
+        /* ANTI-VACUITY: the sequences must actually differ, or a kernel that
+         * ignored `s` would pass everything below. */
+        if (ns > 1u &&
+            memcmp(aq[0], aq[ns - 1u],
+                   (size_t)blocks * KERNELS_Q8_K_BLOCK_BYTES) == 0) {
+            degenerate++;
+        }
+
+        vec_dot_q6_k_q8_k_xn_avx2(w, aqp, ns, n, want);
+        vec_dot_q6_k_q8_k_xn_maddubs_avx2(w, aqp, ns, n, got);
+
+        for (u32 s = 0; s < ns; s++) {
+            if (!bit_identical(got[s], want[s])) {
+                if (mismatch_twin == 0) {
+                    fprintf(stderr,
+                            "  iter %u n=%llu n_seq=%u s=%u: ref %.9g (0x%08X) "
+                            "vs maddubs %.9g (0x%08X)\n",
+                            it, (unsigned long long)n, ns, s, (double)want[s],
+                            f32_bits(want[s]), (double)got[s],
+                            f32_bits(got[s]));
+                }
+                mismatch_twin++;
+            }
+            /* Claim 2: both batched spellings must equal the SOLO kernel. */
+            f32 solo = vec_dot_q6_k_q8_k_avx2(w, aq[s], n);
+            if (!bit_identical(got[s], solo) ||
+                !bit_identical(want[s], solo)) {
+                if (mismatch_solo == 0) {
+                    fprintf(stderr,
+                            "  iter %u n=%llu n_seq=%u s=%u: solo %.9g vs ref "
+                            "%.9g vs maddubs %.9g\n",
+                            it, (unsigned long long)n, ns, s, (double)solo,
+                            (double)want[s], (double)got[s]);
+                }
+                mismatch_solo++;
+            }
+        }
+    }
+    free(w);
+    free(x);
+    for (u32 s = 0; s < KERNELS_BATCH_TILE; s++) free(aq[s]);
+
+    ASSERT_EQ_U32(degenerate, 0u);
+    ASSERT_EQ_U32(mismatch_twin, 0u);
+    ASSERT_EQ_U32(mismatch_solo, 0u);
+}

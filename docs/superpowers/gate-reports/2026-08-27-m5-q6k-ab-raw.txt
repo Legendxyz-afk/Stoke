@@ -1,0 +1,53 @@
+﻿2026-08-27T15:07:31  Q6_K batched kernel A/B. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T15:07:31  A=ref  B=maddubs  (ONE binary, STOKE_Q6K_KERNEL selects)
+2026-08-27T15:07:31  cycles 24, 4 blocks, tensor ffn_down, affinity 0x1
+2026-08-27T15:07:31  exe commit 3d14f0b
+2026-08-27T15:07:33  refusal check: an unrecognised STOKE_Q6K_KERNEL exits 1 -- a typo cannot silently pick an arm
+2026-08-27T15:07:43    block 1 ref done (9.2s)
+2026-08-27T15:07:45    block 1 maddubs done (2.1s)
+2026-08-27T15:07:47    block 2 maddubs done (2s)
+2026-08-27T15:07:56    block 2 ref done (9.2s)
+2026-08-27T15:08:05    block 3 ref done (9.2s)
+2026-08-27T15:08:07    block 3 maddubs done (2s)
+2026-08-27T15:08:10    block 4 maddubs done (3.1s)
+2026-08-27T15:08:21    block 4 ref done (10.2s)
+2026-08-27T15:08:21  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-ab-report.md
+2026-08-27T15:08:21  VERDICT: B/A at N=16 = 7.68x, control 0.862x, monotone True
+2026-08-27T15:09:45  Q6_K batched kernel A/B. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T15:09:45  A=ref  B=maddubs  (ONE binary, STOKE_Q6K_KERNEL selects)
+2026-08-27T15:09:45  cycles 24, 4 blocks, tensor ffn_down, affinity 0x1
+2026-08-27T15:09:45  exe commit 3d14f0b
+2026-08-27T15:09:46  refusal check: an unrecognised STOKE_Q6K_KERNEL exits 1 -- a typo cannot silently pick an arm
+2026-08-27T15:09:46    block 1 ref already banked, skipping
+2026-08-27T15:09:46    block 1 maddubs already banked, skipping
+2026-08-27T15:09:55    block 1 ref2 done (9.2s)
+2026-08-27T15:10:06    block 2 ref2 done (10.2s)
+2026-08-27T15:10:06    block 2 maddubs already banked, skipping
+2026-08-27T15:10:06    block 2 ref already banked, skipping
+2026-08-27T15:10:06    block 3 ref already banked, skipping
+2026-08-27T15:10:06    block 3 maddubs already banked, skipping
+2026-08-27T15:10:16    block 3 ref2 done (10.2s)
+2026-08-27T15:10:25    block 4 ref2 done (9.3s)
+2026-08-27T15:10:25    block 4 maddubs already banked, skipping
+2026-08-27T15:10:25    block 4 ref already banked, skipping
+2026-08-27T15:10:25  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-ab-report.md
+2026-08-27T15:10:25  VERDICT: B/A at N=16 = 7.68x, control 0.862x, monotone True
+2026-08-27T15:11:12  Q6_K batched kernel A/B. exe M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-27T15:11:12  A=ref  B=maddubs  (ONE binary, STOKE_Q6K_KERNEL selects)
+2026-08-27T15:11:12  cycles 24, 4 blocks, tensor ffn_down, affinity 0x1
+2026-08-27T15:11:12  exe commit 3d14f0b
+2026-08-27T15:11:13  refusal check: an unrecognised STOKE_Q6K_KERNEL exits 1 -- a typo cannot silently pick an arm
+2026-08-27T15:11:13    block 1 ref already banked, skipping
+2026-08-27T15:11:13    block 1 maddubs already banked, skipping
+2026-08-27T15:11:13    block 1 ref2 already banked, skipping
+2026-08-27T15:11:13    block 2 ref2 already banked, skipping
+2026-08-27T15:11:13    block 2 maddubs already banked, skipping
+2026-08-27T15:11:13    block 2 ref already banked, skipping
+2026-08-27T15:11:13    block 3 ref already banked, skipping
+2026-08-27T15:11:13    block 3 maddubs already banked, skipping
+2026-08-27T15:11:13    block 3 ref2 already banked, skipping
+2026-08-27T15:11:13    block 4 ref2 already banked, skipping
+2026-08-27T15:11:13    block 4 maddubs already banked, skipping
+2026-08-27T15:11:13    block 4 ref already banked, skipping
+2026-08-27T15:11:13  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-27-m5-q6k-ab-report.md
+2026-08-27T15:11:13  VERDICT: B/A at N=16 = 7.68x, control 0.862x, monotone True

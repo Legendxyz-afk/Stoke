@@ -194,4 +194,73 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
 void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                                u32 n_seq, u64 n, f32* out);
 
+/* ---- the Q6_K batched kernel, re-formulated on vpmaddubsw -----------------
+ *
+ * ▶▶ WHY IT EXISTS: MEASURED 2026-08-27, THE BATCHED Q6_K KERNEL GOES BACKWARDS.
+ * `stoke bench --matvec-batch`, one tensor per process: every Q4_K tensor CLIMBS
+ * with N (38 -> 70 GF/s) while `ffn_down` (Q6_K) reads 33.42 at N=1 and then
+ * 17.64 / 19.27 / 20.44 / 10.89. The SOLO kernel is fine; batching makes this one
+ * ~2x WORSE where it makes Q4_K ~2x better.
+ *
+ * The reason is density, and it is visible in the source. Per sequence per
+ * super-block, `vec_dot_q4_k_q8_k_xn_avx2` runs 8 iterations of
+ * `vpmaddubsw` + `vpmaddwd` -- 32 int8 products per instruction. The Q6_K twin
+ * above runs 32 iterations of `kq_load_i8x8_to_i32` + `kq_mac8`: it WIDENS i8 to
+ * i32 and does 8 products per operation. Same 256 elements, ~4x the uops -- in
+ * the per-sequence body, which is exactly what batching multiplies by N.
+ *
+ * ▶ WHY vpmaddubsw APPLIES TO Q6_K AT ALL, given its quants are SIGNED.
+ * `vpmaddubsw` takes its first operand UNSIGNED. Q6_K's stored value is a 6-bit
+ * unsigned `u` in [0,63] which the reference offsets to `u - 32`. Keep `u` raw
+ * and carry the offset as a separate term -- exactly the shape Q4_K already uses
+ * for its `mins`:
+ *
+ *     SUM (u-32)*a*s  ==  SUM u*a*s  -  32 * SUM a*s
+ *
+ * and `SUM a` over each 16-element scale group is precisely what Q8_K's `bsums`
+ * already stores (see quantize_row_q8_k). So the second term is one `vpmaddwd`
+ * of the scales against the bsums, and nothing has to be recomputed.
+ *
+ * ▶ BIT-EXACTNESS IS BY CONSTRUCTION, NOT BY TESTING, and the bounds are the
+ * argument. Every term is an integer and integer arithmetic is associative, so
+ * the regrouping is exact PROVIDED nothing overflows:
+ *   - `vpmaddubsw` pairs: 2 * 63 * 127 = 16,002 against i16's 32,767.
+ *   - the following `vpmaddwd` against the scales: 16,002 * 127 * 2 = 4,064,508.
+ *   - accumulated over 8 chunks and 8 lanes: 260,128,512 against i32's 2^31.
+ *   - the bsums term: 127 * 2032 * 2 = 516,128, and 32 * that over 8 lanes is
+ *     132,128,768.
+ * `S_b` is therefore the SAME INTEGER the twin above computes, and the one f32
+ * expression that consumes it is byte-identical -- which is what tests/test_simd.c
+ * asserts directly rather than inheriting from this comment.
+ *
+ * ▶ A 32-BYTE vpmaddubsw SPANS TWO OF Q6_K's SCALE GROUPS, which is the one
+ * structural difference from Q4_K (whose 8 scales over 256 elements line up with
+ * its chunks exactly). Q6_K has 16 scales, so a chunk covers groups 2c and 2c+1;
+ * the following `vpmaddwd` against `[s_2c x8, s_2c+1 x8]` applies each to its own
+ * half, since within a 128-bit lane every scale lane is the same value and
+ * `(a+b)*s == a*s + b*s`.
+ *
+ * DECLARED SEPARATELY AND CALLABLE DIRECTLY, for the reason this header gives at
+ * the top: a dispatching entry point cannot be tested against the thing it
+ * dispatches to. `vec.c` chooses between the two. */
+void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
+                                       const void* const* arows, u32 n_seq,
+                                       u64 n, f32* out);
+
+/* Which Q6_K batched kernel `matvec_batch` dispatches to.
+ *
+ * The COMPILE-TIME default is what ships; `STOKE_Q6K_KERNEL=ref|maddubs`
+ * overrides it at runtime so both arms come from ONE binary in ONE sitting --
+ * the same reasoning `sched.c` gives for `STOKE_SCHED_CHUNK`, and it matters
+ * more here: the 2026-08-24 `vpmulld` ablation had to build its two arms into
+ * equal-length directories because mingw embeds object paths and PE here is not
+ * position-independent, so a longer build directory shifts `.text` and code
+ * layout alone can move a hot loop by a few percent.
+ *
+ * An unrecognised value is REFUSED rather than ignored: a typo that silently
+ * selected the default would make an A/B measure one kernel twice. */
+#ifndef STOKE_Q6K_MADDUBS
+#define STOKE_Q6K_MADDUBS 0
+#endif
+
 #endif /* STOKE_KERNELS_SIMD_H */

@@ -8,6 +8,9 @@
 #include "pool.h"
 #include "simd.h"
 
+#include <stdlib.h> /* getenv -- STOKE_Q6K_KERNEL */
+#include <string.h> /* strcmp -- ditto */
+
 f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
     f32 sum = 0.0f;
     for (u64 i = 0; i < n; i++) {
@@ -170,9 +173,40 @@ static void rows_q4_k_batch_avx2(void* vctx, u64 begin, u64 end) {
                            vec_dot_q4_k_q8_k_xn_avx2);
 }
 
+/* ▶ WHICH Q6_K BATCHED KERNEL, AND WHY THE CHOICE IS A FUNCTION POINTER TAKEN
+ * ONCE PER MATVEC RATHER THAN A BRANCH IN THE LOOP. `rows_kquant_batch_avx2`
+ * already takes the kernel as a parameter, so selecting here costs one call per
+ * matvec and nothing per row, per super-block or per sequence.
+ *
+ * The env var exists so both arms come from ONE binary in ONE sitting -- see
+ * simd.h. Read once into a static, the same shape `kernels_cpu_has_avx_vnni`
+ * already uses, and resolved on the DISPATCHING thread before `pool_for_rows`
+ * hands work to anyone else. An unrecognised value is refused: a typo that
+ * silently selected the default would make an A/B measure one kernel twice. */
+static int g_q6k_maddubs = -1;
+
+static void q6k_select(void) {
+    if (g_q6k_maddubs >= 0) return;
+    const char* e = getenv("STOKE_Q6K_KERNEL");
+    if (e == NULL || e[0] == '\0') {
+        g_q6k_maddubs = STOKE_Q6K_MADDUBS ? 1 : 0;
+    } else if (strcmp(e, "maddubs") == 0) {
+        g_q6k_maddubs = 1;
+    } else if (strcmp(e, "ref") == 0) {
+        g_q6k_maddubs = 0;
+    } else {
+        fatal("kernels: STOKE_Q6K_KERNEL=%s -- want 'ref' or 'maddubs'; an "
+              "unrecognised value is refused rather than ignored, because a "
+              "typo that silently selected the default would make an A/B "
+              "measure one kernel twice",
+              e);
+    }
+}
+
 static void rows_q6_k_batch_avx2(void* vctx, u64 begin, u64 end) {
     rows_kquant_batch_avx2((const BatchRowJob*)vctx, begin, end,
-                           vec_dot_q6_k_q8_k_xn_avx2);
+                           g_q6k_maddubs ? vec_dot_q6_k_q8_k_xn_maddubs_avx2
+                                         : vec_dot_q6_k_q8_k_xn_avx2);
 }
 
 static void rows_q4_k_scalar(void* vctx, u64 begin, u64 end) {
@@ -328,6 +362,9 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
          * predicts N=1 cannot move, so routing it here would risk a change
          * that could only be a bug. */
         if (simd && n_seq > 1u) {
+            /* Resolved HERE, on the dispatching thread, before any worker
+             * exists -- see q6k_select. */
+            if (!is_q4) q6k_select();
             pool_for_rows(n_out, is_q4 ? rows_q4_k_batch_avx2
                                        : rows_q6_k_batch_avx2, &j);
         } else {

@@ -862,6 +862,109 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
 }
 
+/* See simd.h for WHY this exists, why vpmaddubsw applies to a signed quant, and
+ * the overflow bounds that make the regrouping bit-exact rather than merely
+ * close. This file implements it and argues nothing the header already argued.
+ *
+ * The structure is deliberately Q4_K's, line for line where it can be: weight-
+ * only work hoisted to once per row, then a per-sequence body that is nothing
+ * but loads, one vpmaddubsw, one vpmaddwd and an accumulate. */
+void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
+                                       const void* const* arows, u32 n_seq,
+                                       u64 n, f32* out) {
+    if (n % KERNELS_Q6_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q6_k_q8_k_xn_maddubs_avx2 -- n=%llu is not a "
+              "multiple of %u",
+              (unsigned long long)n, KERNELS_Q6_K_BLOCK_ELEMS);
+    }
+    if (n_seq == 0u || n_seq > KERNELS_BATCH_TILE) {
+        fatal("kernels: vec_dot_q6_k_q8_k_xn_maddubs_avx2 -- n_seq=%u outside "
+              "1..%u; the caller tiles",
+              n_seq, KERNELS_BATCH_TILE);
+    }
+    const u8* wb = (const u8*)wrow;
+    u64       nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
+
+    f32 sumf[KERNELS_BATCH_TILE];
+    for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
+
+    /* ▶ THE RAW 6-BIT VALUE, NOT THE OFFSET ONE. This is the only difference
+     * from the twin's `aux8` rebuild: no `- 32`, because vpmaddubsw needs an
+     * UNSIGNED first operand and the offset is carried by the bsums term below.
+     * Element order is identical, so scale group j still covers [16j, 16j+16). */
+    u8      auxu[KERNELS_Q6_K_BLOCK_ELEMS];
+    __m256i scv[KERNELS_Q6_K_BLOCK_ELEMS / 32u]; /* [s_2c x8, s_2c+1 x8], i16 */
+
+    for (u64 i = 0; i < nb; ++i) {
+        const u8* blk = wb + i * KERNELS_Q6_K_BLOCK_BYTES;
+        const u8* ql  = blk;
+        const u8* qh  = blk + 128;
+        const i8* sc  = (const i8*)(blk + 192);
+
+        /* ── WEIGHT-ONLY WORK, ONCE PER ROW. */
+        for (u32 h = 0; h < 2u; ++h) {
+            const u8* q4h = ql + h * 64u;
+            const u8* qhh = qh + h * 32u;
+            u8*       a   = auxu + h * 128u;
+            for (int l = 0; l < 32; ++l) {
+                a[l + 0]  = (u8)((q4h[l + 0] & 0xF) | (((qhh[l] >> 0) & 3) << 4));
+                a[l + 32] = (u8)((q4h[l + 32] & 0xF) | (((qhh[l] >> 2) & 3) << 4));
+                a[l + 64] = (u8)((q4h[l + 0] >> 4) | (((qhh[l] >> 4) & 3) << 4));
+                a[l + 96] = (u8)((q4h[l + 32] >> 4) | (((qhh[l] >> 6) & 3) << 4));
+            }
+        }
+        /* A chunk of 32 elements spans scale groups 2c and 2c+1, and within a
+         * 128-bit lane every scale lane holds the same value -- see simd.h. */
+        for (u32 c = 0; c < KERNELS_Q6_K_BLOCK_ELEMS / 32u; ++c) {
+            const i16 s0 = (i16)sc[2u * c];
+            const i16 s1 = (i16)sc[2u * c + 1u];
+            scv[c] = _mm256_set_epi16(s1, s1, s1, s1, s1, s1, s1, s1,
+                                      s0, s0, s0, s0, s0, s0, s0, s0);
+        }
+        /* The 16 scales as i16, for the bsums term. Weight-only, so hoisted. */
+        const __m256i sc16 = _mm256_cvtepi8_epi16(
+            _mm_loadu_si128((const __m128i*)(const void*)sc));
+
+        u16 draw;
+        memcpy(&draw, blk + 208, sizeof draw);
+        const f32 dw = f16_to_f32(draw);
+
+        /* ── PER-SEQUENCE WORK: two loads, one vpmaddubsw, one vpmaddwd and an
+         * add, eight times -- against the twin's thirty-two widening loads. */
+        for (u32 s = 0; s < n_seq; ++s) {
+            const u8* ablk = (const u8*)arows[s] + i * KERNELS_Q8_K_BLOCK_BYTES;
+            const i8* q8    = (const i8*)(ablk + 4);
+            const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
+            f32       ad;
+            memcpy(&ad, ablk, sizeof ad);
+
+            __m256i acc = _mm256_setzero_si256();
+            for (u32 c = 0; c < KERNELS_Q6_K_BLOCK_ELEMS / 32u; ++c) {
+                __m256i uv = _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(auxu + c * 32u));
+                __m256i av = _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(q8 + c * 32u));
+                /* UNSIGNED first, SIGNED second -- the argument order is load
+                 * bearing, exactly as in the Q4_K twin. */
+                acc = _mm256_add_epi32(
+                    acc, _mm256_madd_epi16(_mm256_maddubs_epi16(uv, av),
+                                           scv[c]));
+            }
+            /* SUM u*a*s */
+            const i32 P = kq_hsum_i32(acc);
+            /* SUM a*s over each scale group, straight out of the bsums. */
+            const i32 M = kq_hsum_i32(_mm256_madd_epi16(
+                sc16,
+                _mm256_loadu_si256((const __m256i*)(const void*)bsums)));
+            /* SUM (u-32)*a*s, the twin's S_b as the SAME INTEGER. */
+            const i32 S_b = P - 32 * M;
+            sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
+        }
+    }
+
+    for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
+}
+
 #else /* !x86-64 */
 
 bool kernels_cpu_has_avx_vnni(void) { return false; }
@@ -935,6 +1038,19 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     (void)n;
     (void)out;
     fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 on a non-x86-64 build -- "
+          "callers must check kernels_cpu_has_avx_vnni() first");
+}
+
+
+void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
+                                       const void* const* arows, u32 n_seq,
+                                       u64 n, f32* out) {
+    (void)wrow;
+    (void)arows;
+    (void)n_seq;
+    (void)n;
+    (void)out;
+    fatal("kernels: vec_dot_q6_k_q8_k_xn_maddubs_avx2 on a non-x86-64 build -- "
           "callers must check kernels_cpu_has_avx_vnni() first");
 }
 
