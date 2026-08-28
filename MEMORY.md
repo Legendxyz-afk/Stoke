@@ -772,6 +772,71 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   Gate reports: `docs/superpowers/gate-reports/2026-08-28-m5-bars-q6k-report.md`,
   `-m5-bars-q6k-ab-report.md`, `2026-08-28-m5-gate3-report.md`.
 
+- **2026-08-28 — M6 STARTED: A1 and A2 are done and gate items [5] and [6] are
+  banked.** M6 is `stoke.h` freeze + server. Rung order and the two claims it
+  rests on: `docs/superpowers/design-notes/2026-08-28-m6-entry.md`; running
+  narrative in `.superpowers/sdd/progress.md` ADDENDUM 24.
+  **A1** (`39e7166`, `f69e224`): the `fatal()` trap, with the thread-local
+  `jmp_buf` and error buffer given **EXTERNAL linkage** — `fatal()` is
+  `static inline` in a header, so trap state kept `static` beside it would give
+  every translation unit its own chain and whether an error was caught or killed
+  the host would depend on which TU raised it. **All 322 call sites unchanged**
+  (the forward note's "~90" was wrong by 3.5x, counted not estimated). `stoke.h`
+  v0 is written, implemented and driven by a real generation in
+  `tests/abi_smoke.c` — and is **NOT frozen**: A7 freezes it, after `server.c`
+  has had the chance to prove it wrong, which is the whole reason the server is
+  built as a CONSUMER of the header rather than a sibling reaching into
+  `sched.h`. Gate [5] banked with a mutation whose signature was not the obvious
+  one: with `extern "C"` removed the C TU still exits 0 and the C++ TU dies at
+  link with **zero "undefined reference" lines on this toolchain** — a check
+  grepping the log for that phrase would have missed it; the signal is the make
+  exit code.
+  **A2** (`e188e5b`, `053c746`): `src/http.c`, the HTTP/1.1 request parser —
+  allocation-free, results are offsets into the caller's buffer, re-parses from
+  the start every call (no partially-advanced machine to desynchronise), and
+  **it never calls `fatal()`**, because everything reaching it is untrusted
+  network bytes and a malformed request is ORDINARY INPUT, not one of the M6
+  split's three classes; a parser that reached for `fatal()` would hand every
+  client on the network a remote process kill. Three framing decisions all
+  REFUSE rather than resolve: `Transfer-Encoding` → 501 by its own pass before
+  Content-Length is even read; a repeated `Content-Length` refused **even when
+  the values agree**; a bare LF accepted while a bare CR is not (safe HERE only
+  because TE is refused outright, so the CL.TE desync has nowhere to happen).
+  And `src/net.c`, the socket shim — the **only** file in the tree that knows
+  whether these are Winsock or POSIX sockets, with `SO_REUSEADDR` set on POSIX
+  and deliberately NOT on Windows (there it lets a *different process* take the
+  port) and 127.0.0.1 as the default bind.
+  **▶▶ GATE ITEM [6] IS BANKED AND IT HAS A MUTATION LEG.** 51 committed files
+  under `tests/data/http_corpus/` (generator `tests/data/make_http_corpus.py`),
+  each carrying its expected verdict **and its expected reason slug** in the
+  FILENAME — sixteen distinct defects answer 400, so a corpus checking only the
+  status would stay green against a parser that rejected all sixteen for one
+  wrong cause. Each file is parsed from a heap buffer of **exactly its length**,
+  because a padded array hides the one-byte over-read the corpus exists to find.
+  All 51 verdicts were right first run — which is when a fixture is least
+  trustworthy — so `tests/tooling/run_m6_http_mutants.sh` runs seven deliberate
+  defects, one per claim, each in its own BUILDDIR: **all seven caught by the
+  corpus**. The mutant's stderr banner **gates the verdict**, because a build
+  that silently dropped the `-D` produces a clean binary and the leg would then
+  report "the corpus did not catch it" about a mutant that was never there.
+  ⚠⚠ **AND THE FIRST BARE_CR MUTANT GRADED NOTHING**: it removed only the
+  bare-cr branch, but 0x0D is also `< 0x20 && != TAB` and the control-char check
+  underneath rejected it anyway — so it proved only that the two REASONS differ
+  while the property it claimed (a bare CR is never ACCEPTED) went untested and
+  the table read GREEN. Caught by reading which corpus file caught it and what
+  it actually said. **A mutation masked by a second check covering the same byte
+  is a mutation that graded nothing.**
+  ⚠ `.gitattributes` gained `tests/data/http_corpus/*.raw -text`: this repo has
+  `core.autocrlf=true` and three fixtures exist to carry a bare LF or a CRLF
+  split across a read boundary — without it git would rewrite those bytes on
+  checkout and each fixture would become a different test under its old name,
+  **on a fresh clone, never in the tree that wrote them**.
+  Green: `mingw32-make test` rc 0 — **16 test binaries** (up from 14:
+  `test_http` 60/60, `test_net` 7/7), `abi_tu`, `abi_tu_cxx`, `abi_smoke`, and
+  all four goldens. **NEXT = A3**, the vertical slice: `/health` +
+  non-streaming `/v1/chat/completions`, with `server.c` including `stoke.h` and
+  `net.h` and nothing else from `src/`; its curl goldens are gate item [2].
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
