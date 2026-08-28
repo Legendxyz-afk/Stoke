@@ -12,3 +12,9 @@ tests/data/parity/*.txt -text
 # Same rule for the W1 validation prompts: their committed oracle JSON
 # captures and ref outputs correspond to these exact bytes.
 tests/tooling/validation/*.txt -text
+# The HTTP garbage corpus IS its bytes. Several fixtures exist precisely to
+# carry a bare LF, a bare CR, or a CRLF split across a read boundary, and eol
+# conversion would rewrite the defect out of them on checkout -- turning a
+# fixture into a different test while its name still claims the old one. The
+# damage would appear only on a fresh clone, never in the tree that wrote them.
+tests/data/http_corpus/*.raw -text

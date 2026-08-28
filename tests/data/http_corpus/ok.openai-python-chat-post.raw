@@ -1,0 +1,14 @@
+POST /v1/chat/completions HTTP/1.1
+Host: localhost:8080
+Accept-Encoding: gzip, deflate
+Connection: keep-alive
+Accept: application/json
+Content-Type: application/json
+User-Agent: OpenAI/Python 1.40.0
+X-Stainless-Lang: python
+X-Stainless-Package-Version: 1.40.0
+X-Stainless-Retry-Count: 0
+Authorization: Bearer sk-not-a-real-key
+Content-Length: 64
+
+{"model":"qwen3-4b","messages":[{"role":"user","content":"hi"}]}
