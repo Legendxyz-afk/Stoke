@@ -712,6 +712,66 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   unsound (`e253d7e`), and what ships is the bit-exact maddubs twin (`650c47c`)
   plus Q6_K on maddubs (`cf0d8eb`).
 
+- **2026-08-28 — M5 CLOSED, tag `m5`. Continuous batching works; the two bars it
+  misses are not scheduler questions.** The scoreboard is SEVEN items, not five:
+  **[1] cancel-safe sim MET · [2] the real bars MISSED, 0.51x · [3] ITL stall
+  MISSED, 2.7x at the smallest legal chunk · [4] S3 fanout MET, 13.535 against
+  13.3 · [5] 1 h ASan+TSan soak MET, 480,874,507 steps and zero findings ·
+  [6] preempt-lossless on the real model MET, and re-MET on the dedup default ·
+  [7] ledger/MEMORY close-out done today.** **[2] AND [3] ARE THE SAME ARITHMETIC
+  WALL, and every scheduler-shaped explanation is dead**: preemptions read 0
+  everywhere, the STATIC batch path clears decode, and serve's decode-only rate
+  sits within 1.6% of it. **The wall is llama's ALGORITHM, not its instructions**
+  — front-end (~40% of emitted instructions to ~7%), port throughput (half the
+  p01 µops to 12.1%) and memory (activation re-reads, killed against a MEASURED
+  7.0% noise floor) were each measured and each dead; what remains is that stoke
+  runs a matrix-VECTOR product N times where tinyBLAS runs a register-blocked
+  matrix-MATRIX product reusing BOTH operands. That is a redesign, M6/M7-sized.
+  **THE ONE LIVE LEVER FOUND IN M5 WAS TAKEN AND PRICED HONESTLY.** An isolated
+  per-tensor table showed the batched Q6_K kernel going BACKWARDS — every Q4_K
+  tensor climbs with N (38→70 GF/s) while `ffn_down` read 33.42 at N=1 then
+  17.64/19.27/20.44/10.89 — because Q4_K does 32 int8 products per `vpmaddubsw`
+  where Q6_K widened i8→i32 for 8, and batching multiplies that body by N.
+  `vec_dot_q6_k_q8_k_xn_maddubs_avx2` is **bit-exact by construction** (keep `u`
+  raw in [0,63], carry −32 on `bsums`; a 32-B chunk spans TWO scale groups) and
+  **7.68x at N=16 on the kernel** — but 7.68x on a kernel is not 7.68x on a
+  token: **1.20x on a prefill token, and 1.2949x end-to-end on gate [2]'s own
+  cell**, the latter from a same-sitting one-binary A/B (ref 6.993/6.962 vs
+  maddubs 9.032/9.038, floor 0.45%, RESOLVED). **The bars went 0.28x/0.27x to
+  0.51x/0.51x and the stall 4.4x to 2.7x, and neither is a pass.** ⚠ **The
+  cross-sitting halves of those moves are NOT attribution and the referent said
+  so**: llama-bench is a fixed third-party binary and ITS OWN numbers moved
+  between sittings — `pp512` 72.24→92.29 (+27.8%) against `tg128` 17.48→18.77
+  (+7.4%), the exact compute-dense-vs-memory-bound split this box's thermal
+  drift produces. The kernel number above is the same-sitting one for that
+  reason. **P1 was FALSIFIED and left standing rather than re-fitted** (the band
+  was mine and wrong — an in-process null floor applied to a between-process
+  ratio), and its successor was NOT SUPPORTED but FLAT: prefill fits
+  `4447 ms/chunk + 4.68 ms/token`, so ~88.6% of it does not care how many tokens
+  ride in a chunk — **which is exactly the term a matrix-MATRIX product
+  amortises, making this rung a down payment on the wall rather than a crack in
+  it.** ⚠ **THE INSTRUMENT FAILED MORE OFTEN THAN THE ENGINE, AGAIN.** A gate
+  runner banked "written and desk-reviewed" turned out never to have PARSED;
+  `[Parser]::ParseFile` is now the standing pre-flight for every .ps1, and it is
+  not sufficient — `-f (if …)` parses clean and dies at runtime. A pre-flight
+  shared the gate's BANK and would have resumed 2-seq units as an 8×300 gate
+  result. A bank keyed by stamp alone would have reported 11/11 GREEN about
+  binaries that no longer existed; **both binaries are now hashed into every
+  bank key, and the same defect was found a third time on 2026-08-28 in the
+  gate [3] cell cache, which still held all five 08-26 cells and would have
+  published them under today's commit as a re-measure.** A null arm was reused
+  one level out and manufactured a falsification: **a null bounds THE ARM IT IS
+  BUILT FROM, must be read PER CELL (30% at the smallest, 1.0% at the largest),
+  and a cell resolves only at 2x its floor.** And the M5 ledger row itself came
+  out reporting a **fabricated 3x regression across all 15 ops** — `bench --ops`
+  is the one path that never calls `pool_start` and so never gets the 2026-08-17
+  EcoQoS opt-out, leaving the project's standing regression instrument the one
+  thread Windows could park on an efficiency core. The opt-out recovers 3.25x
+  and lands the ops ON their M3 values; the row that ships has `rmsnorm`,
+  `rope_neox`, `softmax` and `argmax` **identical** to M3 as its own control.
+  Gate reports: `docs/superpowers/gate-reports/2026-08-28-m5-bars-q6k-report.md`,
+  `-m5-bars-q6k-ab-report.md`, `2026-08-28-m5-gate3-report.md`.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
