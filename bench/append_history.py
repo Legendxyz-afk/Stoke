@@ -474,6 +474,75 @@ def box_sample():
 # ------------------------------------------------------------------ driving
 
 
+def prefer_performance(pid):
+    """Opt one process out of Windows EcoQoS. True/False on Windows, None off it.
+
+    ▶▶ WHY A LEDGER TOOL TOUCHES POWER MANAGEMENT AT ALL. On 2026-08-28 the
+    first M5 row came out reporting every one of 15 ops ~3x slower than the M3
+    rows -- attn_q 1020.9 -> 3069.9 us, and rmsnorm 1.6 -> 7.9 on an op no
+    milestone since M3 has touched. It was not a regression. `bench --ops` is
+    the ONLY path in this project that does not get the 2026-08-17 EcoQoS fix:
+    that fix lives in `thread_prefer_performance()` and is called from
+    `worker_main` and from `pool_start` ("the caller runs chunks too"), and
+    `bench_ops` never calls `pool_start` because the pool is deliberately inert
+    for this measurement. So the one instrument whose whole job is catching
+    regressions was the one thread Windows was free to park on an E-core.
+
+    Measured, A/B, one binary, order ABBA, on the row that was withdrawn:
+
+        op        as-launched   opt-out   recovery   the M3 row it is diffed against
+        attn_q       3038.4 us    936.1     3.25x    1020.9
+        rmsnorm         7.9 us      1.6     4.94x        1.6
+
+    The opt-out does not merely improve the numbers, it lands them ON the M3
+    values -- which is what says the code was never the problem.
+
+    ⚠ AND THE STABILITY GUARD COULD NOT HAVE CAUGHT IT. Throttled runs are
+    stable; they are consistently slow. `ref_gbs` was 21.5 against M3's 21.0,
+    because the reference stream is memory-bound and a frequency cap barely
+    touches it -- which also means %ref normalisation would have made this
+    WORSE, dividing a throttled op by an unthrottled denominator. This is the
+    concrete case the header's decision 1 argues about in the abstract.
+
+    The state is NOT inherited by children (measured the same day: opting this
+    interpreter out left the bench child throttled at 2943 us), so it has to be
+    applied per spawned process, which is why this is here and not in a
+    wrapper.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        class _PPT(ctypes.Structure):
+            _fields_ = [("Version", ctypes.c_ulong),
+                        ("ControlMask", ctypes.c_ulong),
+                        ("StateMask", ctypes.c_ulong)]
+
+        PROCESS_SET_INFORMATION = 0x0200
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
+        ProcessPowerThrottling = 4  # PROCESS_INFORMATION_CLASS
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = k32.OpenProcess(PROCESS_SET_INFORMATION, False, int(pid))
+        if not h:
+            return False
+        try:
+            s = _PPT(PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                     PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+                     0)  # bit CONTROLLED, state 0 == throttling OFF
+            ok = k32.SetProcessInformation(h, ProcessPowerThrottling,
+                                           ctypes.byref(s), ctypes.sizeof(s))
+            return bool(ok)
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        # Best-effort, exactly like pool.c's version: on a Windows without the
+        # entry point the behaviour is what it was before.
+        return False
+
+
 def one_run(exe, model, extra_args):
     """Run the bench once; return (parsed final JSON line, box sidecar).
 
@@ -488,12 +557,21 @@ def one_run(exe, model, extra_args):
     """
     before = box_sample()
     cmd = [exe, "bench", "--ops", model, "--jsonl"] + list(extra_args)
-    r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    # Popen, not subprocess.run: the EcoQoS opt-out has to be applied to a
+    # process that already exists, and run() does not come back until it is
+    # gone. The window between spawn and the call is covered by the 4.3 GB
+    # model load, which happens before anything is timed.
+    p = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True)
+    qos = prefer_performance(p.pid)
+    out, err = p.communicate()
     sidecar = sidecar_delta(before, box_sample())
-    if r.returncode != 0:
+    if qos is not None:
+        sidecar["qos_optout"] = qos
+    if p.returncode != 0:
         raise SystemExit(
-            f"bench failed (rc={r.returncode}):\n{r.stderr.strip()[:2000]}")
-    lines = [ln for ln in r.stdout.splitlines() if ln.strip()]
+            f"bench failed (rc={p.returncode}):\n{err.strip()[:2000]}")
+    lines = [ln for ln in out.splitlines() if ln.strip()]
     if not lines:
         raise SystemExit("bench produced no output")
     try:
@@ -841,8 +919,12 @@ def main():
         sidecars.append(sc)
         load = (f", foreign {sc['foreign_cpu_cores']:.2f} cores"
                 if sc else ", box UNSAMPLED")
+        # Printed per run, not summarised at the end: an opt-out that failed on
+        # run 2 of 3 is the one a reader most needs to see while it is happening.
+        q = "" if sc is None or "qos_optout" not in sc else (
+            ", qos opt-out ON" if sc["qos_optout"] else ", qos opt-out FAILED")
         print(f"  run {i + 1}/{a.runs}: ref {r['ref_gbs']:.2f} GB/s, "
-              f"{len(r['ops'])} ops{load}")
+              f"{len(r['ops'])} ops{load}{q}")
 
     row = build_row(runs, a.label, a.milestone, a.exe, a.model, sidecars)
 
@@ -866,6 +948,24 @@ def main():
               "referent, and may not be quoted against another row:")
         for r in row["box"]["grade_reasons"]:
             print(f"  - {r}")
+
+    # ▶▶ THE THROTTLE GUARD, AND IT IS SEPARATE FROM THE STABILITY GUARD ON
+    # PURPOSE. A throttled run is not an unstable one -- it is consistently
+    # slow, so it sails through every spread check while being ~3x wrong (see
+    # prefer_performance()). Nothing already in this file could have caught the
+    # withdrawn 2026-08-28 row, which is the argument for a guard that asks a
+    # different question: was the opt-out actually applied?
+    qos_states = [sc.get("qos_optout") for sc in (sidecars or [])
+                  if sc is not None and "qos_optout" in sc]
+    if qos_states and not all(qos_states):
+        print("\nTHROTTLE GUARD FAILED -- the EcoQoS opt-out did not apply to "
+              f"{sum(1 for q in qos_states if not q)} of {len(qos_states)} run(s).")
+        print("Windows was free to park bench on an efficiency core, which reads "
+              "as a ~3x\nregression across EVERY op while ref_gbs -- being "
+              "memory-bound -- barely moves.\nThat row would be a fabricated "
+              "regression. Re-run, or pass --force if you accept it.")
+        if not a.force:
+            return 2
 
     if violations:
         print("\nSTABILITY GUARD FAILED -- this box is not measuring "
