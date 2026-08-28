@@ -1,0 +1,62 @@
+﻿2026-08-28T13:07:01  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-28-m5-gate3
+2026-08-28T13:07:01  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-28T13:07:01  exe commit d482807; predictions pre-registered at 23fcb35
+2026-08-28T13:07:01  exe sha256 B1E99988B3C2 -- the cell cache is keyed by it, so a rebuild cannot resume
+2026-08-28T13:09:52    Sd     stall p50  3,869.5  n=56    (2.3% of gaps) | cadence p50  310.2 | pooled p50  310.4 p95   329.7 | 170.9s
+2026-08-28T13:09:52    -MaxCells 1 reached -- Sn and later left for the next invocation
+2026-08-28T13:09:52    -MaxCells 1 reached -- C16 and later left for the next invocation
+2026-08-28T13:09:52    -MaxCells 1 reached -- Sn2 and later left for the next invocation
+2026-08-28T13:09:52    -MaxCells 1 reached -- Sd2 and later left for the next invocation
+2026-08-28T13:09:52  1 of 5 cells banked; still owed: Sn, C16, Sn2, Sd2. NO REPORT until all five are in.
+2026-08-28T13:10:07  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-28-m5-gate3
+2026-08-28T13:10:07  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-28T13:10:07  exe commit d482807; predictions pre-registered at 23fcb35
+2026-08-28T13:10:07  exe sha256 B1E99988B3C2 -- the cell cache is keyed by it, so a rebuild cannot resume
+2026-08-28T13:10:07    Sd already banked, skipping
+2026-08-28T13:16:02    Sn     stall p50  3,324.5  n=280   (11.7% of gaps) | cadence p50  334.0 | pooled p50  336.9 p95 3,433.3 | 355.8s
+2026-08-28T13:16:02    -MaxCells 1 reached -- C16 and later left for the next invocation
+2026-08-28T13:16:02    -MaxCells 1 reached -- Sn2 and later left for the next invocation
+2026-08-28T13:16:02    -MaxCells 1 reached -- Sd2 and later left for the next invocation
+2026-08-28T13:16:03  2 of 5 cells banked; still owed: C16, Sn2, Sd2. NO REPORT until all five are in.
+2026-08-28T13:16:08  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-28-m5-gate3
+2026-08-28T13:16:08  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-28T13:16:08  exe commit d482807; predictions pre-registered at 23fcb35
+2026-08-28T13:16:08  exe sha256 B1E99988B3C2 -- the cell cache is keyed by it, so a rebuild cannot resume
+2026-08-28T13:16:08    Sd already banked, skipping
+2026-08-28T13:16:08    Sn already banked, skipping
+2026-08-28T13:19:02    C16    stall p50    677.7  n=392   (16.4% of gaps) | cadence p50  308.0 | pooled p50  310.4 p95   714.6 | 174.1s
+2026-08-28T13:19:02    -MaxCells 1 reached -- Sn2 and later left for the next invocation
+2026-08-28T13:19:02    -MaxCells 1 reached -- Sd2 and later left for the next invocation
+2026-08-28T13:19:02  3 of 5 cells banked; still owed: Sn2, Sd2. NO REPORT until all five are in.
+2026-08-28T13:19:08  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-28-m5-gate3
+2026-08-28T13:19:08  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-28T13:19:08  exe commit d482807; predictions pre-registered at 23fcb35
+2026-08-28T13:19:08  exe sha256 B1E99988B3C2 -- the cell cache is keyed by it, so a rebuild cannot resume
+2026-08-28T13:19:08    Sd already banked, skipping
+2026-08-28T13:19:08    Sn already banked, skipping
+2026-08-28T13:19:08    C16 already banked, skipping
+2026-08-28T13:25:07    Sn2    stall p50  3,386.2  n=280   (11.7% of gaps) | cadence p50  336.4 | pooled p50  338.9 p95 3,483.5 | 359.6s
+2026-08-28T13:25:07    -MaxCells 1 reached -- Sd2 and later left for the next invocation
+2026-08-28T13:25:07  4 of 5 cells banked; still owed: Sd2. NO REPORT until all five are in.
+2026-08-28T13:25:11  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-28-m5-gate3
+2026-08-28T13:25:11  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-28T13:25:11  exe commit d482807; predictions pre-registered at 23fcb35
+2026-08-28T13:25:11  exe sha256 B1E99988B3C2 -- the cell cache is keyed by it, so a rebuild cannot resume
+2026-08-28T13:25:11    Sd already banked, skipping
+2026-08-28T13:25:11    Sn already banked, skipping
+2026-08-28T13:25:11    C16 already banked, skipping
+2026-08-28T13:25:11    Sn2 already banked, skipping
+2026-08-28T13:28:05    Sd2    stall p50  3,953.5  n=56    (2.3% of gaps) | cadence p50  312.9 | pooled p50  313.0 p95   333.5 | 173.9s
+2026-08-28T13:28:05  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-gate3-report.md
+2026-08-28T13:28:05  VERDICT: **MISS** -- the smallest stall p50 measured is 678 ms = 2.7x the 250 ms bound
+2026-08-28T13:29:13  M5 gate [3] -- decode stall during co-running prefill. stamp 2026-08-28-m5-gate3
+2026-08-28T13:29:13  seqs 8 x n 300, ctx 1600, threads 8, bound 250 ms
+2026-08-28T13:29:13  exe commit d482807; predictions pre-registered at 23fcb35
+2026-08-28T13:29:13  exe sha256 B1E99988B3C2 -- the cell cache is keyed by it, so a rebuild cannot resume
+2026-08-28T13:29:13    Sd already banked, skipping
+2026-08-28T13:29:13    Sn already banked, skipping
+2026-08-28T13:29:13    C16 already banked, skipping
+2026-08-28T13:29:13    Sn2 already banked, skipping
+2026-08-28T13:29:13    Sd2 already banked, skipping
+2026-08-28T13:29:13  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-gate3-report.md
+2026-08-28T13:29:13  VERDICT: **MISS** -- the smallest stall p50 measured is 678 ms = 2.7x the 250 ms bound

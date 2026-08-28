@@ -217,6 +217,22 @@ foreach ($c in $cells) {
 $lines += ""
 $lines += "## The pre-registered predictions, graded"
 $lines += ""
+# ⚠⚠ A RE-GRADE IS NOT A FRESH TEST, AND ON 2026-08-28 THIS TABLE FLIPPED TWO
+# VERDICTS WITHOUT A SINGLE PREDICTION BEING RIGHT OR WRONG ABOUT ANYTHING NEW.
+# The predictions were registered at 23fcb35 against the PRE-MADDUBS binary. Run
+# them against a binary whose decode is ~1.3x faster and a band calibrated on the
+# slower one gets entered or exited by the SYSTEM moving, not by the prediction
+# succeeding: P4 (cadence ~403 ms) went HELD -> FALSIFIED because decode got
+# faster, and P5 (chunk-16 stall 400-800 ms) went FALSIFIED -> HELD for the same
+# reason. Reading the second as a retroactive vindication of P5 would be the
+# 08-27 error -- re-fitting a band to a result -- arriving by the back door.
+$regradeCommit = (git -C $root rev-parse --short HEAD)
+$lines += "⚠ **These were registered at ``23fcb35``. If the binary under test is not the one they"
+$lines += "were registered against (this run: ``$regradeCommit``, exe ``$exeSha``), a verdict below is a"
+$lines += "RE-GRADE, not a fresh test**: a band calibrated on a different binary can be entered or"
+$lines += "exited because the SYSTEM moved. Compare against the run that registered them before"
+$lines += "reading any flip as the prediction being right or wrong."
+$lines += ""
 # ⚠ P3 AND P4 ARE SHAPE-SPECIFIC AND THE PRE-FLIGHT MUST NOT GRADE THEM.
 # P3's bands (~8% / ~27%) are chunks/n_gen at n=300, and P4's 403 ms is the step
 # time at N=8. Run at 2x24 both are "falsified" by arithmetic that has nothing to
