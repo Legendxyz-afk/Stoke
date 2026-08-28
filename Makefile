@@ -130,12 +130,24 @@ LIB_OBJ  := $(patsubst src/%.c,$(BUILDDIR)/%.o,$(LIB_SRC))
 MAIN_OBJ := $(BUILDDIR)/main.o
 STOKE_BIN := $(BUILDDIR)/stoke$(EXE)
 
+# ⚠ DEFINED HERE, ABOVE `all`, NOT BESIDE ITS RULES FURTHER DOWN. A target's
+# prerequisite list is expanded WHEN THE MAKEFILE IS READ, so a variable defined
+# after `all:` expands to nothing there -- `make` then reports success having
+# built neither binary, and `make test` fails with "No such file or directory"
+# on a target it never attempted. Cost one build cycle on 2026-08-28.
+CXX      ?= g++
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -g -O1 -Isrc
+ABI_TU_BIN := $(BUILDDIR)/abi_tu$(EXE) $(BUILDDIR)/abi_tu_cxx$(EXE) $(BUILDDIR)/abi_smoke$(EXE)
+
 .PHONY: all test clean
 
-all: $(TEST_BIN) $(STOKE_BIN)
+all: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN)
 
-test: $(TEST_BIN) $(STOKE_BIN)
+test: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN)
 	$(TSAN_RUN) sh tests/run_tests.sh $(BUILDDIR) $(EXE)
+	$(BUILDDIR)/abi_tu$(EXE) && echo "abi_tu: stoke.h standalone C11 OK"
+	$(BUILDDIR)/abi_tu_cxx$(EXE) && echo "abi_tu_cxx: stoke.h C++ compile+link OK"
+	$(TSAN_RUN) sh tests/abi_smoke.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/golden_info.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/tok_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/tok_special_golden.sh $(BUILDDIR) $(EXE)
@@ -189,6 +201,29 @@ $(BUILDDIR)/kernels/simd.o: src/kernels/simd.c $(HEADERS) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(SIMD_CFLAGS) -c -o $@ $<
 
 $(BUILDDIR)/%$(EXE): tests/%.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
+
+# ---- M6 gate item [5]: stoke.h compiles standalone, as C11 AND as C++ ----
+#
+# These two are NOT named tests/test_*.c on purpose, so the TEST_SRC wildcard
+# does not sweep them into run_tests.sh: neither defines test.h's main(), and
+# the C++ one cannot be compiled by $(CC) at all. They are built and RUN by the
+# `test` target below.
+#
+# The C++ TU LINKS rather than merely compiling. A missing `extern "C"` guard
+# compiles perfectly and fails only at link time, so a compile-only check would
+# pass on the exact defect this exists to catch.
+#
+# -std=c++17 rather than the oldest C++ that works: a host on a modern standard
+# is the common case, and the narrowing and enum rules that catch header
+# mistakes are stricter there.
+$(BUILDDIR)/abi_tu$(EXE): tests/abi_tu.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
+
+$(BUILDDIR)/abi_tu_cxx$(EXE): tests/abi_tu.cpp $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
+
+$(BUILDDIR)/abi_smoke$(EXE): tests/abi_smoke.c $(LIB_OBJ) $(HEADERS) Makefile | $(BUILDDIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LIB_OBJ) $(LIBS)
 
 # tests/test_c_oracle.c is the ONE test that carries AVX2 intrinsics of its
