@@ -80,6 +80,23 @@ void pool_start(u32 n_threads);
 /* Stops all workers and joins them. Safe to call when not started. */
 void pool_stop(void);
 
+/* Opts the CALLING thread out of Windows EcoQoS -- "this is performance work,
+ * do not park it on an efficiency core". A no-op off Windows and best-effort on
+ * it (see pool.c). `pool_start` already does this for the dispatching thread
+ * and every worker, so nothing that runs the engine needs to call it.
+ *
+ * ▶▶ IT IS EXPORTED FOR THE PATHS THAT DELIBERATELY DO NOT START THE POOL, and
+ * that gap was not hypothetical. `bench --ops` is single-threaded ON PURPOSE
+ * (the pool must be inert or its rows stop being comparable to the M3 ones), so
+ * it never called `pool_start` and therefore never got the 2026-08-17 fix --
+ * leaving the project's standing regression instrument the one thread Windows
+ * was free to throttle. On 2026-08-28 it produced a ledger row reporting a 3x
+ * regression across all 15 ops, including `rmsnorm` and `argmax`, which no
+ * milestone since M3 has touched. Opting out recovers 3.25x and lands the ops
+ * on their M3 values. A path that opts out of the POOL is not opting out of
+ * being performance work. */
+void pool_prefer_performance_here(void);
+
 /* Total workers including the caller; 1 when the pool is not started. */
 u32 pool_threads(void);
 

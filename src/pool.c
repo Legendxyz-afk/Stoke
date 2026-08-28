@@ -148,6 +148,8 @@ static void thread_prefer_performance(void) {
 static void thread_prefer_performance(void) {}
 #endif
 
+void pool_prefer_performance_here(void) { thread_prefer_performance(); }
+
 static inline void pool_relax(void) {
 #if defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();

@@ -164,6 +164,9 @@
 #include "bench.h"
 #include "gguf.h"
 #include "kernels/kernels.h"
+/* For pool_prefer_performance_here() only -- the pool itself stays inert here
+ * on purpose, so that these rows remain comparable to the single-thread M3 ones. */
+#include "pool.h"
 /* For KERNELS_BATCH_TILE alone -- `bench --matvec-batch` sizes its per-sequence
  * arrays at the tile the batched path is defined over, and a caller that picks
  * its own number gets to be wrong about it (kernels.h makes the same argument
@@ -715,6 +718,25 @@ static void bench_proj(const GgufFile* f, const char* tensor_name,
 void bench_ops(const char* model_path, u32 reps_override, int jsonl) {
     g_jsonl      = jsonl;
     g_captured_n = 0;
+
+    /* ▶▶ THIS THREAD IS PERFORMANCE WORK, AND SAYING SO IS NOT OPTIONAL HERE.
+     * Everything below is timed on THIS thread -- the pool is deliberately
+     * inert so these rows stay comparable to the M3 ones -- so `pool_start`,
+     * which is where every other path picks up the 2026-08-17 EcoQoS opt-out,
+     * is never called. That left the one instrument whose job is catching
+     * regressions as the one thread Windows could park on an efficiency core,
+     * and on 2026-08-28 it fabricated a 3x regression across all 15 ops:
+     * attn_q 1020.9 -> 3069.9 us, and rmsnorm 1.6 -> 7.9 on an elementwise
+     * scan no milestone since M3 has touched.
+     *
+     * It is invisible to every guard the ledger has, because a throttled run
+     * is not an unstable one -- it is consistently slow, so the spread checks
+     * pass -- and `ref_gbs` barely moves, the reference stream being
+     * memory-bound. Opting out recovers 3.25x and lands the ops ON their M3
+     * values, which is what says the code was never the problem.
+     *
+     * Before the model is opened, so the whole run including load is covered. */
+    pool_prefer_performance_here();
 
     GgufFile* f = gguf_open(model_path);
 
