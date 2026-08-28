@@ -52,16 +52,27 @@
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File tests\tooling\run_m5_bars.ps1
 #              [-Cells 8f32,8q8,16f32,16q8] [-Blocks 3] [-Threads 8]
-#              [-QuietTries 10] [-Stamp <name>]
+#              [-QuietTries 10] [-Stamp <name>] [-Arms S,B,L] [-AllowISLC]
+#
+# -Arms EXISTS SO A SITTING CAN BE DRIVEN ONE UNIT AT A TIME. The 2026-08-26
+# lesson is that a long unattended job on this box gets killed with no message,
+# so gate sittings run FOREGROUND -- and a foreground caller has a wall-clock
+# ceiling well under a 16-seq cell's two arms back to back (505 s + 477 s on
+# 2026-08-20). Slicing by arm keeps every invocation under one unit, and the
+# bank's resume logic makes the chain equivalent to one run: the interleave
+# that matters (S against B inside a cell, cells inside a block) is preserved
+# because the SLICES are issued in that order.
 # =====================================================================
 param(
     [string[]]$Cells      = @("8f32", "16f32", "8q8", "16q8"),
+    [string[]]$Arms       = @("S", "B", "L"),
     [int]$Blocks          = 3,
     [int]$Threads         = 8,
     [int]$Ctx             = 704,
     [int]$NGen            = 128,
     [int]$QuietTries      = 10,
-    [string]$Stamp        = ""
+    [string]$Stamp        = "",
+    [switch]$AllowISLC
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +84,11 @@ $ErrorActionPreference = "Stop"
 # and not a `continue`.
 $Cells = @($Cells | ForEach-Object { $_ -split ',' } |
            ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$Arms  = @($Arms  | ForEach-Object { $_ -split ',' } |
+           ForEach-Object { $_.Trim().ToUpper() } | Where-Object { $_ })
+foreach ($a in $Arms) {
+    if ($a -notin @("S", "B", "L")) { throw "bad arm '$a' -- want S, B or L" }
+}
 
 $root  = "M:\New Drive\Desktop\Programming\stoke"
 $exe   = "$root\build\win\stoke.exe"
@@ -252,9 +268,35 @@ function LlamaCell() {
 
 # ------------------------------------------------------------------- run
 Say "M5 gate [2] -- the bars. stamp $Stamp"
-Say "cells: $($Cells -join ',')  blocks: $Blocks  threads: $Threads  ctx: $Ctx  n: $NGen"
+Say "cells: $($Cells -join ',')  arms: $($Arms -join ',')  blocks: $Blocks  threads: $Threads  ctx: $Ctx  n: $NGen"
 Say "exe: $exe"
-@{ total = ($Cells.Count * $Blocks * 2 + $Blocks); stamp = $Stamp } |
+
+# >> THE BANK IS KEYED BY THE BINARIES, NOT BY THE STAMP ALONE. Unit ids here
+# are `b<block>-<cell>-<arm>` and say nothing about WHAT was measured, so a
+# resume after a rebuild would skip every banked unit and publish a report
+# about binaries that no longer exist -- under the new commit hash, with no
+# stale mtime to notice. That is the 2026-08-27 defect (b) from the Q6_K gate,
+# and it is worse here because this runner's whole purpose is to compare a
+# re-measurement against a banked one. Hash both engines; refuse a bank whose
+# hashes differ.
+$exeSha = (Get-FileHash $exe -Algorithm SHA256).Hash
+$lbSha  = (Get-FileHash $LB  -Algorithm SHA256).Hash
+$prevBin = @(Banked | Where-Object { $_.kind -eq "binaries" })
+if ($prevBin.Count -gt 0) {
+    if ($prevBin[0].exe_sha -ne $exeSha -or $prevBin[0].lb_sha -ne $lbSha) {
+        throw ("bank '$bank' was measured with DIFFERENT binaries " +
+               "(banked exe $($prevBin[0].exe_sha.Substring(0,12)) / lb $($prevBin[0].lb_sha.Substring(0,12)); " +
+               "now exe $($exeSha.Substring(0,12)) / lb $($lbSha.Substring(0,12))). " +
+               "Use a fresh -Stamp -- resuming would report banked units as this binary's.")
+    }
+} else {
+    Bank @{ id = "binaries"; kind = "binaries"; exe = $exe; exe_sha = $exeSha;
+            lb = $LB; lb_sha = $lbSha; utc = (Get-Date -Format s) }
+}
+Say "exe sha256 $($exeSha.Substring(0,12))   llama-bench sha256 $($lbSha.Substring(0,12))"
+
+@{ total = ($Cells.Count * $Blocks * 2 + $Blocks); stamp = $Stamp;
+   exe_sha = $exeSha; lb_sha = $lbSha } |
     ConvertTo-Json -Compress | Out-File -Encoding utf8 $status
 
 # ISLC. The Intelligent Standby List Cleaner purges the standby list on a
@@ -262,10 +304,22 @@ Say "exe: $exe"
 # disk -- and worse, the standby guard below then flags every block as
 # disk-bound and stops meaning anything. Stop it ONCE for a chain and restore
 # it after the last leg (the 08-19 lesson: a leg that restores it purges the
-# cache the NEXT leg depends on). This only WARNS -- stopping someone's
-# program is not a benchmark script's decision to take unattended.
+# cache the NEXT leg depends on).
+#
+# >> IT WAS A WARNING AND THAT WAS NOT ENOUGH. On 2026-08-27 it printed, the
+# run proceeded with its disk-bound guard dead, and the sitting had to be
+# abandoned and its files renamed VOID-ISLC-* by hand so the stamp could not
+# be resumed past the quiesce gate. A guard that announces its own irrelevance
+# and then carries on is a guard that costs two hours. Stopping someone else's
+# program is still not this script's call -- so it STOPS, and -AllowISLC is
+# the deliberate override.
 if (@(Get-Process | Where-Object { $_.Name -match 'ISLC' }).Count -gt 0) {
     Say "  !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless"
+    if (-not $AllowISLC) {
+        throw ("ISLC is running: close it, or pass -AllowISLC to measure anyway " +
+               "(and then do not compare the result to a run taken without it).")
+    }
+    Say "  !! -AllowISLC given -- proceeding with the disk-bound guard DEAD"
 }
 
 # QUIESCE GATE. One sample is not a quiesce check -- the 08-14 harness bug
@@ -313,6 +367,7 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
         $kv   = $m.Groups[2].Value
 
         foreach ($arm in @("S", "B")) {
+            if ($Arms -notcontains $arm) { continue }
             $id = "b$blk-$cell-$arm"
             if (HasUnit $id) { Say "  $id already banked, skipping"; continue }
             $t0 = Get-Date
@@ -327,6 +382,10 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
             $r.id = $id; $r.kind = "cell"; $r.arm = $arm; $r.cell = $cell
             $r.seqs = $seqs; $r.kv = $kv; $r.block = $blk; $r.secs = $secs
             $r.cpu_s = $script:LastCpuS; $r.cpu_busy = (CpuBusy)
+            # PER UNIT, NOT PER RUN. Sliced by -Arms this script is invoked once
+            # per unit, so "the quiesce gate passed" is a fact about ONE unit's
+            # start conditions and belongs on that unit's record.
+            $r.quiesced = $quiesced
             $r.standby_gb = (StandbyGB); $r.utc = (Get-Date -Format s)
             Bank $r
             Say ("  {0,-14} {1,8:n3} tok/s   ({2}s wall, {3}s cpu)" -f $id, $r.gate, $secs, $r.cpu_s)
@@ -334,7 +393,7 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
     }
 
     $id = "b$blk-L"
-    if (-not (HasUnit $id)) {
+    if (($Arms -contains "L") -and -not (HasUnit $id)) {
         $t0 = Get-Date
         $r = LlamaCell
         $secs = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
@@ -344,7 +403,8 @@ for ($blk = 1; $blk -le $Blocks; $blk++) {
         } else {
             $r.id = $id; $r.kind = "cell"; $r.arm = "L"; $r.cell = "llama"
             $r.block = $blk; $r.secs = $secs; $r.cpu_s = $script:LastCpuS
-            $r.cpu_busy = (CpuBusy); $r.standby_gb = (StandbyGB); $r.utc = (Get-Date -Format s)
+            $r.cpu_busy = (CpuBusy); $r.quiesced = $quiesced
+            $r.standby_gb = (StandbyGB); $r.utc = (Get-Date -Format s)
             Bank $r
             Say ("  {0,-14} tg {1,7:n3}  pp {2,7:n3} tok/s  ({3}s)" -f $id, $r.gate, $r.pp, $secs)
         }
@@ -513,10 +573,21 @@ $lines += "Any block whose standby cache summed under the 2.33 GB model was read
 $lines += "model from DISK and is not comparable; all three buckets are summed (the"
 $lines += "Normal-only guard cried wolf on 3/3 good blocks on 2026-08-18). If the raw log"
 $lines += "carries an ISLC warning, read the standby column as unavailable rather than low."
+# EVERY QUIESCE RECORD, NOT THE FIRST. Sliced by -Arms the gate runs once per
+# invocation, so `$q[0]` is the first slice's start condition and a failure in
+# slice 7 would publish under a PASSED banner. The units carry their own
+# `quiesced` flag; name the ones that were measured noisy.
 $q = @(Banked | Where-Object { $_.kind -eq "quiesce" })
-if ($q.Count -gt 0 -and $q[0].passed -ne $true) {
+$qBad = @($q | Where-Object { $_.passed -ne $true })
+$noisy = @($all | Where-Object { $_.quiesced -eq $false } | ForEach-Object { $_.id })
+if ($qBad.Count -gt 0) {
     $lines += ""
-    $lines += "**THE QUIESCE GATE DID NOT PASS.** Every absolute rate here is INDICATIVE."
+    $lines += ("**THE QUIESCE GATE DID NOT PASS on {0} of {1} invocation(s).**" -f $qBad.Count, $q.Count)
+    if ($noisy.Count -gt 0) {
+        $lines += ("Units measured without it: ``{0}`` -- their absolute rates are INDICATIVE." -f ($noisy -join '`, `'))
+    } else {
+        $lines += "No banked unit carries ``quiesced: false``, so the failures fell on invocations that measured nothing."
+    }
 }
 $lines | Out-File -Encoding utf8 $report
 Say "report: $report"

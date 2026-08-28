@@ -1,0 +1,29 @@
+﻿2026-08-28T11:21:22  M5 gate [2] -- the bars. stamp PREFLIGHT-2026-08-28-m5-bars
+2026-08-28T11:21:22  cells: 8f32  arms: L  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:21:22  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:21:22  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T11:21:23    waiting: cpu 19% > 12%
+2026-08-28T11:21:43    waiting: cpu 15% > 12%
+2026-08-28T11:22:28  QUIESCE GATE PASSED on cpu 10%, 10% (<= 12% twice), standby 1.69 GB
+2026-08-28T11:22:31  BLOCK 1 starting (cpu 8%, standby 1.69 GB)
+2026-08-28T11:23:26    b1-L           tg  16.890  pp  92.290 tok/s  (51.8s)
+2026-08-28T11:23:26  all blocks done -- writing report
+2026-08-28T11:23:27  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\PREFLIGHT-2026-08-28-m5-bars-report.md
+2026-08-28T11:23:41  M5 gate [2] -- the bars. stamp PREFLIGHT-2026-08-28-m5-bars
+2026-08-28T11:23:41  cells: 8f32  arms: L  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:23:41  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:23:41  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T11:23:41    waiting: cpu 13% > 12%
+2026-08-28T11:24:05  !! QUIESCE GATE NOT MET after 1 tries -- last reads 13%, standby 4.25 GB.
+2026-08-28T11:24:05  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-28T11:24:09  BLOCK 1 starting (cpu 13%, standby 4.25 GB)
+2026-08-28T11:24:09  all blocks done -- writing report
+2026-08-28T11:24:09  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\PREFLIGHT-2026-08-28-m5-bars-report.md
+2026-08-28T11:24:24  M5 gate [2] -- the bars. stamp PREFLIGHT-2026-08-28-m5-bars
+2026-08-28T11:24:24  cells: 8f32  arms: L  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:24:24  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:24:43  M5 gate [2] -- the bars. stamp PREFLIGHT-2026-08-28-m5-bars
+2026-08-28T11:24:43  cells: 8f32  arms: L  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:24:43  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:24:44  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T11:24:44    !! ISLC IS RUNNING -- standby readings and the disk-bound guard are meaningless

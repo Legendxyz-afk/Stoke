@@ -1,0 +1,3 @@
+﻿{"id":"binaries","exe_sha":"B1E99988B3C2122A2E03644BE66F05F754FA3D2E2E58511C118E4AD5B7A4097F","exe":"M:\\New Drive\\Desktop\\Programming\\stoke\\build\\win\\stoke.exe","lb_sha":"1AFC0B22E21FF652E77E62D143A45FD6DA0F224D39D01D529036656C6F6BAA21","kind":"binaries","utc":"2026-08-28T11:21:22","lb":"M:\\New Drive\\Desktop\\Programming\\stoke\\bench\\vendor\\llama-b10037\\llama-bench.exe"}
+{"id":"quiesce","passed":true,"reads":[19,15,10,10],"kind":"quiesce","utc":"2026-08-28T11:22:28","standby_gb":1.69}
+{"id":"b1-L","block":1,"cpu_busy":22,"cpu_s":361.8,"kind":"cell","pp":92.29,"secs":51.8,"utc":"2026-08-28T11:23:26","quiesced":true,"standby_gb":4.25,"arm":"L","cell":"llama","gate":16.89}
