@@ -61,7 +61,12 @@ ifeq ($(OS),Windows_NT)
   # asking for a hard minimum working set. See map_pin() in src/gguf.c -- the
   # privilege is held but DISABLED by default, and without it the request is
   # refused and the model gets trimmed out from under a running decode.
-  LIBS += -ladvapi32
+  #
+  # ws2_32: the winsock 2 entry points src/net.c calls (WSAStartup, socket,
+  # closesocket, ioctlsocket, getaddrinfo...). Added at M6 rung A2. On POSIX
+  # these live in libc and there is nothing to link, which is one more thing
+  # src/net.h exists to keep out of every other file.
+  LIBS += -ladvapi32 -lws2_32
 else
   PLAT := linux
   EXE  :=
