@@ -26,6 +26,7 @@ param(
     [int]$Seqs    = 8,
     [int]$Threads = 8,
     [int]$Ctx     = 1600,
+    [int]$MaxCells = 99,
     [switch]$Quick
 )
 
@@ -39,7 +40,19 @@ $gr    = "$root\docs\superpowers\gate-reports"
 $BOUND = 250.0
 
 if ($Quick) { $NGen = 24; $Seqs = 2 }
-$SHAPE = "s${Seqs}n${NGen}"
+
+# >> THE SHAPE KEY MUST CARRY THE BINARY, AND ON 2026-08-28 IT DID NOT.
+# Cells resume from `$tmp\<id>-<SHAPE>.txt`, and every s8n300 cell from the
+# 2026-08-26 sitting was still sitting there. Re-running after the Q6_K default
+# flipped would have printed "already banked, skipping" five times and emitted a
+# report dated today, under today's commit, made entirely of numbers measured by
+# a binary WITHOUT the kernel being gated -- a re-measure that re-measured
+# nothing and said so nowhere. Same defect as the Q6_K gate's (b): a stale
+# binary has an mtime you can look at, a stale cache does not. The staleness
+# check below compares the exe against SOURCE and is blind to this, because
+# nothing about the exe is wrong -- the CACHE is from a different one.
+$exeSha   = (Get-FileHash $exe -Algorithm SHA256).Hash.Substring(0, 12)
+$SHAPE = "s${Seqs}n${NGen}-$exeSha"
 $Stamp = "{0}-m5-gate3{1}" -f (Get-Date -Format "yyyy-MM-dd"),
                               $(if ($Quick) { "-quick" } else { "" })
 $log    = "$gr\$Stamp-raw.txt"
@@ -121,6 +134,7 @@ function Cell($id, $dedup, $chunk) {
 Say "M5 gate [3] -- decode stall during co-running prefill. stamp $Stamp"
 Say "seqs $Seqs x n $NGen, ctx $Ctx, threads $Threads, bound $BOUND ms"
 Say "exe commit $(git -C $root rev-parse --short HEAD); predictions pre-registered at 23fcb35"
+Say "exe sha256 $exeSha -- the cell cache is keyed by it, so a rebuild cannot resume"
 if ($Quick) { Say "*** -Quick: NOT a gate ***" }
 
 $cells = @(
@@ -130,8 +144,40 @@ $cells = @(
     @{ id = "Sn2";  dedup = $false; chunk = 0  },
     @{ id = "Sd2";  dedup = $true;  chunk = 0  }
 )
+# >> HOW MANY CELLS THIS INVOCATION MAY RUN, so the sitting can be driven
+# FOREGROUND (2026-08-26: long unattended jobs on this box get killed with no
+# message). Cells ran 272-574 s on 2026-08-26, so five back to back is well past
+# a foreground caller's ceiling. The per-cell cache already makes the chain
+# equivalent to one run, and the PALINDROME survives because the order of the
+# invocations is the order of the cells.
+#
+# ⚠ AND THE REPORT IS NOT WRITTEN UNTIL EVERY CELL IS IN. A partial `$res` would
+# make `V "Sd2"` return $null, and every mean, ratio and verdict built from it
+# would come out as a tidy-looking number about cells that were never measured.
 $res = @{}
-foreach ($c in $cells) { $res[$c.id] = Cell $c.id $c.dedup $c.chunk }
+$ran = 0
+foreach ($c in $cells) {
+    $cached = $false
+    $out = "$tmp\$($c.id)-$SHAPE.txt"
+    if (Test-Path $out) {
+        $tc = Get-Content $out -Raw
+        if ($tc -and (Grp $tc 'ITL\s+stall\s+p50\s+([\d.]+)' 1)) { $cached = $true }
+    }
+    if (-not $cached) {
+        if ($ran -ge $MaxCells) {
+            Say "  -MaxCells $MaxCells reached -- $($c.id) and later left for the next invocation"
+            continue
+        }
+        $ran++
+    }
+    $res[$c.id] = Cell $c.id $c.dedup $c.chunk
+}
+$missing = @($cells | Where-Object { -not $res.ContainsKey($_.id) -or $null -eq $res[$_.id] })
+if ($missing.Count -gt 0) {
+    Say ("{0} of {1} cells banked; still owed: {2}. NO REPORT until all five are in." -f
+         ($cells.Count - $missing.Count), $cells.Count, (($missing | ForEach-Object { $_.id }) -join ", "))
+    return
+}
 
 function V($id, $re, $i) { return (Grp $res[$id] $re $i) }
 $reStallP50 = 'ITL\s+stall\s+p50\s+([\d.]+)'
@@ -152,6 +198,9 @@ $lines = @()
 $lines += "# M5 gate item [3] -- the decode stall during co-running prefill"
 $lines += ""
 $lines += "Run ``$Stamp``. S3, $Seqs clients x $NGen generated, ctx $Ctx, threads $Threads, kv f32."
+# THE BINARY IS A PROPERTY THE WHOLE COMPARISON RESTS ON, so it is printed INTO
+# the artifact rather than left in the raw log ([[fixture-can-be-blind-to-the-defect]]).
+$lines += ("Binary ``stoke.exe`` sha256 ``{0}``; the per-cell resume cache is keyed by it." -f $exeSha)
 $lines += "Bound **$BOUND ms**. Graded on the ``ITL stall`` line per the 2026-08-26 ruling"
 $lines += '(`memos/2026-08-26-m5-gate3-criterion-RULING-OPUS.md`); predictions pre-registered'
 $lines += "at ``23fcb35`` BEFORE this run. Raw ``$Stamp-raw.txt``."

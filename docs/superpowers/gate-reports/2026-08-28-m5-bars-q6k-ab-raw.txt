@@ -1,0 +1,35 @@
+﻿2026-08-28T12:52:29  M5 gate [2] cell -- Q6_K kernel A/B. stamp 2026-08-28-m5-bars-q6k-ab
+2026-08-28T12:52:29  exe sha256 B1E99988B3C2  commit b4311c4
+2026-08-28T12:52:29  cell: seqs 8, ctx 704, n 128, kv f32, --no-dedup, threads 8
+2026-08-28T12:52:30  SWITCH PROVEN LIVE: an unrecognised value is refused (exit 1)
+2026-08-28T12:52:51  QUIESCE GATE PASSED on cpu 12%, 11%
+2026-08-28T12:55:32    u1-ref          6.993 tok/s   (161s wall, 1098.4s cpu)
+2026-08-28T12:55:32    -Units 1 reached -- u2-maddubs and later left for the next invocation
+2026-08-28T12:55:32  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-ab-report.md
+2026-08-28T12:55:43  M5 gate [2] cell -- Q6_K kernel A/B. stamp 2026-08-28-m5-bars-q6k-ab
+2026-08-28T12:55:43  exe sha256 B1E99988B3C2  commit b4311c4
+2026-08-28T12:55:43  cell: seqs 8, ctx 704, n 128, kv f32, --no-dedup, threads 8
+2026-08-28T12:55:43  SWITCH PROBE already banked for this binary, skipping
+2026-08-28T12:55:43    waiting: cpu 15% > 12%
+2026-08-28T12:56:04    waiting: cpu 16% > 12%
+2026-08-28T12:56:24    waiting: cpu 18% > 12%
+2026-08-28T12:56:44    waiting: cpu 13% > 12%
+2026-08-28T12:57:26  QUIESCE GATE PASSED on cpu 10%, 12%
+2026-08-28T12:57:26    u1-ref already banked, skipping
+2026-08-28T12:59:31    u2-maddubs      9.032 tok/s   (124.8s wall, 829.9s cpu)
+2026-08-28T13:01:36    u3-maddubs      9.038 tok/s   (124.8s wall, 829.9s cpu)
+2026-08-28T13:01:36    -Units 2 reached -- u4-ref and later left for the next invocation
+2026-08-28T13:01:36  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-ab-report.md
+2026-08-28T13:01:41  M5 gate [2] cell -- Q6_K kernel A/B. stamp 2026-08-28-m5-bars-q6k-ab
+2026-08-28T13:01:41  exe sha256 B1E99988B3C2  commit b4311c4
+2026-08-28T13:01:41  cell: seqs 8, ctx 704, n 128, kv f32, --no-dedup, threads 8
+2026-08-28T13:01:41  SWITCH PROBE already banked for this binary, skipping
+2026-08-28T13:01:41    waiting: cpu 18% > 12%
+2026-08-28T13:02:02    waiting: cpu 24% > 12%
+2026-08-28T13:02:22    waiting: cpu 26% > 12%
+2026-08-28T13:03:02  QUIESCE GATE PASSED on cpu 11%, 9%
+2026-08-28T13:03:02    u1-ref already banked, skipping
+2026-08-28T13:03:02    u2-maddubs already banked, skipping
+2026-08-28T13:03:03    u3-maddubs already banked, skipping
+2026-08-28T13:05:44    u4-ref          6.962 tok/s   (161.4s wall, 1103.9s cpu)
+2026-08-28T13:05:44  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-ab-report.md

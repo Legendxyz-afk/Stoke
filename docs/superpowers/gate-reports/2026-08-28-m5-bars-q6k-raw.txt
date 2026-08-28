@@ -1,0 +1,172 @@
+﻿2026-08-28T11:46:09  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T11:46:09  cells: 8f32  arms: S  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:46:09  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:46:09  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T11:46:10    waiting: cpu 34% > 12%
+2026-08-28T11:46:30    waiting: cpu 14% > 12%
+2026-08-28T11:47:14  QUIESCE GATE PASSED on cpu 4%, 6% (<= 12% twice), standby 4.84 GB
+2026-08-28T11:47:17  BLOCK 1 starting (cpu 11%, standby 4.84 GB)
+2026-08-28T11:49:27    b1-8f32-S         8.960 tok/s   (126s wall, 827.7s cpu)
+2026-08-28T11:49:27  all blocks done -- writing report
+2026-08-28T11:49:27  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T11:49:34  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T11:49:34  cells: 8f32  arms: B  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:49:34  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:49:34  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T11:49:55    waiting: cpu 30% > 12%
+2026-08-28T11:50:35    waiting: cpu 14% > 12%
+2026-08-28T11:50:56    waiting: cpu 16% > 12%
+2026-08-28T11:51:16    waiting: cpu 13% > 12%
+2026-08-28T11:51:39  !! QUIESCE GATE NOT MET after 6 tries -- last reads 16%, 13%, standby 4.87 GB.
+2026-08-28T11:51:39  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-28T11:51:43  BLOCK 1 starting (cpu 13%, standby 4.87 GB)
+2026-08-28T11:53:51    b1-8f32-B        32.396 tok/s   (124.8s wall, 816.5s cpu)
+2026-08-28T11:53:51  all blocks done -- writing report
+2026-08-28T11:53:51  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T11:56:44  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T11:56:44  cells: 16f32  arms: S  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T11:56:44  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T11:56:44  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T11:56:44    waiting: cpu 15% > 12%
+2026-08-28T11:57:28  QUIESCE GATE PASSED on cpu 11%, 11% (<= 12% twice), standby 4.87 GB
+2026-08-28T11:57:31  BLOCK 1 starting (cpu 16%, standby 4.87 GB)
+2026-08-28T12:01:41    b1-16f32-S        8.691 tok/s   (246.3s wall, 1636.8s cpu)
+2026-08-28T12:01:41  all blocks done -- writing report
+2026-08-28T12:01:41  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:01:46  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:01:46  cells: 16f32  arms: B  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T12:01:46  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:01:47  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:01:47    waiting: cpu 13% > 12%
+2026-08-28T12:02:31  QUIESCE GATE PASSED on cpu 8%, 7% (<= 12% twice), standby 4.87 GB
+2026-08-28T12:02:35  BLOCK 1 starting (cpu 6%, standby 4.87 GB)
+2026-08-28T12:06:49    b1-16f32-B       34.344 tok/s   (249.8s wall, 1659.1s cpu)
+2026-08-28T12:06:49  all blocks done -- writing report
+2026-08-28T12:06:49  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:06:53  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:06:53  cells: 8f32,16f32  arms: L  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-28T12:06:53  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:06:53  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:06:54    waiting: cpu 30% > 12%
+2026-08-28T12:07:38  QUIESCE GATE PASSED on cpu 9%, 6% (<= 12% twice), standby 4.87 GB
+2026-08-28T12:07:41  BLOCK 1 starting (cpu 12%, standby 4.87 GB)
+2026-08-28T12:08:30    b1-L           tg  18.730  pp  91.400 tok/s  (45.1s)
+2026-08-28T12:08:30  all blocks done -- writing report
+2026-08-28T12:08:30  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:08:39  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:08:39  cells: 8f32  arms: S,B  blocks: 2  threads: 8  ctx: 704  n: 128
+2026-08-28T12:08:39  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:08:39  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:09:00    waiting: cpu 19% > 12%
+2026-08-28T12:09:44  QUIESCE GATE PASSED on cpu 7%, 10% (<= 12% twice), standby 4.87 GB
+2026-08-28T12:09:47  BLOCK 1 starting (cpu 13%, standby 4.87 GB)
+2026-08-28T12:09:47    b1-8f32-S already banked, skipping
+2026-08-28T12:09:47    b1-8f32-B already banked, skipping
+2026-08-28T12:09:50  BLOCK 2 starting (cpu 14%, standby 4.87 GB)
+2026-08-28T12:11:59    b2-8f32-S         9.029 tok/s   (125.3s wall, 834.4s cpu)
+2026-08-28T12:14:06    b2-8f32-B        32.713 tok/s   (124.1s wall, 820.8s cpu)
+2026-08-28T12:14:06  all blocks done -- writing report
+2026-08-28T12:14:07  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:14:13  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:14:13  cells: 16f32  arms: S  blocks: 2  threads: 8  ctx: 704  n: 128
+2026-08-28T12:14:13  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:14:13  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:14:34    waiting: cpu 13% > 12%
+2026-08-28T12:15:14    waiting: cpu 39% > 12%
+2026-08-28T12:15:55    waiting: cpu 24% > 12%
+2026-08-28T12:16:19  !! QUIESCE GATE NOT MET after 6 tries -- last reads 9%, 24%, standby 7.96 GB.
+2026-08-28T12:16:19  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-28T12:16:22  BLOCK 1 starting (cpu 12%, standby 7.99 GB)
+2026-08-28T12:16:22    b1-16f32-S already banked, skipping
+2026-08-28T12:16:26  BLOCK 2 starting (cpu 15%, standby 8 GB)
+2026-08-28T12:20:41    b2-16f32-S        8.501 tok/s   (251.8s wall, 1660.4s cpu)
+2026-08-28T12:20:41  all blocks done -- writing report
+2026-08-28T12:20:41  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:20:46  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:20:46  cells: 16f32  arms: B  blocks: 2  threads: 8  ctx: 704  n: 128
+2026-08-28T12:20:46  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:20:47  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:20:47    waiting: cpu 18% > 12%
+2026-08-28T12:21:31  QUIESCE GATE PASSED on cpu 11%, 9% (<= 12% twice), standby 5.86 GB
+2026-08-28T12:21:35  BLOCK 1 starting (cpu 8%, standby 5.86 GB)
+2026-08-28T12:21:35    b1-16f32-B already banked, skipping
+2026-08-28T12:21:38  BLOCK 2 starting (cpu 12%, standby 5.85 GB)
+2026-08-28T12:25:50    b2-16f32-B       34.445 tok/s   (248.3s wall, 1659.6s cpu)
+2026-08-28T12:25:50  all blocks done -- writing report
+2026-08-28T12:25:50  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:25:55  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:25:55  cells: 8f32,16f32  arms: L  blocks: 2  threads: 8  ctx: 704  n: 128
+2026-08-28T12:25:55  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:25:55  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:26:19  QUIESCE GATE PASSED on cpu 12%, 9% (<= 12% twice), standby 5.88 GB
+2026-08-28T12:26:22  BLOCK 1 starting (cpu 48%, standby 5.87 GB)
+2026-08-28T12:26:26  BLOCK 2 starting (cpu 10%, standby 5.99 GB)
+2026-08-28T12:27:14    b2-L           tg  18.780  pp  93.310 tok/s  (44.5s)
+2026-08-28T12:27:14  all blocks done -- writing report
+2026-08-28T12:27:14  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:27:20  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:27:20  cells: 8f32  arms: S,B  blocks: 3  threads: 8  ctx: 704  n: 128
+2026-08-28T12:27:20  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:27:20  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:27:41    waiting: cpu 16% > 12%
+2026-08-28T12:28:01    waiting: cpu 15% > 12%
+2026-08-28T12:28:21    waiting: cpu 18% > 12%
+2026-08-28T12:28:42    waiting: cpu 15% > 12%
+2026-08-28T12:29:02    waiting: cpu 24% > 12%
+2026-08-28T12:29:26  !! QUIESCE GATE NOT MET after 6 tries -- last reads 15%, 24%, standby 6.32 GB.
+2026-08-28T12:29:26  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-28T12:29:29  BLOCK 1 starting (cpu 21%, standby 6.32 GB)
+2026-08-28T12:29:29    b1-8f32-S already banked, skipping
+2026-08-28T12:29:29    b1-8f32-B already banked, skipping
+2026-08-28T12:29:32  BLOCK 2 starting (cpu 7%, standby 6.32 GB)
+2026-08-28T12:29:32    b2-8f32-S already banked, skipping
+2026-08-28T12:29:32    b2-8f32-B already banked, skipping
+2026-08-28T12:29:36  BLOCK 3 starting (cpu 11%, standby 6.32 GB)
+2026-08-28T12:31:47    b3-8f32-S         8.810 tok/s   (128.4s wall, 852.6s cpu)
+2026-08-28T12:33:55    b3-8f32-B        32.572 tok/s   (123.7s wall, 822.9s cpu)
+2026-08-28T12:33:55  all blocks done -- writing report
+2026-08-28T12:33:55  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:33:59  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:33:59  cells: 16f32  arms: S  blocks: 3  threads: 8  ctx: 704  n: 128
+2026-08-28T12:33:59  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:33:59  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:34:00    waiting: cpu 15% > 12%
+2026-08-28T12:34:40    waiting: cpu 13% > 12%
+2026-08-28T12:35:01    waiting: cpu 13% > 12%
+2026-08-28T12:35:21    waiting: cpu 13% > 12%
+2026-08-28T12:35:41    waiting: cpu 16% > 12%
+2026-08-28T12:36:05  !! QUIESCE GATE NOT MET after 6 tries -- last reads 13%, 16%, standby 6.35 GB.
+2026-08-28T12:36:05  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-28T12:36:08  BLOCK 1 starting (cpu 10%, standby 6.35 GB)
+2026-08-28T12:36:08    b1-16f32-S already banked, skipping
+2026-08-28T12:36:12  BLOCK 2 starting (cpu 13%, standby 6.35 GB)
+2026-08-28T12:36:12    b2-16f32-S already banked, skipping
+2026-08-28T12:36:15  BLOCK 3 starting (cpu 5%, standby 6.35 GB)
+2026-08-28T12:40:31    b3-16f32-S        8.485 tok/s   (252.3s wall, 1684.4s cpu)
+2026-08-28T12:40:31  all blocks done -- writing report
+2026-08-28T12:40:31  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:40:35  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:40:35  cells: 16f32  arms: B  blocks: 3  threads: 8  ctx: 704  n: 128
+2026-08-28T12:40:35  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:40:35  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:41:00  QUIESCE GATE PASSED on cpu 12%, 7% (<= 12% twice), standby 5.87 GB
+2026-08-28T12:41:03  BLOCK 1 starting (cpu 23%, standby 5.86 GB)
+2026-08-28T12:41:03    b1-16f32-B already banked, skipping
+2026-08-28T12:41:07  BLOCK 2 starting (cpu 1%, standby 5.87 GB)
+2026-08-28T12:41:07    b2-16f32-B already banked, skipping
+2026-08-28T12:41:11  BLOCK 3 starting (cpu 11%, standby 5.86 GB)
+2026-08-28T12:45:22    b3-16f32-B       34.115 tok/s   (248.4s wall, 1654.4s cpu)
+2026-08-28T12:45:22  all blocks done -- writing report
+2026-08-28T12:45:23  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md
+2026-08-28T12:45:27  M5 gate [2] -- the bars. stamp 2026-08-28-m5-bars-q6k
+2026-08-28T12:45:27  cells: 8f32,16f32  arms: L  blocks: 3  threads: 8  ctx: 704  n: 128
+2026-08-28T12:45:27  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-28T12:45:27  exe sha256 B1E99988B3C2   llama-bench sha256 1AFC0B22E21F
+2026-08-28T12:45:48    waiting: cpu 15% > 12%
+2026-08-28T12:46:32  QUIESCE GATE PASSED on cpu 0%, 11% (<= 12% twice), standby 5.88 GB
+2026-08-28T12:46:36  BLOCK 1 starting (cpu 7%, standby 5.88 GB)
+2026-08-28T12:46:39  BLOCK 2 starting (cpu 4%, standby 5.88 GB)
+2026-08-28T12:46:42  BLOCK 3 starting (cpu 13%, standby 5.88 GB)
+2026-08-28T12:47:30    b3-L           tg  18.770  pp  92.290 tok/s  (44.8s)
+2026-08-28T12:47:30  all blocks done -- writing report
+2026-08-28T12:47:31  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-28-m5-bars-q6k-report.md

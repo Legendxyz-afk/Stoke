@@ -1,0 +1,5 @@
+﻿{"id":"switch-probe","exe_sha":"B1E99988B3C2122A2E03644BE66F05F754FA3D2E2E58511C118E4AD5B7A4097F","exit":1,"kind":"probe","utc":"2026-08-28T12:52:30","refused":true}
+{"ttft50":75825,"id":"u1-ref","kind":"unit","arm":"ref","cpu_s":1098.4,"exe_sha":"B1E99988B3C2122A2E03644BE66F05F754FA3D2E2E58511C118E4AD5B7A4097F","cpu_busy":10,"itl50":325.3,"quiesced":true,"secs":161,"utc":"2026-08-28T12:55:32","gate":6.993}
+{"ttft50":59103,"id":"u2-maddubs","kind":"unit","arm":"maddubs","cpu_s":829.9,"exe_sha":"B1E99988B3C2122A2E03644BE66F05F754FA3D2E2E58511C118E4AD5B7A4097F","cpu_busy":14,"itl50":246,"quiesced":true,"secs":124.8,"utc":"2026-08-28T12:59:31","gate":9.032}
+{"ttft50":58942,"id":"u3-maddubs","kind":"unit","arm":"maddubs","cpu_s":829.9,"exe_sha":"B1E99988B3C2122A2E03644BE66F05F754FA3D2E2E58511C118E4AD5B7A4097F","cpu_busy":16,"itl50":245.5,"quiesced":true,"secs":124.8,"utc":"2026-08-28T13:01:36","gate":9.038}
+{"ttft50":75852,"id":"u4-ref","kind":"unit","arm":"ref","cpu_s":1103.9,"exe_sha":"B1E99988B3C2122A2E03644BE66F05F754FA3D2E2E58511C118E4AD5B7A4097F","cpu_busy":19,"itl50":326.8,"quiesced":true,"secs":161.4,"utc":"2026-08-28T13:05:44","gate":6.962}
