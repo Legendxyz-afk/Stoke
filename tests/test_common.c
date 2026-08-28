@@ -3,6 +3,8 @@
  */
 #include "common.h"
 
+#include "gguf.h" /* for the cross-translation-unit trap test only */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +30,140 @@ static int fatal_child_main(int argc, char** argv) {
 }
 #define TEST_CHILD_MAIN fatal_child_main
 #include "test.h"
+
+/* ---- the fatal() trap (M6) ----
+ *
+ * The spawn-self test at the bottom of this file is the other half of these
+ * and it is the one that must never be deleted: it proves that with NO trap
+ * armed fatal() still exits(1) with "fatal: " on stderr. Everything below
+ * proves the armed path, and the pair is what says the trap is additive.
+ */
+static void raise_via_fatal(void) { fatal("trapped %d", 7); }
+
+TEST(trap_catches_fatal_and_captures_the_message) {
+    StokeTrap t;
+    int caught = 0;
+    stoke_trap_push(&t);
+    if (STOKE_TRAP_ARMED(t)) {
+        raise_via_fatal();
+        ASSERT_TRUE(0 && "fatal() returned to its caller");
+        stoke_trap_pop(&t);
+    } else {
+        caught = 1;
+    }
+    ASSERT_EQ_I64(caught, 1);
+    ASSERT_EQ_STR(stoke_errmsg, "trapped 7");
+    /* fatal() disarms BEFORE jumping, so nothing is left armed on this thread. */
+    ASSERT_TRUE(stoke_trap_top == NULL);
+}
+
+TEST(trap_pop_on_the_success_path_leaves_nothing_armed) {
+    StokeTrap t;
+    int ran = 0;
+    stoke_trap_push(&t);
+    if (STOKE_TRAP_ARMED(t)) {
+        ran = 1;
+        stoke_trap_pop(&t);
+    }
+    ASSERT_EQ_I64(ran, 1);
+    ASSERT_TRUE(stoke_trap_top == NULL);
+}
+
+/* NESTING IS NOT DECORATION: stoke_open will arm a trap and call code that
+ * arms its own. If the inner catch left the chain wrong, the OUTER trap would
+ * either be lost (next failure kills the host) or double-popped. */
+TEST(inner_trap_catches_and_the_outer_one_survives) {
+    StokeTrap outer, inner;
+    int inner_caught = 0, outer_intact = 0;
+    stoke_trap_push(&outer);
+    if (STOKE_TRAP_ARMED(outer)) {
+        stoke_trap_push(&inner);
+        if (STOKE_TRAP_ARMED(inner)) {
+            raise_via_fatal();
+        } else {
+            inner_caught = 1;
+        }
+        outer_intact = (stoke_trap_top == &outer);
+        stoke_trap_pop(&outer);
+    }
+    ASSERT_EQ_I64(inner_caught, 1);
+    ASSERT_EQ_I64(outer_intact, 1);
+    ASSERT_TRUE(stoke_trap_top == NULL);
+}
+
+/* THE ALLOCATORS MUST ROUTE THROUGH THE TRAP TOO, and this is the cheap
+ * deterministic proof: xcalloc's OVERFLOW branch calls fatal() without
+ * attempting a huge allocation, so the test costs nothing and does not depend
+ * on the box being out of memory. If the x* family ever stops going through
+ * the fatal() choke point, stoke_open's OOM path silently becomes an abort. */
+TEST(xcalloc_overflow_is_trappable_not_fatal) {
+    StokeTrap t;
+    int caught = 0;
+    stoke_trap_push(&t);
+    if (STOKE_TRAP_ARMED(t)) {
+        void* p = xcalloc(SIZE_MAX, 2);
+        ASSERT_TRUE(p == NULL && "xcalloc overflow returned instead of failing");
+        stoke_trap_pop(&t);
+    } else {
+        caught = 1;
+    }
+    ASSERT_EQ_I64(caught, 1);
+    ASSERT_TRUE(strstr(stoke_errmsg, "xcalloc") != NULL);
+}
+
+/* ⚠⚠ THE ONE ABOVE ALL PASS EVEN IF THE TRAP STATE IS WRONG, AND THIS IS THE
+ * ONE THAT DOES NOT. Every test so far arms the trap and raises the fatal() in
+ * THIS translation unit, so they cannot distinguish the shipped design
+ * (external linkage, one chain per thread) from the bug it was written to
+ * avoid (a `static` beside the inline fatal(), giving every .c its own chain).
+ * In one TU both spellings behave identically and the whole suite stays green
+ * while `stoke_open` silently aborts its host for any failure raised inside
+ * gguf.c, model.c or tok.c -- which is every failure that matters.
+ *
+ * So this one arms the trap HERE and raises it THERE: gguf_open() on a path
+ * that does not exist fatals inside gguf.c, a different object file. It is the
+ * only test in this file whose result depends on src/common.c existing.
+ *
+ * VERIFIED BY MUTATION, and the mutant's signature is worth knowing because it
+ * is not a clean FAIL line. Replacing the extern declarations with per-TU
+ * statics: 10 tests pass -- including the same-TU trap test
+ * `volatile_local_survives_the_longjmp`, which is the whole point -- and then
+ * the binary DIES here, exit 1, with
+ *   `fatal: gguf: cannot open './definitely-not-a-real-model-file.gguf' ...`
+ * on stderr and no "tests passed" line at all, because gguf.c's own copy of
+ * fatal() found a NULL chain and called exit(). The remaining trap tests are
+ * never reached. A harness that only greps for "FAIL" would call that a pass;
+ * run_tests.sh catches it on the exit code. */
+TEST(a_fatal_raised_in_another_translation_unit_is_trapped) {
+    StokeTrap t;
+    int caught = 0;
+    stoke_trap_push(&t);
+    if (STOKE_TRAP_ARMED(t)) {
+        GgufFile* f = gguf_open("./definitely-not-a-real-model-file.gguf");
+        ASSERT_TRUE(f == NULL && "gguf_open returned for a missing file");
+        stoke_trap_pop(&t);
+    } else {
+        caught = 1;
+    }
+    ASSERT_EQ_I64(caught, 1);
+    ASSERT_TRUE(strstr(stoke_errmsg, "gguf") != NULL);
+    ASSERT_TRUE(stoke_trap_top == NULL);
+}
+
+/* A volatile local survives the longjmp; this is the shape stoke_open's
+ * partial-construction cleanup depends on, asserted so the requirement is
+ * executable rather than a comment in common.h. */
+TEST(volatile_local_survives_the_longjmp) {
+    StokeTrap t;
+    volatile int stage = 0;
+    stoke_trap_push(&t);
+    if (STOKE_TRAP_ARMED(t)) {
+        stage = 1;
+        raise_via_fatal();
+        stoke_trap_pop(&t);
+    }
+    ASSERT_EQ_I64(stage, 1);
+}
 
 TEST(typedefs_have_expected_sizes) {
     ASSERT_TRUE(sizeof(u8) == 1);
