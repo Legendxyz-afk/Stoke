@@ -40,12 +40,19 @@ golden_lib_require_data_file "$suite" "serve_openai" "suite"
 py="bench/.venv-openai/Scripts/python.exe"
 [ -x "$py" ] || py="bench/.venv-openai/bin/python"
 if [ ! -x "$py" ]; then
-    if [ "${STOKE_REQUIRE_GOLDEN:-0}" = "1" ]; then
-        echo "serve_openai: FAILED -- bench/.venv-openai is missing but" \
-             "STOKE_REQUIRE_GOLDEN=1 (this box is supposed to have it; a" \
-             "missing venv must not silently downgrade this gate to a no-op)." \
-             "Recreate it with:  python -m venv bench/.venv-openai &&" \
-             "bench/.venv-openai/Scripts/pip install openai" >&2
+    # ⚠ ESCALATES ON STOKE_REQUIRE_OPENAI, NOT STOKE_REQUIRE_GOLDEN, and the
+    # distinction is not pedantry. REQUIRE_GOLDEN means "this box has the real
+    # model, so a missing one is a moved file rather than a fresh clone" -- and
+    # scripts/wsl-check.sh sets it for the Linux legs of the matrix. A venv is
+    # NOT like a model: it is per-interpreter and per-platform, so the Windows
+    # one is legitimately absent under WSL and escalating there would fail the
+    # matrix over a file that is not supposed to exist. The Windows gate run
+    # sets REQUIRE_OPENAI instead, which keeps "the venv quietly vanished" a
+    # failure exactly where the venv is supposed to be.
+    if [ "${STOKE_REQUIRE_OPENAI:-0}" = "1" ]; then
+        echo "serve_openai: FAILED -- no openai venv found but" \
+             "STOKE_REQUIRE_OPENAI=1. Recreate it with:  python -m venv" \
+             "bench/.venv-openai && bench/.venv-openai/Scripts/pip install openai" >&2
         exit 1
     fi
     echo "serve_openai: SKIP -- bench/.venv-openai not present (gitignored;" \

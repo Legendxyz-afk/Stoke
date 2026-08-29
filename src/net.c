@@ -26,6 +26,16 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+/* ⚠ select() AND ITS fd_set LIVE HERE ON POSIX, AND ONLY HERE. On Windows
+ * <winsock2.h> hands over select, fd_set, FD_ZERO/SET/ISSET and struct timeval
+ * together, so net_wait() compiled on the Windows leg from the day it was
+ * written (M6 rung A3) and did not compile on Linux ONCE -- for six commits,
+ * because every build in that stretch was a Windows build. The whole point of
+ * this file is to be the one place that knows which platform this is; a
+ * portability hole in it is worth more than a comment, so: sys/select.h for
+ * select and fd_set, sys/time.h for struct timeval. */
+#include <sys/select.h>
+#include <sys/time.h>
 #include <unistd.h>
 #define SOCKH(s_) ((int)(s_))
 #endif

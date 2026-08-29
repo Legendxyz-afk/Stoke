@@ -142,7 +142,23 @@ STOKE_BIN := $(BUILDDIR)/stoke$(EXE)
 # on a target it never attempted. Cost one build cycle on 2026-08-28.
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -g -O1 -Isrc
-ABI_TU_BIN := $(BUILDDIR)/abi_tu$(EXE) $(BUILDDIR)/abi_tu_cxx$(EXE) $(BUILDDIR)/abi_smoke$(EXE)
+
+# ⚠ THE C++ TU IS OPTIONAL AT BUILD TIME AND LOUD ABOUT IT, and that is a
+# deliberate change from "always required". It is gate item [5], so it must not
+# vanish quietly -- but it was in `all`, which meant a leg with no C++ compiler
+# could not build ANYTHING: on this box's WSL side, where g++ is not installed,
+# `make` died on abi_tu_cxx and took the whole Linux leg of the matrix with it,
+# including 17 test binaries, ASan and TSan that have nothing to do with C++.
+# A missing optional toolchain should cost you that one box and no more. The
+# test target below prints a SKIP line naming what to install, so the box is
+# visibly unchecked rather than silently absent.
+HAVE_CXX := $(shell command -v $(CXX) > /dev/null 2>&1 && echo yes)
+ifeq ($(HAVE_CXX),yes)
+  ABI_TU_CXX_BIN := $(BUILDDIR)/abi_tu_cxx$(EXE)
+else
+  ABI_TU_CXX_BIN :=
+endif
+ABI_TU_BIN := $(BUILDDIR)/abi_tu$(EXE) $(ABI_TU_CXX_BIN) $(BUILDDIR)/abi_smoke$(EXE)
 
 # M6 rungs A3+A4: an HTTP client of our own, for the three behaviours curl
 # cannot reach (pipelining, the SSE heartbeat, a client that stops reading).
@@ -159,7 +175,11 @@ all: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN) $(SERVE_BIN)
 test: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN) $(SERVE_BIN)
 	$(TSAN_RUN) sh tests/run_tests.sh $(BUILDDIR) $(EXE)
 	$(BUILDDIR)/abi_tu$(EXE) && echo "abi_tu: stoke.h standalone C11 OK"
+ifeq ($(HAVE_CXX),yes)
 	$(BUILDDIR)/abi_tu_cxx$(EXE) && echo "abi_tu_cxx: stoke.h C++ compile+link OK"
+else
+	@echo "abi_tu_cxx: SKIP -- no $(CXX) on this leg, so M6 gate item [5]'s C++ translation unit is NOT checked here. It is a real box and this is a real gap: install it (apt install g++) to close it. The C leg below still runs."
+endif
 	sh tests/abi_isolation.sh
 	sh tests/abi_checklist.sh
 	sh tests/abi_checklist_mutants.sh
