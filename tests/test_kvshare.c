@@ -349,11 +349,26 @@ static void test_partial_admission(void) {
     Kv* a = kv_open_in_partial(st, 64);
     Kv* b = kv_open_in_partial(st, 64);
     ok("partial admission reserves nothing, so both ceilings fit", a && b);
+
+    /* ⚠ CAPTURED AND CLOSED, not opened inside the assertion. A handle opened
+     * in an expression is a handle nobody owns, and `a`/`b` below were then
+     * reassigned over. ASan named this exact spot -- 120 bytes in 3
+     * allocations, two from kv_open_in_partial and one from kv_open_in -- the
+     * first time the whole suite ran under it, which was M6 gate item [7].
+     * The leak is the TEST's: kv_open_in's contract is that the caller
+     * closes. */
+    Kv* full1 = kv_open_in(st, 64);
+    Kv* full2 = kv_open_in(st, 64);
     ok("...whereas full reservation admits only one",
-       kv_open_in(st, 64) != NULL && kv_open_in(st, 64) == NULL);
+       full1 != NULL && full2 == NULL);
+    if (full1) kv_close(full1);
+    if (full2) kv_close(full2);
 
     ok("a ceiling past the whole pool is refused",
        kv_open_in_partial(st, 65) == NULL);
+    /* Before the store, never after: kv_close returns blocks to the pool. */
+    kv_close(a);
+    kv_close(b);
     kv_store_close(st);
 
     st = kv_store_open(NL, 4, NH, HD, KV_F32);
