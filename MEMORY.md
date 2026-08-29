@@ -973,6 +973,69 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   out to need. The entry note's open question (whether the harness needs a
   sampling parameter A3–A4 did not build) is answered ON ARRIVAL, not guessed.
 
+- **2026-08-29 (THIRD SITTING) — M6 A5 DONE: THE M0 HARNESS DRIVES STOKE
+  UNMODIFIED, AND FIVE OF THE SEVEN GATE ITEMS ARE BANKED.** Commits
+  `153d00d` (A5) and `f7d4b32` (gate [1]).
+  ▶ **GATE [3]: `bench/adapters.py` gains `StokeAdapter` and NOTHING ELSE HAD
+  TO CHANGE.** bench.py, scenarios.py and report.py are untouched — stoke goes
+  through the same `bench.timed_stream` / `bench.run_scenario` path that
+  produced the published M0 baseline numbers for ollama and llama-server.
+  `s1-interactive` (8 clients, 512-token prompts, 128 max_tokens, Poisson) ran
+  8/8 with zero errors and a usage trailer on every client. The gate driver
+  refuses a run where any client streamed nothing, where the count is short, or
+  where usage is missing — **that last one because the harness SILENTLY FALLS
+  BACK to counting arrivals when an engine omits usage, which is exactly what
+  would hide a broken include_usage on our side.**
+  ⚠⚠ **THE THROUGHPUT NUMBERS THAT RUN PRINTED ARE NOT A MEASUREMENT AND THE
+  DRIVER'S OWN BANNER SAYS SO.** One arm, once, un-interleaved, no quiesce
+  gate, no counterbalancing, on a box Kabir had already flagged as noisy. It
+  prints a throughput line only so a run that silently produced nothing cannot
+  look identical to one that worked. Nothing from it is comparable to the M5
+  bars (different harness, different shape, prefill-diluted aggregate).
+  ▶▶ **THE ENTRY NOTE'S OPEN QUESTION, ANSWERED BY THE HARNESS RATHER THAN
+  GUESSED: it sends `"temperature": 0.0` on EVERY request, and greedy decoding
+  IS temperature zero ⇒ NO sampling work moves forward from A6.** But "free" is
+  not "ignorable": until A5 the field was silently dropped, so a client asking
+  for 0.7 would have received the greedy distribution and plausible text that
+  was not what it asked for. Zero is now accepted and needs no special case;
+  non-zero is a 400 that says why. The refusal leaves with A6.
+  ▶ **`/v1/models`** (one entry, id = the GGUF's basename — the only name this
+  server has; nothing routes on the `model` field, which is echoed and never
+  matched) **and `/v1/completions`** (RAW: no chat template AND no BOS, because
+  wrapping a prompt in turn markers would silently change what the model was
+  asked; its prompt is DECODED out of the JSON, unlike a chat message whose
+  escapes go to the template as ordinary text). The two response shapes are
+  asserted APART in the gate — `text` against `message`/`delta`, `cmpl-`
+  against `chatcmpl-` — because a client reading `delta.content` off a
+  completion chunk gets nothing. ⏹ Cross-check: `/v1/completions` on "The
+  capital of France is" returns " Paris. The capital of Germany is Berlin",
+  token for token what `abi_smoke` gets with no HTTP in the path.
+  ▶▶▶ **GATE [1]: `tests/serve_openai.py` drives the ecosystem's own client**
+  (openai-python 3.6.0, in the gitignored repo-local venv `bench/.venv-openai`)
+  over models / chat / chat+stream / chat+stream+usage / completions /
+  completions+stream. **Why, when serve_golden already pins every byte: the
+  golden answers "do the bytes match what we recorded", this answers "would a
+  real client ACCEPT them" — openai-python parses each response into a pydantic
+  model and raises on anything that does not fit, so a response can match a
+  recorded transcript exactly and still be a shape nothing in the ecosystem can
+  use.** `max_retries=0` deliberately, and the completed-request count is
+  asserted against it, so a retry storm cannot pass as a clean run.
+  ⚠⚠ **IT PASSED ON THE FIRST RUN — least-trustworthy territory — so a mutant
+  was built.** `STOKE_MUT_ROLE_EVERY_CHUNK` removes the `sent_role` guard;
+  the suite answered `FAIL -- streamed chat: role arrived on chunk 1, not the
+  first`. **The mutant ANNOUNCES ITSELF and the leg reads that banner**, per
+  the A2 lesson: a build that silently dropped its `-D` is a CLEAN binary and
+  the leg would report "the suite did not catch it" about a mutant that was
+  never there. `build/win-mut-openai-role` — never measure with it.
+  ⏹ Green: `mingw32-make test` rc 0 — 17 test binaries, `abi_tu`,
+  `abi_tu_cxx`, `abi_isolation`, `abi_smoke`, 4 goldens, `serve_golden` 15/15,
+  `serve_raw` 3/3, `serve_openai` 6/6. **NEXT = A6** (temperature / top-k /
+  top-p / repeat-penalty / stop / seed; stop strings cross token boundaries, so
+  the server holds a tail window of max-stop-string-bytes − 1, checks after
+  each token, cancels on a hit and drops the overshoot). Then A7: gate [4] the
+  ABI checklist and gate [7] the matrix + 10-minute randomized ASan serve
+  smoke, and the header is TAGGED FROZEN.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
