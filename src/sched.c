@@ -784,3 +784,19 @@ u32 sched_progress(const Sched* s, u64 id) {
     Req* r = find((Sched*)s, id);
     return r ? r->n_done : 0u;
 }
+
+bool sched_is_live(const Sched* s, u64 id) {
+    Req* r = find((Sched*)s, id);
+    if (r) return r->state != SCHED_FINISHED;
+    /* Not on the lists yet. It may still be sitting in the submit queue, which
+     * find() deliberately does not walk -- and a request cancelled from there
+     * is retired without ever reaching the lists, so this half is what keeps a
+     * caller's per-request state from outliving it. */
+    bool queued = false;
+    pthread_mutex_lock(&((Sched*)s)->mu);
+    for (Req* q = s->submitted; q; q = q->all_next) {
+        if (q->spec.id == id) { queued = !q->cancel; break; }
+    }
+    pthread_mutex_unlock(&((Sched*)s)->mu);
+    return queued;
+}

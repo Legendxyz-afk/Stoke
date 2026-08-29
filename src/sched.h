@@ -265,6 +265,15 @@ u64 sched_last_preempted(const Sched* s, bool* ok);
  * id, which is also what a request that has just been preempted reports. */
 u32 sched_progress(const Sched* s, u64 id);
 
+/* Whether an id still has work outstanding: submitted-and-not-yet-drained, or
+ * WAITING, or RUNNING. False for an unknown id and for one that has retired --
+ * both of which is the point, because the caller asking is trying to find out
+ * whether it may reclaim per-request state, and "never existed" and "is over"
+ * warrant the same answer. Covers the SUBMIT QUEUE as well as the lists: a
+ * request cancelled before it was ever admitted never becomes a Req, and a
+ * predicate blind to that would leak the caller's state for it forever. */
+bool sched_is_live(const Sched* s, u64 id);
+
 /* ---- the constants the design LOCKS ------------------------------------
  * Named here rather than hidden in sched.c because the sim sweeps them and the
  * bench may tune them -- but changing their FORM (not their value) is a design

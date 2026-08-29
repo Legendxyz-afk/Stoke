@@ -21,13 +21,55 @@
 #include "model.h"
 #include "pool.h"
 #include "sched.h"
+#include "sample.h"
 #include "serve.h"
 #include "stoke.h"
 #include "tok.h"
 
+#include <pthread.h>
+#include <stddef.h>
 #include <string.h>
 
 #define STOKE_DEFAULT_SEQS 8u
+
+/* ---- sampling state ----------------------------------------------------
+ *
+ * One slot per LIVE request. Small and fixed: the scheduler admits at most
+ * max_seqs sequences, and a request that is not admitted is not sampling.
+ *
+ * ⚠ THE HISTORY IS INDEXED BY POSITION, NOT APPENDED. A preempted sequence
+ * is REPLAYED, so an appending history would grow a second copy of the same
+ * tokens and the repeat penalty a replay computed would differ from the one
+ * the original did -- silently, since the stream stays fluent either way.
+ * Writing each token to its own slot makes a replay idempotent. */
+typedef struct {
+    int          live;
+    u64          req_id;
+    SampleParams p;
+    u32*         hist;    /* [max_ctx] token at each position, UNSET_TOKEN
+                           * wherever nothing has been generated yet */
+    u32          n_hist;  /* highest position written, + 1    */
+} SampleSlot;
+
+/* ⚠ NOT ZERO. The history is indexed by ABSOLUTE position, so everything below
+ * a request's first generated position is never written -- and zero is a real
+ * vocabulary id, so a zero-filled prefix would penalise token 0 on every
+ * request that used a repeat penalty. This value is >= any n_vocab, which is
+ * the condition sample.c already skips on. */
+#define UNSET_TOKEN 0xFFFFFFFFu
+
+/* What stoke_submit hands to the step thread. See sample_prologue: the slot
+ * table itself is touched by ONE thread, and this queue is the only place the
+ * two meet. */
+typedef struct {
+    u64          req_id;
+    SampleParams p;
+} SamplePend;
+
+/* Deep enough that a caller submitting a burst before its next step does not
+ * lose params; overflow degrades to greedy rather than to an error, exactly as
+ * running out of slots does. 256 * 40 bytes is not worth a growable buffer. */
+#define STOKE_MAX_PENDING 256u
 
 struct stoke_engine {
     GgufFile*  gf;
@@ -37,6 +79,24 @@ struct stoke_engine {
     ServeHost* host;
     Sched*     sched;
     u32        max_ctx;
+    u32        n_vocab;
+
+    /* ▶▶ TOUCHED ONLY BY THE THREAD THAT CALLS stoke_step. That is what makes
+     * the whole sampling path free of locks and free of races: stoke_submit is
+     * documented SAFE from any thread, so it may NOT write these. */
+    SampleSlot* slots;
+    u32         n_slots;
+    f32*        sample_scratch; /* [n_vocab], reused: no malloc per token */
+    int         any_sampling;   /* the hook is installed only if a request
+                                 * has ever asked for it, so a greedy-only
+                                 * engine keeps serve_step's original path */
+
+    /* ...and this is the crossing. Written by whichever thread submits, drained
+     * by the step thread. One plain mutex, taken once per submit and once per
+     * step -- never per token. */
+    pthread_mutex_t pend_mu;
+    SamplePend      pend[STOKE_MAX_PENDING];
+    u32             n_pend;
 };
 
 /* ---- errors ------------------------------------------------------------
@@ -144,7 +204,32 @@ stoke_engine* stoke_open_abi(const char* gguf_path, const stoke_open_opts* opts,
         e->gf = gf; e->tok = tok; e->model = model;
         e->store = store; e->host = host; e->sched = sched;
         e->max_ctx = ctx;
+        e->n_vocab = model_n_vocab(model);
 
+        /* One slot per admissible sequence, each with a position-indexed
+         * history, plus ONE shared logits scratch -- the sampler is called from
+         * the single scheduler thread, so one buffer is enough and a per-token
+         * malloc is exactly what M2's op-spec forbids. Allocated at open rather
+         * than on first use so the failure lands on the trapped open path. */
+        e->n_slots = max_seqs ? max_seqs : STOKE_DEFAULT_SEQS;
+        e->slots   = (SampleSlot*)xcalloc(e->n_slots, sizeof(SampleSlot));
+        for (u32 i = 0; i < e->n_slots; i++) {
+            e->slots[i].hist = (u32*)xcalloc(ctx, sizeof(u32));
+        }
+        e->sample_scratch = (f32*)xcalloc(e->n_vocab, sizeof(f32));
+        pthread_mutex_init(&e->pend_mu, NULL);
+
+#ifdef STOKE_MUT_NO_SLOT_RELEASE
+        fprintf(stderr, "stoke: MUTANT src/stoke.c -- STOKE_MUT_NO_SLOT_RELEASE "
+                        "(sampling slots are never reclaimed). NEVER use this "
+                        "binary for anything but the mutation leg.\n");
+#endif
+#ifdef STOKE_MUT_STALE_HISTORY
+        fprintf(stderr, "stoke: MUTANT src/stoke.c -- STOKE_MUT_STALE_HISTORY "
+                        "(a reused slot keeps its last occupant's history). "
+                        "NEVER use this binary for anything but the mutation "
+                        "leg.\n");
+#endif
         stoke_trap_pop(&trap);
         return (stoke_engine*)e;
     }
@@ -166,6 +251,12 @@ stoke_engine* stoke_open_abi(const char* gguf_path, const stoke_open_opts* opts,
 void stoke_close(stoke_engine* e) {
     if (!e) return;
     sched_close(e->sched);
+    if (e->slots) {
+        for (u32 i = 0; i < e->n_slots; i++) free(e->slots[i].hist);
+        free(e->slots);
+    }
+    free(e->sample_scratch);
+    pthread_mutex_destroy(&e->pend_mu);
     serve_host_close(e->host);
     kv_store_close(e->store);
     model_close(e->model);
@@ -186,13 +277,177 @@ uint32_t stoke_eos_id(const stoke_engine* e) {
 
 /* ---- requests ---------------------------------------------------------- */
 
+/* The same job opt_u32 does for open opts, for the request's sampling tail: a
+ * caller compiled against the older header passes a SMALLER struct, and every
+ * field past its `size` must take its default instead of being read out of
+ * bounds. That is what makes adding these fields a compatible change rather
+ * than an ABI break. */
+static f32 req_f32(const stoke_request* r, size_t off, f32 dflt) {
+    if (r->size < off + sizeof(float)) return dflt;
+    float v;
+    memcpy(&v, (const char*)r + off, sizeof v);
+    return (f32)v;
+}
+static u32 req_u32(const stoke_request* r, size_t off, u32 dflt) {
+    if (r->size < off + sizeof(uint32_t)) return dflt;
+    uint32_t v;
+    memcpy(&v, (const char*)r + off, sizeof v);
+    return v;
+}
+static u64 req_u64(const stoke_request* r, size_t off, u64 dflt) {
+    if (r->size < off + sizeof(uint64_t)) return dflt;
+    uint64_t v;
+    memcpy(&v, (const char*)r + off, sizeof v);
+    return v;
+}
+
+/* ---- the sampler, as serve.h's hook ------------------------------------ */
+
+static SampleSlot* slot_for(stoke_engine* e, u64 req_id) {
+    for (u32 i = 0; i < e->n_slots; i++) {
+        if (e->slots[i].live && e->slots[i].req_id == req_id) return &e->slots[i];
+    }
+    return NULL;
+}
+
+/* Installed on the host only once some request has actually asked to sample --
+ * see stoke_engine.any_sampling. A greedy-only engine therefore runs exactly
+ * the serve_step path M5 measured, with not even the null check taken. */
+static u32 stoke_sample_cb(void* ctx, u64 req_id, u32 pos, const f32* logits,
+                           u32 n_vocab) {
+    stoke_engine* e = (stoke_engine*)ctx;
+    SampleSlot*   sl = slot_for(e, req_id);
+    if (!sl) {
+        /* No slot means greedy: either the request never asked to sample, or it
+         * finished between the forward pass and here. Falling back rather than
+         * failing is right -- a token is owed either way. */
+        SampleParams none;
+        memset(&none, 0, sizeof none);
+        return sample_token(&none, pos, logits, n_vocab, NULL, 0, NULL);
+    }
+    u32 id = sample_token(&sl->p, pos, logits, n_vocab, sl->hist, sl->n_hist,
+                          e->sample_scratch);
+    /* Recorded at its own position, so a replay of this position overwrites
+     * rather than appends -- see SampleSlot. */
+    if (sl->hist && pos < e->max_ctx) {
+        sl->hist[pos] = id;
+        if (pos + 1u > sl->n_hist) sl->n_hist = pos + 1u;
+    }
+    return id;
+}
+
+static void slot_release(stoke_engine* e, u64 req_id) {
+    SampleSlot* sl = slot_for(e, req_id);
+    if (sl) { sl->live = 0; sl->n_hist = 0; }
+}
+
+/* ---- the step prologue, and the whole concurrency argument --------------
+ *
+ * ▶▶▶ WHY THE SLOTS ARE NOT CLAIMED IN stoke_submit, WHICH IS WHERE THEY
+ * OBVIOUSLY BELONG. stoke.h promises stoke_submit, stoke_poll and stoke_cancel
+ * are safe from ANY thread while stoke_step runs on one. The sampler callback
+ * runs INSIDE stoke_step. So a slot table written by submit and read by the
+ * callback is a data race across that promise -- and so is installing the hook
+ * on a host another thread is already stepping. Both would be invisible on x86
+ * and both would be real.
+ *
+ * Guarding the table with a mutex would fix the first and not the second. So
+ * instead the table belongs to the step thread outright: submit leaves params
+ * in a small queue, and everything that touches a slot happens here.
+ *
+ * ⚠ THE ORDER OF THE TWO HALVES IS LOAD-BEARING. Sweeping BEFORE draining
+ * means a request that finished last step has already returned its slot by the
+ * time this step's new requests look for a free one; the other order makes a
+ * burst of short requests run greedily for no reason, and it would look like a
+ * capacity limit rather than like an ordering mistake.
+ *
+ * ⚠⚠ AND THE SWEEP ASKS THE SCHEDULER, NOT THE CALLER. Reclaiming on
+ * stoke_poll would leak a slot for every request whose caller stopped polling,
+ * cancelled, or simply walked away -- and would put a slot write back on an
+ * any-thread function. sched_is_live answers for cancelled, retired, abandoned
+ * and never-admitted alike. */
+static void sample_prologue(stoke_engine* e) {
+    if (!e->slots) return;
+
+    for (u32 i = 0; i < e->n_slots; i++) {
+#ifdef STOKE_MUT_NO_SLOT_RELEASE
+        /* MUTANT: slots are never reclaimed. Every sampled request past the
+         * n_slots'th then runs greedy -- fluent text, no error. */
+        break;
+#endif
+        if (e->slots[i].live && !sched_is_live(e->sched, e->slots[i].req_id)) {
+            slot_release(e, e->slots[i].req_id);
+        }
+    }
+
+    if (!e->n_pend) return;
+
+    SamplePend batch[STOKE_MAX_PENDING];
+    u32        n;
+    pthread_mutex_lock(&e->pend_mu);
+    n = e->n_pend;
+    memcpy(batch, e->pend, (size_t)n * sizeof(SamplePend));
+    e->n_pend = 0;
+    pthread_mutex_unlock(&e->pend_mu);
+
+    for (u32 k = 0; k < n; k++) {
+        /* An id submitted twice cannot be live twice -- the scheduler refuses
+         * that -- but a REUSED id whose predecessor has retired can still hold
+         * a slot the sweep has not reached. Take it back rather than claim a
+         * second one, or the old request's history would be this one's. */
+        slot_release(e, batch[k].req_id);
+
+        SampleSlot* sl = NULL;
+        for (u32 i = 0; i < e->n_slots; i++) {
+            if (!e->slots[i].live) { sl = &e->slots[i]; break; }
+        }
+        /* No free slot: the request still runs, greedily. Refusing it would
+         * turn a resource limit into a client-visible error for something the
+         * scheduler was willing to admit. */
+        if (!sl) continue;
+
+        sl->live   = 1;
+        sl->req_id = batch[k].req_id;
+        sl->p      = batch[k].p;
+        sl->n_hist = 0;
+        /* ⚠ CLEARED, NOT JUST COUNTED DOWN. n_hist alone would leave the
+         * previous occupant's tokens visible to a request whose prompt is
+         * shorter, and the unwritten prefix below any request's first position
+         * has to read as "no token" rather than as id 0. */
+#ifndef STOKE_MUT_STALE_HISTORY
+        if (sl->hist) {
+            memset(sl->hist, 0xFF, (size_t)e->max_ctx * sizeof(u32));
+        }
+#endif
+        /* MUTANT STOKE_MUT_STALE_HISTORY: the clear above is skipped, so a slot
+         * hands its last occupant's tokens to the next request at every
+         * position the new one does not itself write. Observable ONLY across
+         * differing prompt lengths -- see abi_sample.c case [G]. */
+
+        /* ⚠ INSTALLED LAZILY, AND ONLY EVER ONCE -- and from the step thread,
+         * which is the thread that reads it. An engine that is never asked to
+         * sample runs serve_step's original argmax path, which is the path
+         * every M5 number was measured through. */
+        if (!e->any_sampling) {
+            e->any_sampling = 1;
+            serve_host_set_sampler(e->host, stoke_sample_cb, e);
+        }
+    }
+}
+
 stoke_status stoke_submit(stoke_engine* e, const stoke_request* req) {
     if (!e || !req) return fail(STOKE_ERR_INVALID_ARG,
                                 "stoke_submit: engine and request must be non-NULL");
-    if (req->size < sizeof(stoke_request)) {
+    /* ⚠ A SMALLER STRUCT IS ACCEPTED, AND THAT IS THE POINT OF `size`. This
+     * used to demand at least sizeof(stoke_request), which meant the moment the
+     * sampling tail was added every caller compiled against the older header
+     * started failing -- an ABI break dressed as a validation. What must be
+     * rejected is a struct too small to hold the fields this function actually
+     * requires; everything past that takes its default. */
+    if (req->size < offsetof(stoke_request, eos_id) + sizeof(int64_t)) {
         return fail(STOKE_ERR_INVALID_ARG,
-                    "stoke_submit: req->size is smaller than this library's "
-                    "stoke_request -- set it to sizeof(stoke_request)");
+                    "stoke_submit: req->size is too small to contain the "
+                    "required fields -- set it to sizeof(stoke_request)");
     }
     if (!req->prompt_ids || req->n_prompt == 0) {
         return fail(STOKE_ERR_INVALID_ARG,
@@ -211,6 +466,18 @@ stoke_status stoke_submit(stoke_engine* e, const stoke_request* req) {
                     "stoke_submit: n_prompt + max_tokens exceeds max_ctx");
     }
 
+    /* The sampling tail, defaulted for a caller who predates it. */
+    SampleParams sp;
+    memset(&sp, 0, sizeof sp);
+    sp.temperature    = req_f32(req, offsetof(stoke_request, temperature), 0.0f);
+    sp.top_k          = req_u32(req, offsetof(stoke_request, top_k), 0u);
+    sp.top_p          = req_f32(req, offsetof(stoke_request, top_p), 0.0f);
+    sp.repeat_penalty = req_f32(req, offsetof(stoke_request, repeat_penalty), 1.0f);
+    sp.seed           = req_u64(req, offsetof(stoke_request, seed), 0u);
+
+    int wants_sampling = (sp.temperature > 0.0f) ||
+                         (sp.repeat_penalty > 1.0f);
+
     SchedRequest sr;
     sr.id         = req->id;
     sr.prompt_ids = req->prompt_ids;
@@ -221,11 +488,28 @@ stoke_status stoke_submit(stoke_engine* e, const stoke_request* req) {
         return fail(STOKE_ERR_DUPLICATE_ID,
                     "stoke_submit: an id already live was submitted again");
     }
+
+    /* ▶ QUEUED ONLY AFTER THE SCHEDULER ACCEPTED IT, so a rejected submit
+     * leaves nothing behind to be matched by a later request that happens to
+     * reuse the id. The slot itself is claimed by the step thread -- see
+     * sample_prologue for why this function must not touch the table. */
+    if (wants_sampling) {
+        pthread_mutex_lock(&e->pend_mu);
+        if (e->n_pend < STOKE_MAX_PENDING) {
+            e->pend[e->n_pend].req_id = req->id;
+            e->pend[e->n_pend].p      = sp;
+            e->n_pend++;
+        }
+        /* Queue full: the request still runs, greedily -- the same degradation
+         * as running out of slots, and for the same reason. */
+        pthread_mutex_unlock(&e->pend_mu);
+    }
     return STOKE_OK;
 }
 
 stoke_status stoke_step(stoke_engine* e, uint32_t* out_rows) {
     if (!e) return fail(STOKE_ERR_INVALID_ARG, "stoke_step: engine is NULL");
+    sample_prologue(e);
     u32 rows = sched_step(e->sched);
     if (out_rows) *out_rows = rows;
     return STOKE_OK;

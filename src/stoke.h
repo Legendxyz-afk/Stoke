@@ -187,6 +187,29 @@ typedef struct {
     uint32_t        n_prompt;    /* > 0                                      */
     uint32_t        max_tokens;  /* > 0                                      */
     int64_t         eos_id;      /* -1 for none; otherwise a vocab id        */
+
+    /* ---- sampling. A ZEROED TAIL IS GREEDY, which is why these could be
+     * added without breaking a caller: `size` tells the library how much of
+     * this struct exists, and a request compiled against the older header
+     * simply reports a smaller one and gets the greedy defaults it already
+     * expected. That is the whole reason `size` is here. ---- */
+
+    /* <= 0 is GREEDY and is the default. Greedy is not "temperature nearly
+     * zero" -- it takes a separate path that is bit-identical to the argmax it
+     * replaces, with no softmax and no rounding introduced on the way. */
+    float    temperature;
+    uint32_t top_k;          /* 0 = no truncation by rank                    */
+    float    top_p;          /* >= 1, or <= 0 (unset) = no truncation        */
+    float    repeat_penalty; /* <= 1 = none                                  */
+
+    /* ⚠ A SEED IS A PROMISE THIS ENGINE CAN ACTUALLY KEEP, and that is not
+     * automatic for a continuous batcher. The scheduler PREEMPTS a sequence
+     * under KV pressure and later REPLAYS it, so a sampler with a running RNG
+     * would produce a different token the second time through -- silently,
+     * because the stream stays fluent. Draws here are a pure function of
+     * (seed, position), so the same seed gives the same text whatever the
+     * scheduler did to get there, and whatever else was running alongside. */
+    uint64_t seed;
 } stoke_request;
 
 /* Queues a request. Nothing is queued on failure. */
