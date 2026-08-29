@@ -166,7 +166,7 @@ ABI_TU_BIN := $(BUILDDIR)/abi_tu$(EXE) $(ABI_TU_CXX_BIN) $(BUILDDIR)/abi_smoke$(
 # the generic tests/%.c rule; listed here for the same reason abi_smoke is --
 # it takes arguments and needs a server, so the TEST_SRC wildcard must not
 # sweep it into run_tests.sh, and something has to name it or it never builds.
-SERVE_BIN := $(BUILDDIR)/serve_probe$(EXE)
+SERVE_BIN := $(BUILDDIR)/serve_probe$(EXE) $(BUILDDIR)/serve_fuzz$(EXE)
 
 .PHONY: all test clean
 

@@ -231,10 +231,35 @@ i64 net_recv(NetSock s, void* buf, size_t cap) {
     }
 }
 
+/* ⚠⚠ MSG_NOSIGNAL, AND IT IS NOT A TIDINESS FLAG -- WITHOUT IT THIS SERVER DIES.
+ * On POSIX, writing to a socket whose peer has closed raises SIGPIPE, whose
+ * DEFAULT DISPOSITION IS TO TERMINATE THE PROCESS. A client that disconnects
+ * mid-response is not an error condition here, it is Tuesday: the slow-client
+ * policy drops them deliberately, browsers close tabs, and the A7 fuzz driver
+ * does it on purpose. Windows has no SIGPIPE at all, so every serve gate on
+ * that leg was green while `stoke serve` on Linux died on the FIRST such
+ * disconnect -- exit 141 -- which is exactly what gate item [7] found within
+ * seconds of first running.
+ *
+ * Per-call rather than `signal(SIGPIPE, SIG_IGN)` at startup, deliberately:
+ * stoke is a LIBRARY, and a library that rewrites its host's signal
+ * dispositions has changed the behaviour of code it has never seen. The flag
+ * is scoped to our own sends and nobody else's.
+ *
+ * Where the platform lacks it the value is 0 and the old behaviour returns --
+ * that is macOS (which wants SO_NOSIGPIPE instead) and is a real gap, recorded
+ * here rather than papered over, because neither leg of this project's matrix
+ * is macOS and pretending otherwise would be worse than saying so. */
+#ifdef MSG_NOSIGNAL
+#define NET_SEND_FLAGS MSG_NOSIGNAL
+#else
+#define NET_SEND_FLAGS 0
+#endif
+
 i64 net_send(NetSock s, const void* buf, size_t len) {
     if (len == 0) return 0;
     for (;;) {
-        int n = send(SOCKH(s), (const char*)buf, clamp_len(len), 0);
+        int n = send(SOCKH(s), (const char*)buf, clamp_len(len), NET_SEND_FLAGS);
         if (n > 0) return n;
 #ifdef _WIN32
         int e = WSAGetLastError();

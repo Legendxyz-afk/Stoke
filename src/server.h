@@ -35,6 +35,19 @@ typedef struct {
      * very race this option exists to remove, from the inside. */
     int max_requests;
 
+    /* Serve for this many seconds, then return. 0 = no limit.
+     *
+     * ▶▶ IT EXISTS BECAUSE A SANITIZER RUN MUST END IN A CLEAN EXIT. Gate item
+     * [7] is a ten-minute randomized soak under ASan, and the traffic is
+     * random, so `max_requests` cannot express "stop at the end" -- nobody
+     * knows the count in advance. The obvious alternative is to kill the
+     * process, and that DEFEATS THE RUN: LeakSanitizer reports at process exit,
+     * so a killed server is a server whose leaks were never checked, and the
+     * gate would go green on exactly the failure it exists to find. Same shape
+     * of argument as max_requests above -- a server that ends itself is worth
+     * more than a script that ends it. */
+    int max_seconds;
+
     /* ---- SSE tuning. Both are real host knobs with sane defaults, and both
      * are also what makes the two behaviours below testable at all: a
      * fifteen-second heartbeat and a 256 KiB backlog cannot be reached by a

@@ -1581,7 +1581,15 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
            (unsigned)net_port_of(lis), sv.max_ctx);
     fflush(stdout);
 
-    while (so.max_requests == 0 || sv.completed < so.max_requests) {
+    /* ▶ A DEADLINE, NOT A KILL. See ServerOpts.max_seconds: the sanitizer soak
+     * needs the process to END ITSELF, because LeakSanitizer reports at exit
+     * and a killed server is one whose leaks were never looked at. */
+    double stop_at_ms = so.max_seconds > 0
+                            ? now_ms() + (double)so.max_seconds * 1000.0
+                            : 0.0;
+
+    while ((so.max_requests == 0 || sv.completed < so.max_requests) &&
+           (stop_at_ms == 0.0 || now_ms() < stop_at_ms)) {
         NetWait w[MAX_CONNS + 1];
         /* ▶▶ WHICH CONNECTION EACH WAIT ENTRY BELONGS TO (-1 = the listener),
          * carried EXPLICITLY rather than re-derived by walking the connections
