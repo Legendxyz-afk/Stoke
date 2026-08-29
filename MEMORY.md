@@ -1036,6 +1036,48 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   ABI checklist and gate [7] the matrix + 10-minute randomized ASan serve
   smoke, and the header is TAGGED FROZEN.
 
+- **2026-08-29 (FOURTH SITTING) — M6 A6 FIRST HALF: STOP STRINGS, AND THE
+  SAMPLER DELIBERATELY NOT LANDED.** Commit `99badea`.
+  ▶▶ **THE TAIL WINDOW IS A HOLD-BACK, NOT A SEARCH WINDOW, and reading it
+  as the latter is the way to get this wrong.** A stop string crosses token
+  boundaries, so by the time a search finds the match its first half has
+  already gone out as a delta — part of the stop string leaked to the client,
+  the one thing a stop string must never do. Emission is therefore held back by
+  (longest stop − 1) bytes while generating; the bound is EXACT (a match ending
+  at the newest byte starts at or after the previous emission limit). And the
+  mirror: when generation ends nothing can complete a match, so the held tail
+  is text the client is owed — `stream_final` flushes it BEFORE the finish
+  chunk, or every answer using a stop string is silently truncated in a way
+  that looks like the model being terse.
+  ⚠ **The gate pins a stop string NO SINGLE TOKEN CONTAINS**: the golden
+  already shows this prompt arriving as `"Hello" "!" " How" " can" " I" ...`,
+  so `"an I"` spans two tokens. A server checking each token in isolation
+  cannot see it **and every other assertion here would pass against such a
+  server** — [[fixture-can-be-blind-to-the-defect]] applied ahead of time
+  rather than after.
+  ⚠ **Emission stays INSIDE the per-token loop**: a poll can return several
+  tokens, and emitting per BATCH would coalesce them into one SSE event, which
+  the M0 harness counts as ONE token while `usage` reports several — turning
+  gate [3]'s exact `count_vs_usage_diff` of 0 into a silent mismatch. Re-checked
+  after the change: still 0. ⏹ Every pre-A6 golden case is BYTE-IDENTICAL;
+  with no stop strings the hold is zero and nothing changed.
+  ▶ Sampling surface: accepted at its no-op value (temperature 0, top_p 1,
+  top_k 0, penalties at identity, n 1 — where "no sampler" IS the correct
+  answer), refused elsewhere, because answering top_p 0.9 greedily returns
+  plausible text that is not what was asked for. `seed` is accepted: greedy is
+  deterministic, so any seed gives the identical stream, which is what a seed
+  promises.
+  ⚠⚠ **THE SAMPLER ITSELF IS NOT LANDED, ON PURPOSE.** It must pick a token
+  from logits on the scheduler thread, and M6 inherits "if a refactor touches
+  the scheduler, the M5 bars are re-measured or the refactor does not land" —
+  and the bars cannot be re-measured on a noisy box (today the same
+  single-stream shape ran ~12 tok/s against a usual ~17). Landing it with the
+  re-measure merely OWED is the unverified claim the protocol exists to
+  prevent. **Kabir's call, stated not taken.** Design is settled (per-request
+  splitmix64 on the scheduler thread; preemption replay means the RNG must be a
+  PURE FUNCTION of (seed, token index), not a mutating stream, or a replayed
+  sequence diverges). A7's gate [4] needs neither a quiet box nor the sampler.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
