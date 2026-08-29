@@ -183,6 +183,7 @@ typedef struct {
     int           ping_ms;
     size_t        max_pending;
     int           send_buffer;
+    int           idle_secs;
     /* What /v1/models reports. Derived from the GGUF's filename, because that
      * is the only name this server actually has -- it serves one file and
      * never routes on the `model` field a client sends. */
@@ -1500,15 +1501,41 @@ static void reap_idle(Server* sv) {
     time_t now = time(NULL);
     for (int i = 0; i < MAX_CONNS; i++) {
         Conn* c = &sv->conns[i];
-        /* Never a connection with a request in flight: it is not idle, it is
-         * waiting on us. A stream is the clearest case -- it can legitimately
-         * say nothing for longer than the timeout while the model thinks, and
-         * reaping it would kill the request it is waiting for. */
+        /* ▶▶▶ ONLY CONN_READ IS EVER IDLE, AND THE OTHERS ARE NOT A MATTER OF
+         * DEGREE. This reaper exists for one thing: a client that opened a
+         * socket and then said nothing, which would otherwise hold a slot
+         * forever. That is CONN_READ and nothing else. Every other state is one
+         * where WE owe the client bytes, and closing it discards an answer we
+         * have already paid for.
+         *
+         * ⚠⚠ IT USED TO REAP CONN_WRITE, AND THAT DESTROYED FINISHED
+         * RESPONSES. `last_active` is stamped when bytes move, so a request
+         * whose GENERATION takes longer than the timeout arrives at CONN_WRITE
+         * already stale -- and was closed on the very next turn, after the
+         * engine had done all the work and the log had recorded
+         * `finish=length`. The client saw `curl: (52) Empty reply from server`.
+         * Found on the TSan leg, where a forward pass is slow enough to cross
+         * sixty seconds; in production it is any long generation, any large
+         * prompt, any busy server. A timeout that measures how long OUR work
+         * took, and then punishes the client for it, is not a timeout. */
+#ifdef STOKE_MUT_REAP_WRITE
+        /* ⚠ DELIBERATELY WRONG -- the pre-fix reaper, restored. It also closes
+         * CONN_WRITE, which throws away responses the engine has already
+         * produced whenever generation outlasts the timeout. Built only by
+         *   mingw32-make BUILDDIR=build/win-mut-reaper \
+         *                EXTRA_CFLAGS=-DSTOKE_MUT_REAP_WRITE=1
+         * to prove tests/serve_golden.sh's --idle-timeout guard can fail. It
+         * announces itself, because a build that silently dropped its -D is a
+         * CLEAN binary and the leg would then report "the gate did not catch
+         * it" about a mutant that was never there. */
         if (c->state == CONN_FREE || c->state == CONN_GEN ||
             c->state == CONN_STREAM) {
             continue;
         }
-        if (now - c->last_active > IDLE_TIMEOUT_SECS) conn_close(sv, c);
+#else
+        if (c->state != CONN_READ) continue;
+#endif
+        if (now - c->last_active > sv->idle_secs) conn_close(sv, c);
     }
 }
 
@@ -1526,6 +1553,8 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
     sv.max_pending = so.sse_max_pending > 0 ? so.sse_max_pending
                                             : SSE_MAX_PENDING_DEFAULT;
     sv.send_buffer = so.sse_send_buffer;
+    sv.idle_secs   = so.idle_timeout_secs > 0 ? so.idle_timeout_secs
+                                             : IDLE_TIMEOUT_SECS;
     for (int i = 0; i < MAX_CONNS; i++) sv.conns[i].s = NET_INVALID_SOCK;
 
     sv.e = stoke_open(gguf_path, engine_opts);
@@ -1568,6 +1597,12 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
     }
     net_set_nonblocking(lis);
 
+#ifdef STOKE_MUT_REAP_WRITE
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_REAP_WRITE "
+                    "(the reaper closes CONN_WRITE, discarding finished "
+                    "responses). NEVER use this binary for anything but "
+                    "the mutation leg.\n");
+#endif
 #ifdef STOKE_MUT_ROLE_EVERY_CHUNK
     fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_ROLE_EVERY_CHUNK "
                     "(role on every delta). NEVER use this binary for anything "

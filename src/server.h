@@ -48,6 +48,16 @@ typedef struct {
      * more than a script that ends it. */
     int max_seconds;
 
+    /* Close a connection that has been SILENT this long. 0 = 60 s.
+     *
+     * ⚠ IT APPLIES ONLY TO A CONNECTION WE ARE WAITING ON, never to one
+     * that is waiting on US -- see reap_idle. Exposed because the gate
+     * sets it to a couple of seconds: a request whose GENERATION outlasts
+     * this value is exactly the case that used to have its finished
+     * response thrown away, and a regression guard for it has to be able
+     * to reach that timeout in a gate that finishes. */
+    int idle_timeout_secs;
+
     /* ---- SSE tuning. Both are real host knobs with sane defaults, and both
      * are also what makes the two behaviours below testable at all: a
      * fifteen-second heartbeat and a 256 KiB backlog cannot be reached by a

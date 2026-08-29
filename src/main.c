@@ -1419,7 +1419,8 @@ static int cmd_serve(int argc, char** argv) {
         fprintf(stderr,
                 "usage: stoke serve <model.gguf> [--host A] [--port P] "
                 "[--ctx N] [--seqs N] [--threads N] [--kv q8] "
-                "[--max-requests N] [--max-seconds N] [--sse-ping-ms N] "
+                "[--max-requests N] [--max-seconds N] [--idle-timeout N] "
+                "[--sse-ping-ms N] "
                 "[--sse-max-pending BYTES] [-v]\n");
         return 2;
     }
@@ -1462,6 +1463,8 @@ static int cmd_serve(int argc, char** argv) {
             so.sse_ping_ms = (int)strtol(argv[++i], NULL, 10);
         } else if (strcmp(a, "--sse-max-pending") == 0 && has_next) {
             so.sse_max_pending = (size_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--idle-timeout") == 0 && has_next) {
+            so.idle_timeout_secs = (int)strtol(argv[++i], NULL, 10);
         } else if (strcmp(a, "--max-seconds") == 0 && has_next) {
             so.max_seconds = (int)strtol(argv[++i], NULL, 10);
         } else if (strcmp(a, "--sse-send-buffer") == 0 && has_next) {
@@ -1495,6 +1498,7 @@ int main(int argc, char** argv) {
               "bench --ops <path.gguf> [--reps N] [--jsonl], "
               "serve <path.gguf> [--host A] [--port P] [--ctx N] [--seqs N] "
               "[--threads N] [--kv q8] [--max-requests N] [--max-seconds N] "
+              "[--idle-timeout N] "
               "[--sse-ping-ms N] "
               "[--sse-max-pending BYTES] [-v])");
     }

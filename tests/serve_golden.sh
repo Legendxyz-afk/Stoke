@@ -84,8 +84,18 @@ first_retry="--retry 400 --retry-delay 1 --retry-connrefused"
 # failed one, so it is a bound on the whole session and not a per-request one.
 guard=$(golden_lib_guard "$builddir")
 
+# ⚠ --idle-timeout 2 IS A REGRESSION GUARD, NOT TUNING. The reaper used to close
+# CONN_WRITE connections too, and `last_active` is stamped when bytes move -- so
+# a request whose GENERATION outlasted the timeout arrived at "ready to send"
+# already stale, and was closed on the next turn, throwing away a response the
+# engine had already produced. The client saw `curl: (52) Empty reply from
+# server` while the server's own log said `finish=length`. Found on the TSan
+# leg, where a forward pass is slow enough to cross sixty seconds; in production
+# it is any long generation. Two seconds here means EVERY generating case in
+# this gate crosses the timeout, so the bug cannot come back quietly.
 $guard "$bin" serve "$model" --port "$port" --ctx "$ctx" --seqs "$seqs" \
-    --threads "$threads" --max-requests "$n_requests" -v > "$srvlog" 2>&1 &
+    --threads "$threads" --max-requests "$n_requests" --idle-timeout 2 \
+    -v > "$srvlog" 2>&1 &
 srv_pid=$!
 
 # run_case <label> <curl-args...> -- appends the labelled, normalized response
