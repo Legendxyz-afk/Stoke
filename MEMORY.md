@@ -894,6 +894,85 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   role in the first delta, `finish_reason` null-until-final, `usage` only under
   `stream_options.include_usage`, and never blocking the scheduler on a socket.
 
+- **2026-08-29 (SECOND SITTING) — M6 A4 DONE: SSE, AND THE COMPAT TRAP LIST
+  CHECKED ONE AT A TIME.** Commit `ccde223`. `stream:true` streams instead of
+  answering 501, over **chunked framing rather than close-delimited** — the
+  simpler spelling costs the connection, and every request would then pay a
+  fresh TCP handshake including every request of the M0 harness at gate [3],
+  whose job is measuring inter-token latency. Framing that distorts the
+  instrument pointed at it is not a saving.
+  Every trap is asserted **BY NAME** in the gate, not merely diffed: a golden
+  catches everything and explains nothing, so a regressed trap reports as the
+  same wall of red as any other change. Role on the FIRST delta and no other;
+  `finish_reason` null-until-final then stop/length; an EMPTY final delta
+  (the reason is not content); `data: [DONE]`; and `usage` only under
+  `stream_options.include_usage`, as its own chunk, AFTER the finish chunk,
+  with empty `choices` — three traps in one field.
+  ⚠ **THE HEARTBEAT FIRES IN GAPS, AND STEADY GENERATION HAS NONE.** The first
+  probe asked for a short answer and asserted a ping at `--sse-ping-ms 5`; it
+  got ZERO and the server was right. The check runs once per loop turn, each
+  turn's forward pass emits a token, and emitting resets the timer — so the
+  elapsed time at the check is always ~0 however small the interval. **A gap
+  has to be a real one**: prefill of a few hundred prompt tokens produces no
+  output and is exactly the silence a proxy times out on. 438-token prompt →
+  3 pings, and the stream still ends correctly with them interleaved (a
+  comment in the middle of a chunked body is where framing goes wrong).
+  ⚠ **`json_utf8_complete_prefix()` — half a codepoint is not a smaller
+  answer.** `json_escape` passes raw UTF-8 through because it is already valid
+  inside a JSON string; that holds only if the input IS valid UTF-8, and a
+  server emitting one token at a time does not choose where its bytes end.
+  This vocabulary has all 256 single-byte ids, so one character can arrive as
+  several tokens. Cut at the last complete sequence, hold the tail, prepend it
+  to the next piece. 12 tests written against a deliberately wrong stub
+  (`return len` — what a server that never thought about it does); 4 failed.
+  ⚠⚠ **THE SLOW-CLIENT POLICY TOOK FOUR ATTEMPTS AND THREE WERE TEST BUGS.**
+  (1) not reading for 6 s → 41,225 bytes in flight, untriggered; (2) not
+  reading for 15 s then draining → 51,513, and the flaw is STRUCTURAL because
+  the drain empties the buffers so the server stops accumulating the instant
+  the measurement begins; (3) reading one byte per 250 ms → **the server DID
+  drop the client and its log said so, and the probe could not see it**,
+  because end-of-stream sits behind every buffered byte and at 4 B/s that is
+  most of an hour away; (4) **detect by WRITING** — a byte sent into a closed
+  connection fails, a byte sent into a live one consumes nothing the server
+  holds, so the probe stays perfectly silent as a reader (the condition under
+  test) and still notices within one polling interval whatever the box does.
+  ▶ **And one real finding in the server: a non-reading client had 71,417
+  bytes in flight and CLIMBING after 30 s, none of it in the server's own
+  buffer.** So a stated per-connection cap of 256 KiB was really 256 KiB plus
+  whatever the kernel felt like — half a promise. `ServerOpts.sse_send_buffer`
+  (SO_SNDBUF on accepted sockets) closes the gap; pinned at 4 KiB by the gate
+  the in-flight total falls to ~9 KB and the drop lands in seconds:
+  `stream id=1 dropped -- 4202 bytes unread past the 4096-byte cap`.
+  ⚠ **ONE INTERMITTENT RED, NOT DISMISSED AS FLAKE**: the ping probe once
+  reported 4,428 bytes and no `[DONE]` against a server log showing that same
+  stream finishing correctly, then passed on re-run and in isolation. The
+  mechanism that fits is the probe's own 30 s drain deadline expiring
+  mid-stream on a loaded box. Every probe exits the moment it has its answer,
+  so the deadline is now 120 s — paid only by a genuine hang — and the failure
+  message now names WHICH of the three ways it ended. **A gate that fails
+  intermittently is worse than one that fails always, and a test-side timeout
+  tighter than the work is the commonest way to build one.**
+  ⚠ A test-client bug worth recording: `chat_request` built its body into a
+  512-byte buffer and sent the UNTRUNCATED length — a 511-byte body announced
+  as `Content-Length: 2100`. A well-formed request for a body that was never
+  going to arrive; the server correctly waited, and the red looked like a
+  broken heartbeat in the SERVER. **A silent truncation in a test client is
+  indistinguishable from a bug in the thing under test.**
+  Gates: `serve_golden.sh` grows to 10 curl requests, one of them `--raw` so
+  the transcript pins the chunk framing ON THE WIRE (hex sizes, the CRLF
+  around each chunk, the terminating zero chunk) rather than what curl made of
+  it. `serve_pipeline.{c,sh}` become `serve_probe.c` + `serve_raw.sh`: one
+  server, three probes, because all three need a client curl cannot be.
+  Green: `mingw32-make test` rc 0 — 17 test binaries (`test_json` 42/42, up
+  12), `abi_tu`, `abi_tu_cxx`, `abi_isolation`, `abi_smoke`, 4 goldens,
+  `serve_golden` 10/10, `serve_raw` 3/3. Streamed and non-streamed agree token
+  for token on the same prompt (`gen=10` both). **NEXT = A5**, the gate's core
+  and deliberately early: write `StokeAdapter` and run the M0 harness
+  UNMODIFIED. ⚠ `/v1/completions` and `/v1/models` do not exist yet and gate
+  item [1] names them — they land at A5, along with whatever the harness turns
+  out to need. The entry note's open question (whether the harness needs a
+  sampling parameter A3–A4 did not build) is answered ON ARRIVAL, not guessed.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
