@@ -562,3 +562,39 @@ i64 json_escape(const char* in, size_t len, char* out, size_t cap) {
     }
     return (i64)w;
 }
+
+/* ▶ THE LOOK-BACK IS BOUNDED AT THREE BYTES, and that bound is exactly right
+ * rather than merely cheap: a UTF-8 sequence is at most four bytes, so an
+ * INCOMPLETE one has at most three, and its lead is therefore within three
+ * bytes of the end. A complete four-byte sequence's lead sits four back, out of
+ * the window -- the scan falls off the end and returns len, which is the answer
+ * it should give. Nothing is special-cased to make that come out.
+ */
+size_t json_utf8_complete_prefix(const char* buf, size_t len) {
+    const u8* p    = (const u8*)buf;
+    size_t    back = len < 3 ? len : 3;
+
+    for (size_t i = 1; i <= back; i++) {
+        u8 c = p[len - i];
+        if ((c & 0xC0) == 0x80) continue; /* a continuation byte; keep going */
+
+        size_t need;
+        if ((c & 0xE0) == 0xC0) {
+            need = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            need = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            need = 4;
+        } else {
+            /* ASCII, or a byte that can never lead a sequence (0xFE, 0xFF, or
+             * a stray continuation run's end). Holding it back would be waiting
+             * for a completion that cannot arrive. */
+            return len;
+        }
+        return (i < need) ? len - i : len;
+    }
+
+    /* Only continuation bytes in the window and no lead in reach: either a
+     * complete four-byte sequence, or garbage. Either way nothing is pending. */
+    return len;
+}

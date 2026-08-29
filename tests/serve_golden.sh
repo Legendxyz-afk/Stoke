@@ -71,7 +71,7 @@ diffout="$builddir/serve_golden.diff"
 rm -f "$out" "$raw" "$srvlog" "$diffout"
 
 url="http://127.0.0.1:$port"
-n_requests=8
+n_requests=10
 
 # The first request has to outwait a 2.5GB model load, so it retries a refused
 # connection. Every later one does NOT: by then the server is up, and a retry
@@ -150,11 +150,108 @@ run_case "POST /v1/chat/completions (system + user)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
     -d '{"model":"stoke-golden","messages":[{"role":"system","content":"You are terse."},{"role":"user","content":"Name one color."}],"max_tokens":24}'
 
-# 4. Streaming is refused rather than silently answered whole -- a client that
-#    asked for a stream and got one blob would hang waiting for events.
-run_case "POST /v1/chat/completions (stream:true -> 501)" \
-    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
-    -d '{"model":"stoke","messages":[{"role":"user","content":"hi"}],"stream":true}'
+# ---- the SSE assertions -------------------------------------------------
+#
+# ▶▶ NAMED, NOT ONLY DIFFED. The transcript diff below catches any change at
+# all, which is what a golden is for -- and it explains nothing: every OpenAI
+# compat trap that regresses reports as the same wall of red. These name the
+# trap. It is the A2 corpus's reason-slug argument applied to a protocol
+# instead of to a parser.
+#
+# ⚠ grep -F EVERYWHERE, deliberately. `data: [DONE]` read as a BRE is "data: "
+# followed by one character out of D/O/N/E, which matches most lines in an SSE
+# stream -- an assertion that can only pass. Fixed strings have no
+# metacharacters to get wrong. This gate has already shipped one pattern whose
+# escape it got wrong; see the CRLF check above.
+sse_fail=0
+sse_assert() { # <file> <what> <fixed-needle>
+    if ! grep -qF -- "$3" "$1"; then
+        echo "serve_golden: FAILED -- $2" >&2
+        echo "               expected to find: $3" >&2
+        sse_fail=1
+    fi
+}
+sse_refute() { # <file> <what> <fixed-needle>
+    if grep -qF -- "$3" "$1"; then
+        echo "serve_golden: FAILED -- $2" >&2
+        echo "               must not contain: $3" >&2
+        sse_fail=1
+    fi
+}
+
+# 4. THE ENDPOINT AS A STREAM. curl decodes the chunked framing here, so what
+#    the transcript records is the event stream a client actually sees.
+run_case "POST /v1/chat/completions (stream:true)" \
+    -N -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":24,"stream":true}'
+cp "$raw" "$builddir/serve_golden.sse"
+sse="$builddir/serve_golden.sse"
+
+sse_assert "$sse" "a stream must be text/event-stream" \
+    "Content-Type: text/event-stream"
+sse_assert "$sse" "a stream is framed by chunked transfer-encoding, not a length" \
+    "Transfer-Encoding: chunked"
+sse_refute "$sse" "a stream cannot carry a Content-Length: nothing knows it when the head goes out" \
+    "Content-Length:"
+sse_assert "$sse" "the stream must terminate with the sentinel event" \
+    "data: [DONE]"
+sse_assert "$sse" "the final content chunk carries the finish reason" \
+    '"finish_reason":"stop"'
+sse_refute "$sse" "usage is sent ONLY under stream_options.include_usage" \
+    '"usage"'
+
+# The FIRST delta is its own trap twice over: openai-python reads `role` off it
+# and off no other chunk, and expects finish_reason null until the last one.
+# Both are properties of ONE chunk, so both are checked on that chunk -- "the
+# stream carries a role somewhere" is a weaker claim a broken server can meet.
+first_delta=$(grep -m1 '^data: {' "$sse")
+case "$first_delta" in
+    *'"role":"assistant"'*) ;;
+    *) echo "serve_golden: FAILED -- the first delta must carry role=assistant" >&2
+       echo "               first delta was: $first_delta" >&2
+       sse_fail=1 ;;
+esac
+case "$first_delta" in
+    *'"finish_reason":null'*) ;;
+    *) echo "serve_golden: FAILED -- finish_reason stays null until the final chunk" >&2
+       echo "               first delta was: $first_delta" >&2
+       sse_fail=1 ;;
+esac
+
+# 5. stream_options.include_usage. OpenAI sends usage as its own final chunk
+#    with an EMPTY choices array, AFTER the chunk carrying finish_reason: a
+#    client reading usage off the finish chunk gets nothing, and one that stops
+#    at finish_reason never sees it at all.
+run_case "POST /v1/chat/completions (stream + include_usage)" \
+    -N -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":24,"stream":true,"stream_options":{"include_usage":true}}'
+cp "$raw" "$builddir/serve_golden.usage"
+usg="$builddir/serve_golden.usage"
+
+sse_assert "$usg" "include_usage must produce a usage chunk" '"usage":{"prompt_tokens"'
+sse_assert "$usg" "the usage chunk carries an empty choices array" '"choices":[]'
+sse_assert "$usg" "the stream still terminates with the sentinel" "data: [DONE]"
+fin_line=$(grep -nF -- '"finish_reason":"stop"' "$usg" | head -1 | cut -d: -f1)
+usg_line=$(grep -nF -- '"usage":{"prompt_tokens"' "$usg" | head -1 | cut -d: -f1)
+if [ -z "$fin_line" ] || [ -z "$usg_line" ] || [ "$usg_line" -le "$fin_line" ]; then
+    echo "serve_golden: FAILED -- the usage chunk must come AFTER the chunk" \
+         "carrying finish_reason (finish at line ${fin_line:-none}, usage at" \
+         "line ${usg_line:-none})" >&2
+    sse_fail=1
+fi
+
+# 6. THE WIRE, UNDECODED. curl --raw leaves the chunked framing in place, so
+#    this case pins the bytes on the socket instead of what curl made of them:
+#    the hex chunk sizes, the CRLF around each, and the terminating zero chunk.
+#    Everything above would still pass against a server whose framing was
+#    subtly wrong and whose client was forgiving.
+run_case "POST /v1/chat/completions (stream, --raw wire bytes)" \
+    -N --raw -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"stream":true}'
+
+if [ "$sse_fail" -ne 0 ]; then
+    echo "serve_golden: FAILED -- see the named SSE failures above" >&2
+fi
 
 # 5-8. The error surface. Each carries its own reason string, so a server that
 #      refused all four for one wrong cause cannot pass -- the same argument
@@ -192,7 +289,7 @@ srv_rc=$?
     printf '[server exit %d]\n' "$srv_rc"
 } >> "$out"
 
-fail=0
+fail=$sse_fail
 if [ "$srv_rc" -ne 0 ]; then
     echo "serve_golden: FAILED -- the server exited $srv_rc" >&2
     fail=1
@@ -215,6 +312,6 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 rm -f "$out" "$raw" "$diffout" "$builddir/serve_golden.err" \
-      "$builddir/serve_golden.crlf" "$srvlog"
+      "$builddir/serve_golden.crlf" "$builddir/serve_golden.sse" "$builddir/serve_golden.usage" "$srvlog"
 echo "serve_golden: OK ($n_requests curl requests matched $golden)"
 exit 0

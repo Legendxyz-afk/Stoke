@@ -144,11 +144,13 @@ CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Werror -g -O1 -Isrc
 ABI_TU_BIN := $(BUILDDIR)/abi_tu$(EXE) $(BUILDDIR)/abi_tu_cxx$(EXE) $(BUILDDIR)/abi_smoke$(EXE)
 
-# M6 rung A3: an HTTP client of our own, because curl cannot pipeline. Built by
+# M6 rungs A3+A4: an HTTP client of our own, for the three behaviours curl
+# cannot reach (pipelining, the SSE heartbeat, a client that stops reading).
+# Built by
 # the generic tests/%.c rule; listed here for the same reason abi_smoke is --
 # it takes arguments and needs a server, so the TEST_SRC wildcard must not
 # sweep it into run_tests.sh, and something has to name it or it never builds.
-SERVE_BIN := $(BUILDDIR)/serve_pipeline$(EXE)
+SERVE_BIN := $(BUILDDIR)/serve_probe$(EXE)
 
 .PHONY: all test clean
 
@@ -165,7 +167,7 @@ test: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN) $(SERVE_BIN)
 	$(TSAN_RUN) sh tests/tok_special_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/unicode_sweep_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/serve_golden.sh $(BUILDDIR) $(EXE)
-	$(TSAN_RUN) sh tests/serve_pipeline.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/serve_raw.sh $(BUILDDIR) $(EXE)
 
 # One BUILDDIR per (platform,sanitizer) combination (see header comment) --
 # object files live here too, built with this invocation's exact CFLAGS, so

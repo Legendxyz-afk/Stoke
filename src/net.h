@@ -92,6 +92,39 @@ int net_set_nonblocking(NetSock s);
  * arriving now; Nagle would hold it back waiting for company. */
 int net_set_nodelay(NetSock s);
 
+/* Asks the kernel for a receive buffer of `bytes` on this socket. Advisory --
+ * the kernel may round it, clamp it, or ignore it entirely, so nothing may
+ * depend on the exact number taking effect.
+ *
+ * ▶ ADDED AT RUNG A4 FOR A TEST CLIENT, and stated plainly because that is
+ * unusual: proving a server disconnects a client that has stopped reading
+ * means being a client that has stopped reading, and the kernel will happily
+ * absorb tens of kilobytes on that client's behalf before the server's own
+ * buffer ever grows. Shrinking the window is how the test reaches the policy
+ * in seconds instead of in a minute of generated tokens. It is a real socket
+ * option a real host might want; it is simply the test that needed it first. */
+int net_set_recv_buffer(NetSock s, int bytes);
+
+/* The sending half of the same option. Also advisory.
+ *
+ * ▶ A SERVER HAS A REASON TO WANT THIS, and it is not only the test. A server
+ * that promises "at most N unsent bytes per connection" while the kernel holds
+ * an unbounded amount on its behalf is describing only half of the memory that
+ * connection costs. Measured here on 2026-08-29: a client reading essentially
+ * nothing for thirty seconds had 71,417 bytes in flight and climbing, none of
+ * which had reached the server's own buffer yet. */
+int net_set_send_buffer(NetSock s, int bytes);
+
+/* net_connect, with SO_RCVBUF applied to the socket BEFORE the connect.
+ *
+ * ⚠ THE ORDERING IS THE ENTIRE VALUE OF THIS FUNCTION, and it was learned by
+ * watching the other order do nothing. Windows auto-tunes the receive window
+ * and stops only once SO_RCVBUF has been set explicitly, and the window is
+ * first advertised during the handshake -- so a value set afterwards may never
+ * take effect. Measured: a client that set 2 KiB after connecting still let
+ * roughly 100 KiB accumulate in flight. */
+NetSock net_connect_recvbuf(const char* host, u16 port, int recvbuf);
+
 /* ---- readiness ----------------------------------------------------------
  *
  * ▶ ADDED AT RUNG A3, because the server needs it and A2 had no caller for it.

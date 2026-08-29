@@ -66,11 +66,31 @@
 
 #define DEFAULT_MAX_TOKENS 128
 
+/* An idle stream that says nothing gets closed by intermediaries -- 60 s is a
+ * common proxy default, so the comment goes out well inside it. It is a
+ * COMMENT (`: ping`) rather than an event precisely so no client can mistake
+ * it for content: the SSE spec says a line starting with a colon is ignored. */
+#define SSE_PING_MS_DEFAULT 15000
+
+/* How much unread stream one connection may make this process hold before it
+ * is disconnected. Sized so a normal reader never approaches it and a reader
+ * that has stopped reading cannot buy memory indefinitely. */
+#define SSE_MAX_PENDING_DEFAULT (256u * 1024u)
+
+/* ---- a growable byte buffer, for building responses -------------------- */
+
+typedef struct {
+    char*  b;
+    size_t len, cap;
+    int    oom;
+} Buf;
+
 typedef enum {
     CONN_FREE = 0,
-    CONN_READ,  /* accumulating a request                    */
-    CONN_GEN,   /* submitted to the engine, generating       */
-    CONN_WRITE, /* response built, draining to the socket    */
+    CONN_READ,   /* accumulating a request                      */
+    CONN_GEN,    /* submitted to the engine, generating         */
+    CONN_WRITE,  /* whole response built, draining to the socket */
+    CONN_STREAM, /* generating AND draining, one token at a time */
 } ConnState;
 
 typedef struct {
@@ -80,18 +100,38 @@ typedef struct {
     char*  in;
     size_t in_len, in_cap;
 
-    char*  out;
-    size_t out_len, out_sent;
+    /* ▶ ONE BUFFER, APPENDED TO, NOT REPLACED. A non-streamed response is
+     * built once and drained once, which a fresh allocation per response
+     * served fine. A stream appends after every token while the socket is
+     * still draining the last one, so the buffer has to outlive any single
+     * write and carry a read cursor into itself. */
+    Buf    out;
+    size_t out_sent;
 
     int keep_alive;
 
     /* the live request */
     uint64_t  req_id;
-    uint32_t* prompt_ids; /* BORROWED by the engine while CONN_GEN */
+    uint32_t* prompt_ids; /* BORROWED by the engine while CONN_GEN/STREAM */
     uint32_t  n_prompt;
     uint32_t* gen;
     int32_t   n_gen, gen_cap;
     char      model[128]; /* echoed back; copied because `in` is reused */
+    int64_t   created;    /* one timestamp for every chunk of one answer */
+
+    /* ---- streaming ---- */
+    int  want_usage;  /* stream_options.include_usage                      */
+    int  sent_role;   /* the role goes in the FIRST delta and nowhere else */
+    int  stream_done; /* the [DONE] sentinel and the final chunk are in    */
+    /* Bytes of a multi-byte character whose remaining bytes are still in a
+     * token that has not been generated yet. See json_utf8_complete_prefix:
+     * this vocabulary has all 256 single-byte ids, so one character really
+     * can arrive as several tokens, and half a codepoint inside a JSON
+     * string is a response the client cannot parse. Four bytes is the whole
+     * of UTF-8; eight is room to be wrong in safely. */
+    char   pend[8];
+    size_t pend_len;
+    double last_out_ms; /* for the heartbeat: when we last put bytes out */
 
     time_t last_active;
 } Conn;
@@ -104,20 +144,23 @@ typedef struct {
     int           verbose;
     uint32_t      max_ctx;
     uint32_t      eos_id;
+    int           ping_ms;
+    size_t        max_pending;
+    int           send_buffer;
+    /* One reusable frame buffer for the whole server. Streaming builds a
+     * complete SSE frame before it can chunk it (a chunk is prefixed by its
+     * length), and a fresh allocation per token is a malloc on the hot path
+     * for no reason -- the loop is single-threaded, so one is enough. */
+    Buf           scratch;
 } Server;
 
-/* ---- a growable byte buffer, for building responses -------------------- */
-
-typedef struct {
-    char*  b;
-    size_t len, cap;
-    int    oom;
-} Buf;
+/* ---- the buffer helpers ------------------------------------------------ */
 
 static void buf_free(Buf* d) {
     free(d->b);
     d->b   = NULL;
     d->len = d->cap = 0;
+    d->oom = 0;
 }
 
 static int buf_reserve(Buf* d, size_t extra) {
@@ -196,7 +239,7 @@ static void conn_close(Server* sv, Conn* c) {
     net_close(c->s);
     c->s = NET_INVALID_SOCK;
     free(c->in);
-    free(c->out);
+    buf_free(&c->out);
     memset(c, 0, sizeof *c);
     c->s     = NET_INVALID_SOCK;
     c->state = CONN_FREE;
@@ -215,32 +258,36 @@ static void conn_consume(Conn* c, size_t n) {
 
 /* ---- responses ---------------------------------------------------------- */
 
+/* Drops whatever is already queued and starts the buffer over. Only a
+ * complete-response path may do this: it is how a 500 replaces a half-built
+ * body, and it is exactly wrong once a stream's head has gone out. */
+static void conn_out_reset(Conn* c) {
+    c->out.len  = 0;
+    c->out.oom  = 0;
+    c->out_sent = 0;
+}
+
 static void respond(Conn* c, int status, const char* content_type,
                     const char* body, size_t body_len) {
-    Buf h = {0};
-    buf_fmt(&h, "HTTP/1.1 %d %s\r\n", status, http_status_text(status));
-    buf_fmt(&h, "Content-Type: %s\r\n", content_type);
-    buf_fmt(&h, "Content-Length: %zu\r\n", body_len);
-    buf_str(&h, c->keep_alive ? "Connection: keep-alive\r\n"
-                              : "Connection: close\r\n");
-    buf_str(&h, "\r\n");
-    buf_add(&h, body, body_len);
+    conn_out_reset(c);
+    Buf* h = &c->out;
+    buf_fmt(h, "HTTP/1.1 %d %s\r\n", status, http_status_text(status));
+    buf_fmt(h, "Content-Type: %s\r\n", content_type);
+    buf_fmt(h, "Content-Length: %zu\r\n", body_len);
+    buf_str(h, c->keep_alive ? "Connection: keep-alive\r\n"
+                             : "Connection: close\r\n");
+    buf_str(h, "\r\n");
+    buf_add(h, body, body_len);
 
-    if (h.oom) {
-        buf_free(&h);
-        free(c->out); /* the previous response, if any -- not leaked here */
+    if (h->oom) {
+        /* Nothing can be sent, so send nothing and close. The request still
+         * counts as answered when service_write drains this empty buffer --
+         * see the note there; a client that gets a closed socket has had its
+         * answer, badly. */
+        conn_out_reset(c);
         c->keep_alive = 0;
-        c->state      = CONN_WRITE;
-        c->out        = NULL;
-        c->out_len    = 0;
-        c->out_sent   = 0;
-        return;
     }
-    free(c->out);
-    c->out      = h.b;
-    c->out_len  = h.len;
-    c->out_sent = 0;
-    c->state    = CONN_WRITE;
+    c->state = CONN_WRITE;
 }
 
 /* The OpenAI error envelope. openai-python reads `error.message` and
@@ -264,6 +311,71 @@ static void respond_error(Conn* c, int status, const char* type,
         respond(c, status, "application/json", b.b, b.len);
     }
     buf_free(&b);
+}
+
+/* ---- server-sent events -------------------------------------------------
+ *
+ * ▶▶ CHUNKED, NOT Connection: close. A streamed body has no length when its
+ * head goes out, and HTTP/1.1 offers exactly two ways to say so: chunked
+ * framing, or close-delimited. Close-delimited is three lines shorter and
+ * costs the connection -- every request would then pay a fresh TCP handshake,
+ * including every request of the M0 benchmark harness, whose whole job is
+ * measuring inter-token latency. Framing that distorts the instrument pointed
+ * at it is not a saving. It is also what the real OpenAI API sends, and the
+ * clients this milestone is graded against are its clients.
+ *
+ * ⚠ Inbound chunked is still refused with a 501 by src/http.c, and that is not
+ * an inconsistency: a client sending it is a request we would have to buffer
+ * and re-frame, while a server sending it is a body we already produce a piece
+ * at a time.
+ */
+
+/* Rewinds the send cursor, moving anything unsent to the front. The common
+ * case -- the socket kept up -- is a rewind with no copy at all. */
+static void conn_out_compact(Conn* c) {
+    if (c->out_sent == 0) return;
+    if (c->out_sent >= c->out.len) {
+        c->out.len  = 0;
+        c->out_sent = 0;
+        return;
+    }
+    memmove(c->out.b, c->out.b + c->out_sent, c->out.len - c->out_sent);
+    c->out.len -= c->out_sent;
+    c->out_sent = 0;
+}
+
+/* Queues one chunked-transfer chunk carrying `n` bytes. */
+static void sse_chunk(Conn* c, const char* p, size_t n) {
+    if (n == 0) return; /* a zero-length chunk ENDS the body; never by accident */
+    conn_out_compact(c);
+    buf_fmt(&c->out, "%zx\r\n", n);
+    buf_add(&c->out, p, n);
+    buf_str(&c->out, "\r\n");
+    c->last_out_ms = now_ms();
+}
+
+static void sse_begin(Conn* c) {
+    conn_out_reset(c);
+    Buf* h = &c->out;
+    buf_str(h, "HTTP/1.1 200 OK\r\n");
+    buf_str(h, "Content-Type: text/event-stream\r\n");
+    /* Both matter in front of a proxy: one stops it caching a stream, the
+     * other stops it holding events back until it has "enough" of them. */
+    buf_str(h, "Cache-Control: no-cache\r\n");
+    buf_str(h, "X-Accel-Buffering: no\r\n");
+    buf_str(h, "Transfer-Encoding: chunked\r\n");
+    buf_str(h, c->keep_alive ? "Connection: keep-alive\r\n"
+                             : "Connection: close\r\n");
+    buf_str(h, "\r\n");
+    c->last_out_ms = now_ms();
+}
+
+/* The terminating zero-length chunk. After this the body is over and the
+ * connection is reusable. */
+static void sse_finish_body(Conn* c) {
+    conn_out_compact(c);
+    buf_str(&c->out, "0\r\n\r\n");
+    c->last_out_ms = now_ms();
 }
 
 /* ---- the chat endpoint -------------------------------------------------- */
@@ -296,6 +408,142 @@ static const char* finish_reason_of(int32_t finish) {
     }
 }
 
+/* ---- the streamed shape of the same answer ------------------------------
+ *
+ * Every function here returns 1 to continue and 0 when the connection has been
+ * closed under it -- the only failure any of them can hit is a buffer that
+ * could not grow, and a stream missing a token is not a stream.
+ */
+
+/* The envelope every chunk of one response shares.
+ *
+ * ⚠ `created` is fixed when the request is accepted, not read per chunk. All
+ * of OpenAI's chunks carry one timestamp, and a clock read per token would put
+ * a field in the stream that changes for reasons the client cannot see. */
+static void stream_envelope(Server* sv, Conn* c) {
+    Buf* f = &sv->scratch;
+    f->len = 0;
+    f->oom = 0;
+    buf_str(f, "data: ");
+    buf_fmt(f, "{\"id\":\"chatcmpl-%llu\",\"object\":\"chat.completion.chunk\","
+               "\"created\":%lld,\"model\":\"",
+            (unsigned long long)c->req_id, (long long)c->created);
+    buf_json_str(f, c->model, strlen(c->model));
+    buf_str(f, "\",");
+}
+
+static int stream_send_frame(Server* sv, Conn* c) {
+    buf_str(&sv->scratch, "\n\n");
+    if (sv->scratch.oom) {
+        conn_close(sv, c);
+        return 0;
+    }
+    sse_chunk(c, sv->scratch.b, sv->scratch.len);
+    return 1;
+}
+
+/* One content delta.
+ *
+ * ▶ THE ROLE RIDES ON THE FIRST CONTENT CHUNK rather than in a chunk of its
+ * own. openai-python accepts either -- it merges deltas -- but a role-only
+ * chunk is one more SSE event, and the M0 harness counts events to derive
+ * inter-token latency. A chunk carrying no token would land in that
+ * measurement as a token, which is a worse error than a shorter stream. */
+static int stream_delta(Server* sv, Conn* c, const char* text, size_t len) {
+    stream_envelope(sv, c);
+    buf_str(&sv->scratch, "\"choices\":[{\"index\":0,\"delta\":{");
+    if (!c->sent_role) {
+        buf_str(&sv->scratch, "\"role\":\"assistant\",");
+        c->sent_role = 1;
+    }
+    buf_str(&sv->scratch, "\"content\":\"");
+    buf_json_str(&sv->scratch, text, len);
+    buf_str(&sv->scratch, "\"},\"logprobs\":null,\"finish_reason\":null}]}");
+    return stream_send_frame(sv, c);
+}
+
+/* Decodes the newly generated ids and emits them, holding back a trailing
+ * partial character.
+ *
+ * ⚠⚠ THE HOLD-BACK IS NOT OPTIONAL. This vocabulary contains all 256
+ * single-byte ids, so one character can be generated as several tokens, and a
+ * server that emitted each token as it arrived would put half a codepoint
+ * inside a JSON string -- an unparseable event, produced only by inputs that
+ * make the model answer in a non-ASCII script. See
+ * json_utf8_complete_prefix(). A partial character still pending when
+ * generation ENDS is dropped; it was never a character. */
+static int stream_push_tokens(Server* sv, Conn* c, const uint32_t* ids,
+                              int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        if (ids[i] == sv->eos_id) continue;
+
+        char    piece[512];
+        int32_t m = stoke_detokenize(sv->e, ids[i], piece, (int32_t)sizeof piece);
+        if (m <= 0 || (size_t)m > sizeof piece) continue;
+
+        char   whole[sizeof c->pend + sizeof piece];
+        size_t len = c->pend_len;
+        memcpy(whole, c->pend, c->pend_len);
+        memcpy(whole + len, piece, (size_t)m);
+        len += (size_t)m;
+
+        size_t cut  = json_utf8_complete_prefix(whole, len);
+        size_t tail = len - cut;
+        if (tail > sizeof c->pend) { /* unreachable: a partial tail is < 4 */
+            cut  = len;
+            tail = 0;
+        }
+        memcpy(c->pend, whole + cut, tail);
+        c->pend_len = tail;
+
+        if (cut == 0) continue; /* the character has not finished arriving */
+        if (!stream_delta(sv, c, whole, cut)) return 0;
+    }
+    return 1;
+}
+
+static int stream_final(Server* sv, Conn* c, int32_t finish) {
+    /* The finish chunk: an EMPTY delta carrying the reason. A client that
+     * merges deltas gets nothing new, which is the point -- the reason is not
+     * content. */
+    stream_envelope(sv, c);
+    buf_fmt(&sv->scratch,
+            "\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,"
+            "\"finish_reason\":\"%s\"}]}",
+            finish_reason_of(finish));
+    if (!stream_send_frame(sv, c)) return 0;
+
+    /* ▶ USAGE IS ITS OWN CHUNK, AFTER THE FINISH CHUNK, WITH EMPTY choices,
+     * and only under stream_options.include_usage. Three separate traps in one
+     * field: a client reading usage off the finish chunk finds nothing; one
+     * that stops reading at finish_reason never sees it; and one that did not
+     * ask for it and gets a chunk with no choices can trip over the empty
+     * array. Non-streamed responses carry usage unconditionally -- that
+     * asymmetry is OpenAI's, not ours. */
+    if (c->want_usage) {
+        stream_envelope(sv, c);
+        buf_fmt(&sv->scratch,
+                "\"choices\":[],\"usage\":{\"prompt_tokens\":%u,"
+                "\"completion_tokens\":%d,\"total_tokens\":%u}}",
+                c->n_prompt, (int)c->n_gen, c->n_prompt + (uint32_t)c->n_gen);
+        if (!stream_send_frame(sv, c)) return 0;
+    }
+
+    sse_chunk(c, "data: [DONE]\n\n", sizeof "data: [DONE]\n\n" - 1);
+    sse_finish_body(c);
+    c->stream_done = 1;
+
+    if (sv->verbose) {
+        fprintf(stderr,
+                "stoke serve: stream id=%llu prompt=%u gen=%d finish=%s\n",
+                (unsigned long long)c->req_id, c->n_prompt, (int)c->n_gen,
+                finish_reason_of(finish));
+    }
+    c->req_id = 0; /* the engine is done with it; nothing to cancel */
+    conn_release_request(sv, c);
+    return 1;
+}
+
 static void finish_chat(Server* sv, Conn* c, int32_t finish) {
     Buf text = {0};
     decode_tokens(sv, c->gen, c->n_gen, &text);
@@ -303,7 +551,7 @@ static void finish_chat(Server* sv, Conn* c, int32_t finish) {
     Buf b = {0};
     buf_fmt(&b, "{\"id\":\"chatcmpl-%llu\",\"object\":\"chat.completion\","
                 "\"created\":%lld,\"model\":\"",
-            (unsigned long long)c->req_id, (long long)time(NULL));
+            (unsigned long long)c->req_id, (long long)c->created);
     buf_json_str(&b, c->model, strlen(c->model));
     buf_str(&b, "\",\"choices\":[{\"index\":0,\"message\":{\"role\":"
                 "\"assistant\",\"content\":\"");
@@ -391,15 +639,19 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
         return;
     }
 
-    /* stream:true is refused rather than silently answered whole. A client that
-     * asked for a stream and got one JSON blob would hang waiting for events
-     * that never come -- a loud 501 is the kinder failure. */
-    const JsonNode* stream = json_member(&d, body, root, "stream");
+    const JsonNode* stream      = json_member(&d, body, root, "stream");
     int             want_stream = 0;
-    if (stream && json_bool(body, stream, &want_stream) == 0 && want_stream) {
-        respond_error(c, 501, "invalid_request_error",
-                      "streaming responses are not implemented");
-        return;
+    if (stream) json_bool(body, stream, &want_stream);
+
+    /* ⚠ stream_options IS READ EVEN WHEN stream IS FALSE, and then ignored.
+     * The alternative -- refusing the combination -- is a 400 for a request
+     * that is merely redundant, and openai-python sends whatever the caller
+     * set. A non-streamed response carries usage unconditionally anyway. */
+    int             want_usage = 0;
+    const JsonNode* sopts      = json_member(&d, body, root, "stream_options");
+    if (sopts && sopts->type == JSON_OBJ) {
+        const JsonNode* iu = json_member(&d, body, sopts, "include_usage");
+        if (iu) json_bool(body, iu, &want_usage);
     }
 
     const JsonNode* model = json_member(&d, body, root, "model");
@@ -500,10 +752,15 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
         return;
     }
 
-    c->prompt_ids = ids;
-    c->n_prompt   = (uint32_t)n_prompt;
-    c->n_gen      = 0;
-    c->req_id     = sv->next_req_id++;
+    c->prompt_ids  = ids;
+    c->n_prompt    = (uint32_t)n_prompt;
+    c->n_gen       = 0;
+    c->req_id      = sv->next_req_id++;
+    c->created     = (int64_t)time(NULL);
+    c->want_usage  = want_usage;
+    c->sent_role   = 0;
+    c->stream_done = 0;
+    c->pend_len    = 0;
 
     stoke_request req;
     memset(&req, 0, sizeof req);
@@ -522,7 +779,20 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
         respond_error(c, 503, "server_error", msg);
         return;
     }
-    c->state = CONN_GEN;
+
+    if (!want_stream) {
+        c->state = CONN_GEN;
+        return;
+    }
+
+    /* ▶ THE HEAD GOES OUT NOW, BEFORE THE FIRST TOKEN EXISTS. That is the
+     * point of streaming: a client blocked on response headers is a client
+     * that has not started its clock. Everything after this is appended, so
+     * NOTHING on this connection may call respond() again -- a status line in
+     * the middle of a chunked body is not an error message, it is corruption.
+     * The error paths above all run before this line, deliberately. */
+    c->state = CONN_STREAM;
+    sse_begin(c);
 }
 
 /* ---- routing ------------------------------------------------------------ */
@@ -638,9 +908,9 @@ static void service_read(Server* sv, Conn* c) {
 }
 
 static void service_write(Server* sv, Conn* c) {
-    while (c->out_sent < c->out_len) {
-        i64 n = net_send(c->s, c->out + c->out_sent, c->out_len - c->out_sent);
-        if (n == NET_WOULD_BLOCK) return;
+    while (c->out_sent < c->out.len) {
+        i64 n = net_send(c->s, c->out.b + c->out_sent, c->out.len - c->out_sent);
+        if (n == NET_WOULD_BLOCK) break;
         if (n < 0) {
             conn_close(sv, c);
             return;
@@ -648,11 +918,38 @@ static void service_write(Server* sv, Conn* c) {
         c->out_sent += (size_t)n;
     }
 
-    free(c->out);
-    c->out      = NULL;
-    c->out_len  = 0;
-    c->out_sent = 0;
+    if (c->out_sent < c->out.len) {
+        /* ▶▶ THE SLOW-CLIENT POLICY, and it is a policy rather than a bug
+         * guard. A reader that stops reading mid-stream cannot be allowed to
+         * make this process buy memory on its behalf for as long as it likes,
+         * and it must never be allowed to make the SCHEDULER wait -- every
+         * other client's tokens come off the same loop. So the backpressure
+         * stops at this connection's own buffer: past the cap, the client is
+         * disconnected and ITS request is cancelled, which returns the KV
+         * blocks it was holding. Nobody else notices. */
+        if (c->state == CONN_STREAM &&
+            c->out.len - c->out_sent > sv->max_pending) {
+            if (sv->verbose) {
+                fprintf(stderr,
+                        "stoke serve: stream id=%llu dropped -- %zu bytes "
+                        "unread past the %zu-byte cap\n",
+                        (unsigned long long)c->req_id,
+                        c->out.len - c->out_sent, sv->max_pending);
+            }
+            conn_close(sv, c); /* cancels the request on the way out */
+        }
+        return;
+    }
+
+    /* Fully drained. Rewound rather than freed: a stream's next token reuses
+     * the allocation instead of asking the allocator once per token. */
+    c->out.len     = 0;
+    c->out_sent    = 0;
     c->last_active = time(NULL);
+
+    /* A stream that has not sent its sentinel is not a finished request, no
+     * matter how empty its buffer is right now. */
+    if (c->state == CONN_STREAM && !c->stream_done) return;
 
     /* ▶▶ COUNTED HERE, AND ONLY HERE, BECAUSE `completed` IS WHAT ENDS THE
      * LOOP. Counting a request when its response was BUILT is a whole answer
@@ -685,10 +982,31 @@ static void service_write(Server* sv, Conn* c) {
     if (c->in_len > 0) service_read(sv, c);
 }
 
+/* An engine failure, reported to whichever kind of response is in flight.
+ *
+ * ⚠ A STREAM CANNOT BE TOLD. Its 200 and its headers left before the first
+ * token existed, so there is no status code left to change -- writing an error
+ * envelope into the middle of a chunked body produces neither an error nor a
+ * response, just corruption the client parses as content. Dropping the
+ * connection is the only honest signal, and it is the one SSE clients already
+ * understand. */
+static void generation_failed(Server* sv, Conn* c, const char* why) {
+    if (c->state == CONN_STREAM) {
+        conn_close(sv, c);
+        return;
+    }
+    c->req_id = 0;
+    conn_release_request(sv, c);
+    respond_error(c, 500, "server_error", why);
+}
+
 static void service_generation(Server* sv) {
     int any = 0;
     for (int i = 0; i < MAX_CONNS; i++) {
-        if (sv->conns[i].state == CONN_GEN) any = 1;
+        ConnState st = sv->conns[i].state;
+        if (st == CONN_GEN || (st == CONN_STREAM && !sv->conns[i].stream_done)) {
+            any = 1;
+        }
     }
     if (!any) return;
 
@@ -696,38 +1014,64 @@ static void service_generation(Server* sv) {
     if (stoke_step(sv->e, &rows) != STOKE_OK) {
         for (int i = 0; i < MAX_CONNS; i++) {
             Conn* c = &sv->conns[i];
-            if (c->state != CONN_GEN) continue;
-            c->req_id = 0;
-            conn_release_request(sv, c);
-            respond_error(c, 500, "server_error", "the engine failed to step");
+            if (c->state != CONN_GEN && c->state != CONN_STREAM) continue;
+            if (c->state == CONN_STREAM && c->stream_done) continue;
+            generation_failed(sv, c, "the engine failed to step");
         }
         return;
     }
 
     for (int i = 0; i < MAX_CONNS; i++) {
         Conn* c = &sv->conns[i];
-        if (c->state != CONN_GEN) continue;
+        if (c->state != CONN_GEN && c->state != CONN_STREAM) continue;
+        if (c->state == CONN_STREAM && c->stream_done) continue;
 
-        int32_t finish = STOKE_FINISH_NONE;
+        int     streaming = (c->state == CONN_STREAM);
+        int32_t finish    = STOKE_FINISH_NONE;
+
         /* max_tokens bounds generation and gen_cap is max_tokens+4, so this
          * cannot legitimately fill -- but polling with a zero cap is argument
          * misuse, and an engine that over-produced would turn a bug of ours
          * into an error the client sees as ours. Cancel and finish instead. */
         if (c->n_gen >= c->gen_cap) {
             stoke_cancel(sv->e, c->req_id);
-            finish_chat(sv, c, STOKE_FINISH_MAX_TOKENS);
+            if (streaming) {
+                stream_final(sv, c, STOKE_FINISH_MAX_TOKENS);
+            } else {
+                finish_chat(sv, c, STOKE_FINISH_MAX_TOKENS);
+            }
             continue;
         }
-        int32_t k = stoke_poll(sv->e, c->req_id, c->gen + c->n_gen,
-                               c->gen_cap - c->n_gen, &finish);
+
+        int32_t before = c->n_gen;
+        int32_t k      = stoke_poll(sv->e, c->req_id, c->gen + c->n_gen,
+                                    c->gen_cap - c->n_gen, &finish);
         if (k < 0) {
-            c->req_id = 0;
-            conn_release_request(sv, c);
-            respond_error(c, 500, "server_error", "the engine failed to poll");
+            generation_failed(sv, c, "the engine failed to poll");
             continue;
         }
         c->n_gen += k;
-        if (finish != STOKE_FINISH_NONE) finish_chat(sv, c, finish);
+
+        if (!streaming) {
+            if (finish != STOKE_FINISH_NONE) finish_chat(sv, c, finish);
+            continue;
+        }
+
+        if (k > 0 && !stream_push_tokens(sv, c, c->gen + before, k)) {
+            continue; /* the connection is gone; stream_push_tokens closed it */
+        }
+        if (finish != STOKE_FINISH_NONE && !stream_final(sv, c, finish)) {
+            continue;
+        }
+
+        /* ▶ PUSHED NOW RATHER THAN NEXT TURN. The send is non-blocking, so the
+         * cost of trying is a syscall that either moves the token or says
+         * WOULD_BLOCK -- and the alternative adds a whole loop turn of latency
+         * to every token, which is the exact quantity a streaming client is
+         * measuring. */
+        if (c->state == CONN_STREAM && c->out_sent < c->out.len) {
+            service_write(sv, c);
+        }
     }
 }
 
@@ -735,21 +1079,32 @@ static void reap_idle(Server* sv) {
     time_t now = time(NULL);
     for (int i = 0; i < MAX_CONNS; i++) {
         Conn* c = &sv->conns[i];
-        /* Never a generating connection: it is not idle, it is waiting on us. */
-        if (c->state == CONN_FREE || c->state == CONN_GEN) continue;
+        /* Never a connection with a request in flight: it is not idle, it is
+         * waiting on us. A stream is the clearest case -- it can legitimately
+         * say nothing for longer than the timeout while the model thinks, and
+         * reaping it would kill the request it is waiting for. */
+        if (c->state == CONN_FREE || c->state == CONN_GEN ||
+            c->state == CONN_STREAM) {
+            continue;
+        }
         if (now - c->last_active > IDLE_TIMEOUT_SECS) conn_close(sv, c);
     }
 }
 
 int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
                const ServerOpts* srv_opts) {
-    ServerOpts so = {NULL, 0, 0, 0};
+    ServerOpts so;
+    memset(&so, 0, sizeof so);
     if (srv_opts) so = *srv_opts;
 
     Server sv;
     memset(&sv, 0, sizeof sv);
     sv.verbose     = so.verbose;
     sv.next_req_id = 1;
+    sv.ping_ms     = so.sse_ping_ms > 0 ? so.sse_ping_ms : SSE_PING_MS_DEFAULT;
+    sv.max_pending = so.sse_max_pending > 0 ? so.sse_max_pending
+                                            : SSE_MAX_PENDING_DEFAULT;
+    sv.send_buffer = so.sse_send_buffer;
     for (int i = 0; i < MAX_CONNS; i++) sv.conns[i].s = NET_INVALID_SOCK;
 
     sv.e = stoke_open(gguf_path, engine_opts);
@@ -803,6 +1158,20 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
         int     n = 0;
         int     generating = 0;
 
+        /* The heartbeat, checked against each stream's own last write, BEFORE
+         * the wait set is built so a ping queued here gets a slot in it rather
+         * than waiting a turn. It fires only in the gap this server actually
+         * has -- prefill of a long prompt, or a scheduler busy with other
+         * sequences -- and never during steady generation, where the tokens
+         * are the heartbeat. */
+        for (int i = 0; i < MAX_CONNS; i++) {
+            Conn* c = &sv.conns[i];
+            if (c->state != CONN_STREAM || c->stream_done) continue;
+            if (now_ms() - c->last_out_ms >= (double)sv.ping_ms) {
+                sse_chunk(c, ": ping\n\n", sizeof ": ping\n\n" - 1);
+            }
+        }
+
         int free_slots = 0;
         for (int i = 0; i < MAX_CONNS; i++) {
             if (sv.conns[i].state == CONN_FREE) free_slots++;
@@ -821,9 +1190,20 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
                 generating = 1;
                 continue; /* nothing to do on its socket until it finishes */
             }
+            if (c->state == CONN_STREAM) {
+                /* ▶ A STREAM IS BOTH AT ONCE, which is the whole reason it
+                 * needed a state of its own. It is still generating -- so the
+                 * timeout below must stay at 0 for it -- AND it has bytes for
+                 * a socket that may not be ready. With nothing queued there is
+                 * nothing to wait on, so it takes no slot in the set and the
+                 * engine simply steps again. */
+                if (!c->stream_done) generating = 1;
+                if (c->out_sent >= c->out.len) continue;
+            }
             w[n].s          = c->s;
             w[n].want_read  = (c->state == CONN_READ);
-            w[n].want_write = (c->state == CONN_WRITE);
+            w[n].want_write = (c->state == CONN_WRITE ||
+                               c->state == CONN_STREAM);
             w[n].can_read = w[n].can_write = 0;
             wconn[n]        = i;
             n++;
@@ -846,6 +1226,9 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
                 if (cs != NET_INVALID_SOCK) {
                     net_set_nonblocking(cs);
                     net_set_nodelay(cs);
+                    if (sv.send_buffer > 0) {
+                        net_set_send_buffer(cs, sv.send_buffer);
+                    }
                     for (int i = 0; i < MAX_CONNS; i++) {
                         if (sv.conns[i].state != CONN_FREE) continue;
                         Conn* c = &sv.conns[i];
@@ -875,9 +1258,11 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
             if (c->state == CONN_READ && e->can_read) service_read(&sv, c);
             /* Re-checked, not else-if: service_read may have moved this
              * connection to CONN_WRITE with a complete response already built,
-             * and waiting a whole loop turn to start sending it would add a
-             * scheduling delay to every request that never blocked. */
-            if (c->state == CONN_WRITE && (e->can_write || e->can_read)) {
+             * or to CONN_STREAM with the head queued, and waiting a whole loop
+             * turn to start sending would add a scheduling delay to every
+             * request that never blocked. */
+            if ((c->state == CONN_WRITE || c->state == CONN_STREAM) &&
+                (e->can_write || e->can_read)) {
                 service_write(&sv, c);
             }
         }
@@ -889,6 +1274,7 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
     for (int i = 0; i < MAX_CONNS; i++) {
         if (sv.conns[i].state != CONN_FREE) conn_close(&sv, &sv.conns[i]);
     }
+    buf_free(&sv.scratch);
     net_close(lis);
     stoke_close(sv.e);
     if (sv.verbose) {

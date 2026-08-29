@@ -25,14 +25,85 @@ Connection: keep-alive
 
 {"id":"chatcmpl-2","object":"chat.completion","created":<EPOCH>,"model":"stoke-golden","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":21,"completion_tokens":3,"total_tokens":24}}
 
-### POST /v1/chat/completions (stream:true -> 501)
+### POST /v1/chat/completions (stream:true)
 [curl exit 0]
-HTTP/1.1 501 Not Implemented
-Content-Type: application/json
-Content-Length: 120
-Connection: close
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+Transfer-Encoding: chunked
+Connection: keep-alive
 
-{"error":{"message":"streaming responses are not implemented","type":"invalid_request_error","param":null,"code":null}}
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"!"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":" How"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":" can"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":" I"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":" help"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":" you"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":" today"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"?"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-3","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: [DONE]
+
+
+### POST /v1/chat/completions (stream + include_usage)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+Transfer-Encoding: chunked
+Connection: keep-alive
+
+data: {"id":"chatcmpl-4","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"role":"assistant","content":"Blue"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-4","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-4","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-4","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
+
+data: [DONE]
+
+
+### POST /v1/chat/completions (stream, --raw wire bytes)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+X-Accel-Buffering: no
+Transfer-Encoding: chunked
+Connection: keep-alive
+
+cc
+data: {"id":"chatcmpl-5","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"role":"assistant","content":"Blue"},"logprobs":null,"finish_reason":null}]}
+
+
+b6
+data: {"id":"chatcmpl-5","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}]}
+
+
+ab
+data: {"id":"chatcmpl-5","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+
+e
+data: [DONE]
+
+
+0
+
 
 ### POST /v1/chat/completions (body is not JSON -> 400)
 [curl exit 0]
@@ -78,9 +149,14 @@ stoke serve: chat id=1 prompt=14 gen=10 finish=stop
 stoke serve: POST /v1/chat/completions
 stoke serve: chat id=2 prompt=21 gen=3 finish=stop
 stoke serve: POST /v1/chat/completions
+stoke serve: stream id=3 prompt=14 gen=10 finish=stop
+stoke serve: POST /v1/chat/completions
+stoke serve: stream id=4 prompt=12 gen=3 finish=stop
+stoke serve: POST /v1/chat/completions
+stoke serve: stream id=5 prompt=12 gen=3 finish=stop
 stoke serve: POST /v1/chat/completions
 stoke serve: POST /v1/chat/completions
 stoke serve: GET /v1/chat/completions
 stoke serve: GET /nope
-stoke serve: 8 requests completed, exiting
+stoke serve: 10 requests completed, exiting
 [server exit 0]

@@ -124,4 +124,20 @@ int json_bool(const char* buf, const JsonNode* n, int* out);
  * rewritten. */
 i64 json_escape(const char* in, size_t len, char* out, size_t cap);
 
+/* How many leading bytes of `buf` consist ONLY of complete UTF-8 sequences --
+ * i.e. where a streaming producer may cut without splitting a character.
+ *
+ * ⚠ THIS IS THE OTHER HALF OF json_escape's CONTRACT. That function passes raw
+ * UTF-8 through untouched because it is already valid inside a JSON string;
+ * that reasoning holds only for input which IS valid UTF-8, and a server
+ * emitting one token at a time does not choose where its bytes end. This model
+ * has all 256 single-byte ids in its vocabulary, so one character can arrive as
+ * several tokens. Cut here, hold the remainder, prepend it to the next piece.
+ *
+ * Only a TRAILING incomplete sequence is held back. A byte that cannot begin
+ * one -- a stray continuation byte, 0xFE, 0xFF -- is passed through, because
+ * waiting for it to complete is waiting forever. Never returns more than len.
+ */
+size_t json_utf8_complete_prefix(const char* buf, size_t len);
+
 #endif /* STOKE_JSON_H */

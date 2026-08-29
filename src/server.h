@@ -34,6 +34,35 @@ typedef struct {
      * learned the hard way -- counting at response-BUILD time reproduced the
      * very race this option exists to remove, from the inside. */
     int max_requests;
+
+    /* ---- SSE tuning. Both are real host knobs with sane defaults, and both
+     * are also what makes the two behaviours below testable at all: a
+     * fifteen-second heartbeat and a 256 KiB backlog cannot be reached by a
+     * gate that has to finish. 0 means "the default". ---- */
+
+    /* How long a stream may say nothing before a `: ping` comment goes out.
+     * Default 15000 ms -- inside the 60 s idle timeout common in proxies. */
+    int sse_ping_ms;
+
+    /* How many unsent bytes one streaming connection may accumulate before it
+     * is disconnected and its request cancelled. Default 256 KiB. This is the
+     * slow-client policy: backpressure stops at the offending connection and
+     * never reaches the scheduler, because every other client's tokens come
+     * off the same loop. */
+    size_t sse_max_pending;
+
+    /* SO_SNDBUF for accepted connections; 0 leaves the OS default alone.
+     *
+     * ⚠ THIS IS THE OTHER HALF OF sse_max_pending AND THE MEASUREMENT SAYS SO.
+     * The cap above bounds what THIS PROCESS holds for a connection; the
+     * kernel independently holds however much its send buffer allows, and on
+     * this box that turned out to be more than 71 KB and still climbing after
+     * thirty seconds of a client reading nothing. So a stated per-connection
+     * bound of 256 KiB is really 256 KiB plus whatever the kernel felt like.
+     * Setting this makes the stated number close to the true one -- and it is
+     * also what lets a gate observe the policy in seconds rather than in a
+     * minute of generated tokens. */
+    int sse_send_buffer;
 } ServerOpts;
 
 /* Opens the model, binds, and serves until `max_requests` is reached (or

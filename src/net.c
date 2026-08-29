@@ -71,7 +71,7 @@ int net_startup(void) {
 
 /* getaddrinfo rather than inet_pton so a host may be a name. It is also the
  * only spelling that is identical on both platforms. */
-static NetSock connect_to(const char* host, u16 port) {
+static NetSock connect_to(const char* host, u16 port, int recvbuf) {
     char portstr[8];
     snprintf(portstr, sizeof portstr, "%u", (unsigned)port);
 
@@ -95,6 +95,12 @@ static NetSock connect_to(const char* host, u16 port) {
             set_err("socket");
             continue;
         }
+        /* BEFORE connect(), which is the whole reason this is a parameter and
+         * not a call the caller makes afterwards. Windows auto-tunes the
+         * receive window and only stops once SO_RCVBUF has been set
+         * explicitly, and the window is first advertised in the handshake --
+         * so a value set after connect() may simply never take effect. */
+        if (recvbuf > 0) net_set_recv_buffer(t, recvbuf);
         if (connect(SOCKH(t), ai->ai_addr, (int)ai->ai_addrlen) == 0) {
             s = t;
             break;
@@ -108,7 +114,12 @@ static NetSock connect_to(const char* host, u16 port) {
 
 NetSock net_connect(const char* host, u16 port) {
     if (net_startup() != 0) return NET_INVALID_SOCK;
-    return connect_to(host ? host : "127.0.0.1", port);
+    return connect_to(host ? host : "127.0.0.1", port, 0);
+}
+
+NetSock net_connect_recvbuf(const char* host, u16 port, int recvbuf) {
+    if (net_startup() != 0) return NET_INVALID_SOCK;
+    return connect_to(host ? host : "127.0.0.1", port, recvbuf);
 }
 
 NetSock net_listen(const char* bind_addr, u16 port, int backlog) {
@@ -327,6 +338,24 @@ int net_wait(NetWait* w, int n, int timeout_ms) {
         if (w[i].can_read || w[i].can_write) ready++;
     }
     return ready;
+}
+
+int net_set_recv_buffer(NetSock s, int bytes) {
+    if (setsockopt(SOCKH(s), SOL_SOCKET, SO_RCVBUF, (const char*)&bytes,
+                   (socklen_t)sizeof bytes) != 0) {
+        set_err("setsockopt(SO_RCVBUF)");
+        return NET_ERR;
+    }
+    return 0;
+}
+
+int net_set_send_buffer(NetSock s, int bytes) {
+    if (setsockopt(SOCKH(s), SOL_SOCKET, SO_SNDBUF, (const char*)&bytes,
+                   (socklen_t)sizeof bytes) != 0) {
+        set_err("setsockopt(SO_SNDBUF)");
+        return NET_ERR;
+    }
+    return 0;
 }
 
 int net_set_nonblocking(NetSock s) {

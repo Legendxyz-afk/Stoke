@@ -1419,7 +1419,8 @@ static int cmd_serve(int argc, char** argv) {
         fprintf(stderr,
                 "usage: stoke serve <model.gguf> [--host A] [--port P] "
                 "[--ctx N] [--seqs N] [--threads N] [--kv q8] "
-                "[--max-requests N] [-v]\n");
+                "[--max-requests N] [--sse-ping-ms N] "
+                "[--sse-max-pending BYTES] [-v]\n");
         return 2;
     }
 
@@ -1457,6 +1458,12 @@ static int cmd_serve(int argc, char** argv) {
             }
         } else if (strcmp(a, "--max-requests") == 0 && has_next) {
             so.max_requests = (int)strtol(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--sse-ping-ms") == 0 && has_next) {
+            so.sse_ping_ms = (int)strtol(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--sse-max-pending") == 0 && has_next) {
+            so.sse_max_pending = (size_t)strtoull(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--sse-send-buffer") == 0 && has_next) {
+            so.sse_send_buffer = (int)strtol(argv[++i], NULL, 10);
         } else {
             fprintf(stderr, "stoke serve: unknown argument '%s'\n", a);
             return 2;
@@ -1485,7 +1492,8 @@ int main(int argc, char** argv) {
               "[--seqs N] [--ctx N] [--threads N] [--timing], "
               "bench --ops <path.gguf> [--reps N] [--jsonl], "
               "serve <path.gguf> [--host A] [--port P] [--ctx N] [--seqs N] "
-              "[--threads N] [--kv q8] [--max-requests N] [-v])");
+              "[--threads N] [--kv q8] [--max-requests N] [--sse-ping-ms N] "
+              "[--sse-max-pending BYTES] [-v])");
     }
     if (strcmp(argv[1], "bench") == 0) {
         /* The `--ops` spelling is mandated by the M3 forward note; it is a

@@ -484,3 +484,72 @@ TEST(escape_then_parse_round_trips) {
     ASSERT_EQ_I64(n, (i64)nlen);
     ASSERT_TRUE(n == (i64)nlen && memcmp(back, nasty, nlen) == 0);
 }
+
+/* ---- the streaming cut point --------------------------------------------
+ *
+ * ▶▶ WHY THIS LIVES BESIDE THE ESCAPER. json_escape's contract is "raw UTF-8 is
+ * passed through unchanged, because it is already valid inside a JSON string".
+ * That is only true if what you hand it IS valid UTF-8 -- and a streaming
+ * producer does not get to choose where its input ends. This model's vocabulary
+ * contains all 256 single-byte ids (see test_tok's
+ * all_256_byte_ids_decode_to_their_own_byte), so one character can and does
+ * arrive as several tokens, and a server that emitted each token as it came
+ * would put half a codepoint inside a JSON string. This is the function that
+ * says where it is safe to cut; the tail waits for the next token.
+ */
+
+static i64 upfx(const char* b, size_t n) {
+    return (i64)json_utf8_complete_prefix(b, n);
+}
+
+TEST(utf8_prefix_of_empty_is_zero) { ASSERT_EQ_I64(upfx("", 0), 0); }
+
+TEST(utf8_prefix_of_ascii_is_all_of_it) { ASSERT_EQ_I64(upfx(S("hello")), 5); }
+
+TEST(utf8_prefix_keeps_a_complete_two_byte_sequence) {
+    ASSERT_EQ_I64(upfx(S("caf\xc3\xa9")), 5);
+}
+
+TEST(utf8_prefix_cuts_a_lone_two_byte_lead) {
+    /* "caf" + 0xC3 with its continuation byte still unsent. */
+    ASSERT_EQ_I64(upfx(S("caf\xc3")), 3);
+}
+
+TEST(utf8_prefix_keeps_a_complete_three_byte_sequence) {
+    ASSERT_EQ_I64(upfx(S("\xe2\x82\xac")), 3); /* U+20AC EURO SIGN */
+}
+
+TEST(utf8_prefix_cuts_a_three_byte_sequence_missing_its_last_byte) {
+    ASSERT_EQ_I64(upfx(S("x\xe2\x82")), 1);
+}
+
+TEST(utf8_prefix_cuts_a_three_byte_sequence_missing_two_bytes) {
+    ASSERT_EQ_I64(upfx(S("x\xe2")), 1);
+}
+
+TEST(utf8_prefix_keeps_a_complete_four_byte_sequence) {
+    ASSERT_EQ_I64(upfx(S("\xf0\x9f\x98\x80")), 4); /* U+1F600 */
+}
+
+TEST(utf8_prefix_cuts_a_four_byte_sequence_missing_its_last_byte) {
+    ASSERT_EQ_I64(upfx(S("hi\xf0\x9f\x98")), 2);
+}
+
+/* A continuation byte with no lead in front of it is not an unfinished
+ * sequence, it is garbage -- and holding it back would stall the stream
+ * forever waiting for a lead byte that is never coming. It goes out. */
+TEST(utf8_prefix_passes_a_lone_continuation_byte_through) {
+    ASSERT_EQ_I64(upfx(S("ok\x80")), 3);
+}
+
+/* The look-back is bounded: four continuation bytes after a 4-byte lead means
+ * the sequence ENDED and the last byte is garbage, not an unfinished tail. */
+TEST(utf8_prefix_does_not_look_back_past_a_full_sequence) {
+    ASSERT_EQ_I64(upfx(S("\xf0\x9f\x98\x80\x80")), 5);
+}
+
+/* An overlong-looking 0xFF is not a lead byte at all under any UTF-8 rule, so
+ * it can never become complete and must not hold the stream. */
+TEST(utf8_prefix_passes_an_impossible_byte_through) {
+    ASSERT_EQ_I64(upfx(S("a\xff")), 2);
+}
