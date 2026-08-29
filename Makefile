@@ -168,6 +168,7 @@ test: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN) $(SERVE_BIN)
 	$(TSAN_RUN) sh tests/unicode_sweep_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/serve_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/serve_raw.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/serve_openai.sh $(BUILDDIR) $(EXE)
 
 # One BUILDDIR per (platform,sanitizer) combination (see header comment) --
 # object files live here too, built with this invocation's exact CFLAGS, so

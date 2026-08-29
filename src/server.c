@@ -477,6 +477,17 @@ static int stream_delta(Server* sv, Conn* c, const char* text, size_t len) {
         buf_str(&sv->scratch, "\"role\":\"assistant\",");
         c->sent_role = 1;
     }
+#ifdef STOKE_MUT_ROLE_EVERY_CHUNK
+    /* ⚠ DELIBERATELY WRONG. A mutant for tests/serve_openai.py: the role must
+     * ride on the FIRST delta and no other, and a suite that cannot see this
+     * difference is not testing the trap it claims to. Built only by
+     *   mingw32-make BUILDDIR=build/win-mut-openai-role \
+     *                EXTRA_CFLAGS=-DSTOKE_MUT_ROLE_EVERY_CHUNK=1
+     * and it announces itself on startup, because a build that silently
+     * dropped its -D is a CLEAN binary and the leg would then report "the
+     * suite did not catch it" about a mutant that was never there. */
+    c->sent_role = 0;
+#endif
     buf_str(&sv->scratch, "\"content\":\"");
     buf_json_str(&sv->scratch, text, len);
     buf_str(&sv->scratch, "\"},\"logprobs\":null,\"finish_reason\":null}]}");
@@ -1355,6 +1366,12 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
         return 1;
     }
     net_set_nonblocking(lis);
+
+#ifdef STOKE_MUT_ROLE_EVERY_CHUNK
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_ROLE_EVERY_CHUNK "
+                    "(role on every delta). NEVER use this binary for anything "
+                    "but the mutation leg.\n");
+#endif
 
     /* Printed BEFORE the loop and flushed, so a script can wait on this line;
      * with port 0 it is the only way to learn where the server actually is. */
