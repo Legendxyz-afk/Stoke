@@ -161,6 +161,8 @@ test: $(TEST_BIN) $(STOKE_BIN) $(ABI_TU_BIN) $(SERVE_BIN)
 	$(BUILDDIR)/abi_tu$(EXE) && echo "abi_tu: stoke.h standalone C11 OK"
 	$(BUILDDIR)/abi_tu_cxx$(EXE) && echo "abi_tu_cxx: stoke.h C++ compile+link OK"
 	sh tests/abi_isolation.sh
+	sh tests/abi_checklist.sh
+	sh tests/abi_checklist_mutants.sh
 	$(TSAN_RUN) sh tests/abi_smoke.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/golden_info.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/tok_golden.sh $(BUILDDIR) $(EXE)

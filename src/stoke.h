@@ -45,16 +45,31 @@
  *     accounting broke is defensible; silently returning you wrong tokens is
  *     not.
  *
- * ▶▶ THREAD SAFETY, per function, no exceptions and no "probably":
+ * ▶▶ THREAD SAFETY, per function, no exceptions and no "probably". EVERY
+ * public function appears in this list, and tests/abi_checklist.sh fails the
+ * build if one does not -- eight of the fifteen were missing when that check
+ * was first run, which is what a list nobody can forget to update is for.
  *   stoke_submit / stoke_poll / stoke_cancel   SAFE from any thread.
  *   stoke_step                                 ONE thread at a time. It runs
  *                                              the forward pass; two callers
  *                                              would step the same batch twice.
- *   stoke_open / stoke_close                   EXTERNAL synchronization. Do not
- *                                              close an engine another thread
+ *   stoke_open_abi / stoke_close               EXTERNAL synchronization. Do not
+ *              (stoke_open is the macro)       close an engine another thread
  *                                              is still stepping.
  *   stoke_tokenize / stoke_detokenize          SAFE from any thread (read-only
  *                                              against an immutable vocab).
+ *   stoke_apply_chat_template                  SAFE from any thread, same
+ *   stoke_has_chat_template                    reason: the vocab is immutable
+ *                                              once the engine is open.
+ *   stoke_chat_template_bound                  SAFE from any thread, and it
+ *                                              takes no engine at all -- it is
+ *                                              arithmetic on your own lengths.
+ *   stoke_n_vocab / stoke_max_ctx              SAFE from any thread. They read
+ *   stoke_eos_id                               facts fixed when the engine was
+ *                                              opened, so the only unsafe use
+ *                                              is racing them against a close.
+ *   stoke_abi_version                          SAFE from any thread; it returns
+ *                                              a compile-time constant.
  *   stoke_last_error                           Thread-local; you read your own
  *                                              thread's message, never another's.
  *
