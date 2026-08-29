@@ -71,7 +71,7 @@ diffout="$builddir/serve_golden.diff"
 rm -f "$out" "$raw" "$srvlog" "$diffout"
 
 url="http://127.0.0.1:$port"
-n_requests=15
+n_requests=19
 
 # The first request has to outwait a 2.5GB model load, so it retries a refused
 # connection. Every later one does NOT: by then the server is up, and a retry
@@ -321,6 +321,60 @@ run_case "POST /v1/chat/completions (temperature 0.7 -> 400)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
     -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.7}'
 sse_assert "$raw" "a non-zero temperature must be refused, not silently ignored" \
+    "HTTP/1.1 400 Bad Request"
+
+# ---- A6: stop strings ------------------------------------------------------
+#
+# ▶▶ THE THIRD CASE IS THE ONE THAT MATTERS AND IT IS PINNED ON PURPOSE. Case 2
+# above establishes that this prompt answers "Hello! How can I help you today?"
+# and that it arrives as the tokens "Hello" "!" " How" " can" " I" " help" ...
+# -- the streamed transcript shows each one. So "an I" is a stop string that
+# EXISTS IN THE OUTPUT AND IN NO SINGLE TOKEN: its "an" is the tail of " can"
+# and its " I" is the whole of the next token. A server that checks each token
+# against the stop list in isolation cannot see it, and that is precisely the
+# defect the tail window exists to prevent. Everything else here would pass
+# against such a server.
+
+# 14. A stop string inside one token, non-streamed: the plain case.
+run_case "POST /v1/chat/completions (stop, within one token)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":24,"stop":["!"]}'
+sse_assert "$raw" "a stop string truncates the answer before itself" '"content":"Hello"'
+sse_assert "$raw" "stopping on a stop string reports finish_reason stop" \
+    '"finish_reason":"stop"'
+
+# 15. THE CROSS-TOKEN CASE, streamed. "an I" spans " can" and " I".
+run_case "POST /v1/chat/completions (stop ACROSS a token boundary, streamed)" \
+    -N -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":24,"stream":true,"stop":["an I"]}'
+sse_assert "$raw" "a stop string spanning two tokens must still be found" \
+    '"finish_reason":"stop"'
+sse_assert "$raw" "the stream still terminates with the sentinel after a stop" \
+    "data: [DONE]"
+# The overshoot: not one byte of the stop string, nor of anything after it, may
+# reach the client. " help" is the token AFTER the match and its absence is the
+# assertion -- a server that cancelled but emitted the token in flight would
+# still show it.
+sse_refute "$raw" "no text at or beyond the stop string may be emitted" '" help"'
+sse_refute "$raw" "the stop string itself must not be emitted" '"an I"'
+
+# 16-17. The rest of the sampling surface, on the same principle as
+#     temperature: a parameter is accepted at the value where "no sampler" is
+#     the CORRECT answer, and refused at any other. top_p 1 truncates nothing;
+#     top_p 0.9 does, and answering it greedily would be answering a different
+#     question. `seed` is deliberately accepted: greedy is already
+#     deterministic, so any seed gives the identical stream, which is what a
+#     seed promises.
+run_case "POST /v1/chat/completions (top_p 1 + seed -> 200)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"top_p":1,"seed":42,"n":1}'
+sse_assert "$raw" "the no-op value of every sampling parameter is accepted" \
+    "HTTP/1.1 200 OK"
+
+run_case "POST /v1/chat/completions (top_p 0.9 -> 400)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"top_p":0.9}'
+sse_assert "$raw" "a sampling parameter that would change the output is refused" \
     "HTTP/1.1 400 Bad Request"
 
 wait "$srv_pid"

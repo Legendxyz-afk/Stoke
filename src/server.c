@@ -66,6 +66,11 @@
 
 #define DEFAULT_MAX_TOKENS 128
 
+/* OpenAI accepts up to four stop strings and so does this. A cap is a
+ * refusal rather than an assertion: `stop` is client-supplied, and an
+ * unbounded list is an unbounded per-token scan a client can ask for. */
+#define STOP_MAX 4
+
 /* An idle stream that says nothing gets closed by intermediaries -- 60 s is a
  * common proxy default, so the comment goes out well inside it. It is a
  * COMMENT (`: ping`) rather than an event precisely so no client can mistake
@@ -125,6 +130,30 @@ typedef struct {
      * reads delta.content off a completion chunk gets nothing, so the two are
      * asserted apart in the gate rather than assumed identical. */
     int is_completion;
+
+    /* ---- stop strings (A6), consumer-side by design ----
+     *
+     * ▶▶ THE TAIL WINDOW IS A HOLD-BACK, NOT MERELY A SEARCH WINDOW, and that
+     * is the whole difficulty. A stop string crosses token boundaries: "an I"
+     * is the tail of one token and the whole of the next. Searching a window
+     * finds it, but by then "an" has already gone out as a delta -- part of the
+     * stop string leaked to the client. So emission is held back by
+     * (longest stop string - 1) bytes while generating: those bytes cannot yet
+     * be known not to begin a match. The bound is exact -- a match ending at
+     * the newest byte starts at or after the previous emission limit -- and it
+     * is why the window is that length and not a round number.
+     *
+     * `text` accumulates everything decoded, truncated at a match; the
+     * non-streamed response is that buffer, and the streamed one is deltas cut
+     * out of it. One accumulator for both, so a stop cannot behave differently
+     * depending on how the client asked to be answered. */
+    Buf    text;
+    size_t text_emitted;
+    char*  stops[STOP_MAX];
+    size_t stop_len[STOP_MAX];
+    int    n_stops;
+    size_t hold;
+    int    stopped;
 
     /* ---- streaming ---- */
     int  want_usage;  /* stream_options.include_usage                      */
@@ -243,6 +272,16 @@ static void conn_release_request(Server* sv, Conn* c) {
     c->n_gen  = 0;
     c->gen_cap = 0;
     c->n_prompt = 0;
+
+    for (int i = 0; i < c->n_stops; i++) {
+        free(c->stops[i]);
+        c->stops[i] = NULL;
+    }
+    c->n_stops = 0;
+    c->hold    = 0;
+    c->stopped = 0;
+    buf_free(&c->text);
+    c->text_emitted = 0;
 }
 
 static void conn_close(Server* sv, Conn* c) {
@@ -391,23 +430,15 @@ static void sse_finish_body(Conn* c) {
 
 /* ---- the chat endpoint -------------------------------------------------- */
 
-/* Decodes `n` ids to text, DROPPING the end-of-sequence id.
- *
- * ⚠ THE DROP IS THIS LAYER'S JOB AND tok.h SAYS SO. stoke_poll reports every id
- * the model generated, end-of-sequence included, and detokenizing is the
- * mechanical inverse of the vocab table -- so the stop token comes back as the
- * literal text "<|im_end|>". Deciding whether a control token is shown to an
- * API client is a policy choice, and the policy for an OpenAI-compatible
- * endpoint is that it is not: `message.content` is the assistant's words. */
-static void decode_tokens(Server* sv, const uint32_t* ids, int32_t n, Buf* out) {
-    for (int32_t i = 0; i < n; i++) {
-        if (ids[i] == sv->eos_id) continue;
-        char    piece[512];
-        int32_t m = stoke_detokenize(sv->e, ids[i], piece, (int32_t)sizeof piece);
-        if (m <= 0 || (size_t)m > sizeof piece) continue;
-        buf_add(out, piece, (size_t)m);
-    }
-}
+/* ⚠ DROPPING THE END-OF-SEQUENCE ID IS THIS LAYER'S JOB AND tok.h SAYS SO.
+ * stoke_poll reports every id the model generated, end-of-sequence included,
+ * and detokenizing is the mechanical inverse of the vocab table -- so the stop
+ * token comes back as the literal text "<|im_end|>". Whether a control token is
+ * shown to an API client is a policy choice, and the policy for an
+ * OpenAI-compatible endpoint is that it is not: `message.content` is the
+ * assistant's words. consume_tokens() below is where that drop happens, for
+ * both the streamed and the non-streamed path, because both now decode
+ * incrementally -- see its note. */
 
 static const char* finish_reason_of(int32_t finish) {
     switch (finish) {
@@ -504,9 +535,50 @@ static int stream_delta(Server* sv, Conn* c, const char* text, size_t len) {
  * make the model answer in a non-ASCII script. See
  * json_utf8_complete_prefix(). A partial character still pending when
  * generation ENDS is dropped; it was never a character. */
-static int stream_push_tokens(Server* sv, Conn* c, const uint32_t* ids,
-                              int32_t n) {
-    for (int32_t i = 0; i < n; i++) {
+/* How much of `text` may be shown to the client right now.
+ *
+ * While generating, the last `hold` bytes are held back: they cannot yet be
+ * known not to BEGIN a stop string, and a delta carrying half of one has
+ * already leaked it. `hold` is (longest stop string - 1) and that bound is
+ * exact -- a match ending at the newest byte starts at or after the previous
+ * limit -- so nothing is held longer than it must be. With no stop strings
+ * `hold` is zero and this is the whole buffer. */
+static size_t emit_limit(const Conn* c, int final) {
+    if (final || c->stopped) return c->text.len;
+    return c->text.len > c->hold ? c->text.len - c->hold : 0;
+}
+
+/* Returns the offset of the first stop string at or after `from`, or (size_t)-1. */
+static size_t find_stop(const Conn* c, size_t from) {
+    size_t best = (size_t)-1;
+    for (int i = 0; i < c->n_stops; i++) {
+        size_t sl = c->stop_len[i];
+        if (sl == 0 || c->text.len < sl) continue;
+        for (size_t p = from; p + sl <= c->text.len; p++) {
+            if (memcmp(c->text.b + p, c->stops[i], sl) == 0) {
+                if (p < best) best = p;
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+/* Decodes newly generated ids into c->text, honouring the UTF-8 carry and the
+ * stop strings, and (when streaming) emits whatever is now safe to show.
+ *
+ * ⚠⚠ THE HOLD-BACK IS NOT OPTIONAL AND NEITHER IS THE CARRY. This vocabulary
+ * has all 256 single-byte ids, so one character can be generated as several
+ * tokens -- half a codepoint inside a JSON string is unparseable. And a stop
+ * string crosses token boundaries, so a server that checked each token in
+ * isolation would miss "an I" split across " can" and " I" entirely. Both are
+ * the same shape of bug: a decision made per token about a property that
+ * belongs to the stream.
+ *
+ * Returns 1 normally, 0 if the connection was closed underneath. */
+static int consume_tokens(Server* sv, Conn* c, const uint32_t* ids, int32_t n,
+                          int streaming) {
+    for (int32_t i = 0; i < n && !c->stopped; i++) {
         if (ids[i] == sv->eos_id) continue;
 
         char    piece[512];
@@ -527,14 +599,63 @@ static int stream_push_tokens(Server* sv, Conn* c, const uint32_t* ids,
         }
         memcpy(c->pend, whole + cut, tail);
         c->pend_len = tail;
-
         if (cut == 0) continue; /* the character has not finished arriving */
-        if (!stream_delta(sv, c, whole, cut)) return 0;
+
+        /* The search starts `hold` bytes before what just arrived, because a
+         * match may begin in text that is already here and end in text that is
+         * not -- which is exactly the case a per-token check cannot see. */
+        size_t before = c->text.len;
+        buf_add(&c->text, whole, cut);
+        if (c->text.oom) {
+            conn_close(sv, c);
+            return 0;
+        }
+        if (c->n_stops) {
+            size_t from = before > c->hold ? before - c->hold : 0;
+            size_t at   = find_stop(c, from);
+            if (at != (size_t)-1) {
+                c->text.len = at; /* not one byte of the match is kept */
+                c->stopped  = 1;
+                stoke_cancel(sv->e, c->req_id);
+            }
+        }
+
+        /* ▶ EMITTED INSIDE THE LOOP, ONE DELTA PER TOKEN, and that placement is
+         * load-bearing rather than stylistic. A poll can return several tokens
+         * at once, and emitting once per BATCH would coalesce them into a
+         * single SSE event -- which the M0 harness at gate [3] counts as ONE
+         * token while `usage` reports several, turning an exact
+         * count_vs_usage_diff of 0 into a silent mismatch and changing what its
+         * inter-token latency measures. With no stop strings the hold is zero
+         * and this emits exactly what the pre-A6 code did, token for token. */
+        if (streaming) {
+            size_t limit = emit_limit(c, 0);
+            if (limit > c->text_emitted) {
+                size_t off = c->text_emitted;
+                size_t nb  = limit - off;
+                c->text_emitted = limit;
+                if (!stream_delta(sv, c, c->text.b + off, nb)) return 0;
+            }
+        }
     }
     return 1;
 }
 
 static int stream_final(Server* sv, Conn* c, int32_t finish) {
+    /* ▶ THE HELD-BACK TAIL GOES OUT FIRST. While generating, the last
+     * (longest stop string - 1) bytes are withheld in case they begin a match;
+     * once generation is over nothing more can arrive to complete one, so they
+     * are ordinary text and the client is owed them. Forgetting this would
+     * silently truncate the last few characters of every answer that used a
+     * stop string -- a defect that looks like the model being terse. */
+    size_t limit = emit_limit(c, 1);
+    if (limit > c->text_emitted) {
+        size_t off = c->text_emitted;
+        size_t nb  = limit - off;
+        c->text_emitted = limit;
+        if (!stream_delta(sv, c, c->text.b + off, nb)) return 0;
+    }
+
     /* The finish chunk: an EMPTY delta carrying the reason. A client that
      * merges deltas gets nothing new, which is the point -- the reason is not
      * content. */
@@ -578,8 +699,13 @@ static int stream_final(Server* sv, Conn* c, int32_t finish) {
 }
 
 static void finish_chat(Server* sv, Conn* c, int32_t finish) {
-    Buf text = {0};
-    decode_tokens(sv, c->gen, c->n_gen, &text);
+    /* c->text was accumulated token by token by consume_tokens, for the same
+     * reason the streamed path needs it: a stop string has to be able to
+     * CANCEL generation when it is hit, which cannot be done by decoding
+     * everything at the end. The two paths therefore share one accumulator
+     * and a stop cannot behave differently depending on how the client
+     * asked to be answered. */
+    Buf text = c->text;
 
     Buf b = {0};
     buf_fmt(&b, "{\"id\":\"%s-%llu\",\"object\":\"%s\",\"created\":%lld,"
@@ -616,7 +742,6 @@ static void finish_chat(Server* sv, Conn* c, int32_t finish) {
         respond(c, 200, "application/json", b.b, b.len);
     }
     buf_free(&b);
-    buf_free(&text);
 
     c->req_id = 0; /* the engine is done with it; nothing to cancel */
     conn_release_request(sv, c);
@@ -708,28 +833,101 @@ static int parse_body(Server* sv, Conn* c, const HttpRequest* r, JsonDoc* d,
     }
     if (c->model[0] == '\0') snprintf(c->model, sizeof c->model, "stoke");
 
-    /* ▶▶ TEMPERATURE IS ACCEPTED AT ZERO AND REFUSED ABOVE IT, and the refusal
-     * is the whole point. This build decodes greedily and has no sampler --
-     * greedy IS temperature zero, so the M0 harness's `"temperature": 0.0` on
-     * every request needs no special case and gets none. A client asking for
-     * 0.7 and quietly receiving the greedy distribution would get plausible
-     * text that is not what it asked for, which is the kind of wrong nobody
-     * notices for weeks. A 400 is noticed immediately. Sampling arrives at rung
-     * A6 and this refusal leaves with it. */
-    const JsonNode* temp = json_member(d, body, root, "temperature");
-    if (temp) {
-        double t;
-        if (json_number(body, temp, &t) != 0) {
-            respond_error(c, 400, "invalid_request_error",
-                          "'temperature' must be a number");
+    /* ▶▶▶ THE SAMPLING SURFACE, ACCEPTED AT ITS NO-OP VALUE AND REFUSED
+     * OTHERWISE. This build decodes greedily and has no sampler, and every
+     * parameter below has a value at which "no sampler" is the CORRECT answer:
+     * temperature 0 IS greedy, top_p 1 truncates nothing, top_k 0 is disabled,
+     * the penalties at their identity, n=1 is one choice. At those values there
+     * is nothing to implement and nothing to refuse -- which is why the M0
+     * harness's `"temperature": 0.0` on every request needs no special case and
+     * gets none.
+     *
+     * ⚠ AT ANY OTHER VALUE THE REQUEST IS REFUSED RATHER THAN SILENTLY
+     * ANSWERED GREEDILY. A client asking for top_p 0.9 and quietly receiving
+     * the greedy distribution gets plausible text that is not what it asked
+     * for -- the kind of wrong nobody notices for weeks, and the kind that
+     * makes a benchmark comparing two engines meaningless. A 400 is noticed
+     * immediately. The whole table goes when the sampler lands.
+     *
+     * `seed` is deliberately NOT here: greedy decoding is already
+     * deterministic, so any seed produces the identical stream, which is
+     * exactly what a seed promises. Accepting it is honest. */
+    static const struct {
+        const char* key;
+        double      noop;
+    } k_sampling[] = {
+        {"temperature", 0.0},       {"top_p", 1.0},
+        {"top_k", 0.0},             {"frequency_penalty", 0.0},
+        {"presence_penalty", 0.0},  {"repeat_penalty", 1.0},
+        {"n", 1.0},
+    };
+    for (size_t i = 0; i < sizeof k_sampling / sizeof k_sampling[0]; i++) {
+        const JsonNode* pn = json_member(d, body, root, k_sampling[i].key);
+        if (!pn || pn->type == JSON_NULL) continue;
+        double v;
+        if (json_number(body, pn, &v) != 0) {
+            char msg[128];
+            snprintf(msg, sizeof msg, "'%s' must be a number", k_sampling[i].key);
+            respond_error(c, 400, "invalid_request_error", msg);
             return -1;
         }
-        if (t != 0.0) {
-            respond_error(c, 400, "invalid_request_error",
-                          "this build decodes greedily and implements only "
-                          "'temperature': 0 -- a non-zero temperature is "
-                          "refused rather than silently answered greedily");
+        if (v != k_sampling[i].noop) {
+            char msg[224];
+            snprintf(msg, sizeof msg,
+                     "this build decodes greedily and has no sampler, so it "
+                     "implements '%s' only at %g -- %g is refused rather than "
+                     "silently answered greedily",
+                     k_sampling[i].key, k_sampling[i].noop, v);
+            respond_error(c, 400, "invalid_request_error", msg);
             return -1;
+        }
+    }
+
+    /* `stop` is a string or an array of up to four. Both spellings are ordinary
+     * in the wild -- openai-python passes through whatever the caller wrote --
+     * so refusing either would be refusing valid requests. An empty string is
+     * dropped rather than stored: it matches at every position, which would end
+     * every generation before its first token. */
+    const JsonNode* stopn = json_member(d, body, root, "stop");
+    if (stopn && stopn->type != JSON_NULL) {
+        const JsonNode* items[STOP_MAX];
+        uint32_t        n_items = 0;
+        if (stopn->type == JSON_STR) {
+            items[n_items++] = stopn;
+        } else if (stopn->type == JSON_ARR) {
+            if (stopn->n_children > STOP_MAX) {
+                respond_error(c, 400, "invalid_request_error",
+                              "'stop' takes at most 4 strings");
+                return -1;
+            }
+            for (uint32_t i = 0; i < stopn->n_children; i++) {
+                const JsonNode* it = json_at(d, stopn, i);
+                if (!it || it->type != JSON_STR) {
+                    respond_error(c, 400, "invalid_request_error",
+                                  "every element of 'stop' must be a string");
+                    return -1;
+                }
+                items[n_items++] = it;
+            }
+        } else {
+            respond_error(c, 400, "invalid_request_error",
+                          "'stop' must be a string or an array of strings");
+            return -1;
+        }
+
+        for (uint32_t i = 0; i < n_items; i++) {
+            i64 need = json_string(body, items[i], NULL, 0);
+            if (need <= 0) continue; /* empty, or unreadable: nothing to match */
+            char* sp = (char*)malloc((size_t)need);
+            if (!sp) {
+                respond_error(c, 500, "server_error", "out of memory");
+                return -1;
+            }
+            json_string(body, items[i], sp, (size_t)need);
+            c->stops[c->n_stops]    = sp;
+            c->stop_len[c->n_stops] = (size_t)need;
+            c->n_stops++;
+            if ((size_t)need > c->hold + 1) c->hold = (size_t)need - 1;
         }
     }
 
@@ -1272,13 +1470,16 @@ static void service_generation(Server* sv) {
         }
         c->n_gen += k;
 
+        /* Decoded in BOTH modes and on every batch, because a stop string must
+         * be able to CANCEL generation the moment it appears -- which is
+         * impossible for a path that waits until the end to decode. */
+        if (k > 0 && !consume_tokens(sv, c, c->gen + before, k, streaming)) {
+            continue; /* the connection is gone; consume_tokens closed it */
+        }
+
         if (!streaming) {
             if (finish != STOKE_FINISH_NONE) finish_chat(sv, c, finish);
             continue;
-        }
-
-        if (k > 0 && !stream_push_tokens(sv, c, c->gen + before, k)) {
-            continue; /* the connection is gone; stream_push_tokens closed it */
         }
         if (finish != STOKE_FINISH_NONE && !stream_final(sv, c, finish)) {
             continue;
