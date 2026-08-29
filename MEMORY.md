@@ -837,6 +837,63 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   non-streaming `/v1/chat/completions`, with `server.c` including `stoke.h` and
   `net.h` and nothing else from `src/`; its curl goldens are gate item [2].
 
+- **2026-08-29 — M6 A3 DONE: something real answers a real client, and GATE
+  ITEM [2] IS BANKED.** Commits `07b183a` (a `.gitattributes` fix) and
+  `b24066c`. `GET /health` and non-streaming `POST /v1/chat/completions`,
+  greedy, reached ONLY through `stoke.h` — `tests/abi_isolation.sh` enforces
+  that mechanically, and it has already paid for itself: the four chat entry
+  points in `stoke.h` (`stoke_chat_message`, `_bound`, `_apply_chat_template`,
+  `_has_chat_template`) exist BECAUSE `server.c` needed them and the header
+  could not express a chat request. `src/json.c` is a real parser rather than
+  three field scans, because a chat body is attacker-controlled end to end.
+  Gate [2] = `tests/data/serve.golden`: 8 curl requests through a real server
+  on the real model, **reproduced byte-for-byte across four independent
+  sessions**, each a fresh load and a fresh generation.
+  ⚠⚠ **THE CODE COMPILED, PASSED 17 TEST BINARIES, AND DID NOT WORK.** All
+  three defects were in the loop and none was visible to any unit test:
+  **(1)** `--max-requests` counted a request as completed when the response was
+  BUILT — `finish_chat()` runs at the END of a loop turn, so the count hit the
+  limit with the body still in the buffer and the next while-check closed the
+  socket under it. The log said `gen=10 finish=stop`; curl said
+  `(52) Empty reply from server`. **That is exactly the race the option exists
+  to remove, reproduced from the inside.** Counting now happens after the last
+  byte is away, and error replies count too (they counted for nothing before,
+  so a session of 400s never reached its limit and hung).
+  **(2)** the `select()` wait set was mapped to connections BY POSITION, and
+  `accept()` runs between the two walks — every later connection read its
+  neighbour's readiness and the last read past what `net_wait()` wrote.
+  **NOT covered by a failing test and the reason is structural**: a wrongly-
+  ready socket answers WOULD_BLOCK and a wrongly-idle one is polled 50 ms
+  later, so the only visible cost is a turn of latency; the detector would be
+  MSan, which is not in this matrix.
+  **(3)** pipelining was a COMMENT, not a behaviour — `service_read()` returned
+  on WOULD_BLOCK before looking at bytes it already held, so a second request
+  arriving in the same recv sat until the idle reaper. curl cannot pipeline
+  (removed in 7.62), so gate [2] structurally cannot reach it ⇒
+  `tests/serve_pipeline.c`, a client of our own over the same shim.
+  ⚠⚠ **AND TWO INSTRUMENTS READ GREEN WHILE GRADING NOTHING.**
+  `od -c f | grep '\\r'` — the obvious "did it end with CRLF" — **matches a
+  bare letter `r`** (BRE folds `\\r` to the unknown escape `\r`, which GNU grep
+  treats as literal `r`) and never matches a carriage return. It took three
+  tries to catch because the first two controls contained no letter `r` at all.
+  Replaced with `printf` + `cmp` on the exact 17 bytes. And
+  `tests/abi_isolation.sh` **failed on its own documentation**: its rule is
+  "`server.c` never calls `fatal()`" and its pattern matched the sentence
+  saying so. Every pattern now runs against `gcc -fpreprocessed -dD -E` output.
+  **A checker whose verdict changes when you DOCUMENT the property it checks
+  trains you to edit prose to keep a build green.**
+  ⚠ `.gitattributes` gained `tests/data/*.golden -text`, and this one is not
+  about A3: measured with `git checkout-index`, **every golden in the repo
+  arrives CRLF on a fresh Windows clone** (`qwen3-4b-info` 0 CR in the tree →
+  436 on checkout), so all five golden gates fail there and always would have.
+  Blobs were already LF; only the checkout filter needed telling.
+  Green: `mingw32-make test` rc 0 — **17 test binaries** (`test_json` joins),
+  `abi_tu`, `abi_tu_cxx`, `abi_isolation`, `abi_smoke`, 4 goldens,
+  `serve_golden` 8/8, `serve_pipeline`. **NEXT = A4**: SSE and the OpenAI compat
+  trap list one at a time — `data:` framing, `: ping` every 15 s, `[DONE]`,
+  role in the first delta, `finish_reason` null-until-final, `usage` only under
+  `stream_options.include_usage`, and never blocking the scheduler on a socket.
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
