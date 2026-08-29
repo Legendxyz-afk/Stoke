@@ -250,6 +250,85 @@ int net_send_all(NetSock s, const void* buf, size_t len) {
 
 /* ---- options ------------------------------------------------------------ */
 
+/* select(), not poll/WSAPoll, because it is the one spelling that is identical
+ * on both platforms and this server's connection count is small by design. The
+ * cost is the FD_SETSIZE ceiling, which is why net.h caps n and why exceeding
+ * it is an ERROR here rather than a silent truncation -- select would otherwise
+ * quietly ignore the sockets past the limit and the loop would stop servicing
+ * them with nothing to show for it. */
+int net_wait(NetWait* w, int n, int timeout_ms) {
+    if (n < 0 || n > NET_WAIT_MAX) {
+        set_err_str("net_wait", "socket count is outside NET_WAIT_MAX");
+        return NET_ERR;
+    }
+    for (int i = 0; i < n; i++) {
+        w[i].can_read  = 0;
+        w[i].can_write = 0;
+    }
+    if (n == 0) return 0;
+
+    fd_set rd, wr;
+    FD_ZERO(&rd);
+    FD_ZERO(&wr);
+
+    int nfds = 0;
+    int any  = 0;
+    for (int i = 0; i < n; i++) {
+        if (w[i].s == NET_INVALID_SOCK) continue;
+        if (w[i].want_read) {
+            FD_SET(SOCKH(w[i].s), &rd);
+            any = 1;
+        }
+        if (w[i].want_write) {
+            FD_SET(SOCKH(w[i].s), &wr);
+            any = 1;
+        }
+        if ((int)w[i].s + 1 > nfds) nfds = (int)w[i].s + 1;
+    }
+    /* Nothing is being watched. Returning 0 at once rather than sleeping keeps
+     * the decision with the caller -- select() with three empty sets is a
+     * portable sleep on POSIX and WSAEINVAL on Windows, so it is not a
+     * behaviour worth papering over here. */
+    if (!any) return 0;
+
+    struct timeval  tv;
+    struct timeval* ptv = NULL;
+    if (timeout_ms >= 0) {
+        tv.tv_sec  = (long)(timeout_ms / 1000);
+        tv.tv_usec = (long)((timeout_ms % 1000) * 1000);
+        ptv        = &tv;
+    }
+
+#ifdef _WIN32
+    (void)nfds; /* winsock ignores it; the fd_set carries its own count */
+    int rc = select(0, &rd, &wr, NULL, ptv);
+#else
+    int rc = select(nfds, &rd, &wr, NULL, ptv);
+#endif
+    if (rc < 0) {
+#ifdef _WIN32
+        if (WSAGetLastError() == WSAEINTR) return 0;
+#else
+        if (errno == EINTR) return 0;
+#endif
+        set_err("select");
+        return NET_ERR;
+    }
+    if (rc == 0) return 0;
+
+    int ready = 0;
+    for (int i = 0; i < n; i++) {
+        if (w[i].s == NET_INVALID_SOCK) continue;
+        /* Reported only for what was ASKED. select fills the sets it was given,
+         * and echoing readability to a caller that only asked about writing
+         * would have it read a socket it is not ready to handle. */
+        if (w[i].want_read && FD_ISSET(SOCKH(w[i].s), &rd)) w[i].can_read = 1;
+        if (w[i].want_write && FD_ISSET(SOCKH(w[i].s), &wr)) w[i].can_write = 1;
+        if (w[i].can_read || w[i].can_write) ready++;
+    }
+    return ready;
+}
+
 int net_set_nonblocking(NetSock s) {
 #ifdef _WIN32
     u_long mode = 1;

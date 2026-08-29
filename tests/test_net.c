@@ -229,3 +229,81 @@ TEST(close_of_an_invalid_socket_is_safe) {
     net_close(NET_INVALID_SOCK);
     net_close(NET_INVALID_SOCK);
 }
+
+/* ===========================================================================
+ * Readiness. The server loop rests entirely on this: it owns sockets AND a
+ * model, and blocking on either one starves the other.
+ * ===========================================================================
+ */
+
+TEST(net_wait_reports_timeout_when_nothing_is_ready) {
+    Pair p;
+    ASSERT_TRUE(pair_open(&p));
+    if (p.srv == NET_INVALID_SOCK) { pair_close(&p); return; }
+
+    NetWait w = {p.srv, 1, 0, 9, 9};
+    ASSERT_EQ_I64(net_wait(&w, 1, 20), 0);
+    /* Cleared even on a timeout -- a caller must never read the last round's
+     * answer, and 9 above is there to prove they were written. */
+    ASSERT_EQ_I64(w.can_read, 0);
+    ASSERT_EQ_I64(w.can_write, 0);
+    pair_close(&p);
+}
+
+TEST(net_wait_reports_a_readable_socket) {
+    Pair p;
+    ASSERT_TRUE(pair_open(&p));
+    if (p.srv == NET_INVALID_SOCK) { pair_close(&p); return; }
+
+    ASSERT_EQ_I64(net_send_all(p.cli, "hello", 5), 0);
+
+    NetWait w = {p.srv, 1, 0, 0, 0};
+    int     rc = 0;
+    for (int i = 0; i < 100 && !w.can_read; i++) rc = net_wait(&w, 1, 50);
+    ASSERT_EQ_I64(rc, 1);
+    ASSERT_EQ_I64(w.can_read, 1);
+    pair_close(&p);
+}
+
+/* A freshly connected socket with an empty send buffer is writable, and asking
+ * only about writability must not report readability it was not asked for. */
+TEST(net_wait_reports_writability_independently_of_readability) {
+    Pair p;
+    ASSERT_TRUE(pair_open(&p));
+    if (p.srv == NET_INVALID_SOCK) { pair_close(&p); return; }
+
+    NetWait w = {p.srv, 0, 1, 0, 0};
+    ASSERT_EQ_I64(net_wait(&w, 1, 200), 1);
+    ASSERT_EQ_I64(w.can_write, 1);
+    ASSERT_EQ_I64(w.can_read, 0);
+    pair_close(&p);
+}
+
+/* Two sockets, one with data: the ready one is identified, not merely counted.
+ * A wrapper that set every entry would pass a count-only assertion. */
+TEST(net_wait_identifies_which_socket_is_ready) {
+    Pair a, b;
+    ASSERT_TRUE(pair_open(&a));
+    ASSERT_TRUE(pair_open(&b));
+    if (a.srv == NET_INVALID_SOCK || b.srv == NET_INVALID_SOCK) {
+        pair_close(&a);
+        pair_close(&b);
+        return;
+    }
+
+    ASSERT_EQ_I64(net_send_all(b.cli, "x", 1), 0);
+
+    NetWait w[2] = {{a.srv, 1, 0, 0, 0}, {b.srv, 1, 0, 0, 0}};
+    for (int i = 0; i < 100 && !w[1].can_read; i++) net_wait(w, 2, 50);
+    ASSERT_EQ_I64(w[1].can_read, 1);
+    ASSERT_EQ_I64(w[0].can_read, 0);
+
+    pair_close(&a);
+    pair_close(&b);
+}
+
+TEST(net_wait_refuses_more_sockets_than_it_can_watch) {
+    NetWait w = {NET_INVALID_SOCK, 1, 0, 0, 0};
+    ASSERT_EQ_I64(net_wait(&w, NET_WAIT_MAX + 1, 0), NET_ERR);
+    ASSERT_EQ_I64(net_wait(&w, 0, 0), 0);
+}

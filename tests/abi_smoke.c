@@ -156,7 +156,143 @@ int main(int argc, char** argv) {
            (int)finish);
     printf("abi_smoke: \"%s%s\"\n", PROMPT, text);
 
-    /* ---- 7. an unknown id is an error, not a crash ---- */
+    /* ---- 7. the chat template, added at rung A3 ----
+     *
+     * ▶▶ THE FIRST ASSERTION BELOW IS THE ONE THAT MATTERS, and it is not about
+     * chat at all: a `cap` under the bound must RETURN AN ERROR. The internal
+     * encoder answers that condition with fatal(), which is right for a CLI and
+     * is a remote process kill behind an HTTP endpoint -- any client could send
+     * a long enough prompt. If this ever regresses, THIS PROCESS DIES HERE
+     * rather than printing a failure, which is the loudest possible signal and
+     * exactly what a host would suffer. */
+    if (!stoke_has_chat_template(e)) {
+        fprintf(stderr, "abi_smoke: FAIL model reports no chat template\n");
+        stoke_close(e);
+        return 1;
+    }
+
+    stoke_chat_message msgs[2];
+    msgs[0].role        = "system";
+    msgs[0].role_len    = 6;
+    msgs[0].content     = "You are terse.";
+    msgs[0].content_len = 14;
+    msgs[1].role        = "user";
+    msgs[1].role_len    = 4;
+    msgs[1].content     = "Name one primary colour.";
+    msgs[1].content_len = 24;
+
+    int64_t bound = stoke_chat_template_bound(msgs, 2);
+    if (bound <= 0) {
+        fprintf(stderr, "abi_smoke: FAIL bound returned %lld\n", (long long)bound);
+        stoke_close(e);
+        return 1;
+    }
+
+    uint32_t chat_ids[MAX_IDS];
+    if (bound > MAX_IDS) {
+        fprintf(stderr, "abi_smoke: FAIL bound %lld exceeds the test buffer\n",
+                (long long)bound);
+        stoke_close(e);
+        return 1;
+    }
+
+    /* Under the bound by one: refused, and we are still running. */
+    int32_t too_small = stoke_apply_chat_template(e, msgs, 2, chat_ids,
+                                                  (int32_t)bound - 1);
+    if (too_small != STOKE_ERR_TOO_LONG) {
+        fprintf(stderr, "abi_smoke: FAIL short cap gave %d, want %d\n",
+                (int)too_small, (int)STOKE_ERR_TOO_LONG);
+        stoke_close(e);
+        return 1;
+    }
+
+    /* And misuse is enumerated, not a crash. */
+    if (stoke_apply_chat_template(e, NULL, 2, chat_ids, MAX_IDS)
+            != STOKE_ERR_INVALID_ARG ||
+        stoke_apply_chat_template(e, msgs, 0, chat_ids, MAX_IDS)
+            != STOKE_ERR_INVALID_ARG ||
+        stoke_chat_template_bound(NULL, 1) >= 0) {
+        fprintf(stderr, "abi_smoke: FAIL misuse was not refused as INVALID_ARG\n");
+        stoke_close(e);
+        return 1;
+    }
+
+    int32_t n_chat = stoke_apply_chat_template(e, msgs, 2, chat_ids,
+                                               (int32_t)bound);
+    if (n_chat <= 0) { stoke_close(e); return fail("stoke_apply_chat_template"); }
+    if (n_chat > bound) {
+        fprintf(stderr, "abi_smoke: FAIL wrote %d ids past a bound of %lld\n",
+                (int)n_chat, (long long)bound);
+        stoke_close(e);
+        return 1;
+    }
+
+    /* The template must actually TEMPLATE: a plain encode of the same text
+     * would be shorter and would carry no turn markers, so a stub returning
+     * tok_encode's answer cannot pass this. */
+    uint32_t plain_ids[MAX_IDS];
+    int32_t  n_plain = stoke_tokenize(
+        e, "You are terse.Name one primary colour.", -1, 0, plain_ids, MAX_IDS);
+    if (n_chat <= n_plain) {
+        fprintf(stderr, "abi_smoke: FAIL templated %d ids <= plain %d\n",
+                (int)n_chat, (int)n_plain);
+        stoke_close(e);
+        return 1;
+    }
+
+    stoke_request creq;
+    memset(&creq, 0, sizeof creq);
+    creq.size       = sizeof creq;
+    creq.id         = 2;
+    creq.prompt_ids = chat_ids;
+    creq.n_prompt   = (uint32_t)n_chat;
+    creq.max_tokens = MAX_TOK;
+    creq.eos_id     = (int64_t)stoke_eos_id(e);
+    if (stoke_submit(e, &creq) != STOKE_OK) {
+        stoke_close(e);
+        return fail("stoke_submit(chat)");
+    }
+
+    uint32_t cgot[MAX_TOK];
+    int32_t  n_cgot  = 0;
+    int32_t  cfinish = STOKE_FINISH_NONE;
+    int      csteps  = 0;
+    while (cfinish == STOKE_FINISH_NONE && csteps < 4096) {
+        uint32_t rows = 0;
+        if (stoke_step(e, &rows) != STOKE_OK) {
+            stoke_close(e);
+            return fail("stoke_step(chat)");
+        }
+        csteps++;
+        int32_t k = stoke_poll(e, creq.id, cgot + n_cgot, MAX_TOK - n_cgot,
+                               &cfinish);
+        if (k < 0) { stoke_close(e); return fail("stoke_poll(chat)"); }
+        n_cgot += k;
+    }
+    if (cfinish == STOKE_FINISH_NONE || n_cgot == 0) {
+        fprintf(stderr, "abi_smoke: FAIL chat produced %d tokens, finish=%d\n",
+                (int)n_cgot, (int)cfinish);
+        stoke_close(e);
+        return 1;
+    }
+
+    char ctext[1024];
+    size_t cused = 0;
+    for (int32_t i = 0; i < n_cgot; i++) {
+        char    piece[256];
+        int32_t m = stoke_detokenize(e, cgot[i], piece, (int32_t)sizeof piece);
+        if (m < 0) { stoke_close(e); return fail("stoke_detokenize(chat)"); }
+        if ((size_t)m < sizeof piece && cused + (size_t)m < sizeof ctext - 1) {
+            memcpy(ctext + cused, piece, (size_t)m);
+            cused += (size_t)m;
+        }
+    }
+    ctext[cused] = '\0';
+    printf("abi_smoke: chat  %d prompt ids (bound %lld), %d tokens\n",
+           (int)n_chat, (long long)bound, (int)n_cgot);
+    printf("abi_smoke: chat  \"%s\"\n", ctext);
+
+    /* ---- 8. an unknown id is an error, not a crash ---- */
     if (stoke_cancel(e, 999999) != STOKE_ERR_UNKNOWN_ID) {
         fprintf(stderr, "abi_smoke: FAIL cancel of an unknown id was not refused\n");
         stoke_close(e);

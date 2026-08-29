@@ -1252,3 +1252,7 @@ u32 tok_decode(const Tok* t, u32 id, char* buf, u32 cap) {
 
 u32 tok_bos(const Tok* t) { return t->bos_id; }
 u32 tok_eos(const Tok* t) { return t->eos_id; }
+
+int tok_has_chatml(const Tok* t) {
+    return t && t->im_start_id != UINT32_MAX && t->im_end_id != UINT32_MAX;
+}

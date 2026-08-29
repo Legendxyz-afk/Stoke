@@ -92,6 +92,32 @@ int net_set_nonblocking(NetSock s);
  * arriving now; Nagle would hold it back waiting for company. */
 int net_set_nodelay(NetSock s);
 
+/* ---- readiness ----------------------------------------------------------
+ *
+ * ▶ ADDED AT RUNG A3, because the server needs it and A2 had no caller for it.
+ * A loop that owns both sockets AND a model cannot block on either: blocking in
+ * recv() stops token generation for every other client, and blocking in send()
+ * on one slow reader does the same. So the loop asks which sockets are ready,
+ * with a timeout it chooses -- zero when the engine has work to do, longer when
+ * it is idle and there is nothing to burn a core on.
+ *
+ * ⚠ AT MOST NET_WAIT_MAX SOCKETS. This is select(), whose Windows fd_set is a
+ * fixed array of FD_SETSIZE (64) entries -- passing more silently drops the
+ * excess rather than failing, so the cap is enforced here instead. */
+#define NET_WAIT_MAX 60
+
+typedef struct {
+    NetSock s;
+    int     want_read, want_write; /* what the caller is interested in */
+    int     can_read, can_write;   /* what net_wait found; set on return */
+} NetWait;
+
+/* Waits up to `timeout_ms` (0 polls, negative blocks) for any of `n` sockets to
+ * become ready. Returns how many entries had can_read or can_write set, 0 on
+ * timeout, or NET_ERR. Every entry's can_* fields are cleared first, so a
+ * caller never reads a previous round's answer. */
+int net_wait(NetWait* w, int n, int timeout_ms);
+
 /* A no-op on NET_INVALID_SOCK, which is what lets a teardown path close
  * whatever it happens to hold without testing each handle first.
  *

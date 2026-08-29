@@ -98,7 +98,8 @@ enum {
     STOKE_ERR_OPEN_FAILED   = -3, /* trapped load-time failure; see last_error */
     STOKE_ERR_UNKNOWN_ID    = -4, /* no live request with that id            */
     STOKE_ERR_DUPLICATE_ID  = -5, /* an id already live was submitted again  */
-    STOKE_ERR_TOO_LONG      = -6  /* prompt + max_tokens exceeds max_ctx     */
+    STOKE_ERR_TOO_LONG      = -6, /* prompt + max_tokens exceeds max_ctx     */
+    STOKE_ERR_NO_TEMPLATE   = -7  /* this model's vocab has no chat template  */
 };
 
 /* Why a request stopped. Reported through `stoke_poll`'s `finish` out-param. */
@@ -217,6 +218,58 @@ int32_t stoke_tokenize(const stoke_engine* e, const char* text, int64_t len,
  * byte, so the length is the only reliable delimiter. */
 int32_t stoke_detokenize(const stoke_engine* e, uint32_t id, char* buf,
                          int32_t cap);
+
+/* ---- chat ---------------------------------------------------------------
+ *
+ * ▶▶ ADDED AT RUNG A3, AND IT IS EXACTLY THE KIND OF ADDITION THE RUNG ORDER
+ * EXISTS TO PRODUCE. `server.c` includes this header and nothing else from
+ * src/, and the first thing it needed was a way to turn a list of chat messages
+ * into ids. Without this it would have had to reach into tok.h -- and the ABI
+ * would have shipped, and been frozen, unable to express the one request shape
+ * this engine exists to serve. That is the failure the M6 note calls "an ABI
+ * used by nothing", found by building the server ON the header rather than
+ * beside it.
+ *
+ * Roles are "system" / "user" / "assistant" / "tool". Content is arbitrary
+ * UTF-8; it is NEVER rendered to one string and re-parsed, so a message whose
+ * text contains the literal bytes of a turn marker cannot forge a turn. */
+typedef struct {
+    const char* role;
+    size_t      role_len;
+    const char* content;
+    size_t      content_len;
+} stoke_chat_message;
+
+/* A provable UPPER BOUND on the ids `stoke_apply_chat_template` can produce for
+ * these messages, or a negative stoke_status. Pure arithmetic on the lengths --
+ * it loads nothing and looks at no vocabulary.
+ *
+ * ⚠⚠ CALL THIS FIRST AND SIZE YOUR BUFFER TO IT. It is not a suggestion: the
+ * template call REFUSES a `cap` below this bound rather than risk discovering
+ * the overflow halfway through. The bound is roughly 3x the message bytes,
+ * because a worst-case byte-level fallback can emit one id per byte and the
+ * encoder's own contract is stated that way; a typical prompt uses a small
+ * fraction of it, and the ACTUAL count comes back from the call. */
+int64_t stoke_chat_template_bound(const stoke_chat_message* msgs, int32_t n);
+
+/* Renders `msgs` as this model's chat template and encodes it, always ending
+ * with the generation prompt so the result is ready to submit. Returns the id
+ * count WRITTEN, or a negative stoke_status:
+ *
+ *   STOKE_ERR_NO_TEMPLATE  this model's vocab has no chat template. It is a
+ *                          fact about the MODEL, identical for every request,
+ *                          so check it once at startup and answer the chat endpoint
+ *                          with a clear refusal rather than per-request.
+ *   STOKE_ERR_TOO_LONG     `cap` is below stoke_chat_template_bound().
+ *
+ * SAFE from any thread (read-only against an immutable vocab). */
+int32_t stoke_apply_chat_template(const stoke_engine* e,
+                                  const stoke_chat_message* msgs, int32_t n,
+                                  uint32_t* out, int32_t cap);
+
+/* Whether this model can be chat-templated at all. A server should ask once at
+ * startup, not once per request. 0 if `e` is NULL. */
+int32_t stoke_has_chat_template(const stoke_engine* e);
 
 #ifdef __cplusplus
 } /* extern "C" */

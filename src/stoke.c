@@ -273,3 +273,109 @@ int32_t stoke_detokenize(const stoke_engine* e, uint32_t id, char* buf,
     if (cap < 0) return fail(STOKE_ERR_INVALID_ARG, "stoke_detokenize: cap must be >= 0");
     return (int32_t)tok_decode(e->tok, id, buf, (u32)cap);
 }
+
+/* ---- chat ---------------------------------------------------------------
+ *
+ * ▶▶ THE WHOLE DESIGN OF THIS SECTION IS "NEVER REACH tok_apply_chatml's
+ * fatal()". That function answers three questions by exiting the process: the
+ * model has no ChatML specials, the cap is too small, and a length overflows.
+ * Every one of those is correct for a CLI and is a REMOTE PROCESS KILL behind
+ * an HTTP endpoint -- the second one is reachable by any client willing to send
+ * a long enough prompt.
+ *
+ * ⚠ AND TRAPPING IT IS NOT THE ANSWER, WHICH IS WHY IT IS NOT USED HERE.
+ * tok_apply_chatml xmalloc()s a scratch buffer per message and frees it at the
+ * end of the loop body; a longjmp out of the encode would skip that free. The
+ * M6 trap would have turned a process kill into a MEMORY LEAK PER FAILED
+ * REQUEST, which is quieter and worse. So each condition is excluded BEFORE
+ * the call instead: the specials are checked through tok_has_chatml, and the
+ * cap is checked against a bound that provably covers the encoder's own
+ * worst case.
+ */
+
+/* The encoder's stated worst case is 3 ids per byte of `{role}
+{content}`.
+ * Around that, per message: the <|im_start|> and <|im_end|> ids, and the "
+"
+ * separator which is itself encoded and so may cost up to 3. That is 5, and
+ * this allows 8. The fixed tail is one id plus an encode of "assistant
+" (10
+ * bytes, so up to 30) = 31, and this allows 64.
+ *
+ * ⚠ The slack is deliberate and was NOT free to get wrong: an earlier version
+ * of this allowed +4 per message, which is one short of the 5 actually needed,
+ * and the shortfall would have surfaced as a fatal() on one particular input
+ * rather than as a refusal. */
+int64_t stoke_chat_template_bound(const stoke_chat_message* msgs, int32_t n) {
+    if (!msgs || n <= 0) {
+        return fail(STOKE_ERR_INVALID_ARG,
+                    "stoke_chat_template_bound: msgs must be non-NULL and n > 0");
+    }
+    u64 total = 64;
+    for (int32_t i = 0; i < n; i++) {
+        if (!msgs[i].role || !msgs[i].content) {
+            return fail(STOKE_ERR_INVALID_ARG,
+                        "stoke_chat_template_bound: a message has a NULL role "
+                        "or content");
+        }
+        u64 per = (u64)msgs[i].role_len + 1u + (u64)msgs[i].content_len;
+        if (per > (UINT64_MAX - 8u) / 3u) {
+            return fail(STOKE_ERR_TOO_LONG, "stoke_chat_template_bound: overflow");
+        }
+        per = per * 3u + 8u;
+        if (total > UINT64_MAX - per) {
+            return fail(STOKE_ERR_TOO_LONG, "stoke_chat_template_bound: overflow");
+        }
+        total += per;
+    }
+    if (total > (u64)INT32_MAX) {
+        return fail(STOKE_ERR_TOO_LONG,
+                    "stoke_chat_template_bound: bound exceeds INT32_MAX");
+    }
+    return (int64_t)total;
+}
+
+int32_t stoke_apply_chat_template(const stoke_engine* e,
+                                  const stoke_chat_message* msgs, int32_t n,
+                                  uint32_t* out, int32_t cap) {
+    if (!e || !msgs || n <= 0 || !out || cap <= 0) {
+        return fail(STOKE_ERR_INVALID_ARG,
+                    "stoke_apply_chat_template: engine, msgs and out must be "
+                    "non-NULL with n > 0 and cap > 0");
+    }
+    if (!tok_has_chatml(e->tok)) {
+        return fail(STOKE_ERR_NO_TEMPLATE,
+                    "stoke_apply_chat_template: this model's vocab has no "
+                    "'<|im_start|>'/'<|im_end|>' specials");
+    }
+
+    int64_t bound = stoke_chat_template_bound(msgs, n);
+    if (bound < 0) return (int32_t)bound;
+    if ((int64_t)cap < bound) {
+        return fail(STOKE_ERR_TOO_LONG,
+                    "stoke_apply_chat_template: cap is below "
+                    "stoke_chat_template_bound() for these messages");
+    }
+
+    /* Converted field by field rather than cast. The two structs happen to have
+     * identical layout wherever size_t is 64 bits, and would silently stop
+     * having it where it is not -- a cast here would work on this box and
+     * misread every length on another. */
+    StokeMsg* m = (StokeMsg*)xmalloc((size_t)n * sizeof(StokeMsg));
+    for (int32_t i = 0; i < n; i++) {
+        m[i].role        = msgs[i].role;
+        m[i].role_len    = (u64)msgs[i].role_len;
+        m[i].content     = msgs[i].content;
+        m[i].content_len = (u64)msgs[i].content_len;
+    }
+
+    /* No fatal() is reachable from here -- see the section note. That is what
+     * makes this allocation safe to hold across the call. */
+    u32 got = tok_apply_chatml(e->tok, m, (u32)n, out, (u32)cap);
+    free(m);
+    return (int32_t)got;
+}
+
+int32_t stoke_has_chat_template(const stoke_engine* e) {
+    return (e && tok_has_chatml(e->tok)) ? 1 : 0;
+}

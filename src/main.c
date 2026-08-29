@@ -12,6 +12,7 @@
 #include "model.h"
 #include "sched.h"
 #include "serve.h"
+#include "server.h"
 #include "pool.h"
 #include "tok.h"
 
@@ -1401,6 +1402,70 @@ static void finish_stdout_or_fatal(void) {
     }
 }
 
+/* ---- `stoke serve` -- M6 rung A3 ----------------------------------------
+ *
+ * ▶ A THIN ARGUMENT PARSE AND NOTHING ELSE. Every decision the server makes
+ * lives in src/server.c, which reaches the engine only through stoke.h; this
+ * function exists so the CLI has a verb, and it must not grow policy. If
+ * something here starts looking like a scheduling or protocol choice, it is in
+ * the wrong file.
+ *
+ * It returns rather than fatal()ing on a bad argument for the same reason the
+ * server does: `stoke serve` is the entry point a person runs by hand, and an
+ * exit code with a printed usage line is more use than an abort.
+ */
+static int cmd_serve(int argc, char** argv) {
+    if (argc < 3) {
+        fprintf(stderr,
+                "usage: stoke serve <model.gguf> [--host A] [--port P] "
+                "[--ctx N] [--seqs N] [--threads N] [--kv q8] "
+                "[--max-requests N] [-v]\n");
+        return 2;
+    }
+
+    stoke_open_opts eo;
+    memset(&eo, 0, sizeof eo);
+    eo.size         = sizeof eo;
+    eo.dedup_prefix = 1;
+
+    ServerOpts so;
+    memset(&so, 0, sizeof so);
+    so.port = 8080;
+
+    for (int i = 3; i < argc; i++) {
+        const char* a = argv[i];
+        int         has_next = (i + 1 < argc);
+        if (strcmp(a, "-v") == 0) {
+            so.verbose = 1;
+        } else if (strcmp(a, "--host") == 0 && has_next) {
+            so.bind_addr = argv[++i];
+        } else if (strcmp(a, "--port") == 0 && has_next) {
+            so.port = (u16)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--ctx") == 0 && has_next) {
+            eo.max_ctx = (u32)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--seqs") == 0 && has_next) {
+            eo.max_seqs = (u32)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--threads") == 0 && has_next) {
+            eo.n_threads = (u32)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--kv") == 0 && has_next) {
+            const char* v = argv[++i];
+            if (strcmp(v, "q8") == 0) {
+                eo.kv_q8 = 1;
+            } else if (strcmp(v, "f32") != 0) {
+                fprintf(stderr, "stoke serve: --kv takes f32 or q8\n");
+                return 2;
+            }
+        } else if (strcmp(a, "--max-requests") == 0 && has_next) {
+            so.max_requests = (int)strtol(argv[++i], NULL, 10);
+        } else {
+            fprintf(stderr, "stoke serve: unknown argument '%s'\n", a);
+            return 2;
+        }
+    }
+
+    return server_run(argv[2], &eo, &so);
+}
+
 int main(int argc, char** argv) {
 #ifdef _WIN32
     /* Windows CRT stdout defaults to text mode, which translates '\n' to
@@ -1418,7 +1483,9 @@ int main(int argc, char** argv) {
               "[--dump dir] [--probe-pos N] [--timing], "
               "batch <path.gguf> [--raw] [-n N] (-p \"text\" | -f file)... "
               "[--seqs N] [--ctx N] [--threads N] [--timing], "
-              "bench --ops <path.gguf> [--reps N] [--jsonl])");
+              "bench --ops <path.gguf> [--reps N] [--jsonl], "
+              "serve <path.gguf> [--host A] [--port P] [--ctx N] [--seqs N] "
+              "[--threads N] [--kv q8] [--max-requests N] [-v])");
     }
     if (strcmp(argv[1], "bench") == 0) {
         /* The `--ops` spelling is mandated by the M3 forward note; it is a
@@ -1529,7 +1596,10 @@ int main(int argc, char** argv) {
         finish_stdout_or_fatal();
         return 0;
     }
-    fatal("unknown command '%s' (commands: info, tokenize, run, batch)",
+    if (strcmp(argv[1], "serve") == 0) {
+        return cmd_serve(argc, argv);
+    }
+    fatal("unknown command '%s' (commands: info, tokenize, run, batch, serve)",
           argv[1]);
     return 1; /* unreachable */
 }

@@ -1,0 +1,86 @@
+### GET /health
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 16
+Connection: keep-alive
+
+{"status":"ok"}
+
+### POST /v1/chat/completions (greedy, max_tokens 24)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 293
+Connection: keep-alive
+
+{"id":"chatcmpl-1","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Hello! How can I help you today?"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":14,"completion_tokens":10,"total_tokens":24}}
+
+### POST /v1/chat/completions (system + user)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 272
+Connection: keep-alive
+
+{"id":"chatcmpl-2","object":"chat.completion","created":<EPOCH>,"model":"stoke-golden","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":21,"completion_tokens":3,"total_tokens":24}}
+
+### POST /v1/chat/completions (stream:true -> 501)
+[curl exit 0]
+HTTP/1.1 501 Not Implemented
+Content-Type: application/json
+Content-Length: 120
+Connection: close
+
+{"error":{"message":"streaming responses are not implemented","type":"invalid_request_error","param":null,"code":null}}
+
+### POST /v1/chat/completions (body is not JSON -> 400)
+[curl exit 0]
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 125
+Connection: close
+
+{"error":{"message":"body is not valid JSON (bad-value at byte 0)","type":"invalid_request_error","param":null,"code":null}}
+
+### POST /v1/chat/completions (no messages -> 400)
+[curl exit 0]
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 117
+Connection: close
+
+{"error":{"message":"'messages' must be a non-empty array","type":"invalid_request_error","param":null,"code":null}}
+
+### GET /v1/chat/completions (wrong method -> 405)
+[curl exit 0]
+HTTP/1.1 405 Method Not Allowed
+Content-Type: application/json
+Content-Length: 110
+Connection: close
+
+{"error":{"message":"use POST /v1/chat/completions","type":"invalid_request_error","param":null,"code":null}}
+
+### GET /nope (unknown endpoint -> 404)
+[curl exit 0]
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+Content-Length: 97
+Connection: close
+
+{"error":{"message":"unknown endpoint","type":"invalid_request_error","param":null,"code":null}}
+
+### server log
+stoke serve: listening on 127.0.0.1:<PORT>  ctx=1024
+stoke serve: GET /health
+stoke serve: POST /v1/chat/completions
+stoke serve: chat id=1 prompt=14 gen=10 finish=stop
+stoke serve: POST /v1/chat/completions
+stoke serve: chat id=2 prompt=21 gen=3 finish=stop
+stoke serve: POST /v1/chat/completions
+stoke serve: POST /v1/chat/completions
+stoke serve: POST /v1/chat/completions
+stoke serve: GET /v1/chat/completions
+stoke serve: GET /nope
+stoke serve: 8 requests completed, exiting
+[server exit 0]

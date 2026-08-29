@@ -143,6 +143,17 @@ u32 tok_apply_chatml(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
  * add one only when a caller actually needs the distinction. */
 u32 tok_decode(const Tok* t, u32 id, char* buf, u32 cap);
 
+/* Whether this vocab has the '<|im_start|>' and '<|im_end|>' specials that
+ * tok_apply_chatml requires.
+ *
+ * ▶ ADDED AT M6 RUNG A3, AND THE REASON IS THE WHOLE POINT: tok_apply_chatml
+ * answers this question by calling fatal(). That is correct for a CLI, where
+ * the answer is the same for every invocation and exiting is the right thing.
+ * It is unusable behind a network endpoint, where the same fact must become a
+ * REFUSAL of one request rather than the death of the process serving every
+ * other. A server has to be able to ask BEFORE it calls. */
+int tok_has_chatml(const Tok* t);
+
 u32 tok_bos(const Tok* t); /* tokenizer.ggml.bos_token_id */
 u32 tok_eos(const Tok* t); /* tokenizer.ggml.eos_token_id */
 
