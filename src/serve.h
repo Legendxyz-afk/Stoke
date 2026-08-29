@@ -22,6 +22,32 @@
 
 typedef struct ServeHost ServeHost;
 
+/* ---- optional sampling (M6 rung A6) ------------------------------------
+ *
+ * ▶▶▶ THIS IS THE ONE CHANGE THIS FILE TAKES FOR THE SAMPLER, AND IT IS SHAPED
+ * BY WHAT THIS FILE IS. Every M5 gate number was measured through serve_step,
+ * so the milestone's standing rule is that touching it costs a re-measure. The
+ * token is chosen here and nowhere else -- sched.c never calls the model -- so
+ * "do not touch it" was never available. What IS available is making the change
+ * as small as it can be: ONE nullable function pointer, and not a line of
+ * sampling arithmetic in this file.
+ *
+ * With no sampler installed the step does `argmax` exactly as before, behind a
+ * single predictable null check per yielding row. `bench --serve` installs
+ * none, so the M5 measurement path keeps its shape.
+ *
+ * ⚠ THE POSITION IS PASSED, AND IT IS WHAT MAKES A SEEDED STREAM SURVIVE
+ * PREEMPTION. The scheduler preempts and REPLAYS sequences, so a sampler that
+ * advanced a per-request RNG on each call would produce a different token the
+ * second time through and silently break the replay-losslessness the M5 design
+ * rests on. Keyed on the position instead, a sample is a PURE FUNCTION of
+ * (seed, position) and a replay reproduces it by construction. */
+typedef u32 (*ServeSampleFn)(void* ctx, u64 req_id, u32 pos,
+                             const f32* logits, u32 n_vocab);
+
+/* NULL `fn` (the default) restores plain argmax. */
+void serve_host_set_sampler(ServeHost* h, ServeSampleFn fn, void* ctx);
+
 /* `m` is BORROWED and must outlive the host. */
 ServeHost* serve_host_open(Model* m);
 void       serve_host_close(ServeHost* h);

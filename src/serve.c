@@ -19,6 +19,10 @@ struct ServeHost {
     u32   cap;
 
     u64 rows, steps;
+
+    /* NULL = greedy, which is the default and the M5 measurement path. */
+    ServeSampleFn sample;
+    void*         sctx;
 };
 
 static void ensure(ServeHost* h, u32 n) {
@@ -66,8 +70,20 @@ static void serve_step(void* ctx, const SchedStep* in, u32* out) {
          * forward -- see model_compute_logits_batch. */
         model_compute_logits_batch(h->m, (const f32* const*)h->yp, n_yield,
                                    h->lp);
-        for (u32 i = 0; i < n_yield; i++)
-            out[i] = argmax(h->lp[i], h->n_vocab);
+        if (h->sample) {
+            /* The row a yielding index refers to, mirroring how yp was built
+             * just above: decodes are rows [0, n_decode), and the prefill's
+             * contribution is the batch's LAST row. Deriving it twice from the
+             * same rule rather than storing an index keeps the two in step. */
+            for (u32 i = 0; i < n_yield; i++) {
+                u32 row = (i < in->n_decode) ? i : in->n_rows - 1u;
+                out[i]  = h->sample(h->sctx, in->req_ids[row],
+                                    in->positions[row], h->lp[i], h->n_vocab);
+            }
+        } else {
+            for (u32 i = 0; i < n_yield; i++)
+                out[i] = argmax(h->lp[i], h->n_vocab);
+        }
     }
 
     h->rows += in->n_rows;
@@ -77,6 +93,12 @@ static void serve_step(void* ctx, const SchedStep* in, u32* out) {
 static double serve_now(void* ctx) {
     (void)ctx;
     return now_ms();
+}
+
+void serve_host_set_sampler(ServeHost* h, ServeSampleFn fn, void* ctx) {
+    if (!h) fatal("serve: serve_host_set_sampler -- host must be non-NULL");
+    h->sample = fn;
+    h->sctx   = ctx;
 }
 
 ServeHost* serve_host_open(Model* m) {

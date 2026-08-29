@@ -1,0 +1,27 @@
+﻿2026-08-29T21:22:27  M5 gate [2] -- the bars. stamp 2026-08-29-m5-bars-baseline
+2026-08-29T21:22:27  cells: 8f32  arms: S  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-29T21:22:27  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-29T21:22:27  exe sha256 426BDDA3E5C2   llama-bench sha256 1AFC0B22E21F
+2026-08-29T21:22:54  QUIESCE GATE PASSED on cpu 12%, 12% (<= 12% twice), standby 1.98 GB
+2026-08-29T21:22:57  BLOCK 1 starting (cpu 19%, standby 1.98 GB)
+2026-08-29T21:25:38    b1-8f32-S         7.223 tok/s   (156.3s wall, 1019.6s cpu)
+2026-08-29T21:25:38  all blocks done -- writing report
+2026-08-29T21:25:38  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-29-m5-bars-baseline-report.md
+2026-08-29T21:25:56  M5 gate [2] -- the bars. stamp 2026-08-29-m5-bars-baseline
+2026-08-29T21:25:56  cells: 8f32  arms: B  blocks: 1  threads: 8  ctx: 704  n: 128
+2026-08-29T21:25:56  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-08-29T21:25:56  exe sha256 426BDDA3E5C2   llama-bench sha256 1AFC0B22E21F
+2026-08-29T21:26:16    waiting: cpu 13% > 12%
+2026-08-29T21:26:37    waiting: cpu 13% > 12%
+2026-08-29T21:26:57    waiting: cpu 24% > 12%
+2026-08-29T21:27:17    waiting: cpu 16% > 12%
+2026-08-29T21:27:38    waiting: cpu 18% > 12%
+2026-08-29T21:27:58    waiting: cpu 18% > 12%
+2026-08-29T21:28:18    waiting: cpu 21% > 12%
+2026-08-29T21:28:59    waiting: cpu 19% > 12%
+2026-08-29T21:29:22  !! QUIESCE GATE NOT MET after 10 tries -- last reads 8%, 19%, standby 4.52 GB.
+2026-08-29T21:29:22  !! Every rate below is INDICATIVE. Ratios inside a block survive; absolutes do not.
+2026-08-29T21:29:25  BLOCK 1 starting (cpu 14%, standby 4.52 GB)
+2026-08-29T21:32:02    b1-8f32-B        26.671 tok/s   (152.5s wall, 998.4s cpu)
+2026-08-29T21:32:02  all blocks done -- writing report
+2026-08-29T21:32:02  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\2026-08-29-m5-bars-baseline-report.md
