@@ -1078,6 +1078,41 @@ Direction + wedge + AySen alignment: **DECIDED (2026-07-14).**
   PURE FUNCTION of (seed, token index), not a mutating stream, or a replayed
   sequence diverges). A7's gate [4] needs neither a quiet box nor the sampler.
 
+- **2026-08-29 (FIFTH SITTING) — GATE [4] BANKED; SIX OF SEVEN GATE ITEMS DONE
+  ([1][2][3][4][5][6]), ONLY [7] LEFT.** Commits `eda26db`, `c8c9ef6`.
+  ▶ **Gate [4] is a SCRIPT, not a reading** — `tests/abi_checklist.sh`, 13
+  boxes checked against the header's own text, with
+  `tests/abi_checklist_mutants.sh` proving each box can fail (9/9, each caught
+  by the box it breaks). ⚠ **One gap in the header: EIGHT OF FIFTEEN public
+  functions had no thread-safety statement**, in a header whose heading reads
+  "per function, no exceptions and no 'probably'".
+  ⚠⚠ **AND FIVE DEFECTS IN THE CHECKER BEFORE THAT ONE IN THE CODE.** The
+  first run reported **eleven green boxes against ZERO extracted functions**
+  (CRLF left every declaration starting with a carriage return) — caught only
+  by the anti-vacuity control. Five of sixteen functions were silently dropped
+  (a `#define` has no `;`, so joining before filtering glues it to the next
+  declaration). The `extern "C"` box was satisfied by the CLOSING COMMENT. The
+  by-value box built its pattern from `} stoke_chat_message;` WITH the
+  semicolon, so it searched for a string that cannot occur. And two mutants
+  graded nothing — one caught by the wrong box, one whose sed matched nothing.
+  ▶▶ **FIRST LINUX BUILD SINCE A3, AND `src/net.c` HAD NOT COMPILED THERE ONCE.**
+  `select`/`fd_set`/`timeval` arrive free with `<winsock2.h>` but need
+  `<sys/select.h>` + `<sys/time.h>` on POSIX. Six commits, every build a
+  Windows build. **The one file whose job is to be the only place that knows
+  the platform had a portability hole in it.** Also: `abi_tu_cxx` was in `all`,
+  so a missing `g++` on WSL took out the ENTIRE Linux leg (17 binaries, ASan,
+  TSan) — now a loud SKIP naming what to install.
+  ⚠ **ONE NON-FINDING WORTH THE RECORD:** `make` appeared to exit 0 despite
+  `Error 127`, which would have made every green matrix run meaningless. It
+  does not — `wsl.exe -- bash -c '...$?...'` has `$?` expanded BEFORE bash sees
+  it, so every exit code read that way was the previous command's. One control
+  line settled it. **The instrument was broken, not the build system, for the
+  sixth time this session.**
+  ⏹ Linux leg now green: 17/17 binaries, 47/47, all three ABI gates. Windows
+  unchanged. **NEXT = gate [7]:** the model-dependent Linux gates, ASan, TSan,
+  and the 10-minute randomized ASan serve smoke (not written; its natural
+  inputs are the A2 corpus plus the drivers already in `serve_probe.c`).
+
 Related paths (from this folder):
 - **THE OPERATIONAL MAP — read FIRST in any build session:** `docs/ROADMAP.md`
   (position, per-milestone gates + operative-doc pointers, session
