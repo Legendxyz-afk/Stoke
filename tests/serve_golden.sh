@@ -44,7 +44,7 @@ golden="tests/data/serve.golden"
 # Overridable so a box with something already on the default can move it; the
 # port is normalized out of the transcript, so moving it cannot change the
 # golden.
-port="${STOKE_SERVE_PORT:-18139}"
+port="${STOKE_SERVE_PORT:-$(golden_lib_port 18139 "$builddir")}"
 
 # ⚠ PINNED. The generated text is greedy and therefore reproducible, but
 # reproducible at a FIXED REDUCTION SHAPE -- thread count is an input to the
@@ -76,16 +76,13 @@ n_requests=19
 # The first request has to outwait a 2.5GB model load, so it retries a refused
 # connection. Every later one does NOT: by then the server is up, and a retry
 # there would paper over exactly the failure this gate exists to catch.
-first_retry="--retry 120 --retry-delay 1 --retry-connrefused"
+first_retry="--retry 400 --retry-delay 1 --retry-connrefused"
 
 # `timeout` is coreutils and is present on both legs (msys and WSL); where it
 # is not, the run is simply unguarded rather than refused. The guard is what
 # turns "the server never reached its request count" from a hung gate into a
 # failed one, so it is a bound on the whole session and not a per-request one.
-guard=""
-if command -v timeout > /dev/null 2>&1; then
-    guard="timeout ${STOKE_SERVE_GUARD_SECS:-600}"
-fi
+guard=$(golden_lib_guard "$builddir")
 
 $guard "$bin" serve "$model" --port "$port" --ctx "$ctx" --seqs "$seqs" \
     --threads "$threads" --max-requests "$n_requests" -v > "$srvlog" 2>&1 &

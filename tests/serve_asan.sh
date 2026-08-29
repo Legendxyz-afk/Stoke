@@ -38,7 +38,7 @@ seed="${5:-20260829}"
 model="models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 bin="$builddir/stoke$exe"
 fuzz="$builddir/serve_fuzz$exe"
-port="${STOKE_SERVE_ASAN_PORT:-18147}"
+port="${STOKE_SERVE_ASAN_PORT:-$(golden_lib_port 18147 "$builddir")}"
 
 golden_lib_require_model "$model" "serve_asan"
 golden_lib_require_binary "$bin" "serve_asan"

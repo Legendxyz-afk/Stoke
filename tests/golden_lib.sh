@@ -113,3 +113,48 @@ golden_lib_run_and_diff() {
     rm -f "$gl_out" "$gl_diff"
     return 0
 }
+
+# golden_lib_guard <builddir>
+# Echoes the `timeout N` prefix a serve gate should launch its server under, or
+# nothing where coreutils `timeout` is unavailable.
+#
+# ⚠ THE BOUND SCALES WITH THE LEG, AND IT IS WALL CLOCK FROM PROCESS START --
+# which means it covers the 2.5GB MODEL LOAD as well as the serving. Under a
+# sanitizer that load is an order of magnitude slower, and a fixed 600 s bound
+# fired DURING it: the health check passed, the server was killed moments later,
+# and all three probes then reported "connection refused" as though the server
+# had crashed. It had not; the gate's own guard had shot it. Detected from the
+# build directory because `make test` passes $(BUILDDIR) and nothing else knows
+# which leg is running. STOKE_SERVE_GUARD_SECS still overrides both.
+golden_lib_guard() {
+    command -v timeout > /dev/null 2>&1 || return 0
+    if [ -n "${STOKE_SERVE_GUARD_SECS:-}" ]; then
+        echo "timeout $STOKE_SERVE_GUARD_SECS"
+        return 0
+    fi
+    case "$1" in
+        *asan*|*tsan*) echo "timeout 3600" ;;
+        *)             echo "timeout 600" ;;
+    esac
+}
+
+# golden_lib_port <base-port> <builddir>
+# Echoes a port unique to this build leg.
+#
+# ⚠ THE LEGS SHARE localhost AND THE PORTS WERE FIXED, so a Windows gate and a
+# WSL gate could not run at the same time: WSL2 forwards localhost to the
+# Windows host, both grabbed the same number, and the second server exited 1 on
+# bind. The symptom is a gate reporting "the server exited 1" with nothing wrong
+# in it -- which is what happened here on 2026-08-29 when a Windows `make test`
+# overlapped a background Linux one. Offsetting by leg makes the two runnable
+# together and, more importantly, makes an overlap stop producing a mysterious
+# red in code that is fine.
+golden_lib_port() {
+    gl_base="$1"
+    case "$2" in
+        *linux-asan*) echo $((gl_base + 30)) ;;
+        *linux-tsan*) echo $((gl_base + 40)) ;;
+        *linux*)      echo $((gl_base + 20)) ;;
+        *)            echo "$gl_base" ;;
+    esac
+}

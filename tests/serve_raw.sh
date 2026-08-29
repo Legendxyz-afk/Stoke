@@ -28,7 +28,7 @@ exe="${2:-}"
 model="models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 bin="$builddir/stoke$exe"
 probe="$builddir/serve_probe$exe"
-port="${STOKE_SERVE_RAW_PORT:-18141}"
+port="${STOKE_SERVE_RAW_PORT:-$(golden_lib_port 18141 "$builddir")}"
 
 golden_lib_require_model "$model" "serve_raw"
 golden_lib_require_binary "$bin" "serve_raw"
@@ -37,10 +37,7 @@ golden_lib_require_binary "$probe" "serve_raw"
 srvlog="$builddir/serve_raw.srv"
 rm -f "$srvlog"
 
-guard=""
-if command -v timeout > /dev/null 2>&1; then
-    guard="timeout ${STOKE_SERVE_GUARD_SECS:-600}"
-fi
+guard=$(golden_lib_guard "$builddir")
 
 # One to wait out the model load, two for the pipelined pair, one stream for
 # the heartbeat. The slow reader is NOT counted: it is disconnected rather than
@@ -62,7 +59,7 @@ srv_pid=$!
 # The readiness wait, borrowed from the curl gate rather than reimplemented as
 # a connect-retry inside the probe: a client with its own retry loop is a
 # client that can hide a refused connection.
-if ! curl -sS --retry 120 --retry-delay 1 --retry-connrefused \
+if ! curl -sS --retry 400 --retry-delay 1 --retry-connrefused \
         "http://127.0.0.1:$port/health" > /dev/null; then
     echo "serve_raw: FAILED -- the server never answered /health" >&2
     kill "$srv_pid" 2> /dev/null

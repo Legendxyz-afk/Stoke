@@ -28,7 +28,7 @@ exe="${2:-}"
 model="models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
 bin="$builddir/stoke$exe"
 suite="tests/serve_openai.py"
-port="${STOKE_SERVE_OPENAI_PORT:-18143}"
+port="${STOKE_SERVE_OPENAI_PORT:-$(golden_lib_port 18143 "$builddir")}"
 
 golden_lib_require_model "$model" "serve_openai"
 golden_lib_require_binary "$bin" "serve_openai"
@@ -64,10 +64,7 @@ fi
 srvlog="$builddir/serve_openai.srv"
 rm -f "$srvlog"
 
-guard=""
-if command -v timeout > /dev/null 2>&1; then
-    guard="timeout ${STOKE_SERVE_GUARD_SECS:-600}"
-fi
+guard=$(golden_lib_guard "$builddir")
 
 # One readiness probe plus the suite's six requests. The count is asserted
 # below: the SDK is constructed with max_retries=0 precisely so this number is
@@ -78,7 +75,7 @@ $guard "$bin" serve "$model" --port "$port" --ctx 1024 --seqs 4 --threads 8 \
     --max-requests "$n_requests" -v > "$srvlog" 2>&1 &
 srv_pid=$!
 
-if ! curl -sS --retry 120 --retry-delay 1 --retry-connrefused \
+if ! curl -sS --retry 400 --retry-delay 1 --retry-connrefused \
         "http://127.0.0.1:$port/health" > /dev/null; then
     echo "serve_openai: FAILED -- the server never answered /health" >&2
     kill "$srv_pid" 2> /dev/null
