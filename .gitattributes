@@ -18,3 +18,12 @@ tests/tooling/validation/*.txt -text
 # fixture into a different test while its name still claims the old one. The
 # damage would appear only on a fresh clone, never in the tree that wrote them.
 tests/data/http_corpus/*.raw -text
+
+# Every *.golden is compared BYTE FOR BYTE against what a gate generates at run
+# time, and every generator here writes LF (main.c puts stdout in binary mode on
+# Windows precisely so it does). Left unpinned, core.autocrlf=true rewrites them
+# to CRLF ON CHECKOUT and the diff then reports every line as changed -- so a
+# fresh Windows clone fails all five golden gates while the tree that wrote them
+# stays green. Measured with `git checkout-index` on 2026-08-29: unpinned, this
+# checkout turns tests/data/serve.golden into 86 CRLF lines.
+tests/data/*.golden -text
