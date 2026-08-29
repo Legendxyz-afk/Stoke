@@ -145,6 +145,15 @@ static void build_chat(Client* c, char* out, size_t cap, int completions) {
     int      use_stop = (int)pick(&c->rng, 3) == 0;
     const char* p    = prompts[pick(&c->rng, sizeof prompts / sizeof prompts[0])];
 
+    /* ⚠ DRAWN BEFORE THE snprintf, NOT INSIDE ITS ARGUMENT LIST. C leaves the
+     * evaluation ORDER of function arguments unspecified, and every pick()
+     * advances the client's RNG -- so two draws in one argument list make the
+     * generated traffic depend on the compiler, and "reproducible from the
+     * seed" would hold only per-binary. The whole value of printing the seed is
+     * that a failure at minute nine can be run again, including on the other
+     * leg of the matrix. Every draw is hoisted into a variable. */
+    const char* stop_s = use_stop ? stops[pick(&c->rng, 4)] : "";
+
     char body[1024];
     int  bn;
     if (completions) {
@@ -152,8 +161,7 @@ static void build_chat(Client* c, char* out, size_t cap, int completions) {
                       "{\"model\":\"stoke\",\"prompt\":\"%s\",\"max_tokens\":%u,"
                       "\"stream\":%s,\"temperature\":0%s%s}",
                       p, max_tok, stream ? "true" : "false",
-                      use_stop ? ",\"stop\":[" : "",
-                      use_stop ? stops[pick(&c->rng, 4)] : "");
+                      use_stop ? ",\"stop\":[" : "", stop_s);
         if (use_stop) {
             /* close the array the branch above opened */
             bn = (int)strlen(body);
