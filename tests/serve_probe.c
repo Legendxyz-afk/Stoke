@@ -43,7 +43,16 @@
  * which is indistinguishable from the server never sending one. A gate that
  * fails intermittently is worse than one that fails always, and a test-side
  * timeout tighter than the work is the commonest way to build one. */
-#define DEADLINE_MS 120000.0
+#define DEADLINE_MS_DEFAULT 120000.0
+
+/* Settable by the caller, because the same probe runs against a -O3 build
+ * and against a sanitized one where a forward pass is an order of magnitude
+ * slower. Under ASan the ping probe's 438-token prefill outran a 120-second
+ * deadline: 3 heartbeats arrived and the stream had not finished, which the
+ * failure message correctly reported as the PROBE's deadline rather than a
+ * missing sentinel. A deadline tighter than the work manufactures reds. */
+static double g_deadline_ms = DEADLINE_MS_DEFAULT;
+#define DEADLINE_MS g_deadline_ms
 
 static int count_of(const char* hay, size_t n, const char* needle) {
     size_t m = strlen(needle);
@@ -380,6 +389,7 @@ int main(int argc, char** argv) {
     const char* mode = argv[1];
     const char* host = argv[2];
     u16         port = (u16)strtoul(argv[3], NULL, 10);
+    if (argc > 4) g_deadline_ms = strtod(argv[4], NULL);
 
     if (net_startup() != 0) {
         fprintf(stderr, "serve_probe: FAIL net_startup: %s\n", net_error());

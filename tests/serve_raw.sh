@@ -75,8 +75,18 @@ fail=0
 # count, and the count is what ends the server. Put it last and the fourth
 # completion (the ping stream) would have already ended the run before it could
 # connect. So it goes in the middle, and the stream that completes goes last.
+# A sanitized build runs a forward pass an order of magnitude slower, so the
+# probes need a deadline to match. Detected from the build directory rather
+# than passed in, because `make test` invokes this with $(BUILDDIR) and
+# nothing else knows which leg it is. A deadline tighter than the work is
+# how you manufacture an intermittent red.
+probe_deadline=120000
+case "$builddir" in
+    *asan*|*tsan*) probe_deadline=900000 ;;
+esac
+
 for mode in pipeline slowread ping; do
-    if ! "$probe" "$mode" 127.0.0.1 "$port"; then
+    if ! "$probe" "$mode" 127.0.0.1 "$port" "$probe_deadline"; then
         fail=1
     fi
 done
