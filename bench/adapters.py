@@ -54,6 +54,16 @@ LLAMACPP_MODEL_NAME = "qwen3-4b"             # llama-server serves one model; fi
 
 OLLAMA_HOST_ADDR = "127.0.0.1:11434"        # forced explicitly so ambient OLLAMA_HOST can't drift us
 
+# -- stoke itself (M6 rung A5) -------------------------------------------------------------------
+# The whole point of gate item [3] is that NOTHING below this line's own class had to change: the
+# harness's measurement machinery -- bench.timed_stream, bench.run_scenario, scenarios.py,
+# report.py -- is untouched, and stoke is driven through exactly the same OpenAI-SSE path the two
+# baselines are. If any of that had needed a special case, the compat surface would be the thing
+# that is wrong, not the harness.
+STOKE_EXE = REPO_ROOT / "build" / ("win/stoke.exe" if sys.platform == "win32" else "linux/stoke")
+STOKE_MODEL_NAME = "stoke"                  # echoed back in every response; any string works
+STOKE_PORT = 8091                           # not 8089 (llama-server) and not 11434 (ollama)
+
 
 # -- small stdlib-only helpers ------------------------------------------------------------------
 def _port_free(host, port, timeout=0.3):
@@ -338,6 +348,56 @@ class LlamaCppAdapter(Adapter):
         return False
 
 
+class StokeAdapter(Adapter):
+    """stoke's own HTTP server -- M6 rung A5, and the point of the whole rung order.
+
+    This class is the ONLY new code the M0 harness needed in order to drive stoke. It implements
+    the same three-method contract the two baselines do (_spawn, _healthy, a base_url), and every
+    request that follows goes through bench.timed_stream unchanged. That is gate item [3] stated
+    as a diff rather than as a claim.
+
+    ⚠ THE `model` FIELD IS ECHOED, NOT VALIDATED, and that matches both baselines: llama-server
+    serves one model and treats the field as arbitrary, and stoke serves the one GGUF it was
+    started with. Nothing here should ever route on it.
+    """
+    HOST = "127.0.0.1"
+    PORT = STOKE_PORT
+
+    def __init__(self, seqs=None, ctx=None, threads=None):
+        label = "stoke-tuned" if seqs else "stoke-default"
+        self.root_url = f"http://{self.HOST}:{self.PORT}"
+        # base_url is the server ROOT: bench.timed_stream() appends /v1/chat/completions itself.
+        super().__init__(label, base_url=self.root_url, host=self.HOST, port=self.PORT)
+        self.seqs = seqs
+        self.ctx = ctx
+        self.threads = threads
+        self.model_name = STOKE_MODEL_NAME
+
+    def _spawn(self):
+        argv = [
+            str(STOKE_EXE), "serve", str(MODEL_GGUF),
+            "--host", self.HOST, "--port", str(self.PORT),
+        ]
+        if self.ctx:
+            argv += ["--ctx", str(self.ctx)]
+        if self.seqs:
+            argv += ["--seqs", str(self.seqs)]
+        if self.threads:
+            argv += ["--threads", str(self.threads)]
+        # No --max-requests: that option exists so the golden gate's server exits on its own, and
+        # here the harness owns the lifecycle -- Adapter.stop() tree-kills and then blocks until
+        # the port is verifiably free.
+        return subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+
+    def _healthy(self):
+        # stoke binds the port only AFTER the 2.5GB model is loaded, so a refused connection means
+        # "still loading" and a 200 means genuinely ready -- there is no window where it accepts
+        # connections it cannot serve. Adapter.start() polls this for up to timeout_s.
+        return _probe_status(self.root_url + "/health") == 200
+
+
 def build_configs(tuned_n=4, only=None):
     """The four M0 baseline configs, same GGUF, tuned variants parallel=tuned_n.
 
@@ -354,8 +414,14 @@ def build_configs(tuned_n=4, only=None):
         return [c for c in configs if isinstance(c, OllamaAdapter)]
     if only == "llamacpp":
         return [c for c in configs if isinstance(c, LlamaCppAdapter)]
+    # stoke is NOT in the default four. Those four ARE the M0 baseline matrix and its published
+    # numbers; adding a fifth would silently change what "all configs" means for every existing
+    # caller of this function. It is reachable only by asking for it by name.
+    if only == "stoke":
+        return [StokeAdapter(), StokeAdapter(seqs=tuned_n, ctx=1024)]
     if only is not None:
-        raise ValueError(f"unknown engine filter: {only!r} (expected 'ollama' or 'llamacpp')")
+        raise ValueError(
+            f"unknown engine filter: {only!r} (expected 'ollama', 'llamacpp' or 'stoke')")
     return configs
 
 
@@ -551,13 +617,106 @@ def run_smoke(tuned_n=4, only=None):
     return overall_ok
 
 
+def run_scenario_check(scenario_name="s1", seqs=8, ctx=1024, threads=None, timeout_s=900):
+    """M6 GATE ITEM [3]: drive one whole M0 scenario end to end, through the UNMODIFIED harness.
+
+    The smoke above is one request. This is the real thing: S1 is eight clients arriving on a
+    Poisson schedule, each with a 512-token prompt and 128 max_tokens, and every one of them is
+    driven by bench.run_scenario -- the same function, with the same arguments, that produced the
+    published M0 baseline numbers for ollama and llama-server. Nothing in bench.py, scenarios.py
+    or report.py is touched or special-cased; the only stoke-shaped thing in the path is
+    StokeAdapter's _spawn/_healthy.
+
+    ⚠⚠ IT PRINTS AND IT DOES NOT BANK, AND THAT IS NOT A CONVENIENCE. A number printed next to a
+    green banner gets quoted three weeks later as if it were a measurement. This runs one arm,
+    once, un-interleaved, with no quiesce gate and no counterbalancing -- every safeguard the
+    perf protocol requires is absent, deliberately, because this gate is asking whether the
+    COMPAT SURFACE works end to end, not how fast anything is. The throughput line below is
+    printed only so a run that silently produced nothing cannot look identical to one that
+    worked. Do not put it in a report.
+    """
+    import scenarios  # local: only this entry point needs it
+
+    table = {"s1": scenarios.S1, "s3": scenarios.S3, "s4": scenarios.S4}
+    scenario = table.get(scenario_name)
+    if scenario is None:
+        raise ValueError(f"unknown scenario {scenario_name} (have: {sorted(table)})")
+
+    adapter = StokeAdapter(seqs=seqs, ctx=ctx, threads=threads)
+    print("=" * 88)
+    print(f"M6 gate [3]: {scenario.name} -> {adapter.label} "
+          f"(seqs={seqs} ctx={ctx} threads={threads or 'default'})")
+    print(f"  {scenario.n_clients} clients, {scenario.prompt_tokens} prompt tokens, "
+          f"{scenario.max_tokens} max_tokens, mode={scenario.mode}")
+    print("  FUNCTIONAL GATE -- the numbers below are NOT a measurement and must not be quoted")
+    print("=" * 88, flush=True)
+
+    ok = False
+    try:
+        base_url = adapter.start()
+        print(f"{adapter.label}: start() OK, base_url={base_url}", flush=True)
+        rep = bench.run_scenario(
+            base_url, scenario, adapter.model_name, use_usage=True, timeout_s=timeout_s,
+            salt=str(time.time()),
+        )
+        print(json.dumps({k: v for k, v in rep.items() if k != "per_client"}, indent=2))
+
+        n_clients = scenario.n_clients
+        completed = rep.get("completed", 0)
+        errors = rep.get("errors") or []
+        short = [c for c in (rep.get("per_client") or [])
+                 if not c or c.get("n_tokens", 0) < 1]
+        missing_usage = [c for c in (rep.get("per_client") or []) if c and c.get("usage_missing")]
+
+        if errors:
+            print(f"FATAL: {len(errors)} client error(s): {errors[:3]}", flush=True)
+        if completed != n_clients:
+            print(f"FATAL: {completed}/{n_clients} clients completed", flush=True)
+        if short:
+            print(f"FATAL: {len(short)} client(s) streamed no tokens", flush=True)
+        # The harness falls back to counting arrivals when an engine omits usage, and that
+        # fallback is exactly what would hide a broken include_usage on our side.
+        if missing_usage:
+            print(f"FATAL: {len(missing_usage)} client(s) got no usage trailer -- the harness "
+                  f"silently falls back to counting arrivals, so this must be checked, not "
+                  f"assumed", flush=True)
+
+        ok = (not errors and completed == n_clients and not short and not missing_usage)
+    except Exception as exc:
+        print(f"FATAL: {adapter.label}: {exc}", flush=True)
+    finally:
+        try:
+            adapter.stop()
+            print(f"{adapter.label}: stop() OK -- port {adapter.port} confirmed free", flush=True)
+        except Exception as exc:
+            print(f"FATAL: stop() FAILED: {exc}", flush=True)
+            ok = False
+
+    print()
+    print(f"GATE [3] {'PASSED' if ok else 'FAILED'} -- {scenario.name} through the unmodified "
+          f"M0 harness")
+    return ok
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--smoke", action="store_true", help="run the strictly-sequential smoke test")
+    parser.add_argument("--scenario", default=None, metavar="NAME",
+                        help="M6 gate [3]: drive one M0 scenario (s1/s3/s4) against stoke through "
+                             "the unmodified harness. Prints, never banks.")
+    parser.add_argument("--seqs", type=int, default=8, help="--seqs for `stoke serve` under --scenario")
+    parser.add_argument("--ctx", type=int, default=1024, help="--ctx for `stoke serve` under --scenario")
+    parser.add_argument("--threads", type=int, default=None, help="--threads for `stoke serve`")
     parser.add_argument("--tuned-n", type=int, default=4, help="parallelism N for *-tuned configs during --smoke (default 4)")
-    parser.add_argument("--only", choices=["ollama", "llamacpp"], default=None,
-                        help="restrict to one engine's pair of configs (default: all four)")
+    parser.add_argument("--only", choices=["ollama", "llamacpp", "stoke"], default=None,
+                        help="restrict to one engine's pair of configs (default: all four; "
+                             "'stoke' selects stoke's own pair, which is NOT in the default four)")
     args = parser.parse_args(argv)
+
+    if args.scenario:
+        ok = run_scenario_check(args.scenario, seqs=args.seqs, ctx=args.ctx,
+                                threads=args.threads)
+        return 0 if ok else 1
 
     if not args.smoke:
         parser.print_help()

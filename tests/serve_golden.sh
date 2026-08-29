@@ -71,7 +71,7 @@ diffout="$builddir/serve_golden.diff"
 rm -f "$out" "$raw" "$srvlog" "$diffout"
 
 url="http://127.0.0.1:$port"
-n_requests=10
+n_requests=15
 
 # The first request has to outwait a 2.5GB model load, so it retries a refused
 # connection. Every later one does NOT: by then the server is up, and a retry
@@ -275,6 +275,53 @@ run_case "POST /v1/chat/completions (no messages -> 400)" \
 run_case "GET /v1/chat/completions (wrong method -> 405)" "$url/v1/chat/completions"
 
 run_case "GET /nope (unknown endpoint -> 404)" "$url/nope"
+
+# ---- A5: the two endpoints gate item [1] names, and the one parameter the M0
+#      harness sends that this build does not implement -------------------------
+
+# 9. /v1/models. openai-python calls it first in almost every script, and a
+#    client that cannot list models cannot pick one.
+run_case "GET /v1/models" "$url/v1/models"
+sse_assert "$raw" "the models list is an object of type list" '"object":"list"'
+sse_assert "$raw" "each entry is a model object" '"object":"model"'
+
+# 10. /v1/completions, RAW -- no chat template. This is the M2 parity path's
+#     shape: a prompt is bytes, not a conversation, and templating it would
+#     silently change what the model was asked.
+run_case "POST /v1/completions (raw, non-stream)" \
+    -X POST "$url/v1/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","prompt":"The capital of France is","max_tokens":8}'
+sse_assert "$raw" "a completion is an object of type text_completion" \
+    '"object":"text_completion"'
+sse_assert "$raw" "a completion choice carries text, not a message" '"text":'
+sse_refute "$raw" "a completion choice must NOT carry a chat message" '"message":'
+
+# 11. The same endpoint streamed. Its chunks carry `text`, and a client that
+#     reads delta.content off them gets nothing -- which is why the two shapes
+#     are asserted apart rather than assumed to be the same code path.
+run_case "POST /v1/completions (raw, streamed)" \
+    -N -X POST "$url/v1/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","prompt":"The capital of France is","max_tokens":8,"stream":true}'
+sse_assert "$raw" "a streamed completion terminates with the sentinel" "data: [DONE]"
+sse_assert "$raw" "streamed completion chunks carry text" '"text":'
+sse_refute "$raw" "streamed completion chunks must NOT carry a chat delta" '"delta":'
+
+# 12-13. temperature. The M0 harness sends `"temperature": 0.0` on EVERY
+#     request, and greedy decoding IS temperature zero -- so zero is accepted
+#     and nothing about it is special-cased. A NON-zero temperature is refused
+#     rather than silently answered greedily: this build has no sampler, and
+#     quietly returning the wrong distribution is the failure mode that takes
+#     weeks to notice. Sampling arrives at A6 and this refusal goes with it.
+run_case "POST /v1/chat/completions (temperature 0 -> 200)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.0}'
+sse_assert "$raw" "temperature 0 is greedy and must be accepted" "HTTP/1.1 200 OK"
+
+run_case "POST /v1/chat/completions (temperature 0.7 -> 400)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.7}'
+sse_assert "$raw" "a non-zero temperature must be refused, not silently ignored" \
+    "HTTP/1.1 400 Bad Request"
 
 wait "$srv_pid"
 srv_rc=$?

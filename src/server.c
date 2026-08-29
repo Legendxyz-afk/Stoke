@@ -119,6 +119,13 @@ typedef struct {
     char      model[128]; /* echoed back; copied because `in` is reused */
     int64_t   created;    /* one timestamp for every chunk of one answer */
 
+    /* ▶ /v1/completions and /v1/chat/completions are the SAME request with two
+     * wire shapes: `text` against `message`/`delta`, `cmpl-` against
+     * `chatcmpl-`, `text_completion` against `chat.completion`. A client that
+     * reads delta.content off a completion chunk gets nothing, so the two are
+     * asserted apart in the gate rather than assumed identical. */
+    int is_completion;
+
     /* ---- streaming ---- */
     int  want_usage;  /* stream_options.include_usage                      */
     int  sent_role;   /* the role goes in the FIRST delta and nowhere else */
@@ -147,6 +154,10 @@ typedef struct {
     int           ping_ms;
     size_t        max_pending;
     int           send_buffer;
+    /* What /v1/models reports. Derived from the GGUF's filename, because that
+     * is the only name this server actually has -- it serves one file and
+     * never routes on the `model` field a client sends. */
+    char          model_id[128];
     /* One reusable frame buffer for the whole server. Streaming builds a
      * complete SSE frame before it can chunk it (a chunk is prefixed by its
      * length), and a fresh allocation per token is a malloc on the hot path
@@ -425,9 +436,11 @@ static void stream_envelope(Server* sv, Conn* c) {
     f->len = 0;
     f->oom = 0;
     buf_str(f, "data: ");
-    buf_fmt(f, "{\"id\":\"chatcmpl-%llu\",\"object\":\"chat.completion.chunk\","
-               "\"created\":%lld,\"model\":\"",
-            (unsigned long long)c->req_id, (long long)c->created);
+    buf_fmt(f, "{\"id\":\"%s-%llu\",\"object\":\"%s\",\"created\":%lld,\"model\":\"",
+            c->is_completion ? "cmpl" : "chatcmpl",
+            (unsigned long long)c->req_id,
+            c->is_completion ? "text_completion" : "chat.completion.chunk",
+            (long long)c->created);
     buf_json_str(f, c->model, strlen(c->model));
     buf_str(f, "\",");
 }
@@ -451,6 +464,14 @@ static int stream_send_frame(Server* sv, Conn* c) {
  * measurement as a token, which is a worse error than a shorter stream. */
 static int stream_delta(Server* sv, Conn* c, const char* text, size_t len) {
     stream_envelope(sv, c);
+    if (c->is_completion) {
+        /* No role and no delta object: a completion chunk's payload is a bare
+         * `text` field, and there is no conversation for a role to belong to. */
+        buf_str(&sv->scratch, "\"choices\":[{\"index\":0,\"text\":\"");
+        buf_json_str(&sv->scratch, text, len);
+        buf_str(&sv->scratch, "\",\"logprobs\":null,\"finish_reason\":null}]}");
+        return stream_send_frame(sv, c);
+    }
     buf_str(&sv->scratch, "\"choices\":[{\"index\":0,\"delta\":{");
     if (!c->sent_role) {
         buf_str(&sv->scratch, "\"role\":\"assistant\",");
@@ -508,8 +529,9 @@ static int stream_final(Server* sv, Conn* c, int32_t finish) {
      * content. */
     stream_envelope(sv, c);
     buf_fmt(&sv->scratch,
-            "\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,"
+            "\"choices\":[{\"index\":0,%s,\"logprobs\":null,"
             "\"finish_reason\":\"%s\"}]}",
+            c->is_completion ? "\"text\":\"\"" : "\"delta\":{}",
             finish_reason_of(finish));
     if (!stream_send_frame(sv, c)) return 0;
 
@@ -549,15 +571,22 @@ static void finish_chat(Server* sv, Conn* c, int32_t finish) {
     decode_tokens(sv, c->gen, c->n_gen, &text);
 
     Buf b = {0};
-    buf_fmt(&b, "{\"id\":\"chatcmpl-%llu\",\"object\":\"chat.completion\","
-                "\"created\":%lld,\"model\":\"",
-            (unsigned long long)c->req_id, (long long)c->created);
+    buf_fmt(&b, "{\"id\":\"%s-%llu\",\"object\":\"%s\",\"created\":%lld,"
+                "\"model\":\"",
+            c->is_completion ? "cmpl" : "chatcmpl",
+            (unsigned long long)c->req_id,
+            c->is_completion ? "text_completion" : "chat.completion",
+            (long long)c->created);
     buf_json_str(&b, c->model, strlen(c->model));
-    buf_str(&b, "\",\"choices\":[{\"index\":0,\"message\":{\"role\":"
-                "\"assistant\",\"content\":\"");
+    if (c->is_completion) {
+        buf_str(&b, "\",\"choices\":[{\"index\":0,\"text\":\"");
+    } else {
+        buf_str(&b, "\",\"choices\":[{\"index\":0,\"message\":{\"role\":"
+                    "\"assistant\",\"content\":\"");
+    }
     buf_json_str(&b, text.b ? text.b : "", text.len);
-    buf_fmt(&b, "\"},\"logprobs\":null,\"finish_reason\":\"%s\"}],",
-            finish_reason_of(finish));
+    buf_fmt(&b, "%s,\"logprobs\":null,\"finish_reason\":\"%s\"}],",
+            c->is_completion ? "\"" : "\"}", finish_reason_of(finish));
     /* usage is ALWAYS present on a non-streamed response -- that is the
      * OpenAI contract, and clients read it unconditionally. */
     buf_fmt(&b, "\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%d,"
@@ -616,45 +645,51 @@ static int read_message(const JsonDoc* d, const char* body, const JsonNode* n,
     return 0;
 }
 
-static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
+static void start_generation(Server* sv, Conn* c, uint32_t* ids, int32_t n_prompt,
+                             uint32_t max_tokens, int want_stream, int want_usage);
+
+/* Parses a request body and the fields BOTH endpoints share. Returns 0 with
+ * `*root` set, or -1 having already answered with the right error. */
+static int parse_body(Server* sv, Conn* c, const HttpRequest* r, JsonDoc* d,
+                      const char** out_body, const JsonNode** out_root,
+                      uint32_t* max_tokens, int* want_stream, int* want_usage) {
     const char* body     = c->in + r->body_off;
     size_t      body_len = r->body_len;
     if (body_len == 0) {
         respond_error(c, 400, "invalid_request_error", "request body is empty");
-        return;
+        return -1;
     }
 
-    JsonDoc   d;
     JsonError je;
-    if (json_parse(body, body_len, &d, &je) != 0) {
+    if (json_parse(body, body_len, d, &je) != 0) {
         char msg[160];
         snprintf(msg, sizeof msg, "body is not valid JSON (%s at byte %u)",
                  je.reason ? je.reason : "?", je.offset);
         respond_error(c, 400, "invalid_request_error", msg);
-        return;
+        return -1;
     }
-    const JsonNode* root = json_root(&d);
+    const JsonNode* root = json_root(d);
     if (!root || root->type != JSON_OBJ) {
         respond_error(c, 400, "invalid_request_error", "body must be an object");
-        return;
+        return -1;
     }
 
-    const JsonNode* stream      = json_member(&d, body, root, "stream");
-    int             want_stream = 0;
-    if (stream) json_bool(body, stream, &want_stream);
+    const JsonNode* stream = json_member(d, body, root, "stream");
+    *want_stream           = 0;
+    if (stream) json_bool(body, stream, want_stream);
 
     /* ⚠ stream_options IS READ EVEN WHEN stream IS FALSE, and then ignored.
      * The alternative -- refusing the combination -- is a 400 for a request
      * that is merely redundant, and openai-python sends whatever the caller
      * set. A non-streamed response carries usage unconditionally anyway. */
-    int             want_usage = 0;
-    const JsonNode* sopts      = json_member(&d, body, root, "stream_options");
+    *want_usage           = 0;
+    const JsonNode* sopts = json_member(d, body, root, "stream_options");
     if (sopts && sopts->type == JSON_OBJ) {
-        const JsonNode* iu = json_member(&d, body, sopts, "include_usage");
-        if (iu) json_bool(body, iu, &want_usage);
+        const JsonNode* iu = json_member(d, body, sopts, "include_usage");
+        if (iu) json_bool(body, iu, want_usage);
     }
 
-    const JsonNode* model = json_member(&d, body, root, "model");
+    const JsonNode* model = json_member(d, body, root, "model");
     c->model[0]           = '\0';
     if (model && model->type == JSON_STR) {
         i64 mn = json_string(body, model, c->model, sizeof c->model - 1);
@@ -662,17 +697,60 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
     }
     if (c->model[0] == '\0') snprintf(c->model, sizeof c->model, "stoke");
 
-    uint32_t        max_tokens = DEFAULT_MAX_TOKENS;
-    const JsonNode* mt         = json_member(&d, body, root, "max_tokens");
+    /* ▶▶ TEMPERATURE IS ACCEPTED AT ZERO AND REFUSED ABOVE IT, and the refusal
+     * is the whole point. This build decodes greedily and has no sampler --
+     * greedy IS temperature zero, so the M0 harness's `"temperature": 0.0` on
+     * every request needs no special case and gets none. A client asking for
+     * 0.7 and quietly receiving the greedy distribution would get plausible
+     * text that is not what it asked for, which is the kind of wrong nobody
+     * notices for weeks. A 400 is noticed immediately. Sampling arrives at rung
+     * A6 and this refusal leaves with it. */
+    const JsonNode* temp = json_member(d, body, root, "temperature");
+    if (temp) {
+        double t;
+        if (json_number(body, temp, &t) != 0) {
+            respond_error(c, 400, "invalid_request_error",
+                          "'temperature' must be a number");
+            return -1;
+        }
+        if (t != 0.0) {
+            respond_error(c, 400, "invalid_request_error",
+                          "this build decodes greedily and implements only "
+                          "'temperature': 0 -- a non-zero temperature is "
+                          "refused rather than silently answered greedily");
+            return -1;
+        }
+    }
+
+    *max_tokens        = DEFAULT_MAX_TOKENS;
+    const JsonNode* mt = json_member(d, body, root, "max_tokens");
     if (mt) {
         double v;
         if (json_number(body, mt, &v) != 0 || v < 1 || v > (double)sv->max_ctx) {
             respond_error(c, 400, "invalid_request_error",
                           "'max_tokens' must be a number between 1 and the "
                           "context length");
-            return;
+            return -1;
         }
-        max_tokens = (uint32_t)v;
+        *max_tokens = (uint32_t)v;
+    }
+
+    *out_body = body;
+    *out_root = root;
+    return 0;
+}
+
+static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
+    JsonDoc         d;
+    const char*     body;
+    const JsonNode* root;
+    uint32_t        max_tokens;
+    int             want_stream, want_usage;
+
+    c->is_completion = 0;
+    if (parse_body(sv, c, r, &d, &body, &root, &max_tokens, &want_stream,
+                   &want_usage) != 0) {
+        return;
     }
 
     const JsonNode* msgs = json_member(&d, body, root, "messages");
@@ -733,6 +811,15 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
     uint32_t* shrunk = (uint32_t*)realloc(ids, (size_t)n_prompt * sizeof(uint32_t));
     if (shrunk) ids = shrunk;
 
+    start_generation(sv, c, ids, n_prompt, max_tokens, want_stream, want_usage);
+}
+
+/* The half of a request that is identical whichever endpoint asked: bounds
+ * check, submit, and either wait for the whole answer or start streaming.
+ * TAKES OWNERSHIP of `ids` -- on every path here it is either handed to the
+ * connection or freed. */
+static void start_generation(Server* sv, Conn* c, uint32_t* ids, int32_t n_prompt,
+                             uint32_t max_tokens, int want_stream, int want_usage) {
     if ((uint32_t)n_prompt + max_tokens > sv->max_ctx) {
         free(ids);
         char msg[192];
@@ -795,6 +882,109 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
     sse_begin(c);
 }
 
+/* ---- /v1/completions ----------------------------------------------------
+ *
+ * ▶▶ RAW. NO TEMPLATE. That is the entire difference from /v1/chat/completions
+ * and it is the point of the endpoint: a prompt is bytes, and wrapping it in
+ * turn markers would silently change what the model was asked. It is also the
+ * shape the M2 parity path uses, so a prompt that reproduced a parity result
+ * there reproduces it here.
+ *
+ * ⚠ NO BOS EITHER. `add_special` is 0 because the chat path does not add one
+ * (the template's own <|im_start|> is the boundary), and a completions endpoint
+ * that silently prepended one would answer a different question from the CLI
+ * given the same bytes.
+ */
+static void handle_completions(Server* sv, Conn* c, const HttpRequest* r) {
+    JsonDoc         d;
+    const char*     body;
+    const JsonNode* root;
+    uint32_t        max_tokens;
+    int             want_stream, want_usage;
+
+    c->is_completion = 1;
+    if (parse_body(sv, c, r, &d, &body, &root, &max_tokens, &want_stream,
+                   &want_usage) != 0) {
+        return;
+    }
+
+    const JsonNode* pn = json_member(&d, body, root, "prompt");
+    if (!pn || pn->type != JSON_STR) {
+        /* OpenAI also allows an array of prompts (and of token ids), which
+         * means N completions in one response. Refusing plainly beats
+         * answering only the first and looking like it worked. */
+        respond_error(c, 400, "invalid_request_error",
+                      "'prompt' must be a string (an array of prompts is not "
+                      "implemented)");
+        return;
+    }
+
+    /* Decoded out of the JSON rather than used raw: unlike a chat message --
+     * whose escapes are handed to the template as ordinary text -- a
+     * completion's prompt IS the model's input verbatim, so `\n` must be a
+     * newline here and not two characters. */
+    i64 need = json_string(body, pn, NULL, 0);
+    if (need < 0) {
+        respond_error(c, 400, "invalid_request_error", "'prompt' is not a string");
+        return;
+    }
+    char* text = (char*)malloc((size_t)need + 1);
+    if (!text) {
+        respond_error(c, 500, "server_error", "out of memory");
+        return;
+    }
+    json_string(body, pn, text, (size_t)need);
+    text[need] = '\0';
+
+    /* tok.h's stated bound: at most 3 ids per byte, and +1 covers an empty
+     * prompt asking for a zero-length allocation. */
+    int64_t cap = (int64_t)need * 3 + 1;
+    if (cap > INT32_MAX) {
+        free(text);
+        respond_error(c, 400, "invalid_request_error", "'prompt' is too long");
+        return;
+    }
+    uint32_t* ids = (uint32_t*)malloc((size_t)cap * sizeof(uint32_t));
+    if (!ids) {
+        free(text);
+        respond_error(c, 500, "server_error", "out of memory");
+        return;
+    }
+    int32_t n_prompt = stoke_tokenize(sv->e, text, need, /*add_special=*/0, ids,
+                                      (int32_t)cap);
+    free(text);
+    if (n_prompt <= 0) {
+        free(ids);
+        respond_error(c, 400, "invalid_request_error",
+                      n_prompt == 0 ? "'prompt' encoded to zero tokens"
+                                    : stoke_last_error());
+        return;
+    }
+
+    start_generation(sv, c, ids, n_prompt, max_tokens, want_stream, want_usage);
+}
+
+/* ---- /v1/models ---------------------------------------------------------
+ *
+ * One entry, because this server has one file open. The id is that file's
+ * name: it is the only name it actually has, and reporting something invented
+ * would send a client looking for a model that does not exist. Nothing routes
+ * on it -- the `model` field of a request is echoed back, never matched --
+ * which is exactly what llama-server does with the same field. */
+static void handle_models(Server* sv, Conn* c) {
+    Buf b = {0};
+    buf_str(&b, "{\"object\":\"list\",\"data\":[{\"id\":\"");
+    buf_json_str(&b, sv->model_id, strlen(sv->model_id));
+    buf_fmt(&b, "\",\"object\":\"model\",\"created\":%lld,\"owned_by\":\"stoke\"}]}\n",
+            (long long)0);
+    if (b.oom) {
+        respond_error(c, 500, "server_error", "out of memory");
+    } else {
+        respond(c, 200, "application/json", b.b, b.len);
+    }
+    buf_free(&b);
+}
+
 /* ---- routing ------------------------------------------------------------ */
 
 static int path_is(const HttpRequest* r, const char* buf, const char* want) {
@@ -827,6 +1017,25 @@ static void handle_request(Server* sv, Conn* c, const HttpRequest* r) {
             return;
         }
         handle_chat(sv, c, r);
+        return;
+    }
+
+    if (path_is(r, c->in, "/v1/completions")) {
+        if (!method_is(r, c->in, "POST")) {
+            respond_error(c, 405, "invalid_request_error",
+                          "use POST /v1/completions");
+            return;
+        }
+        handle_completions(sv, c, r);
+        return;
+    }
+
+    if (path_is(r, c->in, "/v1/models")) {
+        if (!method_is(r, c->in, "GET")) {
+            respond_error(c, 405, "invalid_request_error", "use GET /v1/models");
+            return;
+        }
+        handle_models(sv, c);
         return;
     }
 
@@ -1114,6 +1323,23 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
     }
     sv.max_ctx = stoke_max_ctx(sv.e);
     sv.eos_id  = stoke_eos_id(sv.e);
+
+    /* The model id /v1/models reports: the GGUF's basename with its extension
+     * removed. Both separators are checked because a Windows path may carry
+     * either, and this is a user-supplied argument rather than something the
+     * program built. */
+    {
+        const char* base = gguf_path;
+        for (const char* p = gguf_path; *p; p++) {
+            if (*p == '/' || *p == '\\') base = p + 1;
+        }
+        snprintf(sv.model_id, sizeof sv.model_id, "%s", base);
+        size_t n = strlen(sv.model_id);
+        if (n > 5 && strcmp(sv.model_id + n - 5, ".gguf") == 0) {
+            sv.model_id[n - 5] = '\0';
+        }
+        if (sv.model_id[0] == '\0') snprintf(sv.model_id, sizeof sv.model_id, "stoke");
+    }
 
     /* Asked ONCE, at startup, exactly as stoke.h says to: it is a fact about
      * the model and cannot change between requests. */
