@@ -212,7 +212,26 @@ typedef struct {
     uint64_t seed;
 } stoke_request;
 
-/* Queues a request. Nothing is queued on failure. */
+/* Queues a request. Nothing is queued on failure.
+ *
+ * Thread safety: safe from ANY thread, including while another thread is inside
+ * stoke_step.
+ *
+ * ⚠ ONE CONSEQUENCE OF THAT, STATED RATHER THAN LEFT TO BE DISCOVERED: the
+ * SAMPLING FIELDS ABOVE TAKE EFFECT FROM THE NEXT STEP THAT STARTS. A step
+ * installs the sampling state for newly queued requests before it admits
+ * anything, so a submit that lands in the middle of a step -- after that
+ * install and before the admission -- can have the request admitted, prefilled
+ * and its FIRST token chosen by the same step, greedily, with the rest of the
+ * generation sampled as asked. One token, in a stream that stays fluent.
+ *
+ * This is an ordering, not a race, and no lock removes it: the sampling state
+ * is deliberately queued only AFTER the scheduler has accepted the request, so
+ * that a rejected submit leaves nothing behind for a later request reusing the
+ * id. Submitting from the same thread that calls stoke_step -- which is what a
+ * single-threaded host such as `stoke serve` does -- cannot hit it at all. If
+ * you submit from another thread and need the first token sampled too, submit
+ * between steps. */
 stoke_status stoke_submit(stoke_engine* e, const stoke_request* req);
 
 /* Runs one scheduler step: admissions, one prefill chunk, one decode batch.

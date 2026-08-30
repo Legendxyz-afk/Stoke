@@ -380,15 +380,26 @@ static void sample_prologue(stoke_engine* e) {
         }
     }
 
-    if (!e->n_pend) return;
-
+    /* ⚠ THE EMPTY CHECK IS INSIDE THE LOCK, AND THE OBVIOUS OPTIMISATION IS A
+     * DATA RACE. Reading e->n_pend here to skip the acquire is the classic
+     * double-check: stoke_submit writes it under this mutex from what stoke.h
+     * promises may be ANY thread, so an unsynchronised read of it is UB by the
+     * C11 model -- benign on x86, invisible everywhere, and exactly the class
+     * TSan exists to find (it cannot be run against this: TSan OOMs on anything
+     * model-heavy on this box). The acquire it saves is one uncontended lock
+     * against a step that runs a full forward pass, so the trade was never
+     * real. Found 2026-08-30 while asking what A6 added to the M5 bars' path;
+     * the rate half now measures the code with this in it. */
     SamplePend batch[STOKE_MAX_PENDING];
     u32        n;
     pthread_mutex_lock(&e->pend_mu);
     n = e->n_pend;
-    memcpy(batch, e->pend, (size_t)n * sizeof(SamplePend));
-    e->n_pend = 0;
+    if (n) {
+        memcpy(batch, e->pend, (size_t)n * sizeof(SamplePend));
+        e->n_pend = 0;
+    }
     pthread_mutex_unlock(&e->pend_mu);
+    if (!n) return;
 
     for (u32 k = 0; k < n; k++) {
         /* An id submitted twice cannot be live twice -- the scheduler refuses
