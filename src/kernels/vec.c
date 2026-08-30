@@ -357,6 +357,28 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
             quantize_row_q8_k(x[s], n_in, aq_scratch[s]);
         }
 
+#ifdef STOKE_MUT_ALIAS_ACT
+        /* MUTANT, SPEED PROBE ONLY -- THE OUTPUT IS DELIBERATELY WRONG.
+         * Every sequence is pointed at sequence 0's quantized activation, so
+         * the per-super-block activation tile collapses from n_seq*292 B to
+         * 292 B and stays L1-resident however many rows sweep it. Nothing else
+         * changes: same weights, same rows, same tiling, same kernel.
+         *
+         * It answers ONE question before a hard kernel rewrite is attempted:
+         * is this matmul bound by RE-READING THE ACTIVATION TILE? If this arm
+         * is much faster, it is, and an M-rows x N-columns microkernel is the
+         * fix. If it is not, the tile is not the wall, and the rewrite would
+         * have been a day spent on the wrong hypothesis.
+         *
+         * The single-threaded microbench answers a DIFFERENT question -- one
+         * hot tensor on one core -- and says no. This asks it where the gate
+         * measures: 8 threads, 253 cold tensors. */
+        static const void* alias_buf[256];
+        if (n_seq > 1u && n_seq <= 256u) {
+            for (u32 s = 0; s < n_seq; s++) alias_buf[s] = aq_scratch[0];
+            aq_scratch = (void* const*)alias_buf;
+        }
+#endif
         int simd = kernels_cpu_has_avx_vnni();
         BatchRowJob j = {(const u8*)w->data, row_bytes, NULL, n_in, y, n_seq,
                          aq_scratch,
