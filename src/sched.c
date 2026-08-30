@@ -304,8 +304,8 @@ bool sched_submit(Sched* s, const SchedRequest* req) {
     /* Duplicate ids are refused rather than tolerated: every lookup here is by
      * id, so two live requests sharing one would make cancel, poll and progress
      * all silently address whichever came first. */
-    if (find(s, req->id)) return false;
     pthread_mutex_lock(&s->mu);
+    if (find(s, req->id)) { pthread_mutex_unlock(&s->mu); return false; }
     for (Req* q = s->submitted; q; q = q->all_next) {
         if (q->spec.id == req->id) { pthread_mutex_unlock(&s->mu); return false; }
     }
@@ -322,9 +322,15 @@ bool sched_submit(Sched* s, const SchedRequest* req) {
 }
 
 bool sched_cancel(Sched* s, u64 id) {
-    Req* r = find(s, id);
-    if (r && r->state != SCHED_FINISHED) { r->cancel = true; return true; }
+    /* Under the lock for its WHOLE body: find() walks s->all, which the step
+     * thread prepends to, and `cancel` is read by retire_cancelled there. */
     pthread_mutex_lock(&s->mu);
+    Req* r = find(s, id);
+    if (r && r->state != SCHED_FINISHED) {
+        r->cancel = true;
+        pthread_mutex_unlock(&s->mu);
+        return true;
+    }
     for (Req* q = s->submitted; q; q = q->all_next) {
         if (q->spec.id == id) { q->cancel = true; pthread_mutex_unlock(&s->mu); return true; }
     }
@@ -334,11 +340,15 @@ bool sched_cancel(Sched* s, u64 id) {
 
 /* ---- the step ---------------------------------------------------------- */
 
+/* ⚠ THE CALLER HOLDS s->mu. It used to take the lock here, for the submit queue
+ * alone, and hand the drained requests onto `s->all` outside it -- which is
+ * exactly the race tests/test_sched_race.c demonstrates: this function prepends
+ * to a list that sched_poll and sched_cancel walk from another thread. The lock
+ * now spans the whole of the step's bookkeeping, so taking it again here would
+ * deadlock. */
 static void drain_submits(Sched* s) {
-    pthread_mutex_lock(&s->mu);
     Req* q = s->submitted;
     s->submitted = NULL;
-    pthread_mutex_unlock(&s->mu);
 
     /* The submit stack is newest-first; reverse it so arrival order survives
      * into WAITING. FCFS that silently depends on how a lock-free-ish stack
@@ -584,7 +594,26 @@ static bool back_prefill_row(Sched* s, Req* r, u32 pos) {
     return r->kv && kv_reserve(r->kv, pos + 1u);
 }
 
+/* ▶▶▶ THE LOCK IS HELD FOR THE BOOKKEEPING AND RELEASED ACROSS THE FORWARD
+ * PASS, and that split is the whole design. `stoke.h` promises submit, poll and
+ * cancel are safe from ANY thread while this runs; before M7 rung B1 they were
+ * not, and tests/test_sched_race.c reports six data races against the M6 build
+ * -- the `s->all` links, `r->state` written by admission, and `r->cancel`.
+ *
+ * Holding the mutex across s->host.step() would serialise a caller's poll
+ * against a 100 ms forward pass, which is not thread safety but a stall. So the
+ * step takes the lock, does every list and state mutation, RELEASES it, runs
+ * the model, and takes it again to consume the results.
+ *
+ * ⚠ WHAT MAY HAPPEN IN THE GAP, and why it is safe: another thread can only
+ * submit (which appends to the submit queue, drained next step), cancel (which
+ * sets a flag honoured by retire_cancelled next step -- the documented "takes
+ * effect at the next step boundary"), or poll (which reads). None of them frees
+ * a Req -- retire deliberately keeps it until sched_close -- and none touches
+ * s->row_*, so the rows in flight stay valid across the gap. `pf` is captured
+ * before the gap and only this thread writes s->prefilling. */
 u32 sched_step(Sched* s) {
+    pthread_mutex_lock(&s->mu);
     drain_submits(s);
     retire_cancelled(s);
     admit_if_possible(s);
@@ -655,7 +684,10 @@ u32 sched_step(Sched* s) {
         if (used > s->st.peak_blocks_used) s->st.peak_blocks_used = used;
     }
 
-    if (n == 0) return 0;
+    if (n == 0) {
+        pthread_mutex_unlock(&s->mu);
+        return 0;
+    }
 
     SchedStep in;
     in.kv = s->row_kv;
@@ -665,7 +697,11 @@ u32 sched_step(Sched* s) {
     in.n_rows = n;
     in.n_decode = n_decode;
     in.prefill_completes = completes;
+    pthread_mutex_unlock(&s->mu);
+
     s->host.step(s->host.ctx, &in, s->row_out);
+
+    pthread_mutex_lock(&s->mu);
 
     /* ---- sample the decodes. Walk the SAME order the rows were built in. */
     u32 k = 0;
@@ -725,22 +761,23 @@ u32 sched_step(Sched* s) {
 
     s->st.steps++;
     s->st.free_blocks = kv_store_free_blocks(s->store);
+    pthread_mutex_unlock(&s->mu);
     return n;
 }
 
 bool sched_pending(const Sched* s) {
-    if (s->waiting_head || s->prefilling || s->running_head) return true;
-    bool any;
     pthread_mutex_lock(&((Sched*)s)->mu);
-    any = (s->submitted != NULL);
+    bool any = (s->waiting_head || s->prefilling || s->running_head ||
+                s->submitted != NULL);
     pthread_mutex_unlock(&((Sched*)s)->mu);
     return any;
 }
 
 u32 sched_poll(Sched* s, u64 id, u32* out, u32 cap, SchedFinish* finish) {
+    pthread_mutex_lock(&s->mu);
     Req* r = find(s, id);
     if (finish) *finish = SCHED_FINISH_NONE;
-    if (!r) return 0;
+    if (!r) { pthread_mutex_unlock(&s->mu); return 0; }
     unsigned int h = atomic_load_explicit(&r->ring_head, memory_order_acquire);
     unsigned int t = atomic_load_explicit(&r->ring_tail, memory_order_relaxed);
     u32 got = 0;
@@ -749,16 +786,22 @@ u32 sched_poll(Sched* s, u64 id, u32* out, u32 cap, SchedFinish* finish) {
     /* Reported only once the ring is DRAINED, so a consumer that stops at the
      * first non-NONE cannot lose a trailing id. */
     if (finish && r->state == SCHED_FINISHED && t == h) *finish = r->finish;
+    pthread_mutex_unlock(&s->mu);
     return got;
 }
 
 void sched_stats(const Sched* s, SchedStats* out) {
+    /* Under the lock like every other reader: it walks the waiting and running
+     * lists, which the step thread relinks. A stats call that tore a list would
+     * report a plausible number rather than crash, which is the worse failure. */
+    pthread_mutex_lock(&((Sched*)s)->mu);
     *out = s->st;
     out->n_waiting = 0;
     for (const Req* r = s->waiting_head; r; r = r->next) out->n_waiting++;
     out->n_running = running_count(s);
     out->n_prefilling = s->prefilling ? 1u : 0u;
     out->free_blocks = kv_store_free_blocks(s->store);
+    pthread_mutex_unlock(&((Sched*)s)->mu);
 }
 
 u64 sched_oldest_waiting(const Sched* s, bool* ok) {
@@ -781,16 +824,19 @@ u64 sched_last_preempted(const Sched* s, bool* ok) {
 }
 
 u32 sched_progress(const Sched* s, u64 id) {
+    pthread_mutex_lock(&((Sched*)s)->mu);
     Req* r = find((Sched*)s, id);
-    return r ? r->n_done : 0u;
+    u32  n = r ? r->n_done : 0u;
+    pthread_mutex_unlock(&((Sched*)s)->mu);
+    return n;
 }
 
 bool sched_known(const Sched* s, u64 id) {
     /* Any state at all, retired included -- see sched.h for why that differs
      * from sched_is_live by exactly one word. */
-    if (find((Sched*)s, id)) return true;
-    bool queued = false;
     pthread_mutex_lock(&((Sched*)s)->mu);
+    if (find((Sched*)s, id)) { pthread_mutex_unlock(&((Sched*)s)->mu); return true; }
+    bool queued = false;
     for (Req* q = s->submitted; q; q = q->all_next) {
         if (q->spec.id == id) { queued = true; break; }
     }
@@ -799,14 +845,18 @@ bool sched_known(const Sched* s, u64 id) {
 }
 
 bool sched_is_live(const Sched* s, u64 id) {
+    pthread_mutex_lock(&((Sched*)s)->mu);
     Req* r = find((Sched*)s, id);
-    if (r) return r->state != SCHED_FINISHED;
+    if (r) {
+        bool live = r->state != SCHED_FINISHED;
+        pthread_mutex_unlock(&((Sched*)s)->mu);
+        return live;
+    }
     /* Not on the lists yet. It may still be sitting in the submit queue, which
      * find() deliberately does not walk -- and a request cancelled from there
      * is retired without ever reaching the lists, so this half is what keeps a
      * caller's per-request state from outliving it. */
     bool queued = false;
-    pthread_mutex_lock(&((Sched*)s)->mu);
     for (Req* q = s->submitted; q; q = q->all_next) {
         if (q->spec.id == id) { queued = !q->cancel; break; }
     }

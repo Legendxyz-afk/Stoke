@@ -54,9 +54,13 @@ root="M:/New Drive/Desktop/Programming/stoke"
 cd "$root" || exit 1
 
 bin_a6="./build/win/stoke.exe"
-bin_m5="M:/New Drive/Desktop/Programming/stoke-m5wt/build/win/stoke.exe"
+# The REFERENCE arm and its bank are overridable, because this runner is now
+# used for more than A6: every scheduler touch owes the same A/B against the
+# tag it is trying not to move. ⚠ ONE BANK PER REFERENCE, never shared -- a
+# bank keyed by nothing is how stale numbers get republished under a new commit.
+bin_m5="${STOKE_AB_REF:-./build/win-m5/stoke.exe}"
 model="models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
-bank="docs/superpowers/gate-reports/2026-08-30-a6-rate-ab-bank.jsonl"
+bank="${STOKE_AB_BANK:-docs/superpowers/gate-reports/2026-08-30-a6-rate-ab-bank.jsonl}"
 mkdir -p docs/superpowers/gate-reports
 
 if [ "${1:-}" = "report" ]; then
