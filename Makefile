@@ -184,7 +184,7 @@ endif
 	sh tests/abi_checklist.sh
 	sh tests/abi_checklist_mutants.sh
 ifeq ($(SAN),tsan)
-	@echo "abi_smoke / abi_sample / golden_info / tok_golden / tok_special_golden / unicode_sweep_golden / serve_golden / serve_raw / serve_openai: SKIP on the TSan leg -- MEASURED, not assumed: abi_smoke peaks at 7,364,440 kB RSS under TSan and this WSL has 7 GB total, so it fits when run alone and is OOM-killed inside make test. Two TSan runs died at exactly this point. TSan's value is the thread pool, and the 17 unit binaries above cover it with zero data races; every gate skipped here RUNS AND PASSES on the ASan leg. Raise WSL memory in .wslconfig to close this gap."
+	@echo "abi_smoke / abi_sample / golden_info / tok_golden / tok_special_golden / unicode_sweep_golden / run_sampling / serve_golden / serve_raw / serve_openai: SKIP on the TSan leg -- MEASURED, not assumed: abi_smoke peaks at 7,364,440 kB RSS under TSan and this WSL has 7 GB total, so it fits when run alone and is OOM-killed inside make test. Two TSan runs died at exactly this point. TSan's value is the thread pool, and the 17 unit binaries above cover it with zero data races; every gate skipped here RUNS AND PASSES on the ASan leg. Raise WSL memory in .wslconfig to close this gap."
 else
 	$(TSAN_RUN) sh tests/abi_smoke.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/abi_sample.sh $(BUILDDIR) $(EXE)
@@ -193,6 +193,7 @@ else
 	$(TSAN_RUN) sh tests/tok_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/tok_special_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/unicode_sweep_golden.sh $(BUILDDIR) $(EXE)
+	$(TSAN_RUN) sh tests/run_sampling.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/serve_golden.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/serve_raw.sh $(BUILDDIR) $(EXE)
 	$(TSAN_RUN) sh tests/serve_openai.sh $(BUILDDIR) $(EXE)

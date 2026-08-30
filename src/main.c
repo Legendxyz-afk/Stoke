@@ -400,7 +400,8 @@ static void cmd_run(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke run <model.gguf> [--raw] [-n N] "
               "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] "
-              "[--timing] [--threads N] [--kv f32|q8]");
+              "[--timing] [--threads N] [--kv f32|q8] [--temp F] [--top-k N] "
+              "[--top-p F] [--repeat-penalty F] [--seed N]");
     }
     const char* model_path = argv[2];
     bool        raw = false;
@@ -420,6 +421,16 @@ static void cmd_run(int argc, char** argv) {
      * and --probe-pos is here, not in `batch`. So the dtype switch is here
      * too, rather than teaching `batch` a second probe implementation. */
     KvDtype     kv_dt = KV_F32;
+
+    /* SAMPLING, OFF BY DEFAULT AND OFF IN EXACTLY THE ENGINE'S SENSE. A zeroed
+     * SampleParams is greedy, and the CLI claims a sampler only where the engine
+     * would: a temperature above zero, or a repeat penalty above one. So
+     * `--top-k 5` alone stays greedy here for the same reason it does through
+     * the server -- a truncation cannot change an argmax -- rather than because
+     * the CLI has an opinion of its own. */
+    SampleParams samp;
+    memset(&samp, 0, sizeof samp);
+    samp.repeat_penalty = 1.0f;
 
     /* strtoll (not strtol): on this project's Windows toolchain (MSYS2
      * ucrt64, LLP64 data model) `long` is only 32 bits, so `(long)
@@ -465,6 +476,41 @@ static void cmd_run(int argc, char** argv) {
             if (strcmp(w, "f32") == 0)     kv_dt = KV_F32;
             else if (strcmp(w, "q8") == 0) kv_dt = KV_Q8_0;
             else fatal("stoke run: --kv '%s' -- expected f32 or q8", w);
+        } else if (strcmp(argv[i], "--temp") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --temp needs a number");
+            double v = strtod(argv[++i], NULL);
+            if (!(v >= 0.0 && v <= 100.0))
+                fatal("stoke run: --temp %g out of range [0,100]", v);
+            samp.temperature = (f32)v;
+        } else if (strcmp(argv[i], "--top-k") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --top-k needs a count");
+            long long v = strtoll(argv[++i], NULL, 10);
+            /* 512 is sample.c's own candidate cap: a larger number would be
+             * silently answered as 512, so it is refused instead. */
+            if (v < 0 || v > 512)
+                fatal("stoke run: --top-k %lld out of range [0,512]", v);
+            samp.top_k = (u32)v;
+        } else if (strcmp(argv[i], "--top-p") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --top-p needs a number");
+            double v = strtod(argv[++i], NULL);
+            if (!(v >= 0.0 && v <= 1.0))
+                fatal("stoke run: --top-p %g out of range [0,1]", v);
+            samp.top_p = (f32)v;
+        } else if (strcmp(argv[i], "--repeat-penalty") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --repeat-penalty needs a number");
+            double v = strtod(argv[++i], NULL);
+            if (!(v > 0.0 && v <= 100.0))
+                fatal("stoke run: --repeat-penalty %g out of range (0,100]", v);
+            samp.repeat_penalty = (f32)v;
+        } else if (strcmp(argv[i], "--seed") == 0) {
+            if (i + 1 >= argc) fatal("stoke run: --seed needs a number");
+            long long v = strtoll(argv[++i], NULL, 10);
+            /* Negative is refused rather than read as llama.cpp's "pick one for
+             * me": a seed exists so an answer can be reproduced, and quietly
+             * choosing one the caller never sees defeats the only parameter
+             * whose entire job is reproducibility. Same rule as the server. */
+            if (v < 0) fatal("stoke run: --seed %lld must be non-negative", v);
+            samp.seed = (u64)v;
         } else {
             fatal("stoke run: unknown argument '%s'", argv[i]);
         }
@@ -558,8 +604,12 @@ static void cmd_run(int argc, char** argv) {
 
     i64         eos_id = (i64)tok_eos(tok);
     ModelTiming timing;
-    u32 count = model_generate(model, kv, prompt_ids, n_prompt, n, eos_id,
-                                out_ids, dump_dir, probe_pos, probe, &timing);
+    /* The engine's own rule for whether a request samples at all, so the CLI and
+     * the server agree about what "greedy" means. */
+    int wants_sampling = (samp.temperature > 0.0f) || (samp.repeat_penalty > 1.0f);
+    u32 count = model_generate_sampled(model, kv, prompt_ids, n_prompt, n, eos_id,
+                                out_ids, dump_dir, probe_pos, probe, &timing,
+                                wants_sampling ? &samp : NULL);
 
     /* stderr, ALWAYS -- stdout is byte-compared against the goldens and
      * against ref_forward.py, so a rate printed there would break the one

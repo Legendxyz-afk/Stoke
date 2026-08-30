@@ -41,6 +41,7 @@
 
 #include "gguf.h"
 #include "kv.h"
+#include "sample.h" /* SampleParams, for model_generate_sampled */
 
 #include <stdbool.h>
 
@@ -226,6 +227,21 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
                     i32 probe_pos, ModelProbeEntry probe_out[5],
                     ModelTiming* timing);
+
+/* The same generation with an OPTIONAL chooser. `sp` NULL is greedy and is
+ * byte-for-byte what model_generate does -- it forwards NULL here, so there is
+ * one loop rather than two that must be kept in step.
+ *
+ * ▶ The history it keeps for the repeat penalty is indexed by ABSOLUTE position
+ * and the seed is used as a pure function of (seed, position), exactly as the
+ * engine does it. So `stoke run --temp T --seed S` reproduces what the server
+ * returns for the same prompt and parameters, which is the point of teaching
+ * the CLI to sample at all: a divergence gets bisected here, not through a
+ * socket. */
+u32 model_generate_sampled(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
+                    u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
+                    i32 probe_pos, ModelProbeEntry probe_out[5],
+                    ModelTiming* timing, const SampleParams* sp);
 
 /* One sequence's slot in a static batch. */
 typedef struct {

@@ -11,6 +11,7 @@
 #include "kernels/kernels.h"
 #include "kernels/simd.h"
 #include "pool.h" /* the attention heads run on the pool -- att_kvheads_run */
+#include "sample.h" /* model_generate_sampled's optional chooser */
 
 #include <errno.h>
 #include <math.h>
@@ -1617,10 +1618,31 @@ static u32 model_argmax(const f32* logits, u64 n) {
                                       : argmax(logits, n);
 }
 
+/* ▶ THE GREEDY PATH IS UNTOUCHED WHEN `sp` IS NULL, and that is the whole
+ * safety argument for adding sampling here: every existing caller -- including
+ * every parity gate -- forwards NULL through model_generate below and takes the
+ * identical `model_argmax` it always took. There is no shared mode flag to
+ * leave set by accident. */
+static u32 pick_next(const SampleParams* sp, const Model* m, u32 pos,
+                     const u32* history, u32 n_history, f32* scratch) {
+    if (!sp) return model_argmax(m->scratch.s_logits, m->n_vocab);
+    return sample_token(sp, pos, m->scratch.s_logits, m->n_vocab, history,
+                        n_history, scratch);
+}
+
 u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
                     i32 probe_pos, ModelProbeEntry probe_out[5],
                     ModelTiming* timing) {
+    return model_generate_sampled(m, kv, prompt_ids, n_prompt, n_gen, eos_id,
+                                  out_ids, dump_dir, probe_pos, probe_out,
+                                  timing, NULL);
+}
+
+u32 model_generate_sampled(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
+                    u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
+                    i32 probe_pos, ModelProbeEntry probe_out[5],
+                    ModelTiming* timing, const SampleParams* sp) {
     if (n_prompt == 0) {
         fatal("model: generate -- prompt_ids must be non-empty");
     }
@@ -1643,6 +1665,21 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
 
     /* M5 E3: chunked, with the dumped last position still run solo. Was a
      * position-by-position loop, each re-streaming all 2.4973 GB of weights. */
+    /* ⚠ TWO BUFFERS, AND BOTH SHAPES MIRROR THE ENGINE'S so that this CLI path
+     * and the server produce the same ids for the same (seed, params): the
+     * scratch must be SEPARATE from s_logits because sample_token writes one
+     * while reading the other, and the history is indexed by ABSOLUTE POSITION
+     * and cleared to 0xFFFFFFFF -- 0 is a real vocabulary id, and a history
+     * pre-filled with it would penalise that token at every position nothing
+     * has written yet. Allocated once per generation, never per token. */
+    f32* samp_scratch = NULL;
+    u32* samp_hist    = NULL;
+    if (sp) {
+        samp_scratch = (f32*)xcalloc(m->n_vocab, sizeof(f32));
+        samp_hist    = (u32*)xcalloc((size_t)n_prompt + n_gen, sizeof(u32));
+        for (u64 i = 0; i < (u64)n_prompt + n_gen; i++) samp_hist[i] = 0xFFFFFFFFu;
+    }
+
     prefill_range(m, kv, prompt_ids, 0u, n_prompt, dump_dir, m->scratch.s_xout);
 
     u32 pos = n_prompt; /* absolute position the next forward call will use */
@@ -1650,7 +1687,17 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
     if (probe_pos == 0) {
         record_top5(m->scratch.s_logits, m->n_vocab, probe_out);
     }
-    u32 next_id = model_argmax(m->scratch.s_logits, m->n_vocab);
+    /* ⚠⚠ THE DRAW IS KEYED ON pos - 1, NOT pos, AND THE OFF-BY-ONE IS NOT
+     * COSMETIC: it is what makes this path agree with the engine. `pos` is the
+     * position the NEXT forward will occupy; the id being chosen right now came
+     * out of the logits for the position just COMPUTED. In the scheduler the
+     * same id is produced by the prefill's LAST row, whose position is
+     * n_prompt - 1, and the sampler is keyed on that row's position. Keying on
+     * `pos` here shifted every draw by one and the CLI produced a different
+     * (perfectly fluent) continuation from the server for the same seed --
+     * found by running both and diffing, not by reading. */
+    u32 next_id = pick_next(sp, m, pos - 1u, samp_hist, pos, samp_scratch);
+    if (samp_hist) samp_hist[pos - 1u] = next_id;
     out_ids[0] = next_id;
     u32 count = 1;
 
@@ -1666,10 +1713,13 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
         if (probe_pos >= 0 && (u32)probe_pos == count) {
             record_top5(m->scratch.s_logits, m->n_vocab, probe_out);
         }
-        next_id = model_argmax(m->scratch.s_logits, m->n_vocab);
+        next_id = pick_next(sp, m, pos - 1u, samp_hist, pos, samp_scratch);
+        if (samp_hist) samp_hist[pos - 1u] = next_id;
         out_ids[count] = next_id;
         count++;
     }
+    free(samp_scratch);
+    free(samp_hist);
 
     if (timing != NULL) {
         double t_end = now_ms();
