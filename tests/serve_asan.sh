@@ -122,6 +122,24 @@ if ! grep -q "stoke serve: " "$srvlog"; then
     fail=1
 fi
 
+# ⚠⚠ AND IT MUST HAVE GENERATED, WHICH IS NOT THE SAME CLAIM. The fuzzer counts
+# "answered exchanges", and a 400 is an answered exchange -- so a soak in which
+# every single request was REFUSED passes every check above it while never
+# entering the model, the scheduler, or the sampler. That is not hypothetical:
+# the traffic builder constructs its JSON with snprintf, and one wrong comma
+# there turns ten minutes of memory-safety evidence into ten minutes of testing
+# the error path. This asserts the server's own record of work it can only have
+# done by generating.
+n_gen=$(grep -cE "stoke serve: (chat|stream) id=" "$srvlog")
+if [ "${n_gen:-0}" -lt 10 ]; then
+    echo "serve_asan: FAILED -- the server logged only ${n_gen:-0} completed" \
+         "generations. Traffic that is all refusals looks like a clean soak to" \
+         "every other check here; the sanitizer saw the parser and nothing" \
+         "downstream of it." >&2
+    grep -m5 "stoke serve: " "$srvlog" | sed 's/^/  /' >&2
+    fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi

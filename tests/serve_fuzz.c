@@ -81,6 +81,15 @@ typedef struct {
     long     exchanges; /* completed request/response pairs                  */
     long     refused;   /* connections the server would not accept -- FATAL  */
     long     actions;
+    /* ⚠ WHAT THE TRAFFIC ACTUALLY CONTAINED, REPORTED RATHER THAN ASSUMED. The
+     * sampling half of this driver exists to give a sanitized soak some
+     * coverage of the sampler, and "the parameters are in the format string" is
+     * not evidence that any request carried one: a mis-built body is answered
+     * with a 400, which this driver counts as a perfectly good outcome. The
+     * summary prints these so the coverage claim is checkable from the run's
+     * own output, on the leg where it actually ran. */
+    long     sampled;   /* generating requests that asked for a sampler       */
+    long     penalized; /* ...and the subset that asked for a repeat penalty  */
 } Client;
 
 /* Sends `req` and reads until the peer closes or a short deadline passes. The
@@ -139,11 +148,58 @@ static void build_chat(Client* c, char* out, size_t cap, int completions) {
     };
     static const char* stops[] = {"\".\"", "\"!\"", "\" the\"", "\"z\""};
 
+    /* ⚠ THE SAMPLING TABLES EXIST BECAUSE THIS FUZZER SENT `"temperature":0` ON
+     * EVERY REQUEST UNTIL 2026-08-30, so a ten-minute sanitized soak -- gate
+     * item [7]'s entire memory-safety evidence -- never once entered
+     * sample_token, the slot table, or the prologue's drain. The newest code in
+     * the milestone was the least covered code in it. Values are all VALID on
+     * purpose: an invalid one is answered with a 400, which this fuzzer counts
+     * as a fine outcome and which reaches none of the machinery. Malformed
+     * sampling input is the A2 corpus's job. The boundaries are here (top_k at
+     * the sampler's 512 cap, repeat_penalty at 100) because a boundary that is
+     * accepted is exactly where an off-by-one lives. */
+    static const char* temps[] = {"0.7", "1.0", "1.4", "2.0"};
+    static const char* topks[] = {"1", "8", "40", "512"};
+    static const char* topps[] = {"0.1", "0.5", "0.9", "1"};
+    static const char* pens[]  = {"1.05", "1.3", "1.8", "100"};
+
     uint32_t max_tok = 1 + pick(&c->rng, g_max_tok);
     int      stream  = (int)pick(&c->rng, 2);
     int      usage   = stream && pick(&c->rng, 2);
     int      use_stop = (int)pick(&c->rng, 3) == 0;
     const char* p    = prompts[pick(&c->rng, sizeof prompts / sizeof prompts[0])];
+
+    /* ⚠⚠ EVERY DRAW BELOW HAPPENS WHATEVER THE KIND SELECTS, for the same
+     * reason the stop string is drawn unconditionally: the RNG stream must
+     * advance identically down every branch or "reproducible from the printed
+     * seed" stops being true the moment a branch is taken differently. */
+    uint32_t samp_kind = pick(&c->rng, 4);
+    const char* t_s    = temps[pick(&c->rng, 4)];
+    const char* k_s    = topks[pick(&c->rng, 4)];
+    const char* p_s    = topps[pick(&c->rng, 4)];
+    const char* pen_s  = pens[pick(&c->rng, 4)];
+    uint32_t    seed_v = pick(&c->rng, 1000000);
+
+    if (samp_kind != 0) c->sampled++;
+    if (samp_kind == 3) c->penalized++;
+
+    char samp[128];
+    switch (samp_kind) {
+    case 0: /* greedy, spelled out -- the explicit-zero parse path */
+        snprintf(samp, sizeof samp, ",\"temperature\":0");
+        break;
+    case 1: /* a temperature alone: the sampler with its default candidate cap */
+        snprintf(samp, sizeof samp, ",\"temperature\":%s,\"seed\":%u", t_s, seed_v);
+        break;
+    case 2: /* both truncations, including the ones that collapse to the argmax */
+        snprintf(samp, sizeof samp,
+                 ",\"temperature\":%s,\"top_k\":%s,\"top_p\":%s,\"seed\":%u",
+                 t_s, k_s, p_s, seed_v);
+        break;
+    default: /* the penalty on the GREEDY path, which copies the whole logit row */
+        snprintf(samp, sizeof samp, ",\"temperature\":0,\"repeat_penalty\":%s", pen_s);
+        break;
+    }
 
     /* ⚠ DRAWN BEFORE THE snprintf, NOT INSIDE ITS ARGUMENT LIST. C leaves the
      * evaluation ORDER of function arguments unspecified, and every pick()
@@ -157,10 +213,14 @@ static void build_chat(Client* c, char* out, size_t cap, int completions) {
     char body[1024];
     int  bn;
     if (completions) {
+        /* ⚠ THE SAMPLING CLAUSE GOES BEFORE THE STOP CLAUSE, not after. The
+         * fix-up below rewrites the LAST character of this body to close the
+         * array the format string opened, so anything appended after `stop`
+         * would be what it overwrote. */
         bn = snprintf(body, sizeof body,
                       "{\"model\":\"stoke\",\"prompt\":\"%s\",\"max_tokens\":%u,"
-                      "\"stream\":%s,\"temperature\":0%s%s}",
-                      p, max_tok, stream ? "true" : "false",
+                      "\"stream\":%s%s%s%s}",
+                      p, max_tok, stream ? "true" : "false", samp,
                       use_stop ? ",\"stop\":[" : "", stop_s);
         if (use_stop) {
             /* close the array the branch above opened */
@@ -175,9 +235,8 @@ static void build_chat(Client* c, char* out, size_t cap, int completions) {
     } else {
         bn = snprintf(body, sizeof body,
                       "{\"model\":\"stoke\",\"messages\":[{\"role\":\"user\","
-                      "\"content\":\"%s\"}],\"max_tokens\":%u,\"stream\":%s,"
-                      "\"temperature\":0%s}",
-                      p, max_tok, stream ? "true" : "false",
+                      "\"content\":\"%s\"}],\"max_tokens\":%u,\"stream\":%s%s%s}",
+                      p, max_tok, stream ? "true" : "false", samp,
                       usage ? ",\"stream_options\":{\"include_usage\":true}" : "");
     }
     if (bn < 0 || (size_t)bn >= sizeof body) {
@@ -363,17 +422,21 @@ int main(int argc, char** argv) {
         }
     }
 
-    long exchanges = 0, refused = 0, actions = 0;
+    long exchanges = 0, refused = 0, actions = 0, sampled = 0, penalized = 0;
     for (int i = 0; i < clients; i++) {
         pthread_join(th[i], NULL);
         exchanges += cs[i].exchanges;
         refused += cs[i].refused;
         actions += cs[i].actions;
+        sampled += cs[i].sampled;
+        penalized += cs[i].penalized;
     }
     for (int i = 0; i < g_n_corpus; i++) free(g_corpus[i].data);
 
     printf("serve_fuzz: %ld actions, %ld answered exchanges, %ld refused\n",
            actions, exchanges, refused);
+    printf("serve_fuzz: %ld requests asked for a sampler (%ld of those for a "
+           "repeat penalty)\n", sampled, penalized);
 
     /* ⚠ THE ONLY TWO FAILURES THIS DRIVER OWNS. Everything else -- 400s, 404s,
      * dropped streams -- is the server doing its job under abuse, and ASan is
