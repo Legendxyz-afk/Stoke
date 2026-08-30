@@ -451,7 +451,6 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     /* BYTE-wise mask, not the epi32 one the widening kernel used: the whole
      * point below is that nothing is widened to i32 before the multiply. */
     const __m256i lownib8 = _mm256_set1_epi8(0xF);
-    const __m256i ones16 = _mm256_set1_epi16(1);
     f32 sumf = 0.0f;
 
     for (u64 i = 0; i < nb; ++i) {
@@ -521,14 +520,23 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
             __m256i av = _mm256_loadu_si256(
                 (const __m256i*)(const void*)(q8 + j * 32u));
             /* Unsigned nibbles x signed quants -- the argument order is load
-             * bearing, maddubs treats its FIRST operand as unsigned. */
-            __m256i sub = _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av),
-                                            ones16);
-            /* scale*sum == sum of scale*x exactly in integers, so scaling the
-             * folded sub-block matches the scalar's value. */
+             * bearing, maddubs treats its FIRST operand as unsigned.
+             *
+             * ▶ The scale is folded into the pair-sum, as in the xn twin and as
+             * the Q6_K maddubs kernel already did: one `madd_epi16` against a
+             * broadcast scale replaces `madd_epi16(...,ones16)` plus a 2-uop
+             * `vpmulld`. scale*(p[2m]+p[2m+1]) == scale*p[2m] + scale*p[2m+1]
+             * exactly in integers, and neither form overflows -- nibbles 0..15
+             * against |q8| <= 127 give a maddubs pair <= 3810 (no i16
+             * saturation), a 6-bit scale takes each product to <= 240k and each
+             * pair-sum to <= 480k, both inside i32.
+             *
+             * ⚠ THIS IS THE DECODE PATH. vec.c routes n_seq==1 here, so it is
+             * what every generated token runs through, while the xn twin is
+             * prefill's. */
             acc = _mm256_add_epi32(
-                acc, _mm256_mullo_epi32(sub,
-                                        _mm256_set1_epi32((int)scales8[j])));
+                acc, _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av),
+                                       _mm256_set1_epi16((short)scales8[j])));
         }
 
         u16 draw, dmraw;
@@ -559,7 +567,6 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
     const __m256i lownib8 = _mm256_set1_epi8(0xF);
-    const __m256i ones16 = _mm256_set1_epi16(1);
     f32 sumf[KERNELS_BATCH_TILE];
     for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
 
@@ -662,15 +669,34 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
             }
 #endif
 
+            /* ▶▶▶ THE SCALE IS FOLDED INTO THE PAIR-SUM, WHICH DELETES A
+             * vpmulld FROM THE INNER LOOP. It used to pair-sum with `ones16`
+             * and then multiply the i32 result by the scale --
+             * `_mm256_mullo_epi32` is 2 uops with ~10-cycle latency and was the
+             * most expensive instruction here. `madd_epi16` against a broadcast
+             * SCALE does the pair-sum and the multiply in one 1-uop
+             * instruction.
+             *
+             * ⚠ BIT-EXACT BY ARITHMETIC, NOT BY TESTING -- the same standard
+             * the mins term above is held to. Old: scale*(p[2m] + p[2m+1]).
+             * New: scale*p[2m] + scale*p[2m+1]. Equal by distributivity over
+             * the INTEGERS, and neither form overflows: the nibbles are 0..15
+             * and the activations |q8| <= 127, so a maddubs pair is <= 3810
+             * (no i16 saturation); a 6-bit scale <= 63 makes each product
+             * <= 240k and each pair-sum <= 480k, both inside i32.
+             *
+             * The broadcast stays INSIDE the loop rather than being hoisted
+             * with the other weight-only work: eight more live __m256i beside
+             * `wnib[8]` would be the whole register file, and rung B measured
+             * that over-hoisting this kernel's siblings made N=16 SLOWER. */
             __m256i acc = _mm256_setzero_si256();
             for (u32 j = 0; j < 8u; ++j) {
                 __m256i av = _mm256_loadu_si256(
                     (const __m256i*)(const void*)(q8 + j * 32u));
-                __m256i sub = _mm256_madd_epi16(
-                    _mm256_maddubs_epi16(wnib[j], av), ones16);
                 acc = _mm256_add_epi32(
-                    acc, _mm256_mullo_epi32(
-                             sub, _mm256_set1_epi32((int)scales8[j])));
+                    acc, _mm256_madd_epi16(
+                             _mm256_maddubs_epi16(wnib[j], av),
+                             _mm256_set1_epi16((short)scales8[j])));
             }
             const i32 S_b = kq_hsum_i32(acc);
             sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
@@ -691,7 +717,6 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     const u8* ab = (const u8*)arow;
     u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
-    const __m256i ones16 = _mm256_set1_epi16(1);
     f32 sumf = 0.0f;
 
     for (u64 i = 0; i < nb; ++i) {
@@ -766,13 +791,24 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
                 (const __m256i*)(const void*)(raw6 + j * 16u));
             __m256i av = _mm256_loadu_si256(
                 (const __m256i*)(const void*)(q8 + j * 16u));
-            __m256i sub = _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av),
-                                            ones16);
-            __m256i sv = _mm256_set_epi32((int)sc[j + 1], (int)sc[j + 1],
-                                          (int)sc[j + 1], (int)sc[j + 1],
-                                          (int)sc[j], (int)sc[j],
-                                          (int)sc[j], (int)sc[j]);
-            acc = _mm256_add_epi32(acc, _mm256_mullo_epi32(sub, sv));
+            /* ▶ THE SCALE FOLDED INTO THE PAIR-SUM, as in the Q4_K twin: one
+             * `madd_epi16` replaces `madd_epi16(...,ones16)` + `mullo_epi32`,
+             * deleting a 2-uop vpmulld per pass. The multiplier is BUILT
+             * rather than broadcast because the two halves carry different
+             * scales -- maddubs puts sub-block j in i16 lanes 0..7 and j+1 in
+             * 8..15, so an i16 vector of [sc[j] x8, sc[j+1] x8] reproduces the
+             * i32 lane layout the old `sv` had exactly.
+             *
+             * ⚠ BIT-EXACT BY ARITHMETIC: scale*(p[2m]+p[2m+1]) becomes
+             * scale*p[2m] + scale*p[2m+1], equal over the integers. No
+             * overflow: 6-bit weights (<=63) against |q8| <= 127 give a
+             * maddubs pair <= 16002 (inside i16, so no saturation), an i8
+             * scale takes each product to <= 2.03M and each pair-sum to
+             * <= 4.06M, both inside i32. */
+            __m256i sv16 = _mm256_set_m128i(_mm_set1_epi16((short)sc[j + 1]),
+                                            _mm_set1_epi16((short)sc[j]));
+            acc = _mm256_add_epi32(
+                acc, _mm256_madd_epi16(_mm256_maddubs_epi16(wv, av), sv16));
         }
 
         u16 draw;
