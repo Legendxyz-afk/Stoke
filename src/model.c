@@ -110,6 +110,64 @@ typedef struct {
  * 1 turns E3 off. Declared up here with the other run-time knobs because
  * att_env_init validates it; the mechanism and its correctness argument live
  * at prefill_range. */
+/* ---- the per-op prefill profile (M7, -DSTOKE_PROFILE_OPS) ---------------
+ *
+ * ▶▶▶ WHY THIS EXISTS. The 0.51x gap to the M5 bar is a PREFILL gap, and 95% of
+ * prefill's FLOPs are matvec. But stoke's own batched Q4_K kernel measures ~70
+ * GF/s single-threaded while the whole prefill extracts ~33 GF/s per thread --
+ * so something between the kernel and the forward pass is losing more than the
+ * kernel itself would explain. Every instrument this project had either times
+ * ONE tensor in a hot loop or the whole prefill as a single number, and the gap
+ * lives exactly between those two. This is the missing middle.
+ *
+ * ⚠ WALL CLOCK PER OP, INCLUDING THE POOL DISPATCH. The matmuls and attention
+ * fan out to the worker pool, so timing around the call is what a caller
+ * actually waits for -- which is the quantity that adds up to the prefill rate.
+ * A per-thread CPU-time profile would hide exactly the dispatch and join costs
+ * worth finding.
+ *
+ * ⚠ AND IT MUST COST NOTHING WHEN OFF. With the flag absent every macro below
+ * expands to `((void)0)`: no counters, no timer calls, no variables to trip
+ * -Werror. The shipping build is unchanged, which the byte-exact goldens check.
+ * Roughly 1,800 timed regions in a 525-token prefill against ~20 ns per
+ * QueryPerformanceCounter is under a millisecond of the ~17,000 it measures. */
+typedef enum {
+    PROF_QKV = 0,    /* attn_q + attn_k + attn_v matvecs            */
+    PROF_QKNORM,     /* per-head QK-norm, rope, kv append (phase 1) */
+    PROF_ATT,        /* causal GQA attention (phase 2)              */
+    PROF_ATTOUT,     /* attn_output matvec + residual               */
+    PROF_FFN_GU,     /* ffn_gate + ffn_up matvecs                   */
+    PROF_SWIGLU,     /* the SwiGLU elementwise                      */
+    PROF_FFN_DOWN,   /* ffn_down matvec + residual                  */
+    PROF_NORM,       /* the two rmsnorms per layer                  */
+    PROF_N
+} ProfOp;
+
+#ifdef STOKE_PROFILE_OPS
+static double g_prof[PROF_N];
+static const char* const g_prof_name[PROF_N] = {
+    "qkv matvec", "qk-norm+rope+kv", "attention", "attn_out matvec",
+    "ffn gate+up matvec", "swiglu", "ffn_down matvec", "rmsnorm"
+};
+#define PROF_DECL double prof_t0 = now_ms()
+#define PROF_ADD(op) (g_prof[op] += now_ms() - prof_t0)
+void model_profile_dump(void) {
+    double tot = 0.0;
+    for (int i = 0; i < PROF_N; i++) tot += g_prof[i];
+    if (tot <= 0.0) return;
+    fprintf(stderr, "\n  per-op profile (wall ms, pool dispatch included)\n");
+    fprintf(stderr, "  %-22s %10s %8s\n", "op", "ms", "%");
+    for (int i = 0; i < PROF_N; i++) {
+        fprintf(stderr, "  %-22s %10.1f %7.1f%%\n", g_prof_name[i], g_prof[i],
+                100.0 * g_prof[i] / tot);
+    }
+    fprintf(stderr, "  %-22s %10.1f\n", "TOTAL ACCOUNTED", tot);
+}
+#else
+#define PROF_DECL ((void)0)
+#define PROF_ADD(op) ((void)0)
+#endif
+
 #define PREFILL_CHUNK 128u
 static u32 g_prefill_chunk = PREFILL_CHUNK;
 
@@ -735,6 +793,9 @@ Model* model_open(const char* path) {
 }
 
 void model_close(Model* m) {
+#ifdef STOKE_PROFILE_OPS
+    model_profile_dump();
+#endif
     if (m) {
         for (u32 i = 0; i < m->n_scratch; i++) scratch_free(&m->scratch_n[i]);
         free(m->scratch_n);
@@ -1220,12 +1281,14 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
             rmsnorm(scs[s]->s_x, (const f32*)ly->attn_norm->data, m->n_embd,
                     m->eps, scs[s]->s_a);
         }
+        { PROF_DECL;
         matvec_batch(ly->attn_q, (const f32* const*)vw->a, m->n_embd, vw->q,
                      (u64)m->n_head * m->head_dim, vw->aq, n_seq);
         matvec_batch(ly->attn_k, (const f32* const*)vw->a, m->n_embd, vw->k,
                      (u64)m->n_head_kv * m->head_dim, vw->aq, n_seq);
         matvec_batch(ly->attn_v, (const f32* const*)vw->a, m->n_embd, vw->v,
                      (u64)m->n_head_kv * m->head_dim, vw->aq, n_seq);
+        PROF_ADD(PROF_QKV); }
 
         const f32* qn = (const f32*)ly->attn_q_norm->data;
         const f32* kn = (const f32*)ly->attn_k_norm->data;
@@ -1319,6 +1382,7 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
         for (u32 s = 1; s < n_seq; s++) {
             if (positions[s] > pos_max) pos_max = positions[s];
         }
+        { PROF_DECL;
         if (g_att_par && (u64)pos_max + 1u >= (u64)g_att_min_pos) {
             g_att_dispatches++;
             pool_for_units((u64)n_seq * ab.per_seq, g_att_chunk, att_batch_run,
@@ -1329,8 +1393,10 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
              * STOKE_ATT_PAR=0's arm: bit-identical, just serial. */
             att_batch_run(&ab, 0, (u64)n_seq * ab.per_seq);
         }
+        PROF_ADD(PROF_ATT); }
 
         /* attn_output matvec -> residual add */
+        { PROF_DECL;
         matvec_batch(ly->attn_output, (const f32* const*)vw->attn_out,
                      (u64)m->n_head * m->head_dim, vw->proj, m->n_embd,
                      vw->aq, n_seq);
@@ -1338,22 +1404,27 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
             f32* x = scs[s]->s_x;
             for (u32 i = 0; i < m->n_embd; i++) x[i] += scs[s]->s_proj[i];
         }
+        PROF_ADD(PROF_ATTOUT); }
 
         /* rmsnorm(ffn_norm) -> SwiGLU -> ffn_down -> residual add */
         for (u32 s = 0; s < n_seq; s++) {
             rmsnorm(scs[s]->s_x, (const f32*)ly->ffn_norm->data, m->n_embd,
                     m->eps, scs[s]->s_f);
         }
+        { PROF_DECL;
         matvec_batch(ly->ffn_gate, (const f32* const*)vw->f, m->n_embd,
                      vw->gate, m->n_ff, vw->aq, n_seq);
         matvec_batch(ly->ffn_up, (const f32* const*)vw->f, m->n_embd, vw->up,
                      m->n_ff, vw->aq, n_seq);
+        PROF_ADD(PROF_FFN_GU); }
         for (u32 s = 0; s < n_seq; s++) {
             swiglu(scs[s]->s_gate, scs[s]->s_up, m->n_ff, scs[s]->s_gate);
             /* in place: safe aliasing per kernels.h's swiglu contract */
         }
+        { PROF_DECL;
         matvec_batch(ly->ffn_down, (const f32* const*)vw->gate, m->n_ff,
                      vw->proj, m->n_embd, vw->aq, n_seq);
+        PROF_ADD(PROF_FFN_DOWN); }
         for (u32 s = 0; s < n_seq; s++) {
             f32* x = scs[s]->s_x;
             for (u32 i = 0; i < m->n_embd; i++) x[i] += scs[s]->s_proj[i];
