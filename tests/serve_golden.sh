@@ -71,7 +71,7 @@ diffout="$builddir/serve_golden.diff"
 rm -f "$out" "$raw" "$srvlog" "$diffout"
 
 url="http://127.0.0.1:$port"
-n_requests=19
+n_requests=25
 
 # The first request has to outwait a 2.5GB model load, so it retries a refused
 # connection. Every later one does NOT: by then the server is up, and a retry
@@ -186,6 +186,43 @@ sse_refute() { # <file> <what> <fixed-needle>
     fi
 }
 
+# ---- comparing two ANSWERS, which is the only way to see a sampler ---------
+#
+# ▶ A6 needs assertions the transcript diff cannot make: that two responses in
+# THIS run agree, or differ. A sampler that is accepted and then dropped answers
+# greedily, and a greedy answer is fluent, well-shaped, and pinned by every
+# other check in this file.
+#
+# ⚠ THE EXTRACTOR IS INSTRUMENT AND IS TREATED AS SUCH. If it returned the empty
+# string -- a changed response shape, a `content` carrying an escaped quote --
+# then every "these must agree" below would agree about nothing and pass. So an
+# empty operand is a FAILURE in both directions rather than a match, and every
+# message prints both operands, because "they differed" without saying how is a
+# report you cannot act on.
+content_of() { # <file> -- the assistant content of a NON-streamed chat response
+    sed -n 's/.*"content":"\([^"]*\)".*/\1/p' "$1" | head -1
+}
+answers_agree() { # <what> <a> <b>
+    if [ -z "$2" ] || [ -z "$3" ]; then
+        echo "serve_golden: FAILED -- $1: an operand was empty, so the" \
+             "comparison graded nothing (a=[$2] b=[$3])" >&2
+        sse_fail=1
+    elif [ "$2" != "$3" ]; then
+        echo "serve_golden: FAILED -- $1 (a=[$2] b=[$3])" >&2
+        sse_fail=1
+    fi
+}
+answers_differ() { # <what> <a> <b>
+    if [ -z "$2" ] || [ -z "$3" ]; then
+        echo "serve_golden: FAILED -- $1: an operand was empty, so the" \
+             "comparison graded nothing (a=[$2] b=[$3])" >&2
+        sse_fail=1
+    elif [ "$2" = "$3" ]; then
+        echo "serve_golden: FAILED -- $1 (both were [$2])" >&2
+        sse_fail=1
+    fi
+}
+
 # 4. THE ENDPOINT AS A STREAM. curl decodes the chunked framing here, so what
 #    the transcript records is the event stream a client actually sees.
 run_case "POST /v1/chat/completions (stream:true)" \
@@ -269,8 +306,10 @@ fi
 # request as completed when it BUILT the response rather than when it FLUSHED
 # it would end the loop with the last body still in the buffer, and the client
 # would see an empty reply. That is not hypothetical -- it is what this server
-# did when it first ran, on 2026-08-29 -- so the last case here is a request
-# whose whole answer must survive the count.
+# did when it first ran, on 2026-08-29 -- so whatever stands LAST in this file
+# must be a request whose whole answer has to survive the count. It was these
+# four when they were written; A6 appended to the list and moved the
+# obligation onto the repeat-penalty pair at the bottom, which carries it.
 run_case "POST /v1/chat/completions (body is not JSON -> 400)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
     -d 'not json at all'
@@ -315,20 +354,35 @@ sse_refute "$raw" "streamed completion chunks must NOT carry a chat delta" '"del
 
 # 12-13. temperature. The M0 harness sends `"temperature": 0.0` on EVERY
 #     request, and greedy decoding IS temperature zero -- so zero is accepted
-#     and nothing about it is special-cased. A NON-zero temperature is refused
-#     rather than silently answered greedily: this build has no sampler, and
-#     quietly returning the wrong distribution is the failure mode that takes
-#     weeks to notice. Sampling arrives at A6 and this refusal goes with it.
+#     and nothing about it is special-cased. A6 landed the sampler, so a
+#     NON-zero temperature is now answered rather than refused; the refusal that
+#     used to stand here was a placeholder with an expiry date on it.
+#
+# ⚠⚠ THE SECOND CASE PINS A SAMPLED CONFIGURATION WHOSE ANSWER IS NOT RANDOM,
+# AND THAT IS THE POINT. `top_k: 1` leaves the softmax exactly one candidate, so
+# the draw has nowhere to land but the argmax and the answer IS the greedy one
+# -- which is the only reason a byte-exact golden may contain it at all. A
+# genuinely stochastic response CANNOT live in this file: it is reproducible on
+# one box and one libm, and this transcript is diffed on both legs of the
+# matrix, where `expf` is a different implementation and one ulp is enough to
+# move a draw across a cumulative boundary. What is pinned here is the part that
+# is a property of this software rather than of its C library; sampling's
+# LIVENESS is proven by name in tests/serve_openai.py, which compares answers to
+# each other instead of to a recording.
 run_case "POST /v1/chat/completions (temperature 0 -> 200)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
     -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.0}'
 sse_assert "$raw" "temperature 0 is greedy and must be accepted" "HTTP/1.1 200 OK"
+greedy_color=$(content_of "$raw")
 
-run_case "POST /v1/chat/completions (temperature 0.7 -> 400)" \
+run_case "POST /v1/chat/completions (temperature 0.7 + top_k 1 -> 200)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
-    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.7}'
-sse_assert "$raw" "a non-zero temperature must be refused, not silently ignored" \
-    "HTTP/1.1 400 Bad Request"
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.7,"top_k":1,"seed":7}'
+sse_assert "$raw" "a non-zero temperature is answered now that a sampler exists" \
+    "HTTP/1.1 200 OK"
+answers_agree "top_k 1 leaves one candidate, so a sampled answer must still be \
+the greedy one -- and if it is not, the truncation never reached the engine" \
+    "$greedy_color" "$(content_of "$raw")"
 
 # ---- A6: stop strings ------------------------------------------------------
 #
@@ -365,24 +419,105 @@ sse_assert "$raw" "the stream still terminates with the sentinel after a stop" \
 sse_refute "$raw" "no text at or beyond the stop string may be emitted" '" help"'
 sse_refute "$raw" "the stop string itself must not be emitted" '"an I"'
 
-# 16-17. The rest of the sampling surface, on the same principle as
-#     temperature: a parameter is accepted at the value where "no sampler" is
-#     the CORRECT answer, and refused at any other. top_p 1 truncates nothing;
-#     top_p 0.9 does, and answering it greedily would be answering a different
-#     question. `seed` is deliberately accepted: greedy is already
-#     deterministic, so any seed gives the identical stream, which is what a
-#     seed promises.
+# 16-17. THE REST OF THE SURFACE, AND THE RULE THAT DECIDES IT: A TRUNCATION
+#     WITHOUT A TEMPERATURE IS GREEDY, AND THAT IS THE RIGHT ANSWER RATHER THAN
+#     A SHORTCUT. top_k and top_p delete candidates from the BOTTOM of the
+#     ranking; the argmax is at the top and survives every one of them. So a
+#     request carrying only a truncation asks for a distribution whose most
+#     likely token is the one greedy already returns, and answering it greedily
+#     is answering exactly what was asked. The engine encodes the same rule --
+#     it claims a sampling slot only for a temperature above zero or a repeat
+#     penalty above one -- so this pins the server and the engine agreeing.
+#
+#     `seed` is accepted here as it always was, and now does something: without
+#     one, a sampled request seeds from its own request id, which the client
+#     already holds as the N in `chatcmpl-N`.
 run_case "POST /v1/chat/completions (top_p 1 + seed -> 200)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
     -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"top_p":1,"seed":42,"n":1}'
 sse_assert "$raw" "the no-op value of every sampling parameter is accepted" \
     "HTTP/1.1 200 OK"
 
-run_case "POST /v1/chat/completions (top_p 0.9 -> 400)" \
+run_case "POST /v1/chat/completions (top_p 0.9, no temperature -> 200 greedy)" \
     -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
     -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"top_p":0.9}'
-sse_assert "$raw" "a sampling parameter that would change the output is refused" \
-    "HTTP/1.1 400 Bad Request"
+sse_assert "$raw" "a truncation is accepted" "HTTP/1.1 200 OK"
+answers_agree "a nucleus cannot remove the most likely token, so top_p without \
+a temperature must give the greedy answer" \
+    "$greedy_color" "$(content_of "$raw")"
+
+# 18-21. WHAT IS STILL REFUSED, AND WHY EACH ONE IS ITS OWN CASE. The A2 corpus
+#     argument applies: a server that refused all four for one wrong cause would
+#     pass a gate that only counted 400s, so each carries its own reason string.
+#
+# ⚠⚠ frequency_penalty AND presence_penalty ARE NOT repeat_penalty, and this is
+# the sharpest edge in the whole surface. OpenAI's two are ADDITIVE -- a term
+# subtracted from a logit, scaled by how often the token appeared -- while the
+# penalty this engine implements is MULTIPLICATIVE, llama.cpp's: divide a
+# positive logit, multiply a negative one. Accepting `frequency_penalty: 0.5`
+# and quietly applying the multiplicative penalty would answer with a
+# distribution nobody asked for, in a way that reads as the model being odd
+# rather than as a bug -- and would make any benchmark that sets it meaningless.
+# They are refused until they are implemented as what they are.
+run_case "POST /v1/chat/completions (n 2 -> 400)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"n":2}'
+sse_assert "$raw" "more than one choice per request is not implemented" \
+    "'n' is implemented only at 1"
+
+run_case "POST /v1/chat/completions (frequency_penalty 0.5 -> 400)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"frequency_penalty":0.5}'
+sse_assert "$raw" "an additive penalty must not be answered with a multiplicative one" \
+    "'frequency_penalty' is OpenAI's additive penalty"
+
+run_case "POST /v1/chat/completions (presence_penalty 0.5 -> 400)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"presence_penalty":0.5}'
+sse_assert "$raw" "presence_penalty is refused on its own terms, not as a copy of the last one" \
+    "'presence_penalty' is OpenAI's additive penalty"
+
+# A value outside a parameter's range is a client bug, and naming it costs one
+# 400 instead of a support thread about strange output.
+run_case "POST /v1/chat/completions (top_p 1.5 -> 400)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Name one color."}],"max_tokens":8,"temperature":0.7,"top_p":1.5}'
+sse_assert "$raw" "a top_p outside [0,1] is refused rather than clamped" \
+    "'top_p' must be between 0 and 1"
+
+# 22-23. THE REPEAT PENALTY, PROVED RATHER THAN ACCEPTED -- and the one sampling
+#     behaviour whose OUTPUT this file can pin, because it runs on the greedy
+#     path: the penalty divides a logit and the argmax is taken, with no softmax
+#     and no expf anywhere near it, so the answer is the same on every libm.
+#
+# ⚠ THE PROMPT IS CHOSEN SO THE PENALTY HAS SOMETHING TO BITE. Measured on this
+# model: "Repeat the word banana three times." decodes greedily to
+# "banana banana banana", whose second and third tokens are the SAME id -- so a
+# penalty that arrives changes the third token and a penalty dropped on the
+# floor cannot hide. Against the golden gate's other prompts it would hide
+# perfectly: "Hello! How can I help you today?" repeats no token at all, so the
+# penalized and unpenalized answers there are identical whatever the server did
+# with the parameter. That is a fixture blind to the defect it was written for,
+# and it was avoided here by looking at the tokens first.
+#
+# ⚠ THE PAIR IS ALSO THE LAST THING THIS GATE ASKS FOR, deliberately: the Nth
+# request is the one that races the server's exit, and a server that counted a
+# request when it BUILT the response rather than when it FLUSHED it would end
+# the loop with the last body still in its buffer. That is not hypothetical --
+# it is what this server did the first day it ran.
+run_case "POST /v1/chat/completions (repeat_penalty baseline, greedy)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Repeat the word banana three times."}],"max_tokens":24}'
+sse_assert "$raw" "the baseline for the penalty pair must be answered" "HTTP/1.1 200 OK"
+banana_plain=$(content_of "$raw")
+
+run_case "POST /v1/chat/completions (repeat_penalty 1.8)" \
+    -X POST "$url/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"model":"stoke","messages":[{"role":"user","content":"Repeat the word banana three times."}],"max_tokens":24,"repeat_penalty":1.8}'
+sse_assert "$raw" "a repeat penalty is answered, not refused" "HTTP/1.1 200 OK"
+answers_differ "a repeat penalty on an answer that repeats a token MUST change \
+it -- an identical answer means the parameter never reached the sampler" \
+    "$banana_plain" "$(content_of "$raw")"
 
 wait "$srv_pid"
 srv_rc=$?

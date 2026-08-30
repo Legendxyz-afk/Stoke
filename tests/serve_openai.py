@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M6 GATE ITEM [1]: the openai-python suite -- stream + non-stream chat, completions, models.
+"""M6 GATE ITEM [1]: the openai-python suite -- chat, completions, models, and the sampler.
 
 ▶▶ WHY A REAL CLIENT AND NOT MORE curl. tests/serve_golden.sh already pins every byte of every
 response, and it would pass against a server whose JSON is subtly wrong in a way only a typed
@@ -14,7 +14,10 @@ look like a pass. Every request here is exactly one request.
 
 ⚠ THE ASSERTIONS ARE ON PARSED FIELDS, not on text the model produced. Nothing below asserts WHAT
 the model said: that is the golden gate's job and it is pinned there. This asks only that the
-shape is one the client can use.
+shape is one the client can use -- with one exception, section 7, which compares answers to EACH
+OTHER. Sampling cannot be checked any other way: its output is text either way, so the only
+observable difference between a live sampler and a parameter dropped on the floor is whether two
+answers that must differ do.
 
 Usage: serve_openai.py <base_url>        (e.g. http://127.0.0.1:18143/v1)
 """
@@ -153,8 +156,64 @@ def main(argv):
         fail(f"streamed completions: no text accumulated over {n_chunks} chunks")
     print(f"serve_openai: completions stream -> {text!r} in {n_chunks} chunks", flush=True)
 
+    # -- 7. SAMPLING IS LIVE, AND THE SEED IS A PROMISE ------------------------------------------
+    #
+    # ▶▶ THIS IS THE ONE BLOCK HERE THAT COMPARES ANSWERS TO EACH OTHER, and it has to: every way
+    # the sampling wiring can be wrong produces FLUENT TEXT. A server that parses `temperature` and
+    # then drops it on the floor answers greedily, and greedy answers look perfect -- they are
+    # merely the same answer forever. Nothing below asserts WHAT the model said; each assertion
+    # asks whether two requests that must differ do, or whether two that must agree do.
+    #
+    # ⚠⚠ EACH ASSERTION IS PAIRED WITH THE ONE THAT MAKES IT NON-VACUOUS, because on its own every
+    # one of them can be satisfied by a server that samples nothing at all:
+    #   - "the same seed reproduces" is free for a greedy server. Its control is "a different seed
+    #     differs", which a greedy server cannot pass.
+    #   - "top_k 1 collapses to the argmax" is free for a server that dropped `temperature`. Its
+    #     control is "a sampled answer differs from the greedy one", above it.
+    # Neither half is dropped and neither is trusted alone. See the project's standing lesson that
+    # a fixture can be blind to the defect it was written for.
+    prompt = "Write one sentence about the sea."
+
+    def sampled(what, **kw):
+        r = client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}], max_tokens=16, **kw)
+        text = r.choices[0].message.content
+        if not text:
+            fail(f"sampling ({what}): empty content")
+        return text
+
+    seed = 20260830
+    greedy = sampled("greedy baseline", temperature=0.0)
+    wild_a = sampled("temperature 1.4", temperature=1.4, seed=seed)
+    wild_b = sampled("temperature 1.4, same seed", temperature=1.4, seed=seed)
+    wild_c = sampled("temperature 1.4, other seed", temperature=1.4, seed=seed + 1)
+
+    if wild_a == greedy:
+        fail(f"temperature 1.4 returned the greedy answer exactly ({greedy!r}) -- the sampler is "
+             "not being reached, which is what a server that accepts the parameter and ignores it "
+             "looks like")
+    if wild_a != wild_b:
+        fail(f"the same seed gave two different answers ({wild_a!r} then {wild_b!r}) -- a seed "
+             "that does not reproduce is not a seed")
+    if wild_a == wild_c:
+        fail(f"two different seeds gave the same answer ({wild_a!r}) -- the seed is not reaching "
+             "the sampler, and the reproduction above proves nothing without this")
+
+    # top_k / top_p at the values where truncation leaves exactly one candidate. The draw then has
+    # nowhere to land but the argmax, so a HIGH temperature must still reproduce the greedy answer
+    # -- and it can only do that if the truncation arrived at the engine.
+    k1 = sampled("top_k 1", temperature=1.4, seed=seed, extra_body={"top_k": 1})
+    if k1 != greedy:
+        fail(f"top_k 1 leaves one candidate, so any temperature must still give the greedy answer: "
+             f"got {k1!r}, greedy was {greedy!r}")
+    p_tiny = sampled("top_p 0.0001", temperature=1.4, seed=seed, top_p=0.0001)
+    if p_tiny != greedy:
+        fail("a nucleus smaller than the top token's own share keeps exactly that token, so this "
+             f"must give the greedy answer too: got {p_tiny!r}, greedy was {greedy!r}")
+    print(f"serve_openai: sampling -> greedy {greedy!r} / sampled {wild_a!r}", flush=True)
+
     print("serve_openai: OK (models, chat, chat+stream, chat+stream+usage, completions, "
-          "completions+stream)")
+          "completions+stream, sampling)")
     return 0
 
 

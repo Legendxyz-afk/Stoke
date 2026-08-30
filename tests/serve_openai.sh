@@ -66,10 +66,12 @@ rm -f "$srvlog"
 
 guard=$(golden_lib_guard "$builddir")
 
-# One readiness probe plus the suite's six requests. The count is asserted
-# below: the SDK is constructed with max_retries=0 precisely so this number is
-# exact, and a retry storm cannot pass as a clean run.
-n_requests=7
+# One readiness probe plus the suite's twelve requests -- six for the shapes, six
+# for the sampler (a greedy baseline, three seeded draws, and the two truncations
+# that must collapse back onto the baseline). The count is asserted below: the
+# SDK is constructed with max_retries=0 precisely so this number is exact, and a
+# retry storm cannot pass as a clean run.
+n_requests=13
 
 $guard "$bin" serve "$model" --port "$port" --ctx 1024 --seqs 4 --threads 8 \
     --max-requests "$n_requests" -v > "$srvlog" 2>&1 &

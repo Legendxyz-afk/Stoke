@@ -782,14 +782,70 @@ static int read_message(const JsonDoc* d, const char* body, const JsonNode* n,
     return 0;
 }
 
+/* The sampling tail of a request, in the shape stoke.h wants it. A zeroed one
+ * is greedy, exactly as a zeroed stoke_request is -- so a request that mentions
+ * none of these needs no branch anywhere below.
+ *
+ * `have_seed` is separate because 0 is a perfectly good seed: "the client sent
+ * zero" and "the client sent nothing" have to be distinguishable, and a
+ * sentinel value inside a u64 would take a real seed away from the client to
+ * pay for it. */
+typedef struct {
+    float    temperature;
+    uint32_t top_k;
+    float    top_p;
+    float    repeat_penalty;
+    uint64_t seed;
+    int      have_seed;
+} ReqSampling;
+
 static void start_generation(Server* sv, Conn* c, uint32_t* ids, int32_t n_prompt,
-                             uint32_t max_tokens, int want_stream, int want_usage);
+                             uint32_t max_tokens, int want_stream, int want_usage,
+                             const ReqSampling* sp);
+
+/* Reads one numeric member. 1 = present, with *out set; 0 = absent or null;
+ * -1 = present but not a number, having already answered 400.
+ *
+ * ⚠ A STRING IS NOT A NUMBER HERE, deliberately -- json_number refuses
+ * `"temperature": "0.7"` and so does this. A client sending that has a bug, and
+ * reading it as 0.7 would put their bug in our output instead of their log. */
+static int number_member(Conn* c, const JsonDoc* d, const char* body,
+                         const JsonNode* root, const char* key, double* out) {
+    const JsonNode* n = json_member(d, body, root, key);
+    if (!n || n->type == JSON_NULL) return 0;
+    if (json_number(body, n, out) != 0) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "'%s' must be a number", key);
+        respond_error(c, 400, "invalid_request_error", msg);
+        return -1;
+    }
+    return 1;
+}
+
+/* ⚠ REFUSED RATHER THAN CLAMPED, EVERY TIME. Clamping top_p 1.5 to 1 answers a
+ * question the client did not ask and reports success while doing it; the
+ * client then tunes a parameter that is not reaching anything. A 400 naming the
+ * range is noticed in the first minute. */
+static void refuse_range(Conn* c, const char* key, double v, const char* range) {
+    /* Sized for the longest `range` below (the seed's, which has to explain
+     * 2^53) plus the template and a %g. -Wformat-truncation is an error in this
+     * build, so a message that outgrows this buffer fails the compile rather
+     * than reaching a client with its reason cut off -- which is the only
+     * reason a client reads one of these at all. */
+    char msg[384];
+    snprintf(msg, sizeof msg,
+             "'%s' must be %s -- %g is refused rather than clamped, because a "
+             "clamped parameter answers a question that was not asked",
+             key, range, v);
+    respond_error(c, 400, "invalid_request_error", msg);
+}
 
 /* Parses a request body and the fields BOTH endpoints share. Returns 0 with
  * `*root` set, or -1 having already answered with the right error. */
 static int parse_body(Server* sv, Conn* c, const HttpRequest* r, JsonDoc* d,
                       const char** out_body, const JsonNode** out_root,
-                      uint32_t* max_tokens, int* want_stream, int* want_usage) {
+                      uint32_t* max_tokens, int* want_stream, int* want_usage,
+                      ReqSampling* sp) {
     const char* body     = c->in + r->body_off;
     size_t      body_len = r->body_len;
     if (body_len == 0) {
@@ -834,51 +890,141 @@ static int parse_body(Server* sv, Conn* c, const HttpRequest* r, JsonDoc* d,
     }
     if (c->model[0] == '\0') snprintf(c->model, sizeof c->model, "stoke");
 
-    /* ▶▶▶ THE SAMPLING SURFACE, ACCEPTED AT ITS NO-OP VALUE AND REFUSED
-     * OTHERWISE. This build decodes greedily and has no sampler, and every
-     * parameter below has a value at which "no sampler" is the CORRECT answer:
-     * temperature 0 IS greedy, top_p 1 truncates nothing, top_k 0 is disabled,
-     * the penalties at their identity, n=1 is one choice. At those values there
-     * is nothing to implement and nothing to refuse -- which is why the M0
-     * harness's `"temperature": 0.0` on every request needs no special case and
-     * gets none.
+    /* ▶▶▶ THE SAMPLING SURFACE. Until A6 this was a table of no-op values and a
+     * 400 for everything else, because the build decoded greedily and had no
+     * sampler: answering top_p 0.9 with the greedy distribution returns
+     * plausible text that is not what was asked for, which is the kind of wrong
+     * nobody notices for weeks and the kind that makes a benchmark comparing
+     * two engines meaningless. The sampler exists now, so the five parameters
+     * it implements are PARSED, and only the ones it does not are refused.
      *
-     * ⚠ AT ANY OTHER VALUE THE REQUEST IS REFUSED RATHER THAN SILENTLY
-     * ANSWERED GREEDILY. A client asking for top_p 0.9 and quietly receiving
-     * the greedy distribution gets plausible text that is not what it asked
-     * for -- the kind of wrong nobody notices for weeks, and the kind that
-     * makes a benchmark comparing two engines meaningless. A 400 is noticed
-     * immediately. The whole table goes when the sampler lands.
+     * ▶ A ZEROED ReqSampling IS GREEDY, which is why nothing below has to
+     * special-case the M0 harness's `"temperature": 0.0` on every request --
+     * and why `stoke_request`'s tail could be added without breaking a caller.
+     * Absent means the disabled value, and each disabled value is chosen to
+     * make that true rather than to be the parameter's mathematical identity.
      *
-     * `seed` is deliberately NOT here: greedy decoding is already
-     * deterministic, so any seed produces the identical stream, which is
-     * exactly what a seed promises. Accepting it is honest. */
-    static const struct {
-        const char* key;
-        double      noop;
-    } k_sampling[] = {
-        {"temperature", 0.0},       {"top_p", 1.0},
-        {"top_k", 0.0},             {"frequency_penalty", 0.0},
-        {"presence_penalty", 0.0},  {"repeat_penalty", 1.0},
-        {"n", 1.0},
-    };
-    for (size_t i = 0; i < sizeof k_sampling / sizeof k_sampling[0]; i++) {
-        const JsonNode* pn = json_member(d, body, root, k_sampling[i].key);
-        if (!pn || pn->type == JSON_NULL) continue;
-        double v;
-        if (json_number(body, pn, &v) != 0) {
-            char msg[128];
-            snprintf(msg, sizeof msg, "'%s' must be a number", k_sampling[i].key);
-            respond_error(c, 400, "invalid_request_error", msg);
+     * ▶ RANGES ARE CHECKED HERE AND NOWHERE ELSE. The engine tolerates
+     * nonsense (a negative temperature is greedy, an enormous top_k is capped)
+     * because it must never abort a caller's process -- but tolerating a value
+     * and IMPLEMENTING it are different, and the difference is exactly what a
+     * client cannot see from the outside. */
+    memset(sp, 0, sizeof *sp);
+
+    double v;
+    int    got;
+
+    /* temperature. The upper bound is not fussiness: past ~100 the softmax is
+     * uniform over the candidate set, so every larger number means the same
+     * thing and a client that sent one has a bug worth naming. */
+    got = number_member(c, d, body, root, "temperature", &v);
+    if (got < 0) return -1;
+    if (got) {
+        if (!(v >= 0.0 && v <= 100.0)) {
+            refuse_range(c, "temperature", v, "between 0 and 100");
             return -1;
         }
-        if (v != k_sampling[i].noop) {
-            char msg[224];
+        sp->temperature = (float)v;
+    }
+
+    /* top_p. 1 truncates nothing and 0 means unset, which is the same answer
+     * for opposite reasons -- see sample.h, where reading 0 literally would
+     * hand every caller who set only a temperature silent greedy output. */
+    got = number_member(c, d, body, root, "top_p", &v);
+    if (got < 0) return -1;
+    if (got) {
+        if (!(v >= 0.0 && v <= 1.0)) {
+            refuse_range(c, "top_p", v, "between 0 and 1");
+            return -1;
+        }
+        sp->top_p = (float)v;
+    }
+
+    /* top_k. ⚠ THE UPPER BOUND IS THE SAMPLER'S OWN CANDIDATE CAP, AND IT IS
+     * REFUSED RATHER THAN APPLIED SILENTLY: sample.c considers at most 512
+     * candidates, so `top_k: 1000` would be answered as 512 and the client
+     * would never learn that the number they tuned stopped mattering. */
+    got = number_member(c, d, body, root, "top_k", &v);
+    if (got < 0) return -1;
+    if (got) {
+        if (!(v >= 0.0 && v <= 512.0) || v != (double)(uint32_t)v) {
+            refuse_range(c, "top_k", v,
+                         "a whole number between 0 and 512 (the sampler's "
+                         "candidate cap)");
+            return -1;
+        }
+        sp->top_k = (uint32_t)v;
+    }
+
+    /* repeat_penalty: llama.cpp's multiplicative penalty, and the only penalty
+     * this engine implements. 1 is the identity; 0 or less is not a weaker
+     * penalty but a sign flip on every logit it touches. */
+    got = number_member(c, d, body, root, "repeat_penalty", &v);
+    if (got < 0) return -1;
+    if (got) {
+        if (!(v > 0.0 && v <= 100.0)) {
+            refuse_range(c, "repeat_penalty", v, "greater than 0 and at most 100");
+            return -1;
+        }
+        sp->repeat_penalty = (float)v;
+    }
+
+    /* seed. ⚠ NEGATIVE IS REFUSED, AND THAT IS A DELIBERATE DIVERGENCE FROM
+     * llama.cpp, where -1 means "pick one for me". A seed exists so an answer
+     * can be reproduced; quietly turning a client's -1 into a number they never
+     * see would hand them an irreproducible answer under the name of the one
+     * parameter whose entire job is reproducibility. The upper bound is where
+     * a JSON number stops being an exact integer: past 2^53 the value the
+     * client wrote and the value we seed with are different numbers, and a seed
+     * that is off by one is a different stream. */
+    got = number_member(c, d, body, root, "seed", &v);
+    if (got < 0) return -1;
+    if (got) {
+        if (!(v >= 0.0 && v <= 9007199254740992.0) || v != (double)(uint64_t)v) {
+            refuse_range(c, "seed", v,
+                         "a whole number between 0 and 2^53 (a JSON number is "
+                         "not an exact integer above that, and a seed off by "
+                         "one is a different stream)");
+            return -1;
+        }
+        sp->seed      = (uint64_t)v;
+        sp->have_seed = 1;
+    }
+
+    /* ---- and what is still refused ------------------------------------- */
+
+    got = number_member(c, d, body, root, "n", &v);
+    if (got < 0) return -1;
+    if (got && v != 1.0) {
+        char msg[192];
+        snprintf(msg, sizeof msg,
+                 "'n' is implemented only at 1: this server returns one choice "
+                 "per request, and %g would report choices it never generated",
+                 v);
+        respond_error(c, 400, "invalid_request_error", msg);
+        return -1;
+    }
+
+    /* ⚠⚠ frequency_penalty AND presence_penalty ARE NOT repeat_penalty, and
+     * this is the sharpest edge on the surface. OpenAI's two are ADDITIVE -- a
+     * term subtracted from a logit, scaled (frequency) or not (presence) by how
+     * often the token has appeared -- while the one this engine implements is
+     * MULTIPLICATIVE. Accepting either and reaching for repeat_penalty would
+     * answer with a distribution nobody asked for, and it would read as the
+     * model being odd rather than as a bug. They are refused until they are
+     * implemented as what they are. */
+    static const char* k_additive[] = {"frequency_penalty", "presence_penalty"};
+    for (size_t i = 0; i < sizeof k_additive / sizeof k_additive[0]; i++) {
+        got = number_member(c, d, body, root, k_additive[i], &v);
+        if (got < 0) return -1;
+        if (got && v != 0.0) {
+            char msg[256];
             snprintf(msg, sizeof msg,
-                     "this build decodes greedily and has no sampler, so it "
-                     "implements '%s' only at %g -- %g is refused rather than "
-                     "silently answered greedily",
-                     k_sampling[i].key, k_sampling[i].noop, v);
+                     "'%s' is OpenAI's additive penalty and this build "
+                     "implements only the multiplicative 'repeat_penalty' -- "
+                     "%g is refused rather than answered with a penalty of a "
+                     "different kind",
+                     k_additive[i], v);
             respond_error(c, 400, "invalid_request_error", msg);
             return -1;
         }
@@ -956,10 +1102,11 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
     const JsonNode* root;
     uint32_t        max_tokens;
     int             want_stream, want_usage;
+    ReqSampling     sp;
 
     c->is_completion = 0;
     if (parse_body(sv, c, r, &d, &body, &root, &max_tokens, &want_stream,
-                   &want_usage) != 0) {
+                   &want_usage, &sp) != 0) {
         return;
     }
 
@@ -1021,7 +1168,8 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
     uint32_t* shrunk = (uint32_t*)realloc(ids, (size_t)n_prompt * sizeof(uint32_t));
     if (shrunk) ids = shrunk;
 
-    start_generation(sv, c, ids, n_prompt, max_tokens, want_stream, want_usage);
+    start_generation(sv, c, ids, n_prompt, max_tokens, want_stream, want_usage,
+                     &sp);
 }
 
 /* The half of a request that is identical whichever endpoint asked: bounds
@@ -1029,7 +1177,8 @@ static void handle_chat(Server* sv, Conn* c, const HttpRequest* r) {
  * TAKES OWNERSHIP of `ids` -- on every path here it is either handed to the
  * connection or freed. */
 static void start_generation(Server* sv, Conn* c, uint32_t* ids, int32_t n_prompt,
-                             uint32_t max_tokens, int want_stream, int want_usage) {
+                             uint32_t max_tokens, int want_stream, int want_usage,
+                             const ReqSampling* sp) {
     if ((uint32_t)n_prompt + max_tokens > sv->max_ctx) {
         free(ids);
         char msg[192];
@@ -1067,6 +1216,21 @@ static void start_generation(Server* sv, Conn* c, uint32_t* ids, int32_t n_promp
     req.n_prompt   = c->n_prompt;
     req.max_tokens = max_tokens;
     req.eos_id     = (int64_t)sv->eos_id;
+
+    req.temperature    = sp->temperature;
+    req.top_k          = sp->top_k;
+    req.top_p          = sp->top_p;
+    req.repeat_penalty = sp->repeat_penalty;
+    /* ▶ AN UNSEEDED SAMPLED REQUEST SEEDS FROM ITS OWN REQUEST ID, and the two
+     * alternatives are both worse. A fixed default (the engine's own, 0) would
+     * make two identical requests return identical text forever, so a client
+     * asking twice for a sample would get one sample twice -- temperature would
+     * look broken. A clock would make the answer irreproducible, which is the
+     * one thing a seeded sampler exists to avoid. The request id varies within
+     * a session and repeats across a fresh one, so sampling varies for a client
+     * that asks twice and a whole session still replays -- and the client
+     * already HOLDS the number: it is the N in `chatcmpl-N`. */
+    req.seed = sp->have_seed ? sp->seed : c->req_id;
 
     if (stoke_submit(sv->e, &req) != STOKE_OK) {
         char msg[256];
@@ -1111,10 +1275,11 @@ static void handle_completions(Server* sv, Conn* c, const HttpRequest* r) {
     const JsonNode* root;
     uint32_t        max_tokens;
     int             want_stream, want_usage;
+    ReqSampling     sp;
 
     c->is_completion = 1;
     if (parse_body(sv, c, r, &d, &body, &root, &max_tokens, &want_stream,
-                   &want_usage) != 0) {
+                   &want_usage, &sp) != 0) {
         return;
     }
 
@@ -1171,7 +1336,8 @@ static void handle_completions(Server* sv, Conn* c, const HttpRequest* r) {
         return;
     }
 
-    start_generation(sv, c, ids, n_prompt, max_tokens, want_stream, want_usage);
+    start_generation(sv, c, ids, n_prompt, max_tokens, want_stream, want_usage,
+                     &sp);
 }
 
 /* ---- /v1/models ---------------------------------------------------------

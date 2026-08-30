@@ -198,23 +198,23 @@ Connection: keep-alive
 
 {"id":"chatcmpl-8","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
 
-### POST /v1/chat/completions (temperature 0.7 -> 400)
-[curl exit 0]
-HTTP/1.1 400 Bad Request
-Content-Type: application/json
-Content-Length: 226
-Connection: close
-
-{"error":{"message":"this build decodes greedily and has no sampler, so it implements 'temperature' only at 0 -- 0.7 is refused rather than silently answered greedily","type":"invalid_request_error","param":null,"code":null}}
-
-### POST /v1/chat/completions (stop, within one token)
+### POST /v1/chat/completions (temperature 0.7 + top_k 1 -> 200)
 [curl exit 0]
 HTTP/1.1 200 OK
 Content-Type: application/json
 Content-Length: 265
 Connection: keep-alive
 
-{"id":"chatcmpl-9","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":14,"completion_tokens":2,"total_tokens":16}}
+{"id":"chatcmpl-9","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
+
+### POST /v1/chat/completions (stop, within one token)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 266
+Connection: keep-alive
+
+{"id":"chatcmpl-10","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":14,"completion_tokens":2,"total_tokens":16}}
 
 ### POST /v1/chat/completions (stop ACROSS a token boundary, streamed)
 [curl exit 0]
@@ -225,17 +225,17 @@ X-Accel-Buffering: no
 Transfer-Encoding: chunked
 Connection: keep-alive
 
-data: {"id":"chatcmpl-10","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"role":"assistant","content":"He"},"logprobs":null,"finish_reason":null}]}
+data: {"id":"chatcmpl-11","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"role":"assistant","content":"He"},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-10","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"l"},"logprobs":null,"finish_reason":null}]}
+data: {"id":"chatcmpl-11","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"l"},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-10","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"lo! "},"logprobs":null,"finish_reason":null}]}
+data: {"id":"chatcmpl-11","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"lo! "},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-10","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"How "},"logprobs":null,"finish_reason":null}]}
+data: {"id":"chatcmpl-11","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"How "},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-10","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"c"},"logprobs":null,"finish_reason":null}]}
+data: {"id":"chatcmpl-11","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{"content":"c"},"logprobs":null,"finish_reason":null}]}
 
-data: {"id":"chatcmpl-10","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-11","object":"chat.completion.chunk","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
 
 data: [DONE]
 
@@ -247,16 +247,70 @@ Content-Type: application/json
 Content-Length: 266
 Connection: keep-alive
 
-{"id":"chatcmpl-11","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
+{"id":"chatcmpl-12","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
 
-### POST /v1/chat/completions (top_p 0.9 -> 400)
+### POST /v1/chat/completions (top_p 0.9, no temperature -> 200 greedy)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 266
+Connection: keep-alive
+
+{"id":"chatcmpl-13","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"Blue."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
+
+### POST /v1/chat/completions (n 2 -> 400)
 [curl exit 0]
 HTTP/1.1 400 Bad Request
 Content-Type: application/json
-Content-Length: 220
+Content-Length: 200
 Connection: close
 
-{"error":{"message":"this build decodes greedily and has no sampler, so it implements 'top_p' only at 1 -- 0.9 is refused rather than silently answered greedily","type":"invalid_request_error","param":null,"code":null}}
+{"error":{"message":"'n' is implemented only at 1: this server returns one choice per request, and 2 would report choices it never generated","type":"invalid_request_error","param":null,"code":null}}
+
+### POST /v1/chat/completions (frequency_penalty 0.5 -> 400)
+[curl exit 0]
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 270
+Connection: close
+
+{"error":{"message":"'frequency_penalty' is OpenAI's additive penalty and this build implements only the multiplicative 'repeat_penalty' -- 0.5 is refused rather than answered with a penalty of a different kind","type":"invalid_request_error","param":null,"code":null}}
+
+### POST /v1/chat/completions (presence_penalty 0.5 -> 400)
+[curl exit 0]
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 269
+Connection: close
+
+{"error":{"message":"'presence_penalty' is OpenAI's additive penalty and this build implements only the multiplicative 'repeat_penalty' -- 0.5 is refused rather than answered with a penalty of a different kind","type":"invalid_request_error","param":null,"code":null}}
+
+### POST /v1/chat/completions (top_p 1.5 -> 400)
+[curl exit 0]
+HTTP/1.1 400 Bad Request
+Content-Type: application/json
+Content-Length: 217
+Connection: close
+
+{"error":{"message":"'top_p' must be between 0 and 1 -- 1.5 is refused rather than clamped, because a clamped parameter answers a question that was not asked","type":"invalid_request_error","param":null,"code":null}}
+
+### POST /v1/chat/completions (repeat_penalty baseline, greedy)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 281
+Connection: keep-alive
+
+{"id":"chatcmpl-14","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"banana banana banana"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":4,"total_tokens":19}}
+
+### POST /v1/chat/completions (repeat_penalty 1.8)
+[curl exit 0]
+HTTP/1.1 200 OK
+Content-Type: application/json
+Content-Length: 282
+Connection: keep-alive
+
+{"id":"chatcmpl-15","object":"chat.completion","created":<EPOCH>,"model":"stoke","choices":[{"index":0,"message":{"role":"assistant","content":"banana banana bananas"},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":4,"total_tokens":19}}
 
 ### server log
 stoke serve: listening on 127.0.0.1:<PORT>  ctx=1024
@@ -283,12 +337,22 @@ stoke serve: stream id=7 prompt=5 gen=8 finish=length
 stoke serve: POST /v1/chat/completions
 stoke serve: chat id=8 prompt=12 gen=3 finish=stop
 stoke serve: POST /v1/chat/completions
+stoke serve: chat id=9 prompt=12 gen=3 finish=stop
 stoke serve: POST /v1/chat/completions
-stoke serve: chat id=9 prompt=14 gen=2 finish=stop
+stoke serve: chat id=10 prompt=14 gen=2 finish=stop
 stoke serve: POST /v1/chat/completions
-stoke serve: stream id=10 prompt=14 gen=5 finish=stop
+stoke serve: stream id=11 prompt=14 gen=5 finish=stop
 stoke serve: POST /v1/chat/completions
-stoke serve: chat id=11 prompt=12 gen=3 finish=stop
+stoke serve: chat id=12 prompt=12 gen=3 finish=stop
 stoke serve: POST /v1/chat/completions
-stoke serve: 19 requests completed, exiting
+stoke serve: chat id=13 prompt=12 gen=3 finish=stop
+stoke serve: POST /v1/chat/completions
+stoke serve: POST /v1/chat/completions
+stoke serve: POST /v1/chat/completions
+stoke serve: POST /v1/chat/completions
+stoke serve: POST /v1/chat/completions
+stoke serve: chat id=14 prompt=15 gen=4 finish=stop
+stoke serve: POST /v1/chat/completions
+stoke serve: chat id=15 prompt=15 gen=4 finish=stop
+stoke serve: 25 requests completed, exiting
 [server exit 0]
