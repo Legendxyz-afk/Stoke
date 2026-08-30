@@ -87,6 +87,24 @@ fi
 "$py" "$suite" "http://127.0.0.1:$port/v1"
 suite_rc=$?
 
+# ⚠ A FAILED SUITE STOPS THE SERVER RATHER THAN BEING WAITED OUT. The suite
+# aborts at its first failure, so the server is left expecting requests that
+# will never arrive and would sit there until the guard shot it -- ten minutes
+# to report a failure that was known in the first thirty seconds. Neither the
+# exit code nor the completed-request count means anything once the suite
+# stopped early, so neither is read: the suite's own message is the finding, and
+# one cause per red is the entire point of naming them. A6's mutation leg runs
+# this gate against five deliberately broken servers and each one takes this
+# path, which is what made the cost visible.
+if [ "$suite_rc" -ne 0 ]; then
+    kill "$srv_pid" 2> /dev/null
+    wait "$srv_pid" 2> /dev/null
+    echo "serve_openai: FAILED -- the suite reported the failure above; the" \
+         "server was stopped rather than waited out, so its exit code and" \
+         "request count are not read here" >&2
+    exit 1
+fi
+
 wait "$srv_pid"
 srv_rc=$?
 

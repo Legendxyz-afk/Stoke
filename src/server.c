@@ -1232,6 +1232,26 @@ static void start_generation(Server* sv, Conn* c, uint32_t* ids, int32_t n_promp
      * already HOLDS the number: it is the N in `chatcmpl-N`. */
     req.seed = sp->have_seed ? sp->seed : c->req_id;
 
+    /* The mutation leg's hooks. Each one leaves the parse, the validation and
+     * the 200 exactly as they are and delivers a greedy default instead --
+     * see tests/tooling/run_m6_server_sampling_mutants.sh for which assertion
+     * is supposed to notice which of them. */
+#ifdef STOKE_MUT_SRV_DROP_TEMPERATURE
+    req.temperature = 0.0f;
+#endif
+#ifdef STOKE_MUT_SRV_DROP_TOPK
+    req.top_k = 0u;
+#endif
+#ifdef STOKE_MUT_SRV_DROP_TOPP
+    req.top_p = 0.0f;
+#endif
+#ifdef STOKE_MUT_SRV_DROP_PENALTY
+    req.repeat_penalty = 1.0f;
+#endif
+#ifdef STOKE_MUT_SRV_DROP_SEED
+    req.seed = c->req_id;
+#endif
+
     if (stoke_submit(sv->e, &req) != STOKE_OK) {
         char msg[256];
         snprintf(msg, sizeof msg, "%s", stoke_last_error());
@@ -1773,6 +1793,35 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
     fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_ROLE_EVERY_CHUNK "
                     "(role on every delta). NEVER use this binary for anything "
                     "but the mutation leg.\n");
+#endif
+    /* ▶ A6's five: each parses a sampling parameter, validates it, reports 200,
+     * and then drops it on the floor on the way into the request -- the exact
+     * defect the surface exists to prevent, and the one that cannot be seen by
+     * reading a response, because what comes back is fluent either way. */
+#ifdef STOKE_MUT_SRV_DROP_TEMPERATURE
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_SRV_DROP_TEMPERATURE "
+                    "(temperature accepted and not delivered). NEVER use this "
+                    "binary for anything but the mutation leg.\n");
+#endif
+#ifdef STOKE_MUT_SRV_DROP_TOPK
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_SRV_DROP_TOPK "
+                    "(top_k accepted and not delivered). NEVER use this binary "
+                    "for anything but the mutation leg.\n");
+#endif
+#ifdef STOKE_MUT_SRV_DROP_TOPP
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_SRV_DROP_TOPP "
+                    "(top_p accepted and not delivered). NEVER use this binary "
+                    "for anything but the mutation leg.\n");
+#endif
+#ifdef STOKE_MUT_SRV_DROP_PENALTY
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_SRV_DROP_PENALTY "
+                    "(repeat_penalty accepted and not delivered). NEVER use this "
+                    "binary for anything but the mutation leg.\n");
+#endif
+#ifdef STOKE_MUT_SRV_DROP_SEED
+    fprintf(stderr, "stoke serve: MUTANT BUILD -- STOKE_MUT_SRV_DROP_SEED "
+                    "(a client's seed ignored in favour of the request id). "
+                    "NEVER use this binary for anything but the mutation leg.\n");
 #endif
 
     /* Printed BEFORE the loop and flushed, so a script can wait on this line;
