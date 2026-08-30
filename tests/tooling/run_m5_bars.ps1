@@ -162,10 +162,47 @@ function RunCapture($e, $argList, $errPath, $outPath) {
     try { $p.Refresh(); $cpu = $p.TotalProcessorTime.TotalSeconds } catch {}
     $script:LastCpuS = [math]::Round($cpu, 1)
 }
+# >> TWO RAW SAMPLES AND THE DELTA COMPUTED HERE, because the obvious spelling
+# READS NOISE. This was `Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor`
+# until 2026-08-30. A FORMATTED WMI counter is a rate that WMI derives from a
+# two-sample window it manages internally, and a one-shot query gives you
+# whatever its last internal refresh happened to produce -- so on an IDLE box it
+# returned 7, 8, 10, 14, 16, 19, 25, 27, 38.
+#
+# Measured side by side in the same seconds, with the raw two-sample delta
+# below: raw said 2.4 2.5 2.7 2.9 2.9 4.0 4.4 7.3 while the formatted counter
+# said 8 10 12 14 14 16 19 27. Per-process CPU accounting over the same window
+# attributed 1.96%, and `100 - % Idle Time` said 2.6-3.9. Two independent
+# instruments and the process ledger agree at ~3%; the formatted one was 5x
+# high and jittered by a factor of five on a quiet machine.
+#
+# ⚠⚠ THIS GATE HAS THEREFORE BEEN WRONG IN BOTH DIRECTIONS. It REJECTED quiet
+# boxes -- the 2026-08-29 bars attempt voided itself over a "median 18%" that
+# was this artifact -- and, far worse, it could PASS a loaded one whenever two
+# consecutive artifact reads happened to land low. A `quiesced: true` banked
+# before this date is weaker evidence than it looks.
+#
+# The raw class exposes idle 100ns ticks and the counter timestamp; busy is
+# 1 - dIdle/dTime, which is the textbook computation and needs no refresher.
+# Property names on the RAW class are stable and locale-independent, unlike the
+# PDH counter PATHS (`\Processor(_Total)\% Processor Time` threw 800007d6 on
+# this box while `% Idle Time` resolved -- another reason not to depend on them).
 function CpuBusy() {
-    $c = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor |
-         Where-Object { $_.Name -eq "_Total" }
-    return [int]$c.PercentProcessorTime
+    $a = Get-CimInstance Win32_PerfRawData_PerfOS_Processor -Filter "Name='_Total'"
+    Start-Sleep -Milliseconds 800
+    $b = Get-CimInstance Win32_PerfRawData_PerfOS_Processor -Filter "Name='_Total'"
+    $dIdle = [double]$b.PercentIdleTime - [double]$a.PercentIdleTime
+    $dTime = [double]$b.Timestamp_Sys100NS - [double]$a.Timestamp_Sys100NS
+    # ⚠ AN UNUSABLE SAMPLE RETURNS A NUMBER THAT FAILS THE GATE, never 0. A
+    # failed measurement that reads as "perfectly quiet" is the one error this
+    # function must not make: it would bank absolutes under a passing banner.
+    if ($dTime -le 0) {
+        Say "  !! CpuBusy: unusable counter delta -- treating as NOT quiet"
+        return 999
+    }
+    $busy = 100.0 * (1.0 - ($dIdle / $dTime))
+    if ($busy -lt 0) { $busy = 0 }
+    return [int][math]::Round($busy)
 }
 function StandbyGB() {
     $s = 0.0
