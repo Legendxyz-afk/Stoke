@@ -188,7 +188,11 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
  *
  * n_seq is tiled by the caller at KERNELS_BATCH_TILE so the per-sequence
  * accumulators stay a small stack array. */
+/* Overridable at build time so the tile can be A/B'd against the shipping one
+ * without editing a header -- see the M7 prefill investigation. */
+#ifndef KERNELS_BATCH_TILE
 #define KERNELS_BATCH_TILE 16u
+#endif
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                                u32 n_seq, u64 n, f32* out);
 void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
