@@ -785,6 +785,19 @@ u32 sched_progress(const Sched* s, u64 id) {
     return r ? r->n_done : 0u;
 }
 
+bool sched_known(const Sched* s, u64 id) {
+    /* Any state at all, retired included -- see sched.h for why that differs
+     * from sched_is_live by exactly one word. */
+    if (find((Sched*)s, id)) return true;
+    bool queued = false;
+    pthread_mutex_lock(&((Sched*)s)->mu);
+    for (Req* q = s->submitted; q; q = q->all_next) {
+        if (q->spec.id == id) { queued = true; break; }
+    }
+    pthread_mutex_unlock(&((Sched*)s)->mu);
+    return queued;
+}
+
 bool sched_is_live(const Sched* s, u64 id) {
     Req* r = find((Sched*)s, id);
     if (r) return r->state != SCHED_FINISHED;

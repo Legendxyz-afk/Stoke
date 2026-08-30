@@ -1,9 +1,24 @@
 /* stoke.h -- the public C ABI. THIS HEADER IS THE API DOCUMENTATION.
  *
- * ⚠ v0 IS NOT FROZEN. M6 freezes it at rung A7, after `server.c` has been built
- * on it and has had the chance to prove it wrong. Until that tag, any symbol
- * here may change. After it, the rules in the M6 forward note apply: error
- * codes are never renumbered, fields are only appended, and nothing is removed.
+ * ▶▶▶ v0 IS FROZEN as of M6 rung A7, tag `m6` (2026-08-30). From here on:
+ * **error codes are never renumbered, struct fields are only APPENDED, and
+ * nothing is ever removed.** A change a caller compiled against this header
+ * could notice bumps STOKE_ABI_VERSION; `stoke_open` passes the caller's
+ * version so a mismatch is caught AT OPEN rather than as a struct read at the
+ * wrong offset later.
+ *
+ * It is frozen at 0 rather than renumbered to 1 because 0 is the version this
+ * header has always declared and the one every existing caller passes; a bump
+ * that changes nothing would cost every one of them a rebuild to say so.
+ *
+ * ▶▶ WHAT THE FREEZE COST, because a freeze that changed nothing was not a
+ * review. `server.c` was built ON this header first, exactly so it could prove
+ * it wrong, and it did: `stoke_apply_chat_template` exists because the server
+ * needed it and the ABI could not otherwise express the one request shape this
+ * engine exists to serve. The review itself then found that `stoke_poll`
+ * answered an id it had never seen with 0/NONE -- indistinguishable from a live
+ * request that has not produced yet -- so a caller who ignored a failed
+ * `stoke_submit` waited forever. That is now STOKE_ERR_UNKNOWN_ID; see poll.
  *
  * ▶▶ WHAT THIS IS. stoke runs one model and schedules many concurrent requests
  * against a shared paged KV pool. The engine does not own a thread: YOU call
@@ -111,7 +126,10 @@ enum {
     STOKE_ERR_INVALID_ARG   = -1, /* NULL, zero cap, malformed request       */
     STOKE_ERR_ABI_MISMATCH  = -2, /* caller's STOKE_ABI_VERSION != library's */
     STOKE_ERR_OPEN_FAILED   = -3, /* trapped load-time failure; see last_error */
-    STOKE_ERR_UNKNOWN_ID    = -4, /* no live request with that id            */
+    STOKE_ERR_UNKNOWN_ID    = -4, /* stoke_cancel: no LIVE request with that
+                                     id. stoke_poll: no request at all, live
+                                     or finished -- a finished one is still
+                                     pollable, so the two differ           */
     STOKE_ERR_DUPLICATE_ID  = -5, /* an id already live was submitted again  */
     STOKE_ERR_TOO_LONG      = -6, /* prompt + max_tokens exceeds max_ctx     */
     STOKE_ERR_NO_TEMPLATE   = -7  /* this model's vocab has no chat template  */
@@ -165,7 +183,16 @@ const char* stoke_last_error(void);
 
 /* ---- model facts ------------------------------------------------------- */
 
-uint32_t stoke_n_vocab(const stoke_engine* e);  /* 0 if `e` is NULL */
+/* All three return 0 if `e` is NULL, which is a caller bug rather than a state
+ * an open engine can be in.
+ *
+ * ⚠ AN OPEN ENGINE ALWAYS HAS AN EOS, so `stoke_eos_id` needs no "absent"
+ * value: a GGUF whose `tokenizer.ggml.eos_token_id` is missing or out of vocab
+ * range is refused at load, so there is no model this can be asked about that
+ * lacks one. That is also why the return is uint32_t while `stoke_request`'s
+ * `eos_id` is int64_t -- the REQUEST may switch EOS off with -1, which is a
+ * choice the caller makes, not a property of the model. */
+uint32_t stoke_n_vocab(const stoke_engine* e);
 uint32_t stoke_max_ctx(const stoke_engine* e);  /* the ctx this engine opened with */
 uint32_t stoke_eos_id(const stoke_engine* e);
 
@@ -253,7 +280,15 @@ stoke_status stoke_step(stoke_engine* e, uint32_t* out_rows);
  * is a guarantee, not an implementation detail.
  *
  * A non-NONE finish is also when the `prompt_ids` buffer you lent us at submit
- * becomes yours to free. */
+ * becomes yours to free.
+ *
+ * ⚠ AN ID THIS ENGINE HAS NEVER SEEN RETURNS STOKE_ERR_UNKNOWN_ID, not 0. The
+ * distinction matters because the loop above is "poll until finish != NONE": a
+ * caller who ignored a failed `stoke_submit`, or mistyped an id, would otherwise
+ * wait forever on 0/NONE, which is exactly what a live request that has not
+ * produced yet looks like. A FINISHED request is NOT unknown -- it stays
+ * pollable and keeps reporting its finish reason -- and neither is one
+ * submitted but not yet stepped, which correctly reports 0/NONE. */
 int32_t stoke_poll(stoke_engine* e, uint64_t id, uint32_t* out, int32_t cap,
                    int32_t* finish);
 

@@ -299,6 +299,61 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    /* ---- 9. AND POLL SAYS SO TOO, which it did not until the A7 freeze
+     * review. `stoke_poll` returned 0 with finish NONE for an id the scheduler
+     * had never seen -- byte for byte what a LIVE request that has not produced
+     * yet looks like. The documented loop is "poll until finish != NONE", so a
+     * caller who ignored a failed stoke_submit (DUPLICATE_ID, TOO_LONG, a typo
+     * in an id) waited forever on a request that did not exist. Cancel reported
+     * it; poll did not; the asymmetry was invisible from the header.
+     *
+     * ⚠ THE SECOND HALF IS THE CONTROL AND IT IS NOT OPTIONAL. "Return
+     * UNKNOWN_ID whenever nothing was drained" would pass the first check and
+     * break every legitimate caller, because a request that is SUBMITTED but
+     * not yet admitted has produced nothing either -- it lives on the submit
+     * queue, which find() deliberately does not walk. So the pair is: an id
+     * never seen is an ERROR, and an id seen but silent is 0/NONE. ---- */
+    uint32_t pbuf[4];
+    int32_t  pfin = -123;
+    int32_t  prc  = stoke_poll(e, 888888u, pbuf, 4, &pfin);
+    if (prc != STOKE_ERR_UNKNOWN_ID) {
+        fprintf(stderr, "abi_smoke: FAIL poll of an id never submitted returned "
+                        "%d, not STOKE_ERR_UNKNOWN_ID (%d) -- a caller that "
+                        "ignored a failed submit would wait forever\n",
+                (int)prc, (int)STOKE_ERR_UNKNOWN_ID);
+        stoke_close(e);
+        return 1;
+    }
+
+    stoke_request qreq;
+    memset(&qreq, 0, sizeof qreq);
+    qreq.size       = sizeof qreq;
+    qreq.id         = 777u;
+    qreq.prompt_ids = ids;
+    qreq.n_prompt   = (uint32_t)n;
+    qreq.max_tokens = 4;
+    qreq.eos_id     = (int64_t)stoke_eos_id(e);
+    if (stoke_submit(e, &qreq) != STOKE_OK) {
+        stoke_close(e);
+        return fail("stoke_submit(quiet)");
+    }
+    /* Polled with NO step in between: admitted nowhere, generated nothing. */
+    pfin = -123;
+    prc  = stoke_poll(e, 777u, pbuf, 4, &pfin);
+    if (prc != 0 || pfin != STOKE_FINISH_NONE) {
+        fprintf(stderr, "abi_smoke: FAIL poll of a submitted-but-unstepped id "
+                        "returned %d finish %d, expected 0 / NONE -- reporting "
+                        "UNKNOWN_ID here would break every correct caller\n",
+                (int)prc, (int)pfin);
+        stoke_close(e);
+        return 1;
+    }
+    if (stoke_cancel(e, 777u) != STOKE_OK) {
+        stoke_close(e);
+        return fail("stoke_cancel(quiet)");
+    }
+    printf("abi_smoke: poll  unknown id -> UNKNOWN_ID, submitted-but-silent id -> 0/NONE\n");
+
     stoke_close(e);
     stoke_close(NULL); /* documented as safe */
     printf("abi_smoke: OK\n");

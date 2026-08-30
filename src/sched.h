@@ -145,7 +145,28 @@ void   sched_close(Sched* s);
  * Thread-safe: the submit queue is the ONE place a foreign thread touches the
  * scheduler, and it is a plain mutex because arrivals are rare relative to
  * steps. The forward note's instruction not to get clever here is deliberate,
- * and TSan coming up clean is the reason. */
+ * and TSan coming up clean is the reason.
+ *
+ * ⚠⚠ THAT SENTENCE IS NO LONGER TRUE, AND IT IS OPEN WORK RATHER THAN A
+ * DISCLAIMER (found by the A7 freeze review, 2026-08-30; owner M7).
+ * `stoke.h` promises stoke_poll and stoke_cancel are SAFE FROM ANY THREAD, and
+ * they reach sched_poll / sched_cancel / sched_known -- every one of which
+ * calls find(), which walks `s->all` with NO LOCK. The step thread PREPENDS to
+ * that same list in drain_submits, also with no lock, and sched_submit walks it
+ * from the foreign thread for its own duplicate check. A foreign thread now
+ * touches far more than the submit queue.
+ *
+ * On x86 this is benign in practice -- aligned pointer stores, and the prepend
+ * publishes a node whose link was written first -- which is why nothing has
+ * been seen. It is still a data race by the C11 model and would be a live one
+ * on weakly-ordered hardware. ⚠ TSan reporting clean does NOT cover it: no test
+ * here drives submit, step and poll from different threads at once, so that
+ * result is scoped to what the suite actually runs concurrently.
+ *
+ * The ABI's promise is the RIGHT contract -- a library whose poll may only be
+ * called from the stepping thread is much less useful -- so the implementation
+ * is what has to catch up: lock the all-list (find(), drain_submits, and the
+ * duplicate check), rather than narrow stoke.h. */
 bool sched_submit(Sched* s, const SchedRequest* req);
 
 /* Marks a request cancelled. Takes effect at the next step boundary, in ANY
@@ -273,6 +294,19 @@ u32 sched_progress(const Sched* s, u64 id);
  * request cancelled before it was ever admitted never becomes a Req, and a
  * predicate blind to that would leak the caller's state for it forever. */
 bool sched_is_live(const Sched* s, u64 id);
+
+/* Whether this scheduler has ANY state for `id` -- queued, running, waiting, or
+ * RETIRED. One word different from sched_is_live and the difference is the
+ * whole reason both exist: a finished request is not live, but it is still
+ * POLLABLE (retire deliberately keeps the Req so a late poll reads its finish
+ * reason and drains its ring). So "may I reclaim my state?" is is_live, and
+ * "does this id mean anything at all?" is this.
+ *
+ * ⚠ It must cover the SUBMIT QUEUE, which find() does not walk: a request
+ * between stoke_submit and the next step has produced nothing, and answering
+ * "unknown" for it would make stoke_poll refuse every correct caller who polled
+ * before stepping. */
+bool sched_known(const Sched* s, u64 id);
 
 /* ---- the constants the design LOCKS ------------------------------------
  * Named here rather than hidden in sched.c because the sim sweeps them and the

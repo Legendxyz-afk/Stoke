@@ -534,6 +534,21 @@ int32_t stoke_poll(stoke_engine* e, uint64_t id, uint32_t* out, int32_t cap,
     SchedFinish f = SCHED_FINISH_NONE;
     u32 n = sched_poll(e->sched, id, out, (u32)cap, &f);
     if (finish) *finish = (int32_t)f;
+    /* ⚠ AN ID THIS SCHEDULER HAS NEVER SEEN IS AN ERROR, NOT SILENCE. Until the
+     * A7 freeze review this returned 0/NONE for it -- byte for byte what a live
+     * request that has not produced yet looks like -- so the documented loop
+     * ("poll until finish != NONE") never ended for a caller who ignored a
+     * failed stoke_submit or mistyped an id. stoke_cancel had always reported
+     * it; poll had not.
+     *
+     * Asked ONLY when nothing was drained and nothing finished, so the hot path
+     * pays nothing, and asked of sched_known rather than sched_is_live: a
+     * RETIRED request is still pollable and must keep reporting its finish
+     * reason, and a request between submit and the next step must keep
+     * reporting 0/NONE. */
+    if (n == 0 && f == SCHED_FINISH_NONE && !sched_known(e->sched, id)) {
+        return fail(STOKE_ERR_UNKNOWN_ID, "stoke_poll: no request with that id");
+    }
     return (int32_t)n;
 }
 
