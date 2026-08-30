@@ -88,6 +88,12 @@ typedef struct {
      * with a 400, which this driver counts as a perfectly good outcome. The
      * summary prints these so the coverage claim is checkable from the run's
      * own output, on the leg where it actually ran. */
+    /* ⚠ THESE COUNT WHAT WAS DRAWN, NOT WHAT THE SERVER ACCEPTED, and the
+     * difference is not academic: under -DSTOKE_MUT_FUZZ_BAD_BODY every body is
+     * invalid JSON and this still reported "36 requests asked for a sampler".
+     * It is an honest record of the traffic this driver INTENDED; whether any of
+     * it reached a sampler is the server log's answer, which is why
+     * tests/serve_asan.sh reads that and not this. */
     long     sampled;   /* generating requests that asked for a sampler       */
     long     penalized; /* ...and the subset that asked for a repeat penalty  */
 } Client;
@@ -200,6 +206,15 @@ static void build_chat(Client* c, char* out, size_t cap, int completions) {
         snprintf(samp, sizeof samp, ",\"temperature\":0,\"repeat_penalty\":%s", pen_s);
         break;
     }
+#ifdef STOKE_MUT_FUZZ_BAD_BODY
+    /* MUTANT: the leading comma goes missing, so every generating body is
+     * invalid JSON and the server answers 400 to all of it. This is the exact
+     * shape tests/serve_asan.sh's generation check exists for -- the driver
+     * still counts "answered exchanges" (a 400 IS one), the sanitizer log is
+     * still clean, and without that check ten minutes of memory-safety evidence
+     * would cover the parser and nothing behind it. */
+    snprintf(samp, sizeof samp, "\"temperature\":0");
+#endif
 
     /* ⚠ DRAWN BEFORE THE snprintf, NOT INSIDE ITS ARGUMENT LIST. C leaves the
      * evaluation ORDER of function arguments unspecified, and every pick()
@@ -406,6 +421,11 @@ int main(int argc, char** argv) {
            " read %.0fms, max_tok<=%u\n",
            g_host, (unsigned)g_port, secs, clients, g_n_corpus,
            (unsigned long long)g_seed, g_read_ms, g_max_tok);
+#ifdef STOKE_MUT_FUZZ_BAD_BODY
+    printf("serve_fuzz: MUTANT BUILD -- STOKE_MUT_FUZZ_BAD_BODY (every "
+           "generating body is invalid JSON). NEVER use this binary for "
+           "anything but proving the gate's generation check can fail.\n");
+#endif
     fflush(stdout);
 
     g_deadline_ms = now_ms() + secs * 1000.0;

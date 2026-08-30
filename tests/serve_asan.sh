@@ -130,6 +130,17 @@ fi
 # there turns ten minutes of memory-safety evidence into ten minutes of testing
 # the error path. This asserts the server's own record of work it can only have
 # done by generating.
+#
+# ▶ PROVED, NOT ASSUMED, AND THE THRESHOLD IS THE MEASURED PART. Built with
+# -DSTOKE_MUT_FUZZ_BAD_BODY, serve_fuzz drops exactly that comma. The mutant run
+# (90 s, plain build) produced MORE traffic than the clean one -- 151 actions and
+# 104 answered exchanges against 88 and 65, because refusals are cheap -- and
+# serve_fuzz reported OK, since nothing was refused and plenty was answered.
+# ⚠ It logged TWO completed generations, not zero: a handful of bodies survive
+# the corruption by accident. So a `> 0` threshold would have passed this
+# mutant, and only a floor well above the accidental survivors catches it. Ten
+# is that floor; the clean arm cleared it at 90 s on the plain build and a real
+# 600 s ASan soak is an order of magnitude past it.
 n_gen=$(grep -cE "stoke serve: (chat|stream) id=" "$srvlog")
 if [ "${n_gen:-0}" -lt 10 ]; then
     echo "serve_asan: FAILED -- the server logged only ${n_gen:-0} completed" \
