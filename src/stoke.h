@@ -244,21 +244,19 @@ typedef struct {
  * Thread safety: safe from ANY thread, including while another thread is inside
  * stoke_step.
  *
- * ⚠ ONE CONSEQUENCE OF THAT, STATED RATHER THAN LEFT TO BE DISCOVERED: the
- * SAMPLING FIELDS ABOVE TAKE EFFECT FROM THE NEXT STEP THAT STARTS. A step
- * installs the sampling state for newly queued requests before it admits
- * anything, so a submit that lands in the middle of a step -- after that
- * install and before the admission -- can have the request admitted, prefilled
- * and its FIRST token chosen by the same step, greedily, with the rest of the
- * generation sampled as asked. One token, in a stream that stays fluent.
+ * ▶ THE SAMPLING FIELDS ABOVE TAKE EFFECT IMMEDIATELY, INCLUDING FOR THE FIRST
+ * TOKEN, whichever thread you submit from and whatever a concurrent
+ * `stoke_step` is part-way through.
  *
- * This is an ordering, not a race, and no lock removes it: the sampling state
- * is deliberately queued only AFTER the scheduler has accepted the request, so
- * that a rejected submit leaves nothing behind for a later request reusing the
- * id. Submitting from the same thread that calls stoke_step -- which is what a
- * single-threaded host such as `stoke serve` does -- cannot hit it at all. If
- * you submit from another thread and need the first token sampled too, submit
- * between steps. */
+ * That is worth stating because it was NOT true until M7 rung B3. A step
+ * installs sampling state for newly queued requests before it admits anything,
+ * so a submit landing between those two points was admitted, prefilled, and had
+ * its FIRST token chosen greedily while the rest of the generation sampled as
+ * asked -- one token, in a stream that stays fluent, reported by nothing. It is
+ * closed by construction rather than by timing: whenever a token is about to be
+ * chosen for a request whose parameters are still queued, they are installed
+ * first. tests/abi_firsttoken.c holds the demonstration, against a build whose
+ * window is widened to 20 ms so the defect can be reproduced on purpose. */
 stoke_status stoke_submit(stoke_engine* e, const stoke_request* req);
 
 /* Runs one scheduler step: admissions, one prefill chunk, one decode batch.

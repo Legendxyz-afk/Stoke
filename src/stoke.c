@@ -230,6 +230,13 @@ stoke_engine* stoke_open_abi(const char* gguf_path, const stoke_open_opts* opts,
                         "NEVER use this binary for anything but the mutation "
                         "leg.\n");
 #endif
+#ifdef STOKE_MUT_WIDEN_SUBMIT_WINDOW
+        fprintf(stderr, "stoke: MUTANT src/stoke.c -- STOKE_MUT_WIDEN_SUBMIT_WINDOW "
+                        "(a spin between the sampling prologue and admission, so "
+                        "a concurrent submit lands INSIDE a window that is "
+                        "otherwise microseconds wide). NEVER use this binary for "
+                        "anything but the mutation leg.\n");
+#endif
         stoke_trap_pop(&trap);
         return (stoke_engine*)e;
     }
@@ -313,14 +320,48 @@ static SampleSlot* slot_for(stoke_engine* e, u64 req_id) {
 /* Installed on the host only once some request has actually asked to sample --
  * see stoke_engine.any_sampling. A greedy-only engine therefore runs exactly
  * the serve_step path M5 measured, with not even the null check taken. */
+/* Defined below, beside the prologue it is half of; declared here because the
+ * callback calls it and the prologue installs the callback. */
+static void sample_drain(stoke_engine* e);
+
 static u32 stoke_sample_cb(void* ctx, u64 req_id, u32 pos, const f32* logits,
                            u32 n_vocab) {
     stoke_engine* e = (stoke_engine*)ctx;
     SampleSlot*   sl = slot_for(e, req_id);
     if (!sl) {
-        /* No slot means greedy: either the request never asked to sample, or it
-         * finished between the forward pass and here. Falling back rather than
-         * failing is right -- a token is owed either way. */
+        /* ⚠⚠ THE MID-STEP SUBMIT, AND WHY THE DRAIN IS REPEATED HERE. A request
+         * submitted after this step's prologue ran but before its admission is
+         * admitted, prefilled and yields its FIRST token in this same step,
+         * with its params still in the queue -- so this lookup misses and the
+         * token would be the argmax. One token, greedily, in a stream whose
+         * every later token samples exactly as asked, and nothing anywhere
+         * reports it. Draining again HERE closes the window by construction:
+         * whenever a token is about to be chosen for a request whose params are
+         * waiting, they are installed first.
+         *
+         * ⚠ SAFE FROM THIS CONTEXT, and that is not incidental. The callback
+         * runs on the thread inside stoke_step, which is the thread that owns
+         * the slot table -- so writing it here breaks no invariant. It runs
+         * with the scheduler's lock RELEASED (sched_step drops s->mu across the
+         * forward pass), so taking pend_mu here cannot deadlock against it.
+         *
+         * ⚠ AND ONLY THE DRAIN, NEVER THE SWEEP: the sweep asks the scheduler
+         * what is still live, and running it mid-step would reclaim slots from
+         * sequences this very step is about to yield tokens for.
+         *
+         * The cost is one uncontended acquire on a MISS -- and a miss means a
+         * request that is legitimately greedy, whose token costs a forward pass
+         * either way. Demonstrated by tests/abi_firsttoken.c against
+         * -DSTOKE_MUT_WIDEN_SUBMIT_WINDOW: 7 of 8 raced requests took the same
+         * first token whatever their seed, which is what "the argmax" looks
+         * like from outside. */
+        sample_drain(e);
+        sl = slot_for(e, req_id);
+    }
+    if (!sl) {
+        /* Still nothing: the request never asked to sample, it finished between
+         * the forward pass and here, or every slot was taken. Falling back
+         * rather than failing is right -- a token is owed either way. */
         SampleParams none;
         memset(&none, 0, sizeof none);
         return sample_token(&none, pos, logits, n_vocab, NULL, 0, NULL);
@@ -366,19 +407,17 @@ static void slot_release(stoke_engine* e, u64 req_id) {
  * cancelled, or simply walked away -- and would put a slot write back on an
  * any-thread function. sched_is_live answers for cancelled, retired, abandoned
  * and never-admitted alike. */
-static void sample_prologue(stoke_engine* e) {
+/* The prologue's SECOND half, on its own because the sampler callback calls it
+ * too -- see stoke_sample_cb. Claims a slot for every request whose params are
+ * waiting in the queue. Writes the slot table, so it may only ever run on the
+ * thread inside stoke_step; that is true of both callers.
+ *
+ * ⚠ IT DOES NOT SWEEP. The sweep asks the scheduler which requests are still
+ * live, and it belongs at a step BOUNDARY: running it from inside the step,
+ * against sequences the step is part-way through, would reclaim slots from
+ * requests that are about to yield a token. */
+static void sample_drain(stoke_engine* e) {
     if (!e->slots) return;
-
-    for (u32 i = 0; i < e->n_slots; i++) {
-#ifdef STOKE_MUT_NO_SLOT_RELEASE
-        /* MUTANT: slots are never reclaimed. Every sampled request past the
-         * n_slots'th then runs greedy -- fluent text, no error. */
-        break;
-#endif
-        if (e->slots[i].live && !sched_is_live(e->sched, e->slots[i].req_id)) {
-            slot_release(e, e->slots[i].req_id);
-        }
-    }
 
     /* ⚠ THE EMPTY CHECK IS INSIDE THE LOCK, AND THE OBVIOUS OPTIMISATION IS A
      * DATA RACE. Reading e->n_pend here to skip the acquire is the classic
@@ -444,6 +483,29 @@ static void sample_prologue(stoke_engine* e) {
             serve_host_set_sampler(e->host, stoke_sample_cb, e);
         }
     }
+}
+
+/* The step's prologue: SWEEP, then drain. Both halves run at a step BOUNDARY,
+ * on the thread inside stoke_step, and the order is load-bearing -- sweeping
+ * first means a request that finished last step has already returned its slot
+ * by the time this step's new requests look for a free one. The other order
+ * makes a burst of short requests run greedily and looks like a capacity limit
+ * rather than an ordering mistake. */
+static void sample_prologue(stoke_engine* e) {
+    if (!e->slots) return;
+
+    for (u32 i = 0; i < e->n_slots; i++) {
+#ifdef STOKE_MUT_NO_SLOT_RELEASE
+        /* MUTANT: slots are never reclaimed. Every sampled request past the
+         * n_slots'th then runs greedy -- fluent text, no error. */
+        break;
+#endif
+        if (e->slots[i].live && !sched_is_live(e->sched, e->slots[i].req_id)) {
+            slot_release(e, e->slots[i].req_id);
+        }
+    }
+
+    sample_drain(e);
 }
 
 stoke_status stoke_submit(stoke_engine* e, const stoke_request* req) {
@@ -521,6 +583,16 @@ stoke_status stoke_submit(stoke_engine* e, const stoke_request* req) {
 stoke_status stoke_step(stoke_engine* e, uint32_t* out_rows) {
     if (!e) return fail(STOKE_ERR_INVALID_ARG, "stoke_step: engine is NULL");
     sample_prologue(e);
+#ifdef STOKE_MUT_WIDEN_SUBMIT_WINDOW
+    /* MUTANT: the window this widens is REAL and is documented on stoke_submit
+     * -- a request submitted after the prologue but before admission is
+     * admitted, prefilled and yields its FIRST token in this same step with its
+     * sampling params still in the queue. In a shipping build that window is
+     * the few hundred nanoseconds between these two lines, which no test can
+     * hit on purpose. Twenty milliseconds of it is hittable, and the width is
+     * the only difference between this binary and the defect it demonstrates. */
+    { double t0 = now_ms(); while (now_ms() - t0 < 20.0) { } }
+#endif
     u32 rows = sched_step(e->sched);
     if (out_rows) *out_rows = rows;
     return STOKE_OK;
