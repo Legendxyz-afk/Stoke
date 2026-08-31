@@ -567,8 +567,30 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
     const __m256i lownib8 = _mm256_set1_epi8(0xF);
+#ifdef STOKE_MUT_NO_BOOKKEEP
+    /* ▶▶ MUTANT, SPEED PROBE ONLY -- THE OUTPUT IS DELIBERATELY WRONG, in the
+     * same family as -DSTOKE_MUT_ALIAS_ACT and built only by an explicit -D.
+     *
+     * WHAT IT ASKS. `objdump` on the shipping kernel says the per-sequence loop
+     * body is 55 instructions, of which 23 are the dot product (8 vpmaddubsw,
+     * 8 vpmaddwd, 7 vpaddd) and 32 are BOOKKEEPING: two 7-uop horizontal sums,
+     * a 10-uop scalar-float epilogue, the mins load+vpmaddwd, and the loop's
+     * own pointer arithmetic. If that reading is right, deleting the
+     * bookkeeping should buy ~1.9x on the matmuls. If it is not, the dot loop
+     * itself is the wall and no reduction-batching rewrite can help.
+     *
+     * ⚠ The per-column SCALE is deliberately NOT stripped, which is what the
+     * previous commit said the next probe would do: GCC already hoists the
+     * eight vpbroadcastw out of the sequence loop and folds the reload into
+     * vpmaddwd's memory operand, so that probe would have measured the removal
+     * of a cost that is not being paid. Reading the disassembly cost ten
+     * minutes and moved the target. */
+    __m256i vacc[KERNELS_BATCH_TILE];
+    for (u32 s = 0; s < n_seq; ++s) vacc[s] = _mm256_setzero_si256();
+#else
     f32 sumf[KERNELS_BATCH_TILE];
     for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
+#endif
 
     /* ▶ THE HOIST GOT FOUR TIMES SMALLER WHEN THE INNER LOOP BECAME MADDUBS.
      * Rung B hoisted the nibbles WIDENED to i32 -- 8 sub-blocks x 4 groups x
@@ -615,6 +637,16 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
             _mm_loadl_epi64((const __m128i*)(const void*)mins8),
             _mm_loadu_si128((const __m128i*)(const void*)dup)));
 #endif
+#ifdef STOKE_MUT_NO_BOOKKEEP
+        /* The weight-only halves of the deleted bookkeeping stay COMPUTED --
+         * they are once per block, not per sequence, so removing them would
+         * confound the probe with a cost it is not asking about. */
+        (void)dw;
+        (void)dm;
+#if STOKE_MINS_SIMD
+        (void)m16;
+#endif
+#endif
 
         /* ── PER-SEQUENCE WORK, byte-for-byte the solo kernel's, in its
          * order. Nothing below regroups anything; it only runs N times. */
@@ -653,6 +685,7 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
              * bs[2k]+bs[2k+1] before multiplying. The SIMD form computes the
              * identical pairing, which is why the two spellings agree bit for
              * bit rather than merely closely. */
+#ifndef STOKE_MUT_NO_BOOKKEEP
             i32 sumi;
 #if STOKE_MINS_SIMD
             /* `m16` is hoisted above with the weight-only work; all that is
@@ -667,6 +700,7 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                 memcpy(&bs, bsums + 2u * j, sizeof bs);
                 sumi += (i32)bs * (i32)mins8[j / 2u];
             }
+#endif
 #endif
 
             /* ▶▶▶ THE SCALE IS FOLDED INTO THE PAIR-SUM, WHICH DELETES A
@@ -698,13 +732,26 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                              _mm256_maddubs_epi16(wnib[j], av),
                              _mm256_set1_epi16((short)scales8[j])));
             }
+#ifdef STOKE_MUT_NO_BOOKKEEP
+            /* The ONLY thing left per sequence: fold the block's raw i32 lanes
+             * into a running vector. The dot loop above is untouched, and it
+             * cannot be optimised away because `vacc` reaches `out`. */
+            vacc[s] = _mm256_add_epi32(vacc[s], acc);
+            (void)ad;
+            (void)bsums;
+#else
             const i32 S_b = kq_hsum_i32(acc);
             sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
             sumf[s] = sumf[s] - (dm * ad) * (f32)sumi;
+#endif
         }
     }
 
+#ifdef STOKE_MUT_NO_BOOKKEEP
+    for (u32 s = 0; s < n_seq; ++s) out[s] = (f32)kq_hsum_i32(vacc[s]);
+#else
     for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
+#endif
 }
 
 f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
@@ -921,8 +968,16 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
     const u8* wb = (const u8*)wrow;
     u64       nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
+#ifdef STOKE_MUT_NO_BOOKKEEP
+    /* The Q4_K twin's probe, applied here too: Q4_K_M carries Q6_K tensors and
+     * the profiler's matmul total covers both, so mutating only one arm would
+     * under-read the ceiling by whatever share Q6_K holds. */
+    __m256i vacc[KERNELS_BATCH_TILE];
+    for (u32 s = 0; s < n_seq; ++s) vacc[s] = _mm256_setzero_si256();
+#else
     f32 sumf[KERNELS_BATCH_TILE];
     for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
+#endif
 
     /* ▶ THE RAW 6-BIT VALUE, NOT THE OFFSET ONE. This is the only difference
      * from the twin's `aux8` rebuild: no `- 32`, because vpmaddubsw needs an
@@ -1003,6 +1058,13 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
                     acc, _mm256_madd_epi16(_mm256_maddubs_epi16(uv, av),
                                            scv[c]));
             }
+#ifdef STOKE_MUT_NO_BOOKKEEP
+            vacc[s] = _mm256_add_epi32(vacc[s], acc);
+            (void)ad;
+            (void)bsums;
+            (void)sc16;
+            (void)dw;
+#else
             /* SUM u*a*s */
             const i32 P = kq_hsum_i32(acc);
             /* SUM a*s over each scale group, straight out of the bsums. */
@@ -1012,10 +1074,15 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
             /* SUM (u-32)*a*s, the twin's S_b as the SAME INTEGER. */
             const i32 S_b = P - 32 * M;
             sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
+#endif
         }
     }
 
+#ifdef STOKE_MUT_NO_BOOKKEEP
+    for (u32 s = 0; s < n_seq; ++s) out[s] = (f32)kq_hsum_i32(vacc[s]);
+#else
     for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
+#endif
 }
 
 #else /* !x86-64 */
