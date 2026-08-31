@@ -479,6 +479,73 @@ static inline __m256i kq4_dot_block(const __m256i* wnib, const u8* scales8,
     return acc;
 }
 
+/* ---- the two attention inner loops ----------------------------------------
+ *
+ * ▶▶ WHY THEY LIVE HERE. `att_kvheads_run` is in model.c, which the Makefile
+ * deliberately compiles WITHOUT -mavx2 so gcc cannot emit AVX2 into the scalar
+ * reference twins. Attention is 15% of prefill and BOTH of its passes are
+ * limited by the same thing on SSE2: there is no single-uop
+ * broadcast-from-memory, so `_mm_load1_ps` is movss+shufps and the score loop
+ * ends up three quarters broadcast overhead. `vbroadcastss` is one uop.
+ * MEASURED before either of these was written: -mavx2 on that file is worth
+ * 1.06x against a scalar score pass and 1.218x against the vectorized one.
+ *
+ * ⚠⚠ BIT-EXACT AGAINST THE SSE2 SPELLING, for two different reasons.
+ * `att_score4_avx2` STAYS 128-BIT ON PURPOSE: its four lanes are the GQA
+ * group's four q-heads, so widening would mean either eight q-heads (there are
+ * four) or two d per lane group -- and the latter sums even and odd d
+ * separately and combines at the end, which is a reassociation. Only the
+ * ENCODING changes, VEX for the cheap broadcast. `att_accum4_avx2` DOES widen
+ * to 256 bits, because there the lanes are independent d's: each o[d] still
+ * accumulates over j in ascending order whatever the vector width, so the lane
+ * count is free.
+ *
+ * ⚠ -ffp-contract=off is pinned in the global CFLAGS, and that is what stops
+ * this file's -mfma from fusing a mul+add here into an FMA the SSE2 arm cannot
+ * spell. That flag is load bearing for these two functions.
+ *
+ * The caller gates on kernels_cpu_has_avx_vnni(), the same probe vec.c uses to
+ * pick its AVX2 kernels, and keeps its SSE2 arm for everything else. */
+void att_score4_avx2(const f32* qt, u64 qstride, const f32* kj, u32 hd,
+                     f32 scale, f32* out4) {
+    __m128 acc = _mm_setzero_ps();
+    for (u32 d = 0; d < hd; ++d) {
+        acc = _mm_add_ps(
+            acc, _mm_mul_ps(_mm_loadu_ps(qt + (u64)d * qstride),
+                            _mm_broadcast_ss(kj + d)));
+    }
+    _mm_storeu_ps(out4, _mm_mul_ps(acc, _mm_set1_ps(scale)));
+}
+
+void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
+                     const f32* w4, u32 hd) {
+    const __m256 b0 = _mm256_broadcast_ss(w4 + 0);
+    const __m256 b1 = _mm256_broadcast_ss(w4 + 1);
+    const __m256 b2 = _mm256_broadcast_ss(w4 + 2);
+    const __m256 b3 = _mm256_broadcast_ss(w4 + 3);
+    u32 d = 0;
+    for (; d + 8u <= hd; d += 8u) {
+        const __m256 v = _mm256_loadu_ps(vj + d);
+        _mm256_storeu_ps(o0 + d, _mm256_add_ps(_mm256_loadu_ps(o0 + d),
+                                               _mm256_mul_ps(b0, v)));
+        _mm256_storeu_ps(o1 + d, _mm256_add_ps(_mm256_loadu_ps(o1 + d),
+                                               _mm256_mul_ps(b1, v)));
+        _mm256_storeu_ps(o2 + d, _mm256_add_ps(_mm256_loadu_ps(o2 + d),
+                                               _mm256_mul_ps(b2, v)));
+        _mm256_storeu_ps(o3 + d, _mm256_add_ps(_mm256_loadu_ps(o3 + d),
+                                               _mm256_mul_ps(b3, v)));
+    }
+    /* The tail is the same per-element operation, not a different one: for a
+     * given d the value is o[d] + w*vj[d] whether it is computed in a lane or
+     * in a register. Nothing crosses lanes here. */
+    for (; d < hd; ++d) {
+        o0[d] += w4[0] * vj[d];
+        o1[d] += w4[1] * vj[d];
+        o2[d] += w4[2] * vj[d];
+        o3[d] += w4[3] * vj[d];
+    }
+}
+
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q4_k_q8_k_avx2 -- n=%llu is not a multiple "
@@ -1436,6 +1503,31 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     fatal("kernels: vec_dot_q6_k_q8_k_avx2 on a non-x86-64 build -- callers "
           "must check kernels_cpu_has_avx_vnni() first");
     return 0.0f;
+}
+
+void att_score4_avx2(const f32* qt, u64 qstride, const f32* kj, u32 hd,
+                     f32 scale, f32* out4) {
+    (void)qt;
+    (void)qstride;
+    (void)kj;
+    (void)hd;
+    (void)scale;
+    (void)out4;
+    fatal("kernels: att_score4_avx2 on a non-x86-64 build -- callers must "
+          "check kernels_cpu_has_avx_vnni() first");
+}
+
+void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
+                     const f32* w4, u32 hd) {
+    (void)o0;
+    (void)o1;
+    (void)o2;
+    (void)o3;
+    (void)vj;
+    (void)w4;
+    (void)hd;
+    fatal("kernels: att_accum4_avx2 on a non-x86-64 build -- callers must "
+          "check kernels_cpu_has_avx_vnni() first");
 }
 
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,

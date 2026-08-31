@@ -288,6 +288,18 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
  * DECLARED SEPARATELY AND CALLABLE DIRECTLY, for the reason this header gives at
  * the top: a dispatching entry point cannot be tested against the thing it
  * dispatches to. `vec.c` chooses between the two. */
+/* The two attention inner loops, AVX2. simd.c says why the score kernel stays
+ * 128-bit (its lanes are the GQA group's q-heads, so widening would reassociate
+ * the sum over d) while the accumulate kernel is 256-bit (its lanes are
+ * independent d's, so the width is free). Both are bit-exact against model.c's
+ * SSE2 arm; the caller gates on kernels_cpu_has_avx_vnni().
+ *
+ * `qt` is the TRANSPOSED q block: element (d, t) is qt[d*qstride + t]. */
+void att_score4_avx2(const f32* qt, u64 qstride, const f32* kj, u32 hd,
+                     f32 scale, f32* out4);
+void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
+                     const f32* w4, u32 hd);
+
 void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
                                        u32 n_rows, const void* const* arows,
                                        u32 n_seq, u64 n, f32* out);

@@ -227,6 +227,10 @@ static u32 g_prefill_chunk = PREFILL_CHUNK;
  * sitting from ONE binary, which is the only comparison this box supports. */
 static u32 g_att_par = 1u;
 
+/* Attention's AVX2 kernels, on unless STOKE_ATT_SIMD=0 -- and gated at the
+ * call site by kernels_cpu_has_avx_vnni() as simd.h requires. */
+static u32 g_att_simd = 1u;
+
 /* KV-HEADS per claim (it was q-heads before E2 made the kv-head the unit). 1 by
  * default: the box is 6 P-cores + 4 E-cores, an E-core takes several times
  * longer on the same work, and the smallest claim is what keeps a slow core
@@ -324,6 +328,12 @@ static void att_env_init(void) {
               pc, kv_block_tokens());
     }
     g_prefill_chunk = pc;
+    /* STOKE_ATT_SIMD=0 forces attention's SSE2/scalar arm even on a CPU that
+     * has the AVX2 kernels. It exists so the two arms can be run against each
+     * other on THIS box -- without it the SSE2 arm is dead code here and its
+     * agreement with the AVX2 one would be asserted rather than tested, which
+     * is the vacuous-pass trap simd.h's header names. */
+    g_att_simd = env_u32("STOKE_ATT_SIMD", 1u, 0u, 1u);
     g_att_chunk = env_u32("STOKE_ATT_CHUNK", 1u, 1u, 1024u);
     g_att_min_pos = env_u32("STOKE_ATT_MIN_POS", 32u, 0u, 1u << 20);
 }
@@ -1154,6 +1164,8 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
     const u32        n = a->pos + 1u; /* causal: positions 0..pos inclusive */
     const u64        row = (u64)m->max_ctx;
 
+    const bool use_simd = (g_att_simd != 0u) && kernels_cpu_has_avx_vnni();
+
     f32* ws = m->att_ws[pool_worker_index()];
     f32* scores = ws;                       /* [G][max_ctx], row g per q-head */
     f32* kvbuf = ws + (u64)G * row;         /* ONE live (K,V) pair is enough:
@@ -1230,6 +1242,12 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
 #endif
             u32        g = 0;
             for (; g + 4u <= G; g += 4u) {
+#if STOKE_ATT_SSE
+                f32 out4[4];
+                if (use_simd) {
+                    att_score4_avx2(qt + g, G, kj, hd, scale, out4);
+                } else {
+#endif
 #if !STOKE_ATT_SSE
                 const f32* q0 = qbase + (u64)(g + 0u) * hd;
                 const f32* q1 = qbase + (u64)(g + 1u) * hd;
@@ -1253,8 +1271,8 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
                                  _mm_load1_ps(kj + d)));
                 }
                 acc = _mm_mul_ps(acc, _mm_set1_ps(scale));
-                f32 out4[4];
                 _mm_storeu_ps(out4, acc);
+                }
 #endif
                 scores[(u64)(g + 0u) * row + j] = out4[0];
                 scores[(u64)(g + 1u) * row + j] = out4[1];
@@ -1290,7 +1308,22 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
 #else
             const f32* vj = kv_read(kvs, L, kvh, j, kvbuf).v;
 #endif
-            for (u32 g = 0; g < G; g++) {
+            u32 g = 0;
+            /* Four outputs per call so the call cost stays under a tenth of the
+             * work: one call per (j, group of four) against 4*head_dim MACs. */
+            if (use_simd) {
+                for (; g + 4u <= G; g += 4u) {
+                    const f32 w4[4] = {scores[(u64)(g + 0u) * row + j],
+                                       scores[(u64)(g + 1u) * row + j],
+                                       scores[(u64)(g + 2u) * row + j],
+                                       scores[(u64)(g + 3u) * row + j]};
+                    att_accum4_avx2(obase + (u64)(g + 0u) * hd,
+                                    obase + (u64)(g + 1u) * hd,
+                                    obase + (u64)(g + 2u) * hd,
+                                    obase + (u64)(g + 3u) * hd, vj, w4, hd);
+                }
+            }
+            for (; g < G; g++) {
                 const f32 wgt = scores[(u64)g * row + j];
                 f32*      o = obase + (u64)g * hd;
                 for (u32 d = 0; d < hd; d++) o[d] += wgt * vj[d];
