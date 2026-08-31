@@ -1209,9 +1209,99 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
         memcpy(&draw, blk + 208, sizeof draw);
         const f32 dw = f16_to_f32(draw);
 
+        u32 s = 0;
+#ifndef STOKE_MUT_NO_BOOKKEEP
+        /* ▶▶▶ FOUR SEQUENCES AT A TIME, the Q4_K twin's grouping applied to
+         * the twin's shape. Same two exactness arguments, unchanged: the
+         * horizontal sums are INTEGER so `kq_hsum4_i32` inherits the scalar's
+         * answer (CONTRACT v2), and `P - 32*M` is integer too -- a left shift
+         * by 5 is the same i32 product, and no term is anywhere near the
+         * bounds simd.h proves for this kernel. The float fold is one add per
+         * super-block per lane, the same operation on the same values in the
+         * same order the scalar statement below runs.
+         *
+         * ⚠ THE SUB-BLOCK LOOP IS OUTSIDE THE SEQUENCE LOOP for the reason the
+         * twin records at length: with the sequence loop outside, four live
+         * accumulators across the weight vectors spill, and the version that
+         * spills is SLOWER THAN THE ONE IT REPLACES. Here `uv` and `scv[c]`
+         * are live one at a time and shared by all four sequences. */
+        for (; s + 4u <= n_seq; s += 4u) {
+            const u8* ab[4];
+            f32       d0, d1, d2, d3;
+            for (u32 k = 0; k < 4u; ++k) {
+                ab[k] = (const u8*)arows[s + k] + i * KERNELS_Q8_K_BLOCK_BYTES;
+            }
+            memcpy(&d0, ab[0], sizeof d0);
+            memcpy(&d1, ab[1], sizeof d1);
+            memcpy(&d2, ab[2], sizeof d2);
+            memcpy(&d3, ab[3], sizeof d3);
+
+            const __m128i M4 = kq_hsum4_i32(
+                _mm256_madd_epi16(sc16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[0] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(sc16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[1] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(sc16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[2] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(sc16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[3] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))));
+
+            const i8* q8g[4];
+            for (u32 k = 0; k < 4u; ++k) q8g[k] = (const i8*)(ab[k] + 4);
+            __m256i a0 = _mm256_setzero_si256();
+            __m256i a1 = _mm256_setzero_si256();
+            __m256i a2 = _mm256_setzero_si256();
+            __m256i a3 = _mm256_setzero_si256();
+            for (u32 c = 0; c < KERNELS_Q6_K_BLOCK_ELEMS / 32u; ++c) {
+                const __m256i uv = _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(auxu + c * 32u));
+                const __m256i sc = scv[c];
+                a0 = _mm256_add_epi32(
+                    a0, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                uv, _mm256_loadu_si256(
+                                        (const __m256i*)(const void*)(q8g[0] +
+                                                                      c * 32u))),
+                            sc));
+                a1 = _mm256_add_epi32(
+                    a1, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                uv, _mm256_loadu_si256(
+                                        (const __m256i*)(const void*)(q8g[1] +
+                                                                      c * 32u))),
+                            sc));
+                a2 = _mm256_add_epi32(
+                    a2, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                uv, _mm256_loadu_si256(
+                                        (const __m256i*)(const void*)(q8g[2] +
+                                                                      c * 32u))),
+                            sc));
+                a3 = _mm256_add_epi32(
+                    a3, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                uv, _mm256_loadu_si256(
+                                        (const __m256i*)(const void*)(q8g[3] +
+                                                                      c * 32u))),
+                            sc));
+            }
+            const __m128i P4  = kq_hsum4_i32(a0, a1, a2, a3);
+            const __m128i Sb4 = _mm_sub_epi32(P4, _mm_slli_epi32(M4, 5));
+            const __m128  a4  = _mm_setr_ps(d0, d1, d2, d3);
+            __m128        v   = _mm_loadu_ps(sumf + s);
+            v = _mm_add_ps(v, _mm_mul_ps(_mm_mul_ps(_mm_set1_ps(dw), a4),
+                                         _mm_cvtepi32_ps(Sb4)));
+            _mm_storeu_ps(sumf + s, v);
+        }
+#endif
+
         /* ── PER-SEQUENCE WORK: two loads, one vpmaddubsw, one vpmaddwd and an
          * add, eight times -- against the twin's thirty-two widening loads. */
-        for (u32 s = 0; s < n_seq; ++s) {
+        for (; s < n_seq; ++s) {
             const u8* ablk = (const u8*)arows[s] + i * KERNELS_Q8_K_BLOCK_BYTES;
             const i8* q8    = (const i8*)(ablk + 4);
             const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
