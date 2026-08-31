@@ -13,6 +13,18 @@
 #include "pool.h" /* the attention heads run on the pool -- att_kvheads_run */
 #include "sample.h" /* model_generate_sampled's optional chooser */
 
+/* ▶ SSE2 ONLY, AND IT IS BASELINE ON x86-64 -- this file is deliberately
+ * compiled WITHOUT -mavx2 (SIMD_CFLAGS is scoped to src/kernels/simd.c so gcc
+ * cannot emit AVX2 into the scalar reference twins), and the attention score
+ * pass needs exactly four lanes because gqa_group is 4. The guard is simd.c's,
+ * and the scalar arm below it is what a non-x86 build takes. */
+#if defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>
+#define STOKE_ATT_SSE 1
+#else
+#define STOKE_ATT_SSE 0
+#endif
+
 #include <errno.h>
 #include <math.h>
 #include <stdbool.h>
@@ -559,8 +571,13 @@ static void att_ws_ensure(Model* m) {
      * group's softmax rows are live at once (the K pass fills all of them
      * before the first softmax runs). Then ONE (K,V) pair, which is all the
      * loop keeps alive at a time. */
+    /* + gqa_group*head_dim for the TRANSPOSED Q, which the score pass builds
+     * once per (sequence, kv-head) and then reads once per (j, d). Q is the
+     * cheap side to transpose: G*head_dim is 2 KB against K's n*head_dim,
+     * which is 269 KB at ctx 525. */
     u64 need = (u64)m->gqa_group * (u64)m->max_ctx +
-               (u64)ATT_KV_FLOATS(m->head_dim);
+               (u64)ATT_KV_FLOATS(m->head_dim) +
+               (u64)m->gqa_group * (u64)m->head_dim;
     u64 stride = (need + 15u) & ~(u64)15u;
     f32** ws = (f32**)xmalloc((size_t)want * sizeof(f32*));
     for (u32 w = 0; w < want; w++) {
@@ -1142,11 +1159,42 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
     f32* kvbuf = ws + (u64)G * row;         /* ONE live (K,V) pair is enough:
                                              * the group shares the fetch, so
                                              * nothing outlives its iteration */
+    f32* qt = kvbuf + ATT_KV_FLOATS(hd);    /* [head_dim][G], see below */
 
     for (u64 kk = kh_begin; kk < kh_end; kk++) {
         const u32  kvh = (u32)kk;
         const f32* qbase = sc->s_q + (u64)kvh * G * hd;
         f32*       obase = sc->s_attn_out + (u64)kvh * G * hd;
+
+        /* ▶▶▶ Q TRANSPOSED ONCE PER UNIT, so the score pass gets LANES without
+         * touching a summation order.
+         *
+         * The dot product `sum_d q[g][d] * K[j][d]` is a REDUCTION over d, and
+         * a float reduction cannot be vectorized without reassociating it --
+         * which is why no compiler flag has ever touched this loop and why
+         * -mavx2 measured 1.06x. Put the FOUR q-heads of the group in the four
+         * LANES instead: lane g accumulates q[g][d]*kj[d] over ascending d,
+         * which is character for character the scalar chain it replaces. Each
+         * lane is its own reduction, in its own order. Bit-exact by
+         * construction, not by tolerance.
+         *
+         * ⚠ Q IS THE CHEAP SIDE TO TRANSPOSE and that is the whole trick: G*hd
+         * is 2 KB per unit against K's n*hd, which is 269 KB at ctx 525. A
+         * transposed K would also work and would cost 130x more to build.
+         *
+         * ⚠ SSE2 IS BASELINE ON x86-64, so this needs no TU move and no build
+         * flag -- model.c is deliberately compiled without -mavx2 (SIMD_CFLAGS
+         * is scoped to simd.c so gcc cannot emit AVX2 into the scalar reference
+         * twins) and 128 bits is exactly G=4 lanes anyway.
+         *
+         * ⚠ G != 4 STILL WORKS AND GAINS NOTHING: the group blocks by four and
+         * the remainder falls through to `vec_dot_f32`, exactly as the scalar
+         * version did. Qwen3-4B and Llama-3.2's family are both G=4; a G=3
+         * model takes the tail exclusively, which is what it did before. */
+        for (u32 g = 0; g < G; g++) {
+            const f32* qg = qbase + (u64)g * hd;
+            for (u32 d = 0; d < hd; d++) qt[(u64)d * G + g] = qg[d];
+        }
 
         /* ---- score pass: K[j] fetched once, scored against all G q-heads */
 #ifdef STOKE_MUT_NO_SCORE
@@ -1182,6 +1230,7 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
 #endif
             u32        g = 0;
             for (; g + 4u <= G; g += 4u) {
+#if !STOKE_ATT_SSE
                 const f32* q0 = qbase + (u64)(g + 0u) * hd;
                 const f32* q1 = qbase + (u64)(g + 1u) * hd;
                 const f32* q2 = qbase + (u64)(g + 2u) * hd;
@@ -1193,10 +1242,24 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
                     a2 += q2[d] * kj[d];
                     a3 += q3[d] * kj[d];
                 }
-                scores[(u64)(g + 0u) * row + j] = a0 * scale;
-                scores[(u64)(g + 1u) * row + j] = a1 * scale;
-                scores[(u64)(g + 2u) * row + j] = a2 * scale;
-                scores[(u64)(g + 3u) * row + j] = a3 * scale;
+                const f32 out4[4] = {a0 * scale, a1 * scale, a2 * scale,
+                                     a3 * scale};
+#else
+                __m128 acc = _mm_setzero_ps();
+                for (u32 d = 0; d < hd; d++) {
+                    acc = _mm_add_ps(
+                        acc, _mm_mul_ps(
+                                 _mm_loadu_ps(qt + (u64)d * G + g),
+                                 _mm_load1_ps(kj + d)));
+                }
+                acc = _mm_mul_ps(acc, _mm_set1_ps(scale));
+                f32 out4[4];
+                _mm_storeu_ps(out4, acc);
+#endif
+                scores[(u64)(g + 0u) * row + j] = out4[0];
+                scores[(u64)(g + 1u) * row + j] = out4[1];
+                scores[(u64)(g + 2u) * row + j] = out4[2];
+                scores[(u64)(g + 3u) * row + j] = out4[3];
             }
             for (; g < G; g++) {
                 scores[(u64)g * row + j] =
