@@ -593,8 +593,9 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     return sumf;
 }
 
-void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
-                               u32 n_seq, u64 n, f32* out) {
+void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
+                               const void* const* arows, u32 n_seq, u64 n,
+                               f32* out) {
     if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q4_k_q8_k_xn_avx2 -- n=%llu is not a multiple "
               "of %u",
@@ -604,7 +605,11 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
         fatal("kernels: vec_dot_q4_k_q8_k_xn_avx2 -- n_seq=%u outside 1..%u; "
               "the caller tiles", n_seq, KERNELS_BATCH_TILE);
     }
-    const u8* wb = (const u8*)wrow;
+    if (n_rows == 0u || n_rows > KERNELS_ROW_TILE) {
+        fatal("kernels: vec_dot_q4_k_q8_k_xn_avx2 -- n_rows=%u outside 1..%u; "
+              "the caller tiles", n_rows, KERNELS_ROW_TILE);
+    }
+    const u8* wb = (const u8*)wrows;
     u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
 
     const __m256i lownib8 = _mm256_set1_epi8(0xF);
@@ -626,11 +631,11 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
      * vpmaddwd's memory operand, so that probe would have measured the removal
      * of a cost that is not being paid. Reading the disassembly cost ten
      * minutes and moved the target. */
-    __m256i vacc[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) vacc[s] = _mm256_setzero_si256();
+    __m256i vacc[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) vacc[t] = _mm256_setzero_si256();
 #else
-    f32 sumf[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
+    f32 sumf[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) sumf[t] = 0.0f;
 #endif
 
     /* ▶ THE HOIST GOT FOUR TIMES SMALLER WHEN THE INNER LOOP BECAME MADDUBS.
@@ -643,9 +648,20 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
      * sequence drop by the same factor. */
     __m256i wnib[8];
 
+    /* ⚠ SUPER-BLOCK OUTSIDE, ROW INSIDE — see simd.h's KERNELS_ROW_TILE note.
+     * Every row in the tile consumes THE SAME super-block of activations
+     * before the loop moves on, so the live activation is 16 * 292 B rather
+     * than the whole row's worth. Nothing about a given (row, sequence)
+     * accumulation changes: it still walks i in ascending order. */
     for (u64 i = 0; i < nb; ++i) {
-        const u8* blk = wb + i * KERNELS_Q4_K_BLOCK_BYTES;
+      for (u32 rr = 0; rr < n_rows; ++rr) {
+        const u8* blk = wb + (u64)rr * row_bytes + i * KERNELS_Q4_K_BLOCK_BYTES;
         const u8* q4 = blk + 16;
+#ifdef STOKE_MUT_NO_BOOKKEEP
+        __m256i* vacc_r = vacc + (size_t)rr * n_seq;
+#else
+        f32* sumf_r = sumf + (size_t)rr * n_seq;
+#endif
 
         /* ── WEIGHT-ONLY WORK, ONCE PER ROW instead of once per sequence.
          * This is the whole of rung B, now carrying rung C's byte layout. */
@@ -814,12 +830,12 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
             }
             const __m128i S4 = kq_hsum4_i32(a0, a1, a2, a3);
             const __m128 a4 = _mm_setr_ps(d0, d1, d2, d3);
-            __m128       v  = _mm_loadu_ps(sumf + s);
+            __m128       v  = _mm_loadu_ps(sumf_r + s);
             v = _mm_add_ps(v, _mm_mul_ps(_mm_mul_ps(dwv, a4),
                                          _mm_cvtepi32_ps(S4)));
             v = _mm_sub_ps(v, _mm_mul_ps(_mm_mul_ps(dmv, a4),
                                          _mm_cvtepi32_ps(M4)));
-            _mm_storeu_ps(sumf + s, v);
+            _mm_storeu_ps(sumf_r + s, v);
         }
 #endif
 
@@ -908,21 +924,22 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
             /* The ONLY thing left per sequence: fold the block's raw i32 lanes
              * into a running vector. The dot loop above is untouched, and it
              * cannot be optimised away because `vacc` reaches `out`. */
-            vacc[s] = _mm256_add_epi32(vacc[s], acc);
+            vacc_r[s] = _mm256_add_epi32(vacc_r[s], acc);
             (void)ad;
             (void)bsums;
 #else
             const i32 S_b = kq_hsum_i32(acc);
-            sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
-            sumf[s] = sumf[s] - (dm * ad) * (f32)sumi;
+            sumf_r[s] = sumf_r[s] + (dw * ad) * (f32)S_b;
+            sumf_r[s] = sumf_r[s] - (dm * ad) * (f32)sumi;
 #endif
         }
+      }
     }
 
 #ifdef STOKE_MUT_NO_BOOKKEEP
-    for (u32 s = 0; s < n_seq; ++s) out[s] = (f32)kq_hsum_i32(vacc[s]);
+    for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = (f32)kq_hsum_i32(vacc[t]);
 #else
-    for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = sumf[t];
 #endif
 }
 
@@ -1040,8 +1057,9 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     return sumf;
 }
 
-void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
-                               u32 n_seq, u64 n, f32* out) {
+void vec_dot_q6_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
+                               const void* const* arows, u32 n_seq, u64 n,
+                               f32* out) {
     if (n % KERNELS_Q6_K_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 -- n=%llu is not a multiple "
               "of %u",
@@ -1051,11 +1069,15 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
         fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 -- n_seq=%u outside 1..%u; "
               "the caller tiles", n_seq, KERNELS_BATCH_TILE);
     }
-    const u8* wb = (const u8*)wrow;
+    if (n_rows == 0u || n_rows > KERNELS_ROW_TILE) {
+        fatal("kernels: vec_dot_q6_k_q8_k_xn_avx2 -- n_rows=%u outside 1..%u; "
+              "the caller tiles", n_rows, KERNELS_ROW_TILE);
+    }
+    const u8* wb = (const u8*)wrows;
     u64 nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
-    f32 sumf[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
+    f32 sumf[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) sumf[t] = 0.0f;
 
     /* ⚠ MEASURED, NOT ASSUMED: hoisting the WIDENING too (a __m256i wv[32]
      * alongside this) made N=16 SLOWER -- 13.565 -> 11.207 tok/s. Q4_K's
@@ -1067,10 +1089,12 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
     i8 aux8[KERNELS_Q6_K_BLOCK_ELEMS];
 
     for (u64 i = 0; i < nb; ++i) {
-        const u8* blk = wb + i * KERNELS_Q6_K_BLOCK_BYTES;
+      for (u32 rr = 0; rr < n_rows; ++rr) {
+        const u8* blk = wb + (u64)rr * row_bytes + i * KERNELS_Q6_K_BLOCK_BYTES;
         const u8* ql = blk;
         const u8* qh = blk + 128;
         const i8* sc = (const i8*)(blk + 192);
+        f32* sumf_r = sumf + (size_t)rr * n_seq;
 
         /* ── WEIGHT-ONLY WORK, ONCE PER ROW. Q6_K gains more from the hoist
          * than Q4_K does: the whole interleaved aux8 rebuild below used to
@@ -1110,11 +1134,12 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
                     acc, _mm256_mullo_epi32(sub, _mm256_set1_epi32((int)sc[j])));
             }
             const i32 S_b = kq_hsum_i32(acc);
-            sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
+            sumf_r[s] = sumf_r[s] + (dw * ad) * (f32)S_b;
         }
+      }
     }
 
-    for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = sumf[t];
 }
 
 /* See simd.h for WHY this exists, why vpmaddubsw applies to a signed quant, and
@@ -1124,9 +1149,9 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
  * The structure is deliberately Q4_K's, line for line where it can be: weight-
  * only work hoisted to once per row, then a per-sequence body that is nothing
  * but loads, one vpmaddubsw, one vpmaddwd and an accumulate. */
-void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
-                                       const void* const* arows, u32 n_seq,
-                                       u64 n, f32* out) {
+void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
+                                       u32 n_rows, const void* const* arows,
+                                       u32 n_seq, u64 n, f32* out) {
     if (n % KERNELS_Q6_K_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q6_k_q8_k_xn_maddubs_avx2 -- n=%llu is not a "
               "multiple of %u",
@@ -1137,18 +1162,23 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
               "1..%u; the caller tiles",
               n_seq, KERNELS_BATCH_TILE);
     }
-    const u8* wb = (const u8*)wrow;
+    if (n_rows == 0u || n_rows > KERNELS_ROW_TILE) {
+        fatal("kernels: vec_dot_q6_k_q8_k_xn_maddubs_avx2 -- n_rows=%u outside "
+              "1..%u; the caller tiles",
+              n_rows, KERNELS_ROW_TILE);
+    }
+    const u8* wb = (const u8*)wrows;
     u64       nb = n / KERNELS_Q6_K_BLOCK_ELEMS;
 
 #ifdef STOKE_MUT_NO_BOOKKEEP
     /* The Q4_K twin's probe, applied here too: Q4_K_M carries Q6_K tensors and
      * the profiler's matmul total covers both, so mutating only one arm would
      * under-read the ceiling by whatever share Q6_K holds. */
-    __m256i vacc[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) vacc[s] = _mm256_setzero_si256();
+    __m256i vacc[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) vacc[t] = _mm256_setzero_si256();
 #else
-    f32 sumf[KERNELS_BATCH_TILE];
-    for (u32 s = 0; s < n_seq; ++s) sumf[s] = 0.0f;
+    f32 sumf[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) sumf[t] = 0.0f;
 #endif
 
     /* ▶ THE RAW 6-BIT VALUE, NOT THE OFFSET ONE. This is the only difference
@@ -1159,10 +1189,16 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
     __m256i scv[KERNELS_Q6_K_BLOCK_ELEMS / 32u]; /* [s_2c x8, s_2c+1 x8], i16 */
 
     for (u64 i = 0; i < nb; ++i) {
-        const u8* blk = wb + i * KERNELS_Q6_K_BLOCK_BYTES;
+      for (u32 rr = 0; rr < n_rows; ++rr) {
+        const u8* blk = wb + (u64)rr * row_bytes + i * KERNELS_Q6_K_BLOCK_BYTES;
         const u8* ql  = blk;
         const u8* qh  = blk + 128;
         const i8* sc  = (const i8*)(blk + 192);
+#ifdef STOKE_MUT_NO_BOOKKEEP
+        __m256i* vacc_r = vacc + (size_t)rr * n_seq;
+#else
+        f32* sumf_r = sumf + (size_t)rr * n_seq;
+#endif
 
         /* ── WEIGHT-ONLY WORK, ONCE PER ROW. */
         for (u32 h = 0; h < 2u; ++h) {
@@ -1292,10 +1328,10 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
             const __m128i P4  = kq_hsum4_i32(a0, a1, a2, a3);
             const __m128i Sb4 = _mm_sub_epi32(P4, _mm_slli_epi32(M4, 5));
             const __m128  a4  = _mm_setr_ps(d0, d1, d2, d3);
-            __m128        v   = _mm_loadu_ps(sumf + s);
+            __m128        v   = _mm_loadu_ps(sumf_r + s);
             v = _mm_add_ps(v, _mm_mul_ps(_mm_mul_ps(_mm_set1_ps(dw), a4),
                                          _mm_cvtepi32_ps(Sb4)));
-            _mm_storeu_ps(sumf + s, v);
+            _mm_storeu_ps(sumf_r + s, v);
         }
 #endif
 
@@ -1321,7 +1357,7 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
                                            scv[c]));
             }
 #ifdef STOKE_MUT_NO_BOOKKEEP
-            vacc[s] = _mm256_add_epi32(vacc[s], acc);
+            vacc_r[s] = _mm256_add_epi32(vacc_r[s], acc);
             (void)ad;
             (void)bsums;
             (void)sc16;
@@ -1335,15 +1371,16 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
                 _mm256_loadu_si256((const __m256i*)(const void*)bsums)));
             /* SUM (u-32)*a*s, the twin's S_b as the SAME INTEGER. */
             const i32 S_b = P - 32 * M;
-            sumf[s] = sumf[s] + (dw * ad) * (f32)S_b;
+            sumf_r[s] = sumf_r[s] + (dw * ad) * (f32)S_b;
 #endif
         }
+      }
     }
 
 #ifdef STOKE_MUT_NO_BOOKKEEP
-    for (u32 s = 0; s < n_seq; ++s) out[s] = (f32)kq_hsum_i32(vacc[s]);
+    for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = (f32)kq_hsum_i32(vacc[t]);
 #else
-    for (u32 s = 0; s < n_seq; ++s) out[s] = sumf[s];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = sumf[t];
 #endif
 }
 
@@ -1401,9 +1438,12 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     return 0.0f;
 }
 
-void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
-                               u32 n_seq, u64 n, f32* out) {
-    (void)wrow;
+void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
+                               const void* const* arows, u32 n_seq, u64 n,
+                               f32* out) {
+    (void)wrows;
+    (void)row_bytes;
+    (void)n_rows;
     (void)arows;
     (void)n_seq;
     (void)n;
@@ -1412,9 +1452,12 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
           "callers must check kernels_cpu_has_avx_vnni() first");
 }
 
-void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
-                               u32 n_seq, u64 n, f32* out) {
-    (void)wrow;
+void vec_dot_q6_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
+                               const void* const* arows, u32 n_seq, u64 n,
+                               f32* out) {
+    (void)wrows;
+    (void)row_bytes;
+    (void)n_rows;
     (void)arows;
     (void)n_seq;
     (void)n;
@@ -1424,10 +1467,12 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
 }
 
 
-void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
-                                       const void* const* arows, u32 n_seq,
-                                       u64 n, f32* out) {
-    (void)wrow;
+void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
+                                       u32 n_rows, const void* const* arows,
+                                       u32 n_seq, u64 n, f32* out) {
+    (void)wrows;
+    (void)row_bytes;
+    (void)n_rows;
     (void)arows;
     (void)n_seq;
     (void)n;

@@ -156,7 +156,7 @@ static void rows_q8_0_avx2(void* vctx, u64 begin, u64 end) {
  * broken, only unfused -- which is exactly the state every type was in
  * before this commit. */
 static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
-                                   void (*dot_xn)(const void*,
+                                   void (*dot_xn)(const void*, u64, u32,
                                                   const void* const*,
                                                   u32, u64, f32*)) {
     for (u64 r0 = begin; r0 < end; r0 += KQUANT_ROW_CHUNK) {
@@ -194,13 +194,25 @@ static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
         for (u32 s0 = 0; s0 < j->n_seq; s0 += KERNELS_BATCH_TILE) {
             u32 cnt = j->n_seq - s0;
             if (cnt > KERNELS_BATCH_TILE) cnt = KERNELS_BATCH_TILE;
-            for (u64 r = r0; r < r1; r++) {
-                const u8* row = j->base + r * j->row_bytes;
-                /* Tiled so the kernel's per-sequence accumulators stay a small
-                 * stack array; each tile is independent and exact on its own. */
-                f32 out[KERNELS_BATCH_TILE];
-                dot_xn(row, (const void* const*)&j->aq[s0], cnt, j->n_in, out);
-                for (u32 k = 0; k < cnt; k++) j->y[s0 + k][r] = out[k];
+            /* ▶ AND THE ROWS GO IN TILES TOO, because the swap above only got
+             * the reuse distance down to a tile's whole-row activation (46.7
+             * KiB at n_in=2560, still the size of L1). The kernel takes
+             * KERNELS_ROW_TILE rows and runs the row loop INSIDE its
+             * super-block loop, so what is live is ONE super-block's
+             * activations, 4.7 KiB. See simd.h. */
+            for (u64 r = r0; r < r1; r += KERNELS_ROW_TILE) {
+                u32 nr = (u32)(r1 - r);
+                if (nr > KERNELS_ROW_TILE) nr = KERNELS_ROW_TILE;
+                /* Row-major, nr * cnt: the kernel's accumulators stay a small
+                 * stack array and each (row, sequence) is exact on its own. */
+                f32 out[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+                dot_xn(j->base + r * j->row_bytes, j->row_bytes, nr,
+                       (const void* const*)&j->aq[s0], cnt, j->n_in, out);
+                for (u32 rr = 0; rr < nr; rr++) {
+                    for (u32 k = 0; k < cnt; k++) {
+                        j->y[s0 + k][r + rr] = out[rr * cnt + k];
+                    }
+                }
             }
         }
     }

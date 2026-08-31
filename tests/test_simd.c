@@ -633,8 +633,13 @@ TEST(simd_q6_k_xn_maddubs_is_bit_exact_vs_reference_and_solo) {
             degenerate++;
         }
 
-        vec_dot_q6_k_q8_k_xn_avx2(w, aqp, ns, n, want);
-        vec_dot_q6_k_q8_k_xn_maddubs_avx2(w, aqp, ns, n, got);
+        /* One weight row: the row-tiled entry points take (base, row_bytes,
+         * n_rows), and this fixture's job is the TWIN comparison, not the row
+         * tiling -- `tests/test_matvec_batch.c` grades that against the solo
+         * kernel through `matvec_batch`. */
+        vec_dot_q6_k_q8_k_xn_avx2(w, blocks * Q6K_BYTES, 1u, aqp, ns, n, want);
+        vec_dot_q6_k_q8_k_xn_maddubs_avx2(w, blocks * Q6K_BYTES, 1u, aqp, ns, n,
+                                          got);
 
         for (u32 s = 0; s < ns; s++) {
             if (!bit_identical(got[s], want[s])) {

@@ -31,8 +31,14 @@
 #include <stdbool.h>
 #include <string.h>
 
-#define N_IN   256u
-#define N_OUT   96u
+/* ▶ N_IN SPANS SEVERAL SUPER-BLOCKS ON PURPOSE (2026-08-31). At 256 there is
+ * exactly ONE, and the row-tiled kernels walk (super-block, row) as a pair --
+ * a wrong stride between the two is invisible with a single block, which is
+ * the shape of fixture that passes while proving nothing. 1024 gives four.
+ * N_OUT is not a multiple of KERNELS_ROW_TILE either, so the short final row
+ * tile is exercised rather than assumed. */
+#define N_IN  1024u
+#define N_OUT  100u
 #define MAX_SEQ  5u
 
 static int checks = 0, failures = 0;

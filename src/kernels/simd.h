@@ -193,10 +193,51 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
 #ifndef KERNELS_BATCH_TILE
 #define KERNELS_BATCH_TILE 16u
 #endif
-void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
-                               u32 n_seq, u64 n, f32* out);
-void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
-                               u32 n_seq, u64 n, f32* out);
+
+/* ▶▶▶ AND n_rows IS TILED TOO, WHICH IS ABOUT CACHE AND NOTHING ELSE.
+ *
+ * With one weight row per call, a call touches every sequence's activation
+ * before the next row starts: n_seq * (n/256) * 292 B, 46.7 KiB at n_seq=16
+ * and n=2560, against a 48 KiB L1 -- so each of the thousands of rows re-reads
+ * all of it from L2. Taking KERNELS_ROW_TILE rows per call and putting the ROW
+ * loop INSIDE the super-block loop makes the live activation ONE super-block's
+ * worth, 16 * 292 B = 4.7 KiB, shared by every row in the tile.
+ *
+ * MEASURED, not assumed: `-DSTOKE_MUT_ALIAS_ACT` -- which collapses the
+ * activation to a single sequence's -- prices an L1-resident tile at 1.29x of
+ * matmul time. ⚠ The SAME probe measured 5.8% on 2026-08-30, before the
+ * per-sequence bookkeeping came out of these kernels. An ablation's verdict is
+ * scoped to the version it ran on; removing the dominant cost promoted this
+ * one.
+ *
+ * ⚠ THE WEIGHT SIDE DOES NOT PAY FOR IT. Prep stays once per (row,
+ * super-block) exactly as before -- which is why this works where shrinking
+ * KERNELS_BATCH_TILE does not (=8 measured 1.7% WORSE end-to-end, =4 8% worse,
+ * because a smaller tile amortizes that prep over fewer sequences). A tile's
+ * rows span n_rows*row_bytes and are swept super-block by super-block, so each
+ * weight byte is still fetched once and every line is fully used.
+ *
+ * BIT-EXACT BY THE SAME CONSTRUCTION AS THE SEQUENCE TILING: each (row,
+ * sequence) still accumulates its own pair over the super-blocks in ascending
+ * order. Only the order of independent work changes.
+ *
+ * `out` is ROW-MAJOR, out[rr * n_seq + s], and `wrows` is the first of n_rows
+ * rows spaced `row_bytes` apart. */
+/* 32 IS MEASURED, NOT CHOSEN. End-to-end matmul time on the 525-token prefill,
+ * two units per arm interleaved: 8 -> 6014 ms, 16 -> 5649, 32 -> 5434, 64 ->
+ * 5545. Larger tiles amortize the super-block's activation slice over more
+ * rows -- the whole point -- but a tile's rows span n_rows*row_bytes of weight
+ * that has to stream through L1 alongside it, and past 32 that starts costing
+ * more than the reuse is worth. The curve has a floor, so it was swept. */
+#ifndef KERNELS_ROW_TILE
+#define KERNELS_ROW_TILE 32u
+#endif
+void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
+                               const void* const* arows, u32 n_seq, u64 n,
+                               f32* out);
+void vec_dot_q6_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
+                               const void* const* arows, u32 n_seq, u64 n,
+                               f32* out);
 
 /* ---- the Q6_K batched kernel, re-formulated on vpmaddubsw -----------------
  *
@@ -247,9 +288,9 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
  * DECLARED SEPARATELY AND CALLABLE DIRECTLY, for the reason this header gives at
  * the top: a dispatching entry point cannot be tested against the thing it
  * dispatches to. `vec.c` chooses between the two. */
-void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrow,
-                                       const void* const* arows, u32 n_seq,
-                                       u64 n, f32* out);
+void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
+                                       u32 n_rows, const void* const* arows,
+                                       u32 n_seq, u64 n, f32* out);
 
 /* Which Q6_K batched kernel `matvec_batch` dispatches to.
  *
