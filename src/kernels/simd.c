@@ -1426,6 +1426,12 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
                                         (const __m256i*)(const void*)(q8g[3] +
                                                                       c * 32u))),
                             sc));
+                /* Same reassociation barrier as the Q4_K twin, and this kernel
+                 * needed it more: `objdump` counted 40 stack spills here. */
+                KQ_KEEP(a0);
+                KQ_KEEP(a1);
+                KQ_KEEP(a2);
+                KQ_KEEP(a3);
             }
             const __m128i P4  = kq_hsum4_i32(a0, a1, a2, a3);
             const __m128i Sb4 = _mm_sub_epi32(P4, _mm_slli_epi32(M4, 5));
