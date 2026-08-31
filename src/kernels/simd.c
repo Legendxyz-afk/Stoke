@@ -930,6 +930,22 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
                 KQ_KEEP(a2);
                 KQ_KEEP(a3);
             }
+#ifdef STOKE_MUT_G4_DOTONLY
+            /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. Keeps the
+             * 8-sub-block dot for all four sequences and deletes everything
+             * else the group path does: the mins term, both kq_hsum4_i32
+             * reductions and the four-wide float fold. It answers the only
+             * question left about this kernel -- whether any BIT-EXACT
+             * headroom remains in it, or whether what is left is the dot
+             * product itself. */
+            _mm_storeu_ps(sumf_r + s,
+                          _mm_add_ps(_mm_loadu_ps(sumf_r + s),
+                                     _mm_cvtepi32_ps(kq_hsum4_i32(a0, a1, a2,
+                                                                  a3))));
+            (void)d0; (void)d1; (void)d2; (void)d3; (void)M4;
+            (void)dwv; (void)dmv;
+            continue;
+#endif
             const __m128i S4 = kq_hsum4_i32(a0, a1, a2, a3);
             const __m128 a4 = _mm_setr_ps(d0, d1, d2, d3);
             __m128       v  = _mm_loadu_ps(sumf_r + s);
