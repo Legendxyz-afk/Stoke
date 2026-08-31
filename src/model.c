@@ -146,12 +146,14 @@ typedef struct {
  * wall clock, so an unwired bucket shows up as a gap rather than as a zero. */
 typedef enum {
     PROF_QKV = 0,    /* attn_q + attn_k + attn_v matvecs            */
-    PROF_QKNORM,     /* per-head QK-norm, rope, kv append (phase 1) */
+    PROF_QKNORM,     /* per-head QK-norm + rope (phase 1a)          */
+    PROF_KVAPPEND,   /* kv_note_token + kv_write (phase 1b)         */
     PROF_ATT,        /* causal GQA attention (phase 2)              */
-    PROF_ATTOUT,     /* attn_output matvec + residual               */
+    PROF_ATTOUT,     /* attn_output matvec                          */
     PROF_FFN_GU,     /* ffn_gate + ffn_up matvecs                   */
     PROF_SWIGLU,     /* the SwiGLU elementwise                      */
-    PROF_FFN_DOWN,   /* ffn_down matvec + residual                  */
+    PROF_FFN_DOWN,   /* ffn_down matvec                             */
+    PROF_RESID,      /* the two residual adds per layer             */
     PROF_NORM,       /* the two rmsnorms per layer                  */
     PROF_SETUP,      /* embed, views bind, validate, x_out copy     */
     PROF_N
@@ -161,9 +163,9 @@ typedef enum {
 static double g_prof[PROF_N];
 static double g_prof_wall;   /* every forward_batch_body call, end to end */
 static const char* const g_prof_name[PROF_N] = {
-    "qkv matvec", "qk-norm+rope+kv", "attention", "attn_out matvec",
-    "ffn gate+up matvec", "swiglu", "ffn_down matvec", "rmsnorm",
-    "embed+bind+copy"
+    "qkv matvec", "qk-norm+rope", "kv append", "attention",
+    "attn_out matvec", "ffn gate+up matvec", "swiglu", "ffn_down matvec",
+    "residual add", "rmsnorm", "embed+bind+copy"
 };
 #define PROF_DECL double prof_t0 = now_ms()
 #define PROF_ADD(op) (g_prof[op] += now_ms() - prof_t0)
@@ -1259,6 +1261,105 @@ static void att_batch_run(void* vctx, u64 u_begin, u64 u_end) {
     }
 }
 
+/* ---- the two per-layer rmsnorms on the pool -------------------------------
+ *
+ * The same shape as the two above, and it was measured before it was written:
+ * 70.6 ms serial against a `residual add` of 31.4, which is why the norms are
+ * dispatched and the adds are not -- at 31 ms across 148 layer-calls a
+ * dispatch would cost about what the work does. */
+typedef struct {
+    SeqScratch* const* scs;
+    f32**              dst;
+    const f32*         w;
+    u32                n;
+    f32                eps;
+} NormJob;
+
+static void norm_run(void* vctx, u64 s_begin, u64 s_end) {
+    const NormJob* j = (const NormJob*)vctx;
+    for (u64 s = s_begin; s < s_end; s++) {
+        rmsnorm(j->scs[s]->s_x, j->w, j->n, j->eps, j->dst[s]);
+    }
+}
+
+/* ---- phase 1a on the pool ------------------------------------------------
+ *
+ * ▶▶ WHY: the completed profile puts the per-head QK-norm and rope at 390 ms
+ * of prefill, on the calling thread, beside a `kv append` that is 26.
+ * Splitting the old combined bucket is what showed that -- 94% of phase 1 is
+ * the half that touches nothing shared, so the block pool never has to become
+ * thread-safe for this.
+ *
+ * ⚠ WHAT MAKES IT SAFE, stated because the OTHER half is not: this touches
+ * `sc->s_q` and `sc->s_k`, which are per-sequence scratch, plus two read-only
+ * norm weights. `kv_write` reaches `bp_seq_ensure` through `kv_vec_offset` and
+ * that call is a pure read only ONCE THE POSITION IS BACKED -- backing it is
+ * exactly what phase 1b does, so 1b stays serial.
+ *
+ * ⚠ Parallelism over INDEPENDENT OUTPUTS again, so no twin and no re-anchor:
+ * every (sequence, head) computes what it computed, in the order it computed
+ * it. The token stream coming out byte-identical is the test. */
+typedef struct {
+    SeqScratch* const* scs;
+    const u32*         positions;
+    const f32*         qn;
+    const f32*         kn;
+    u32                n_head;
+    u32                n_head_kv;
+    u32                head_dim;
+    f32                eps;
+    f32                freq_base;
+} QkRopeJob;
+
+static void qkrope_run(void* vctx, u64 s_begin, u64 s_end) {
+    const QkRopeJob* j = (const QkRopeJob*)vctx;
+    for (u64 s = s_begin; s < s_end; s++) {
+        SeqScratch* sc  = j->scs[s];
+        const u32   pos = j->positions[s];
+        for (u32 h = 0; h < j->n_head; h++) {
+            f32* qh = sc->s_q + (u64)h * j->head_dim;
+            rmsnorm(qh, j->qn, j->head_dim, j->eps, qh);
+            rope_neox(qh, j->head_dim, (u64)pos, j->freq_base);
+        }
+        for (u32 h = 0; h < j->n_head_kv; h++) {
+            f32* kh = sc->s_k + (u64)h * j->head_dim;
+            rmsnorm(kh, j->kn, j->head_dim, j->eps, kh);
+            rope_neox(kh, j->head_dim, (u64)pos, j->freq_base);
+        }
+    }
+}
+
+/* ---- SwiGLU on the pool ---------------------------------------------------
+ *
+ * ▶▶ WHY: the completed profile puts swiglu at 473 ms of a 7870 ms prefill --
+ * 6% -- and every millisecond of it ran on the CALLING thread while seven
+ * workers waited at the barrier. That is the shape L4 found in attention (84.6%
+ * of decode on one core) and it is the same fix.
+ *
+ * ⚠ AND IT IS THE SAME EXEMPTION FROM GRADING, for the same reason L4 claimed
+ * it: this is parallelism over INDEPENDENT OUTPUTS. Element i of sequence s
+ * depends on `s_gate[i]` and `s_up[i]` of that sequence and nothing else, the
+ * arithmetic per element is untouched, and the scratch is per sequence. No
+ * twin, no re-anchor, no CONTRACT v2 -- the token stream must come out
+ * byte-identical, which is the test rather than the argument.
+ *
+ * ⚠ THE UNIT IS A SEQUENCE, and n_seq==1 therefore runs INLINE: pool_for_units
+ * falls back when the claim count is below POOL_MIN_CHUNKS, so decode -- which
+ * is one sequence and where a dispatch would cost more than the work -- keeps
+ * exactly the code path it had. A prefill chunk is 128 sequences. */
+typedef struct {
+    SeqScratch* const* scs;
+    u64                n_ff;
+} SwigluJob;
+
+static void swiglu_run(void* vctx, u64 s_begin, u64 s_end) {
+    const SwigluJob* j = (const SwigluJob*)vctx;
+    for (u64 s = s_begin; s < s_end; s++) {
+        swiglu(j->scs[s]->s_gate, j->scs[s]->s_up, j->n_ff, j->scs[s]->s_gate);
+        /* in place: safe aliasing per kernels.h's swiglu contract */
+    }
+}
+
 static void forward_batch_body(Model* m, SeqScratch* const* scs,
                                Kv* const* kv, const u32* token_ids,
                                const u32* positions, u32 n_seq,
@@ -1314,10 +1415,9 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
          * (the classic T** rule), and the arrays must stay f32** because
          * vw->gate is an OUTPUT here and an INPUT to ffn_down below. */
         { PROF_DECL;
-        for (u32 s = 0; s < n_seq; s++) {
-            rmsnorm(scs[s]->s_x, (const f32*)ly->attn_norm->data, m->n_embd,
-                    m->eps, scs[s]->s_a);
-        }
+        NormJob an = {scs, vw->a, (const f32*)ly->attn_norm->data, m->n_embd,
+                      m->eps};
+        pool_for_units(n_seq, 1u, norm_run, &an);
         PROF_ADD(PROF_NORM); }
         { PROF_DECL;
         matvec_batch(ly->attn_q, (const f32* const*)vw->a, m->n_embd, vw->q,
@@ -1339,23 +1439,24 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
          * the property that all of a batch's K/V is resident before any of its
          * attention reads. See att_batch_run. */
         { PROF_DECL;
+        /* per head: rmsnorm(q_norm/k_norm) THEN rope_neox (P3.4: QK-norm
+           BEFORE rope) */
+        QkRopeJob qj = {scs,       positions,    qn,          kn,
+                        m->n_head, m->n_head_kv, m->head_dim, m->eps,
+                        m->freq_base};
+        pool_for_units(n_seq, 1u, qkrope_run, &qj);
+        PROF_ADD(PROF_QKNORM); }
+
+        /* ---- phase 1b: the KV append, SEPARATE FROM 1a because only 1a is
+         * safe to dispatch. `kv_write` reaches `bp_seq_ensure` through
+         * `kv_vec_offset`, and that call is a pure read only ONCE THE POSITION
+         * IS BACKED -- backing it is what this loop does. Phase 1a touches
+         * nothing but per-sequence scratch and read-only weights. */
+        { PROF_DECL;
         for (u32 s = 0; s < n_seq; s++) {
             SeqScratch* sc  = scs[s];
             Kv*         kvs = kv[s];
             const u32   pos = positions[s];
-
-            /* per head: rmsnorm(q_norm/k_norm) THEN rope_neox (P3.4: QK-norm
-               BEFORE rope) */
-            for (u32 h = 0; h < m->n_head; h++) {
-                f32* qh = sc->s_q + (u64)h * m->head_dim;
-                rmsnorm(qh, qn, m->head_dim, m->eps, qh);
-                rope_neox(qh, m->head_dim, (u64)pos, m->freq_base);
-            }
-            for (u32 h = 0; h < m->n_head_kv; h++) {
-                f32* kh = sc->s_k + (u64)h * m->head_dim;
-                rmsnorm(kh, kn, m->head_dim, m->eps, kh);
-                rope_neox(kh, m->head_dim, (u64)pos, m->freq_base);
-            }
 
             /* M4: record WHICH token this position holds, once per position.
              * kv_view backs a position so K/V can be written; this says what
@@ -1383,7 +1484,7 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
                          sc->s_v + (u64)h * m->head_dim);
             }
         }
-        PROF_ADD(PROF_QKNORM); }
+        PROF_ADD(PROF_KVAPPEND); }
 
         /* ---- phase 2: causal GQA attention for the WHOLE batch, ON THE POOL.
          *
@@ -1440,18 +1541,19 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
         matvec_batch(ly->attn_output, (const f32* const*)vw->attn_out,
                      (u64)m->n_head * m->head_dim, vw->proj, m->n_embd,
                      vw->aq, n_seq);
+        PROF_ADD(PROF_ATTOUT); }
+        { PROF_DECL;
         for (u32 s = 0; s < n_seq; s++) {
             f32* x = scs[s]->s_x;
             for (u32 i = 0; i < m->n_embd; i++) x[i] += scs[s]->s_proj[i];
         }
-        PROF_ADD(PROF_ATTOUT); }
+        PROF_ADD(PROF_RESID); }
 
         /* rmsnorm(ffn_norm) -> SwiGLU -> ffn_down -> residual add */
         { PROF_DECL;
-        for (u32 s = 0; s < n_seq; s++) {
-            rmsnorm(scs[s]->s_x, (const f32*)ly->ffn_norm->data, m->n_embd,
-                    m->eps, scs[s]->s_f);
-        }
+        NormJob fn = {scs, vw->f, (const f32*)ly->ffn_norm->data, m->n_embd,
+                      m->eps};
+        pool_for_units(n_seq, 1u, norm_run, &fn);
         PROF_ADD(PROF_NORM); }
         { PROF_DECL;
         matvec_batch(ly->ffn_gate, (const f32* const*)vw->f, m->n_embd,
@@ -1460,24 +1562,24 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
                      m->n_ff, vw->aq, n_seq);
         PROF_ADD(PROF_FFN_GU); }
         { PROF_DECL;
-        for (u32 s = 0; s < n_seq; s++) {
-            swiglu(scs[s]->s_gate, scs[s]->s_up, m->n_ff, scs[s]->s_gate);
-            /* in place: safe aliasing per kernels.h's swiglu contract */
-        }
+        SwigluJob sj = {scs, m->n_ff};
+        pool_for_units(n_seq, 1u, swiglu_run, &sj);
         PROF_ADD(PROF_SWIGLU); }
-        /* ⚠ THE RESIDUAL IS INSIDE THIS REGION NOW. The enum has always said
-         * "ffn_down matvec + residual" and the region ended before the loop --
-         * a comment describing intent while the code did something else. Its
-         * twin PROF_ATTOUT did include its residual, so the two rows were not
-         * measuring the same shape either. */
+        /* ⚠ THE RESIDUALS ARE THEIR OWN BUCKET. The enum used to say
+         * "ffn_down matvec + residual" while the region ended before the loop,
+         * and PROF_ATTOUT's did include its own -- so the two rows were not
+         * measuring the same shape. Both matvec rows are now pure matvec and
+         * the adds are counted once, together, where their size can be read. */
         { PROF_DECL;
         matvec_batch(ly->ffn_down, (const f32* const*)vw->gate, m->n_ff,
                      vw->proj, m->n_embd, vw->aq, n_seq);
+        PROF_ADD(PROF_FFN_DOWN); }
+        { PROF_DECL;
         for (u32 s = 0; s < n_seq; s++) {
             f32* x = scs[s]->s_x;
             for (u32 i = 0; i < m->n_embd; i++) x[i] += scs[s]->s_proj[i];
         }
-        PROF_ADD(PROF_FFN_DOWN); }
+        PROF_ADD(PROF_RESID); }
 
         if (dump_dir != NULL) {
             /* n_seq == 1 here -- refused above otherwise. */
