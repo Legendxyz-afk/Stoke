@@ -1285,13 +1285,25 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
             }
         }
 
+#ifndef STOKE_MUT_NO_SOFTMAX
         for (u32 g = 0; g < G; g++) softmax(scores + (u64)g * row, n);
+#else
+        /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. The score /
+         * value split leaves a REMAINDER that both arms keep, and after the
+         * Qt and AVX2 work that remainder is 25% of attention. This prices the
+         * part of it that is not bookkeeping: G softmaxes of length n per
+         * unit, i.e. one expf per (query, key, q-head). */
+        (void)0;
+#endif
 
         for (u32 g = 0; g < G; g++) {
             f32* o = obase + (u64)g * hd;
             for (u32 d = 0; d < hd; d++) o[d] = 0.0f;
         }
 
+#ifdef STOKE_MUT_HOIST_KV
+        const f32* vhoist = kv_read(kvs, L, kvh, 0u, kvbuf).v;
+#endif
         /* ---- value pass: V[j] fetched once, accumulated into all G outputs.
          * Ordered j-outer/g-inner so each output's adds still arrive in
          * ascending j -- g-outer would be the same fetch count but would put
@@ -1303,7 +1315,15 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
 #else
         for (u32 j = 0; j < n; j++) {
 #endif
-#ifdef STOKE_MUT_ALIAS_KV
+#if defined(STOKE_MUT_HOIST_KV)
+            /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. The
+             * kv_read CALL leaves the loop entirely (bounds checks,
+             * bp_seq_ensure, bp_seq_block, bp_block_slot and a multiply chain,
+             * once per j around a 128-element inner loop). Its twin
+             * -DSTOKE_MUT_ALIAS_KV keeps the call and removes only the
+             * TRAFFIC, so the pair separates the two. */
+            const f32* vj = vhoist;
+#elif defined(STOKE_MUT_ALIAS_KV)
             const f32* vj = kv_read(kvs, L, kvh, 0u, kvbuf).v;
 #else
             const f32* vj = kv_read(kvs, L, kvh, j, kvbuf).v;

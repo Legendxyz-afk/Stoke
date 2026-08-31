@@ -524,6 +524,27 @@ void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
     const __m256 b2 = _mm256_broadcast_ss(w4 + 2);
     const __m256 b3 = _mm256_broadcast_ss(w4 + 3);
     u32 d = 0;
+#ifdef STOKE_MUT_NO_ACC
+    /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. Stores instead of
+     * accumulating, which deletes the LOAD half of the read-modify-write and
+     * nothing else: same multiplies, same stores, same traffic in vj. It asks
+     * whether re-reading the 512-byte output row for every j is what this pass
+     * costs, before anyone rewrites it to hold that row in registers. */
+    for (; d + 8u <= hd; d += 8u) {
+        const __m256 v = _mm256_loadu_ps(vj + d);
+        _mm256_storeu_ps(o0 + d, _mm256_mul_ps(b0, v));
+        _mm256_storeu_ps(o1 + d, _mm256_mul_ps(b1, v));
+        _mm256_storeu_ps(o2 + d, _mm256_mul_ps(b2, v));
+        _mm256_storeu_ps(o3 + d, _mm256_mul_ps(b3, v));
+    }
+    for (; d < hd; ++d) {
+        o0[d] = w4[0] * vj[d];
+        o1[d] = w4[1] * vj[d];
+        o2[d] = w4[2] * vj[d];
+        o3[d] = w4[3] * vj[d];
+    }
+    return;
+#endif
     for (; d + 8u <= hd; d += 8u) {
         const __m256 v = _mm256_loadu_ps(vj + d);
         _mm256_storeu_ps(o0 + d, _mm256_add_ps(_mm256_loadu_ps(o0 + d),
