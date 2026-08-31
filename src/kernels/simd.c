@@ -438,6 +438,47 @@ static inline i32 kq_hsum_i32(__m256i v) {
     return _mm_cvtsi128_si32(s);
 }
 
+/* CONTRACT v2, FOUR SUPER-BLOCK TOTALS AT ONCE -- lane k of the result is
+ * exactly what `kq_hsum_i32` would return for the k-th argument, and it is
+ * exact for the reason stated just above: the totals are INTEGERS, integer
+ * addition is associative, so the tree shape is free and a wider one inherits
+ * the scalar's answer rather than approximating it.
+ *
+ * ▶ WHY IT EXISTS. In the BATCHED kernels this reduction runs once per
+ * (super-block, SEQUENCE) -- twice, counting the mins term -- and `objdump`
+ * puts the pair at 14 of the 55 instructions in that loop body. Four separate
+ * calls are 28 instructions; this is 11.
+ *
+ * `vphaddd` is per 128-bit lane, so hadd(a,b) = [a01,a23,b01,b23 |
+ * a45,a67,b45,b67]. After the second one each 128-bit lane holds one partial
+ * per input in input order, and adding the two lanes finishes all four. */
+static inline __m128i kq_hsum4_i32(__m256i a, __m256i b, __m256i c,
+                                   __m256i d) {
+    __m256i ab   = _mm256_hadd_epi32(a, b);
+    __m256i cd   = _mm256_hadd_epi32(c, d);
+    __m256i abcd = _mm256_hadd_epi32(ab, cd);
+    return _mm_add_epi32(_mm256_castsi256_si128(abcd),
+                         _mm256_extracti128_si256(abcd, 1));
+}
+
+/* One super-block of the Q4_K x Q8_K dot, for ONE sequence: the 23 of the 55
+ * instructions that are the dot product. Factored out so the grouped path and
+ * the remainder path below cannot drift apart -- they are the same arithmetic
+ * in the same order, and the only thing the grouping changes is how the
+ * results are reduced and folded. */
+static inline __m256i kq4_dot_block(const __m256i* wnib, const u8* scales8,
+                                    const i8* q8) {
+    __m256i acc = _mm256_setzero_si256();
+    for (u32 j = 0; j < 8u; ++j) {
+        __m256i av =
+            _mm256_loadu_si256((const __m256i*)(const void*)(q8 + j * 32u));
+        acc = _mm256_add_epi32(
+            acc, _mm256_madd_epi16(_mm256_maddubs_epi16(wnib[j], av),
+                                   _mm256_set1_epi16((short)scales8[j])));
+    }
+    return acc;
+}
+
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q4_k_q8_k_avx2 -- n=%llu is not a multiple "
@@ -648,9 +689,143 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
 #endif
 #endif
 
+        u32 s = 0;
+#if STOKE_MINS_SIMD && !defined(STOKE_MUT_NO_BOOKKEEP)
+        /* ▶▶▶ FOUR SEQUENCES AT A TIME, AND WHAT IT IS FOR. The dot product
+         * itself is unchanged and un-regrouped -- `kq4_dot_block` is the same
+         * eight instructions in the same order the loop below runs. What the
+         * grouping removes is the part of the body that is NOT the dot:
+         * `objdump` on the 2026-08-30 kernel counts 55 instructions per
+         * (super-block, sequence), of which 23 are the dot and 32 are
+         * bookkeeping. Two horizontal sums become one `kq_hsum4_i32` each (14
+         * instructions -> 22 per FOUR sequences), and the ten-instruction
+         * scalar float epilogue becomes one four-wide one.
+         *
+         * ⚠⚠ BIT-EXACT, AND THE TWO HALVES ARE EXACT FOR DIFFERENT REASONS.
+         * The reductions are INTEGER, so associativity makes the tree shape
+         * free -- that is CONTRACT v2, stated at kq_hsum_i32 and relied on here
+         * rather than re-derived. The float fold is exact because it is not
+         * reassociated at all: lane k executes `sumf + (dw*ad)*S` then
+         * `- (dm*ad)*M`, the same operations on the same values in the same
+         * order as the scalar statement below, and `-ffp-contract=off` is
+         * pinned globally so neither spelling can grow an FMA the other lacks.
+         * Four lanes of the identical computation, not a wider accumulator.
+         *
+         * ⚠ The MINS group is reduced before the DOT group is built, not
+         * alongside it: eight live accumulators plus `wnib[8]` would be the
+         * whole register file, and rung B measured that over-hoisting this
+         * kernel's sibling made N=16 SLOWER. Peak liveness here is four.
+         *
+         * The remainder falls through to the loop below -- production tiles at
+         * KERNELS_BATCH_TILE=16, so the remainder is the prefill chunk's tail
+         * and decode's n_seq=1, neither of which is where the time is. */
+        const __m128 dwv = _mm_set1_ps(dw);
+        const __m128 dmv = _mm_set1_ps(dm);
+        for (; s + 4u <= n_seq; s += 4u) {
+            const u8* ab[4];
+            f32       d0, d1, d2, d3;
+            for (u32 k = 0; k < 4u; ++k) {
+                ab[k] = (const u8*)arows[s + k] + i * KERNELS_Q8_K_BLOCK_BYTES;
+            }
+            /* Four separate scalars rather than an `f32[4]` written by memcpy
+             * and read back with `_mm_loadu_ps`: gcc turned that array into a
+             * GPR pack -- 19 `mov`, 4 `or`, 2 `shl` per group building four
+             * floats it already had in memory. `_mm_setr_ps` of four scalars
+             * gets movss/unpcklps, which is what the value is. */
+            memcpy(&d0, ab[0], sizeof d0);
+            memcpy(&d1, ab[1], sizeof d1);
+            memcpy(&d2, ab[2], sizeof d2);
+            memcpy(&d3, ab[3], sizeof d3);
+            const __m128i M4 = kq_hsum4_i32(
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[0] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[1] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[2] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[3] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))));
+            /* ⚠⚠ THE SUB-BLOCK LOOP IS OUTSIDE THE SEQUENCE LOOP, AND THAT
+             * NEST IS THE WHOLE POINT -- the first spelling of this ran
+             * `kq4_dot_block` four times, which keeps FOUR accumulators live
+             * across `wnib[8]` and spilled: `objdump` counted 66 `vmovdqu` in
+             * the group body, 57 instructions per sequence against the 55 it
+             * was replacing, and it measured 1.06x when the ablation said 1.32x
+             * was available. Here only ONE weight vector and ONE scale are live
+             * at a time and they are shared by all four sequences, so peak
+             * liveness is four accumulators plus two -- no spill, and the
+             * weight-side loads amortize four ways instead of one.
+             *
+             * Per sequence this is the same eight sub-blocks in the same
+             * ascending order accumulating into the same lanes as the loop
+             * below; `test_matvec_batch` holds the two to bit-identity against
+             * the untouched solo kernel at n=4 and n=5, which is what makes the
+             * duplication safe to have. */
+            const i8* q8g[4];
+            for (u32 k = 0; k < 4u; ++k) q8g[k] = (const i8*)(ab[k] + 4);
+            __m256i a0 = _mm256_setzero_si256();
+            __m256i a1 = _mm256_setzero_si256();
+            __m256i a2 = _mm256_setzero_si256();
+            __m256i a3 = _mm256_setzero_si256();
+            /* ⚠ THE PRAGMA IS LOAD BEARING, and it is here because `objdump`
+             * said so. Fully unrolled, gcc REASSOCIATES the four integer
+             * accumulator chains into trees -- it is entitled to, integer
+             * addition being associative -- which needs all 32 products live
+             * at once and spilled every one: 32 `vmovdqu` stores to the stack
+             * per group, 8 per sequence, on top of the work. Keeping the loop
+             * rolled keeps four accumulators and one weight vector live and
+             * costs one compare and branch per sub-block, shared by four
+             * sequences. */
+            for (u32 j = 0; j < 8u; ++j) {
+                const __m256i w  = wnib[j];
+                const __m256i sc = _mm256_set1_epi16((short)scales8[j]);
+                a0 = _mm256_add_epi32(
+                    a0, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                w, _mm256_loadu_si256(
+                                       (const __m256i*)(const void*)(q8g[0] +
+                                                                     j * 32u))),
+                            sc));
+                a1 = _mm256_add_epi32(
+                    a1, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                w, _mm256_loadu_si256(
+                                       (const __m256i*)(const void*)(q8g[1] +
+                                                                     j * 32u))),
+                            sc));
+                a2 = _mm256_add_epi32(
+                    a2, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                w, _mm256_loadu_si256(
+                                       (const __m256i*)(const void*)(q8g[2] +
+                                                                     j * 32u))),
+                            sc));
+                a3 = _mm256_add_epi32(
+                    a3, _mm256_madd_epi16(
+                            _mm256_maddubs_epi16(
+                                w, _mm256_loadu_si256(
+                                       (const __m256i*)(const void*)(q8g[3] +
+                                                                     j * 32u))),
+                            sc));
+            }
+            const __m128i S4 = kq_hsum4_i32(a0, a1, a2, a3);
+            const __m128 a4 = _mm_setr_ps(d0, d1, d2, d3);
+            __m128       v  = _mm_loadu_ps(sumf + s);
+            v = _mm_add_ps(v, _mm_mul_ps(_mm_mul_ps(dwv, a4),
+                                         _mm_cvtepi32_ps(S4)));
+            v = _mm_sub_ps(v, _mm_mul_ps(_mm_mul_ps(dmv, a4),
+                                         _mm_cvtepi32_ps(M4)));
+            _mm_storeu_ps(sumf + s, v);
+        }
+#endif
+
         /* ── PER-SEQUENCE WORK, byte-for-byte the solo kernel's, in its
          * order. Nothing below regroups anything; it only runs N times. */
-        for (u32 s = 0; s < n_seq; ++s) {
+        for (; s < n_seq; ++s) {
             const u8* ablk = (const u8*)arows[s] + i * KERNELS_Q8_K_BLOCK_BYTES;
             const i8* q8 = (const i8*)(ablk + 4);
             const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
@@ -722,16 +897,13 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrow, const void* const* arows,
              * The broadcast stays INSIDE the loop rather than being hoisted
              * with the other weight-only work: eight more live __m256i beside
              * `wnib[8]` would be the whole register file, and rung B measured
-             * that over-hoisting this kernel's siblings made N=16 SLOWER. */
-            __m256i acc = _mm256_setzero_si256();
-            for (u32 j = 0; j < 8u; ++j) {
-                __m256i av = _mm256_loadu_si256(
-                    (const __m256i*)(const void*)(q8 + j * 32u));
-                acc = _mm256_add_epi32(
-                    acc, _mm256_madd_epi16(
-                             _mm256_maddubs_epi16(wnib[j], av),
-                             _mm256_set1_epi16((short)scales8[j])));
-            }
+             * that over-hoisting this kernel's siblings made N=16 SLOWER.
+             *
+             * The eight are `kq4_dot_block`, CALLED rather than restated, so
+             * the grouped path above and this one cannot drift apart in a
+             * kernel where a one-instruction divergence is a silent wrong
+             * answer. */
+            __m256i acc = kq4_dot_block(wnib, scales8, q8);
 #ifdef STOKE_MUT_NO_BOOKKEEP
             /* The ONLY thing left per sequence: fold the block's raw i32 lanes
              * into a running vector. The dot loop above is untouched, and it
