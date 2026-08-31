@@ -884,6 +884,16 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
              * rolled keeps four accumulators and one weight vector live and
              * costs one compare and branch per sub-block, shared by four
              * sequences. */
+/* An empty asm that CLAIMS the accumulator forces gcc to materialise it in a
+ * register at this point, which stops it reassociating the four chains into
+ * trees. It emits nothing. Without it `objdump` counts 34 stack spills in this
+ * function: the tree form needs all 32 products of an unrolled sub-block loop
+ * live at once. */
+#if defined(__GNUC__)
+#define KQ_KEEP(v) __asm__("" : "+x"(v))
+#else
+#define KQ_KEEP(v) ((void)0)
+#endif
             for (u32 j = 0; j < 8u; ++j) {
                 const __m256i w  = wnib[j];
                 const __m256i sc = _mm256_set1_epi16((short)scales8[j]);
@@ -915,6 +925,10 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
                                        (const __m256i*)(const void*)(q8g[3] +
                                                                      j * 32u))),
                             sc));
+                KQ_KEEP(a0);
+                KQ_KEEP(a1);
+                KQ_KEEP(a2);
+                KQ_KEEP(a3);
             }
             const __m128i S4 = kq_hsum4_i32(a0, a1, a2, a3);
             const __m128 a4 = _mm_setr_ps(d0, d1, d2, d3);
