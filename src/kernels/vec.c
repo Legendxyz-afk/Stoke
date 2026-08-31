@@ -78,6 +78,15 @@ typedef struct {
  * four-row stepping is never split across a chunk boundary. */
 #define BATCH_ROW_CHUNK 64u
 
+/* The FUSED K-quant path's own row chunk, separate from the delegating one
+ * because the two nests hold different things in cache: the delegate reuses a
+ * chunk's ROWS across sequences, the fused path reuses a TILE's ACTIVATIONS
+ * across rows while the chunk's weights stay warm. Overridable so the value
+ * can be swept end-to-end rather than argued -- see the M7 prefill work. */
+#ifndef KQUANT_ROW_CHUNK
+#define KQUANT_ROW_CHUNK 64u
+#endif
+
 static void rows_delegate_batch(void* vctx, u64 begin, u64 end) {
     const BatchRowJob* j = (const BatchRowJob*)vctx;
     for (u64 r0 = begin; r0 < end; r0 += BATCH_ROW_CHUNK) {
@@ -150,16 +159,45 @@ static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
                                    void (*dot_xn)(const void*,
                                                   const void* const*,
                                                   u32, u64, f32*)) {
-    for (u64 r0 = begin; r0 < end; r0 += BATCH_ROW_CHUNK) {
-        u64 r1 = r0 + BATCH_ROW_CHUNK;
+    for (u64 r0 = begin; r0 < end; r0 += KQUANT_ROW_CHUNK) {
+        u64 r1 = r0 + KQUANT_ROW_CHUNK;
         if (r1 > end) r1 = end;
-        for (u64 r = r0; r < r1; r++) {
-            const u8* row = j->base + r * j->row_bytes;
-            /* Tiled so the kernel's per-sequence accumulators stay a small
-             * stack array; each tile is independent and exact on its own. */
-            for (u32 s0 = 0; s0 < j->n_seq; s0 += KERNELS_BATCH_TILE) {
-                u32 cnt = j->n_seq - s0;
-                if (cnt > KERNELS_BATCH_TILE) cnt = KERNELS_BATCH_TILE;
+        /* ▶▶▶ TILE OUTSIDE ROW, WHICH IS THE OPPOSITE OF WHAT THIS LOOP USED
+         * TO SAY, AND THE REASON IS THE ACTIVATION REUSE DISTANCE.
+         *
+         * With the row loop outside, ONE row touches every sequence's
+         * activation before the next row starts: n_seq * (n_in/256) * 292 B,
+         * which on a 128-token prefill chunk at n_in=2560 is 374 KiB. Every
+         * row then re-reads all of it, so the reuse distance is 374 KiB and
+         * nothing is ever in L1. With the tile outside, a tile's 16 sequences
+         * (46.7 KiB) are reused across the whole row chunk, and the chunk's
+         * weights (KQUANT_ROW_CHUNK * row_bytes) are read from memory once and
+         * hit warm for every remaining tile.
+         *
+         * ⚠ That is exactly the argument BATCH_ROW_CHUNK's own note makes for
+         * `rows_delegate_batch` above, which has had the sequence loop outside
+         * the row loop all along. The fused path was written the other way and
+         * the note did not carry over.
+         *
+         * ⚠⚠ WHY IT IS WORTH DOING NOW AND WAS NOT ON 2026-08-30:
+         * `-DSTOKE_MUT_ALIAS_ACT` -- which collapses the activation tile to one
+         * sequence's -- measured 5.8% against the kernel of that day and
+         * measures 1.29x against this one. Removing the per-sequence
+         * bookkeeping promoted the tile from noise to the largest remaining
+         * cost. An ablation's verdict is scoped to the version it ran on.
+         *
+         * BIT-EXACT BY CONSTRUCTION, and that is why this is a loop swap
+         * rather than a kernel change: every `dot_xn` call is byte-for-byte
+         * the call it was, on the same row and the same sequences, computing
+         * one (row, sequence) result from the same super-blocks in the same
+         * ascending order. Only the ORDER OF INDEPENDENT CALLS changes. */
+        for (u32 s0 = 0; s0 < j->n_seq; s0 += KERNELS_BATCH_TILE) {
+            u32 cnt = j->n_seq - s0;
+            if (cnt > KERNELS_BATCH_TILE) cnt = KERNELS_BATCH_TILE;
+            for (u64 r = r0; r < r1; r++) {
+                const u8* row = j->base + r * j->row_bytes;
+                /* Tiled so the kernel's per-sequence accumulators stay a small
+                 * stack array; each tile is independent and exact on its own. */
                 f32 out[KERNELS_BATCH_TILE];
                 dot_xn(row, (const void* const*)&j->aq[s0], cnt, j->n_in, out);
                 for (u32 k = 0; k < cnt; k++) j->y[s0 + k][r] = out[k];
