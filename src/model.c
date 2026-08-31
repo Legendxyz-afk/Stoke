@@ -1149,8 +1149,37 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
         f32*       obase = sc->s_attn_out + (u64)kvh * G * hd;
 
         /* ---- score pass: K[j] fetched once, scored against all G q-heads */
+#ifdef STOKE_MUT_NO_SCORE
+        /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG, and its twin
+         * is -DSTOKE_MUT_NO_VALUE. Attention is 18% of prefill for 4.9% of its
+         * FLOPs and has two passes over the same bytes: the SCORE pass is a
+         * scalar float reduction, the VALUE pass is a 4-wide AXPY. Whether
+         * vectorizing the score pass is worth anything depends on which of the
+         * two the 1296 ms is in -- and if they cost the SAME despite 4x the
+         * lanes, attention is bound by streaming K and V, not by arithmetic,
+         * and no amount of SIMD will help. Zeroed rather than left
+         * uninitialised so the softmax below sees a clean uniform row instead
+         * of whatever NaNs the stack held. */
+        for (u32 g = 0; g < G; g++) {
+            f32* srow = scores + (u64)g * row;
+            for (u32 j = 0; j < n; j++) srow[j] = 0.0f;
+        }
+        const u32 n_score = 0u * n;   /* runtime zero: no -Wtype-limits */
+        for (u32 j = 0; j < n_score; j++) {
+#else
         for (u32 j = 0; j < n; j++) {
+#endif
+#ifdef STOKE_MUT_ALIAS_KV
+            /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. Every j
+             * reads POSITION 0, so the K/V working set collapses from n*512 B
+             * to 512 B and is trivially L1-resident, while the kv_read CALL
+             * count, the arithmetic and the loop structure are untouched. It
+             * separates the two candidate bottlenecks the pass split could not:
+             * streaming K/V, versus the work done on it. */
+            const f32* kj = kv_read(kvs, L, kvh, 0u, kvbuf).k;
+#else
             const f32* kj = kv_read(kvs, L, kvh, j, kvbuf).k;
+#endif
             u32        g = 0;
             for (; g + 4u <= G; g += 4u) {
                 const f32* q0 = qbase + (u64)(g + 0u) * hd;
@@ -1187,8 +1216,17 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
          * ascending j -- g-outer would be the same fetch count but would put
          * the reuse a whole pass apart, which is the redundancy this rung is
          * here to remove. */
+#ifdef STOKE_MUT_NO_VALUE
+        const u32 n_score = 0u * n;   /* runtime zero: no -Wtype-limits */
+        for (u32 j = 0; j < n_score; j++) {
+#else
         for (u32 j = 0; j < n; j++) {
+#endif
+#ifdef STOKE_MUT_ALIAS_KV
+            const f32* vj = kv_read(kvs, L, kvh, 0u, kvbuf).v;
+#else
             const f32* vj = kv_read(kvs, L, kvh, j, kvbuf).v;
+#endif
             for (u32 g = 0; g < G; g++) {
                 const f32 wgt = scores[(u64)g * row + j];
                 f32*      o = obase + (u64)g * hd;
