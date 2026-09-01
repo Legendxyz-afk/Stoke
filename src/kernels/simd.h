@@ -240,9 +240,17 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
  * better.** Four units per arm, ABBA, ranges DISJOINT (worst 64 beats best 32),
  * with the untouched `attention` bucket as a null arm at 1.003x.
  *
- * ⏹ AND IT IS BETTER ON BOTH AXES -- batched decode at 8 sequences reads
+ * ⏹ AND IT IS BETTER ON ALL THREE AXES -- batched decode at 8 sequences reads
  * 63.638 -> 65.240 tok/s (1.025x, ranges disjoint), so this is not a
- * prefill-for-decode trade. Bit-exact, checked rather than assumed:
+ * prefill-for-decode trade; and the GATE METRIC agrees, `bench --serve` 8f32
+ * AGGREGATE(M0) 16.314 -> 16.784 (1.029x, four units per arm over two ABBA
+ * blocks). ⚠ THE SERVE AXIS WAS CHECKED BECAUSE IT HAD NOT BEEN: the tile was
+ * swept on `run` (prefill) and `batch` (decode), which are different mixes
+ * from the one the gate measures, and the first post-change serve reading
+ * looked LOW against a number taken hours earlier. It was block drift -- the
+ * arms interleaved in one block disagree with that reading and agree with the
+ * other two axes. A constant validated on the axes you happened to sweep is
+ * not validated on the axis you are graded by. Bit-exact, checked rather than assumed:
  * `test_matvec_batch` 180/180 on both Q4_K kernels, and id streams `cmp`-equal
  * to the ROW_TILE=32 binary at n_seq=1 and at 4-way batch.
  *
