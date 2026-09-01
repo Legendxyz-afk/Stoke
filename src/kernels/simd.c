@@ -57,10 +57,15 @@
  * enters here at n_seq=16 and then the chunk remainder. Decode does not.
  *
  * Build the old arm with -DSTOKE_MINS_SIMD=0 (Makefile: EXTRA_CFLAGS). It is
- * kept so the A/B can be re-run and so a toolchain regression has a referent. */
-#ifndef STOKE_MINS_SIMD
-#define STOKE_MINS_SIMD 1
-#endif
+ * kept so the A/B can be re-run and so a toolchain regression has a referent.
+ *
+ * ⚠⚠ THE DEFAULT LIVES IN simd.h, NOT HERE, AND THAT COST A BUILD TO LEARN
+ * (2026-09-01). It used to be `#ifndef/#define` in this .c file, so vec.c --
+ * which has to know, because the VNNI kernel has only the SIMD mins spelling
+ * and must not be selectable when this arm is off -- saw the name UNDEFINED.
+ * `#if !STOKE_MINS_SIMD` is then `#if !0`, i.e. ALWAYS TRUE, so the guard fired
+ * in every build and switched the VNNI kernel silently off. A per-TU default
+ * for a build-wide knob is not a default, it is two different knobs. */
 
 /* ---------------------------------------------------------------- feature */
 
@@ -567,6 +572,25 @@ void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
     }
 }
 
+/* An empty asm that CLAIMS the accumulator forces gcc to materialise it in a
+ * register at this point, which stops it reassociating N accumulator chains
+ * into trees. It emits nothing. Without it `objdump` counts 34 stack spills in
+ * the Q4_K grouped kernel: the tree form needs all 32 products of an unrolled
+ * sub-block loop live at once.
+ *
+ * ⚠ FILE SCOPE, and it was not always -- fixed 2026-09-01. It used to sit
+ * inside `vec_dot_q4_k_q8_k_xn_avx2`, within that function's
+ * `#if STOKE_MINS_SIMD` block, while the Q6_K grouped kernel below uses it
+ * unconditionally. A `#define` is file-scoped, so Q6_K was silently depending
+ * on the Q4_K grouped path being compiled in, and `-DSTOKE_MINS_SIMD=0` -- a
+ * RETAINED A/B ARM -- had quietly stopped building at all. A knob that no
+ * longer compiles is not a knob, it is a claim. */
+#if defined(__GNUC__)
+#define KQ_KEEP(v) __asm__("" : "+x"(v))
+#else
+#define KQ_KEEP(v) ((void)0)
+#endif
+
 f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
     if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
         fatal("kernels: vec_dot_q4_k_q8_k_avx2 -- n=%llu is not a multiple "
@@ -884,16 +908,131 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
              * rolled keeps four accumulators and one weight vector live and
              * costs one compare and branch per sub-block, shared by four
              * sequences. */
-/* An empty asm that CLAIMS the accumulator forces gcc to materialise it in a
- * register at this point, which stops it reassociating the four chains into
- * trees. It emits nothing. Without it `objdump` counts 34 stack spills in this
- * function: the tree form needs all 32 products of an unrolled sub-block loop
- * live at once. */
-#if defined(__GNUC__)
-#define KQ_KEEP(v) __asm__("" : "+x"(v))
+#define KQ_ACT(k, jj) \
+    _mm256_loadu_si256((const __m256i*)(const void*)(q8g[(k)] + (jj) * 32u))
+#if defined(STOKE_MUT_G4_VNNI_CEIL) || defined(STOKE_MUT_G4_VNNI_B) || \
+    defined(STOKE_MUT_G4_VNNI_A)
+            /* ▶▶ MUTANTS, SPEED PROBES ONLY -- THE OUTPUT IS DELIBERATELY
+             * WRONG (the per-sub-block scale is dropped or applied to the
+             * wrong lanes), in the family of -DSTOKE_MUT_NO_BOOKKEEP. Built
+             * only by an explicit -D, and vec.c's q4k_select announces them.
+             *
+             * WHAT THEY ASK. `objdump` on the shipping group loop counts 157
+             * instructions per (super-block, row, FOUR sequences): 32
+             * vpmaddubsw + 32 vpmaddwd + 28 vpaddd of dot, and the rest
+             * reduction/epilogue/pointer work. The multiplies are the whole of
+             * ports 0-1 -- 68 of them, so 34 cycles at 2/cycle -- while the
+             * front end at 6 uops/cycle wants only 26. If that reading is
+             * right the loop is PORT-BOUND ON THE MULTIPLIERS, and AVX-VNNI's
+             * `vpdpbusd` retires 32 MACs in ONE p01 uop where maddubs+maddwd
+             * take two.
+             *
+             * The recorded objection is that `vpdpbusd` cannot carry the
+             * per-sub-block scale: it accumulates 4 byte-products per i32 lane
+             * and there is nowhere to put a 6-bit multiplier. That was checked
+             * on paper, never measured. These two probes bracket what the
+             * answer is worth BEFORE any of the layout work that would be
+             * needed to collect it:
+             *
+             *   _CEIL -- eight `vpdpbusd` straight into the four accumulators,
+             *   no scale at all. 8 p01 uops per (super-block, sequence) where
+             *   the shipping kernel spends 16. This is the ABSOLUTE ceiling:
+             *   no scale-application scheme can beat it.
+             *
+             *   _B -- the instruction mix of the kernel that WOULD be exact if
+             *   the activations and nibbles were permuted so that lane l of a
+             *   `vpdpbusd` accumulator holds four elements of sub-block l:
+             *   eight dpbusd into TWO accumulators (elements 0-15 and 16-31 of
+             *   every sub-block, each bounded by 16*15*128 = 30,720 so
+             *   `vpackssdw` cannot saturate), one pack, one `vpmaddwd`
+             *   carrying all eight scales at once. 9 p01 uops. The lane
+             *   semantics here are wrong -- the operands are NOT permuted, so
+             *   the answer is garbage -- but every instruction, its port and
+             *   its dependency are the ones that kernel would issue.
+             *
+             * ⚠ Read these UPSTREAM of the garbage: the profiler's matmul
+             * bucket, never prefill wall time. Wrong activations cost ~2.1 s in
+             * elementwise ops that no PROF bucket covers, which is how
+             * -DSTOKE_MUT_NO_BOOKKEEP came back 1.22x on matmul and ~1.00x on
+             * the wall. */
+#ifdef STOKE_MUT_G4_VNNI_CEIL
+            for (u32 j = 0; j < 8u; ++j) {
+                const __m256i w = wnib[j];
+                a0 = _mm256_dpbusd_avx_epi32(a0, w, KQ_ACT(0, j));
+                a1 = _mm256_dpbusd_avx_epi32(a1, w, KQ_ACT(1, j));
+                a2 = _mm256_dpbusd_avx_epi32(a2, w, KQ_ACT(2, j));
+                a3 = _mm256_dpbusd_avx_epi32(a3, w, KQ_ACT(3, j));
+                KQ_KEEP(a0);
+                KQ_KEEP(a1);
+                KQ_KEEP(a2);
+                KQ_KEEP(a3);
+            }
+#elif defined(STOKE_MUT_G4_VNNI_A)
+            /*   _A -- the mix of the kernel that needs NO LAYOUT CHANGE:
+             * sub-blocks taken in PAIRS, two `vpdpbusd` into two zeroed
+             * accumulators, `vpackssdw` to i16 (a lane holds at most
+             * 4*15*128 = 7,680, so no saturation), one `vpmaddwd` carrying the
+             * pair's two scales, one `vpaddd`. Four times per super-block
+             * instead of once: 12 p01 uops against _B's 9 and the shipping
+             * kernel's 16, and 8 zeroing idioms per (super-block, sequence)
+             * that _B does not pay. If this reads like _B, the whole
+             * permuted-layout project is unnecessary. */
+            for (u32 j = 0; j < 8u; j += 2u) {
+                const __m256i wl = wnib[j];
+                const __m256i wh = wnib[j + 1u];
+                __m256i t0, t1;
+#define KQ_PAIR(acc, k)                                                       \
+    t0 = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), wl, KQ_ACT(k, j));   \
+    t1 = _mm256_dpbusd_avx_epi32(_mm256_setzero_si256(), wh,                  \
+                                 KQ_ACT(k, j + 1u));                          \
+    acc = _mm256_add_epi32(                                                   \
+        acc, _mm256_madd_epi16(_mm256_packs_epi32(t0, t1), m16));             \
+    KQ_KEEP(acc)
+                KQ_PAIR(a0, 0);
+                KQ_PAIR(a1, 1);
+                KQ_PAIR(a2, 2);
+                KQ_PAIR(a3, 3);
+#undef KQ_PAIR
+            }
 #else
-#define KQ_KEEP(v) ((void)0)
+            {
+                __m256i b0 = _mm256_setzero_si256();
+                __m256i b1 = _mm256_setzero_si256();
+                __m256i b2 = _mm256_setzero_si256();
+                __m256i b3 = _mm256_setzero_si256();
+                for (u32 j = 0; j < 4u; ++j) {
+                    const __m256i w = wnib[j];
+                    a0 = _mm256_dpbusd_avx_epi32(a0, w, KQ_ACT(0, j));
+                    a1 = _mm256_dpbusd_avx_epi32(a1, w, KQ_ACT(1, j));
+                    a2 = _mm256_dpbusd_avx_epi32(a2, w, KQ_ACT(2, j));
+                    a3 = _mm256_dpbusd_avx_epi32(a3, w, KQ_ACT(3, j));
+                    KQ_KEEP(a0);
+                    KQ_KEEP(a1);
+                    KQ_KEEP(a2);
+                    KQ_KEEP(a3);
+                }
+                for (u32 j = 4u; j < 8u; ++j) {
+                    const __m256i w = wnib[j];
+                    b0 = _mm256_dpbusd_avx_epi32(b0, w, KQ_ACT(0, j));
+                    b1 = _mm256_dpbusd_avx_epi32(b1, w, KQ_ACT(1, j));
+                    b2 = _mm256_dpbusd_avx_epi32(b2, w, KQ_ACT(2, j));
+                    b3 = _mm256_dpbusd_avx_epi32(b3, w, KQ_ACT(3, j));
+                    KQ_KEEP(b0);
+                    KQ_KEEP(b1);
+                    KQ_KEEP(b2);
+                    KQ_KEEP(b3);
+                }
+                /* `m16` stands in for the eight-scale vector: it is hoisted to
+                 * the same place, is the same width, and feeds the same
+                 * instruction, so the mix and the operand source match. */
+                a0 = _mm256_madd_epi16(_mm256_packs_epi32(a0, b0), m16);
+                a1 = _mm256_madd_epi16(_mm256_packs_epi32(a1, b1), m16);
+                a2 = _mm256_madd_epi16(_mm256_packs_epi32(a2, b2), m16);
+                a3 = _mm256_madd_epi16(_mm256_packs_epi32(a3, b3), m16);
+            }
 #endif
+            (void)scales8;
+#else
             for (u32 j = 0; j < 8u; ++j) {
                 const __m256i w  = wnib[j];
                 const __m256i sc = _mm256_set1_epi16((short)scales8[j]);
@@ -930,6 +1069,8 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
                 KQ_KEEP(a2);
                 KQ_KEEP(a3);
             }
+#endif
+#undef KQ_ACT
 #ifdef STOKE_MUT_G4_DOTONLY
             /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. Keeps the
              * 8-sub-block dot for all four sequences and deletes everything
@@ -1059,6 +1200,288 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
 #else
     for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = sumf[t];
 #endif
+}
+
+/* ── FOUR 32-BYTE SUB-BLOCKS -> FOUR VECTORS WHOSE LANE l BELONGS TO SUB-BLOCK
+ * (l mod 4). Eight `vpunpck`s, no cross-lane permute, and it is the SAME eight
+ * on the weight side and the activation side -- which is the only reason the
+ * VNNI kernel below is affordable.
+ *
+ * ▶ WHAT IT IS FOR. `vpdpbusd` accumulates four byte-products into each i32
+ * lane and has nowhere to put a multiplier, so the recorded objection to using
+ * it here was that the per-sub-block scale would need a `vpmulld` costing more
+ * than the instruction saves. That is true of the NATURAL layout, where all
+ * eight lanes of an accumulator belong to ONE sub-block. It stops being true
+ * once the lanes SPAN sub-blocks: then one `vpmaddwd` against a 16-lane scale
+ * vector applies all eight scales and reduces, once per super-block.
+ *
+ * ▶ WHY THIS EXACT SHUFFLE. `vpunpckldq(a,b)` interleaves dwords WITHIN each
+ * 128-bit half, and `vpunpcklqdq` then pairs the halves, so four inputs land
+ * as [a_m, b_m, c_m, d_m] in the low half and [a_{m+4}, b_{m+4}, c_{m+4},
+ * d_{m+4}] in the high half. Lane l therefore holds sub-block (l mod 4), and
+ * the four outputs together cover every one of the eight dwords of all four
+ * inputs EXACTLY ONCE -- which is what makes the partition a permutation and
+ * therefore exact. The obvious alternative, a full 8x8 dword transpose, needs
+ * eight `vpermd` on top of this and buys nothing: the lane-to-sub-block map is
+ * ours to choose, and `scales8` is reordered to match for two instructions.
+ *
+ * ⚠ Lane bound, computed not assumed: each lane accumulates FOUR dwords = 16
+ * elements, so |lane| <= 16 * 15 * 128 = 30,720 against the i16 ceiling of
+ * 32,767 that `vpackssdw` saturates at. Sixteen elements is the most a lane
+ * may hold; a layout putting all 32 in one lane would saturate and be wrong. */
+static inline void kq_perm4(__m256i s0, __m256i s1, __m256i s2, __m256i s3,
+                            __m256i* outv) {
+    const __m256i t0 = _mm256_unpacklo_epi32(s0, s1);
+    const __m256i t1 = _mm256_unpackhi_epi32(s0, s1);
+    const __m256i t2 = _mm256_unpacklo_epi32(s2, s3);
+    const __m256i t3 = _mm256_unpackhi_epi32(s2, s3);
+    outv[0] = _mm256_unpacklo_epi64(t0, t2);
+    outv[1] = _mm256_unpackhi_epi64(t0, t2);
+    outv[2] = _mm256_unpacklo_epi64(t1, t3);
+    outv[3] = _mm256_unpackhi_epi64(t1, t3);
+}
+
+/* ▶▶▶ THE AVX-VNNI TWIN OF `vec_dot_q4_k_q8_k_xn_avx2`, BIT-IDENTICAL TO IT.
+ *
+ * WHAT CHANGES AND WHAT DOES NOT. The mins term, the horizontal reductions,
+ * the four-wide float fold, the tiling and the per-sequence tail are the twin's
+ * verbatim. Only the eight-sub-block dot is different:
+ *
+ *   maddubs twin   8 vpmaddubsw + 8 vpmaddwd + 8 vpaddd   16 uops on ports 0-1
+ *   this kernel    8 vpdpbusd + 1 vpackssdw + 1 vpmaddwd   9 uops on ports 0-1
+ *
+ * per (super-block, sequence). `vpdpbusd` retires 32 unsigned-by-signed MACs in
+ * one uop where the pair takes two, and because `kq_perm4` has put four
+ * DIFFERENT sub-blocks in each accumulator's lanes, the eight per-sub-block
+ * scales arrive in a single `vpmaddwd` at the end instead of one per sub-block.
+ *
+ * ⚠⚠ BIT-EXACT BY CONTRACT v2, NOT BY TESTING. The contract is the exact
+ * integer total S_b = sum_j scale_j * (sum_e q_e * a_e), and integer addition
+ * is associative, so ANY partition of those products that reaches the same
+ * integer is the same answer. `kq_perm4` is a permutation (every dword of every
+ * input appears in exactly one output lane), `vpdpbusd` sums four products per
+ * lane, `vpackssdw` moves lanes without changing values because no lane can
+ * reach the i16 ceiling, and `vpmaddwd` against `sc16` multiplies lane l's
+ * partial by its OWN sub-block's scale and adds two of them. Summing the eight
+ * i32 lanes therefore yields sum_j scale_j * dot_j, which is S_b. Nothing here
+ * is a float, so nothing here can round differently.
+ *
+ * ⚠ THE OVERFLOW LADDER, computed at every step rather than at the end:
+ * a `vpdpbusd` lane holds 16 elements, |lane| <= 16*15*128 = 30,720 (inside
+ * i16, so `vpackssdw` cannot saturate); `vpmaddwd` scales two of those by a
+ * 6-bit scale and adds, <= 2*63*30,720 = 3,870,720; eight such lanes sum to
+ * <= 30,965,760, two orders inside i32. The accumulators are reset every
+ * super-block, exactly as the twin's are, so the ladder never grows past this.
+ *
+ * ⚠ WHY THE PERMUTED ACTIVATION IS BUILT HERE AND NOT AT QUANTIZE TIME. It is
+ * a SECOND view of the same bytes, and the Q8_K block layout is shared with the
+ * solo kernel, both Q6_K kernels and the two scalar references -- a layout
+ * change would touch all of them for a win that is only in this one. Built at
+ * the top of the super-block loop it is paid once per (super-block, sequence)
+ * and read by every row in the tile: about 3% of the kernel's work against the
+ * 27% the probe measured. Hoisting it to `matvec_batch` would amortise it over
+ * all n_out rows instead of the tile's 32 and is the next thing to try if this
+ * is ever re-priced.
+ *
+ * ⚠ THE TAIL IS NOT CONVERTED. `n_seq % 4` sequences fall through to the same
+ * per-sequence path the twin uses, on the ORIGINAL activation layout via
+ * `kq4_dot_block`. Production tiles at 16 so the tail is decode's n_seq==1 and
+ * the prefill chunk's remainder, neither of which is where the time is -- and
+ * leaving it shared means the two kernels cannot drift apart there. */
+void vec_dot_q4_k_q8_k_xn_vnni_avx2(const void* wrows, u64 row_bytes,
+                                    u32 n_rows, const void* const* arows,
+                                    u32 n_seq, u64 n, f32* out) {
+    if (n % KERNELS_Q4_K_BLOCK_ELEMS != 0) {
+        fatal("kernels: vec_dot_q4_k_q8_k_xn_vnni_avx2 -- n=%llu is not a "
+              "multiple of %u",
+              (unsigned long long)n, KERNELS_Q4_K_BLOCK_ELEMS);
+    }
+    if (n_seq == 0u || n_seq > KERNELS_BATCH_TILE) {
+        fatal("kernels: vec_dot_q4_k_q8_k_xn_vnni_avx2 -- n_seq=%u outside "
+              "1..%u; the caller tiles", n_seq, KERNELS_BATCH_TILE);
+    }
+    if (n_rows == 0u || n_rows > KERNELS_ROW_TILE) {
+        fatal("kernels: vec_dot_q4_k_q8_k_xn_vnni_avx2 -- n_rows=%u outside "
+              "1..%u; the caller tiles", n_rows, KERNELS_ROW_TILE);
+    }
+    const u8* wb = (const u8*)wrows;
+    u64 nb = n / KERNELS_Q4_K_BLOCK_ELEMS;
+
+    const __m256i lownib8 = _mm256_set1_epi8(0xF);
+    f32 sumf[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
+    for (u32 t = 0; t < n_rows * n_seq; ++t) sumf[t] = 0.0f;
+
+    __m256i wnib[8];
+    __m256i wperm[8];
+    /* One super-block of every grouped sequence's activations, permuted. 4 KiB
+     * at the production tile, live only across one iteration of the loop
+     * below, and read n_rows times. */
+    u8 aperm[KERNELS_BATCH_TILE][KERNELS_Q8_K_BLOCK_ELEMS];
+
+    for (u64 i = 0; i < nb; ++i) {
+      /* Only the sequences the grouped path will take: the tail reads the
+       * original layout, so permuting for it would be work thrown away. */
+      const u32 n_grp = n_seq & ~3u;
+      for (u32 s = 0; s < n_grp; ++s) {
+        const u8* ablk = (const u8*)arows[s] + i * KERNELS_Q8_K_BLOCK_BYTES;
+        const i8* q8 = (const i8*)(ablk + 4);
+        __m256i av[8], pv[8];
+        for (u32 j = 0; j < 8u; ++j) {
+            av[j] = _mm256_loadu_si256(
+                (const __m256i*)(const void*)(q8 + j * 32u));
+        }
+        kq_perm4(av[0], av[1], av[2], av[3], pv);
+        kq_perm4(av[4], av[5], av[6], av[7], pv + 4);
+        for (u32 m = 0; m < 8u; ++m) {
+            _mm256_storeu_si256((__m256i*)(void*)(aperm[s] + m * 32u), pv[m]);
+        }
+      }
+      for (u32 rr = 0; rr < n_rows; ++rr) {
+        const u8* blk = wb + (u64)rr * row_bytes + i * KERNELS_Q4_K_BLOCK_BYTES;
+        const u8* q4 = blk + 16;
+        f32* sumf_r = sumf + (size_t)rr * n_seq;
+
+        u8 scales8[8], mins8[8];
+        kernels_q4_k_unpack_scales(blk + 4, scales8, mins8);
+        for (u32 j = 0; j < 8u; ++j) {
+            const u8* qsrc = q4 + (j / 2u) * 32u;
+            __m256i qb =
+                _mm256_loadu_si256((const __m256i*)(const void*)qsrc);
+            wnib[j] = (j & 1u)
+                          ? _mm256_and_si256(_mm256_srli_epi16(qb, 4), lownib8)
+                          : _mm256_and_si256(qb, lownib8);
+        }
+        kq_perm4(wnib[0], wnib[1], wnib[2], wnib[3], wperm);
+#ifdef STOKE_MUT_Q4K_VNNI
+        /* MUTANT (`-DSTOKE_MUT_Q4K_VNNI`), and it exists to make this kernel's
+         * grader NON-VACUOUS. Sub-blocks 4 and 5 are swapped on the WEIGHT side
+         * only, so `sc16` applies s4 to sub-block 5 and s5 to sub-block 4 while
+         * every instruction, lane count and bound stays exactly as it was.
+         *
+         * ⚠ It has to be a one-SIDED swap. Permuting both sides identically is
+         * a relabelling and stays bit-exact -- which is the whole reason the
+         * kernel is allowed to permute at all, and therefore exactly the mutant
+         * that would pass and prove nothing. `test_matvec_batch` must FAIL
+         * under `STOKE_Q4K_KERNEL=vnni` and PASS under `maddubs`: the second
+         * half is what shows the failure is this kernel and not the fixture. */
+        kq_perm4(wnib[5], wnib[4], wnib[6], wnib[7], wperm + 4);
+#else
+        kq_perm4(wnib[4], wnib[5], wnib[6], wnib[7], wperm + 4);
+#endif
+
+        /* The eight scales as i16, duplicated across the 128-bit halves --
+         * which is exactly the order `vpackssdw` leaves the lanes in, so no
+         * further shuffling is needed. Two instructions, once per (row,
+         * super-block). */
+        const __m128i s8 =
+            _mm_loadl_epi64((const __m128i*)(const void*)scales8);
+        const __m256i sc16 =
+            _mm256_cvtepu8_epi16(_mm_unpacklo_epi64(s8, s8));
+
+        u16 draw, dmraw;
+        memcpy(&draw, blk, sizeof draw);
+        memcpy(&dmraw, blk + 2, sizeof dmraw);
+        const f32 dw = f16_to_f32(draw);
+        const f32 dm = f16_to_f32(dmraw);
+        static const i8 dup[16] = {0, 0, 1, 1, 2, 2, 3, 3,
+                                   4, 4, 5, 5, 6, 6, 7, 7};
+        const __m256i m16 = _mm256_cvtepu8_epi16(_mm_shuffle_epi8(
+            _mm_loadl_epi64((const __m128i*)(const void*)mins8),
+            _mm_loadu_si128((const __m128i*)(const void*)dup)));
+
+        const __m128 dwv = _mm_set1_ps(dw);
+        const __m128 dmv = _mm_set1_ps(dm);
+        u32 s = 0;
+        for (; s + 4u <= n_seq; s += 4u) {
+            const u8* ab[4];
+            f32       d0, d1, d2, d3;
+            for (u32 k = 0; k < 4u; ++k) {
+                ab[k] = (const u8*)arows[s + k] + i * KERNELS_Q8_K_BLOCK_BYTES;
+            }
+            memcpy(&d0, ab[0], sizeof d0);
+            memcpy(&d1, ab[1], sizeof d1);
+            memcpy(&d2, ab[2], sizeof d2);
+            memcpy(&d3, ab[3], sizeof d3);
+            /* The mins term reads `bsums`, which the permutation does not
+             * touch: it is a per-16-element sum computed at quantize time and
+             * stored beside the quants. */
+            const __m128i M4 = kq_hsum4_i32(
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[0] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[1] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[2] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))),
+                _mm256_madd_epi16(m16, _mm256_loadu_si256(
+                    (const __m256i*)(const void*)(ab[3] + 4 +
+                                                  KERNELS_Q8_K_BLOCK_ELEMS))));
+
+            /* Sub-blocks 0-3 into one accumulator per sequence, 4-7 into
+             * another: two accumulators are what keeps every lane under the
+             * i16 ceiling `vpackssdw` would otherwise saturate at. Eight live
+             * accumulators plus one weight vector, so no spill. */
+            __m256i a0 = _mm256_setzero_si256();
+            __m256i a1 = _mm256_setzero_si256();
+            __m256i a2 = _mm256_setzero_si256();
+            __m256i a3 = _mm256_setzero_si256();
+            __m256i b0 = _mm256_setzero_si256();
+            __m256i b1 = _mm256_setzero_si256();
+            __m256i b2 = _mm256_setzero_si256();
+            __m256i b3 = _mm256_setzero_si256();
+#define KQ_PV(k, m) \
+    _mm256_loadu_si256((const __m256i*)(const void*)(aperm[s + (k)] + (m) * 32u))
+            for (u32 m = 0; m < 4u; ++m) {
+                const __m256i w = wperm[m];
+                a0 = _mm256_dpbusd_avx_epi32(a0, w, KQ_PV(0, m));
+                a1 = _mm256_dpbusd_avx_epi32(a1, w, KQ_PV(1, m));
+                a2 = _mm256_dpbusd_avx_epi32(a2, w, KQ_PV(2, m));
+                a3 = _mm256_dpbusd_avx_epi32(a3, w, KQ_PV(3, m));
+            }
+            for (u32 m = 4u; m < 8u; ++m) {
+                const __m256i w = wperm[m];
+                b0 = _mm256_dpbusd_avx_epi32(b0, w, KQ_PV(0, m));
+                b1 = _mm256_dpbusd_avx_epi32(b1, w, KQ_PV(1, m));
+                b2 = _mm256_dpbusd_avx_epi32(b2, w, KQ_PV(2, m));
+                b3 = _mm256_dpbusd_avx_epi32(b3, w, KQ_PV(3, m));
+            }
+#undef KQ_PV
+            a0 = _mm256_madd_epi16(_mm256_packs_epi32(a0, b0), sc16);
+            a1 = _mm256_madd_epi16(_mm256_packs_epi32(a1, b1), sc16);
+            a2 = _mm256_madd_epi16(_mm256_packs_epi32(a2, b2), sc16);
+            a3 = _mm256_madd_epi16(_mm256_packs_epi32(a3, b3), sc16);
+
+            /* From here down this is the maddubs twin's epilogue verbatim --
+             * same reduction, same four-wide float fold, same order. */
+            const __m128i S4 = kq_hsum4_i32(a0, a1, a2, a3);
+            const __m128 a4 = _mm_setr_ps(d0, d1, d2, d3);
+            __m128       v  = _mm_loadu_ps(sumf_r + s);
+            v = _mm_add_ps(v, _mm_mul_ps(_mm_mul_ps(dwv, a4),
+                                         _mm_cvtepi32_ps(S4)));
+            v = _mm_sub_ps(v, _mm_mul_ps(_mm_mul_ps(dmv, a4),
+                                         _mm_cvtepi32_ps(M4)));
+            _mm_storeu_ps(sumf_r + s, v);
+        }
+
+        /* ── THE TAIL, on the original layout, through the shared block dot. */
+        for (; s < n_seq; ++s) {
+            const u8* ablk = (const u8*)arows[s] + i * KERNELS_Q8_K_BLOCK_BYTES;
+            const i8* q8 = (const i8*)(ablk + 4);
+            const u8* bsums = ablk + 4 + KERNELS_Q8_K_BLOCK_ELEMS;
+            f32 ad;
+            memcpy(&ad, ablk, sizeof ad);
+            const i32 sumi = kq_hsum_i32(_mm256_madd_epi16(
+                m16, _mm256_loadu_si256((const __m256i*)(const void*)bsums)));
+            const i32 S_b = kq_hsum_i32(kq4_dot_block(wnib, scales8, q8));
+            sumf_r[s] = sumf_r[s] + (dw * ad) * (f32)S_b;
+            sumf_r[s] = sumf_r[s] - (dm * ad) * (f32)sumi;
+        }
+      }
+    }
+
+    for (u32 t = 0; t < n_rows * n_seq; ++t) out[t] = sumf[t];
 }
 
 f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
@@ -1598,6 +2021,20 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
     (void)n;
     (void)out;
     fatal("kernels: vec_dot_q4_k_q8_k_xn_avx2 on a non-x86-64 build -- "
+          "callers must check kernels_cpu_has_avx_vnni() first");
+}
+
+void vec_dot_q4_k_q8_k_xn_vnni_avx2(const void* wrows, u64 row_bytes,
+                                    u32 n_rows, const void* const* arows,
+                                    u32 n_seq, u64 n, f32* out) {
+    (void)wrows;
+    (void)row_bytes;
+    (void)n_rows;
+    (void)arows;
+    (void)n_seq;
+    (void)n;
+    (void)out;
+    fatal("kernels: vec_dot_q4_k_q8_k_xn_vnni_avx2 on a non-x86-64 build -- "
           "callers must check kernels_cpu_has_avx_vnni() first");
 }
 

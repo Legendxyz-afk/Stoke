@@ -239,6 +239,51 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
                                const void* const* arows, u32 n_seq, u64 n,
                                f32* out);
 
+/* ---- the Q4_K batched kernel on AVX-VNNI ---------------------------------
+ *
+ * A BIT-IDENTICAL twin of `vec_dot_q4_k_q8_k_xn_avx2` -- same integer total by
+ * CONTRACT v2 -- that spends 9 uops on ports 0-1 per (super-block, sequence)
+ * where the maddubs form spends 16. The trick is a cheap permutation, applied
+ * identically to the nibbles and to the activations, that puts four DIFFERENT
+ * sub-blocks in each `vpdpbusd` accumulator's lanes: the eight per-sub-block
+ * scales then arrive in ONE `vpmaddwd` at the end of the super-block instead of
+ * one per sub-block, which is the cost that made `vpdpbusd` look unusable here.
+ * The full argument, the overflow ladder and the measured alternatives are at
+ * the definition in simd.c.
+ *
+ * ⚠ CALLERS MUST CHECK `kernels_cpu_has_avx_vnni()`, like every other kernel
+ * in this file -- `vec.c` gates the whole batched AVX2 path on it already.
+ *
+ * ⚠ WHICH ARM SHIPS IS `STOKE_Q4K_VNNI`; `STOKE_Q4K_KERNEL=maddubs|vnni`
+ * overrides it at runtime so both arms come from ONE binary in ONE sitting,
+ * for the reason `STOKE_Q6K_KERNEL` exists. */
+void vec_dot_q4_k_q8_k_xn_vnni_avx2(const void* wrows, u64 row_bytes,
+                                    u32 n_rows, const void* const* arows,
+                                    u32 n_seq, u64 n, f32* out);
+/* The mins-term A/B knob. IT LIVES IN THE HEADER because both simd.c (which
+ * has the two spellings) and vec.c (which must not offer the VNNI kernel when
+ * the SIMD spelling is off) have to agree on its value. As a `#define` in
+ * simd.c it was UNDEFINED in vec.c, where `#if !STOKE_MINS_SIMD` is `#if !0` --
+ * always true -- so the guard fired in every build and switched the VNNI kernel
+ * silently off. Caught by `STOKE_Q4K_KERNEL=bogus` no longer being REFUSED,
+ * which is the anti-vacuity check that function already carried. */
+#ifndef STOKE_MINS_SIMD
+#define STOKE_MINS_SIMD 1
+#endif
+
+/* SHIPS ON, 2026-09-01. Prefill 6359.7 -> 5443.6 ms = 1.168x, ten units per
+ * arm from ONE binary, ABBA-counterbalanced on a box the user flagged as noisy
+ * -- readable anyway because the arms' RANGES DO NOT OVERLAP (worst vnni 5608.9
+ * beats best maddubs 6285.0) and because the untouched `attention` bucket, a
+ * within-process control, reads 873.7 vs 874.1 = 1.000x across the arms. The
+ * Q4_K matmuls alone are 1.258x, which is the whole of the 1.272x an
+ * instruction-mix probe said was there: the two permutations cost nothing
+ * measurable. Decode is untouched structurally (n_seq==1 never reaches an xn
+ * kernel) and checked. */
+#ifndef STOKE_Q4K_VNNI
+#define STOKE_Q4K_VNNI 1
+#endif
+
 /* ---- the Q6_K batched kernel, re-formulated on vpmaddubsw -----------------
  *
  * ▶▶ WHY IT EXISTS: MEASURED 2026-08-27, THE BATCHED Q6_K KERNEL GOES BACKWARDS.

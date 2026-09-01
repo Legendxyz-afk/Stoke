@@ -8,7 +8,7 @@
 #include "pool.h"
 #include "simd.h"
 
-#include <stdlib.h> /* getenv -- STOKE_Q6K_KERNEL */
+#include <stdlib.h> /* getenv -- STOKE_Q6K_KERNEL, STOKE_Q4K_KERNEL */
 #include <string.h> /* strcmp -- ditto */
 
 f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
@@ -218,9 +218,16 @@ static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
     }
 }
 
+static int g_q4k_vnni = -1;
+
 static void rows_q4_k_batch_avx2(void* vctx, u64 begin, u64 end) {
     rows_kquant_batch_avx2((const BatchRowJob*)vctx, begin, end,
-                           vec_dot_q4_k_q8_k_xn_avx2);
+                           /* `== 1`, not truthiness: the unresolved state is
+                            * -1, and a reordering that reached here before
+                            * q4k_select would otherwise silently pick the
+                            * kernel that is NOT the compiled-in default. */
+                           g_q4k_vnni == 1 ? vec_dot_q4_k_q8_k_xn_vnni_avx2
+                                           : vec_dot_q4_k_q8_k_xn_avx2);
 }
 
 /* ▶ WHICH Q6_K BATCHED KERNEL, AND WHY THE CHOICE IS A FUNCTION POINTER TAKEN
@@ -258,6 +265,110 @@ static void q6k_select(void) {
               "measure one kernel twice",
               e);
     }
+}
+
+/* ▶ WHICH Q4_K BATCHED KERNEL -- the same shape as q6k_select above and for the
+ * same reasons: resolved on the DISPATCHING thread before any worker exists,
+ * one function-pointer choice per matvec and none per row or per sequence, and
+ * an unrecognised value REFUSED rather than ignored, because a typo that
+ * silently selected the default would make an A/B measure one kernel twice.
+ *
+ * It also announces the SPEED PROBES, the first time the mutated kernel could
+ * be reached. A build that silently dropped its `-D` is a CLEAN binary, and a
+ * leg graded without this line would report "the probe changed nothing" about
+ * a probe that was never there.
+ *
+ * ⚠⚠ AND IT FORCES THE ARM A PROBE LIVES IN. Every `STOKE_MUT_` case below
+ * except `STOKE_MUT_Q4K_VNNI` is cut into the MADDUBS twin only; with vnni as
+ * the shipping default, building one of them and running normally would
+ * measure an UNMUTATED kernel and report that the probe changed nothing. That
+ * is the same vacuous pass the `fatal` above exists to prevent -- it bit this
+ * function once already (see simd.h's STOKE_MINS_SIMD note) -- so the arm is
+ * pinned to the kernel the mutation is in rather than left to the default. */
+static void q4k_select(void) {
+    if (g_q4k_vnni < 0) {
+        const char* e = getenv("STOKE_Q4K_KERNEL");
+        /* PARSE FIRST, ALWAYS -- the refusal below is this function's
+         * anti-vacuity check and must not be skippable by another knob. An
+         * earlier spelling put the STOKE_MINS_SIMD case in front of it and
+         * silently accepted every value, which is how the guard was found to
+         * be firing in every build. */
+        if (e == NULL || e[0] == '\0') {
+            g_q4k_vnni = STOKE_Q4K_VNNI ? 1 : 0;
+        } else if (strcmp(e, "vnni") == 0) {
+            g_q4k_vnni = 1;
+        } else if (strcmp(e, "maddubs") == 0) {
+            g_q4k_vnni = 0;
+        } else {
+            fatal("kernels: STOKE_Q4K_KERNEL=%s -- want 'maddubs' or 'vnni'; "
+                  "an unrecognised value is refused rather than ignored, "
+                  "because a typo that silently selected the default would "
+                  "make an A/B measure one kernel twice",
+                  e);
+        }
+#if !STOKE_MINS_SIMD
+        /* ⚠ THE TWO KNOBS INTERACT, SO SAY SO RATHER THAN LET THEM. Building
+         * `-DSTOKE_MINS_SIMD=0` selects the maddubs twin's PRE-SIMD mins arm by
+         * disabling its grouped path entirely; the VNNI kernel has only the
+         * SIMD spelling, so leaving it selectable here would make that A/B
+         * measure the same mins term in both arms -- the failure the `fatal`
+         * above exists to prevent, arriving by a different door. REFUSED, not
+         * downgraded: silently handing back the other kernel is the same
+         * vacuous pass in a quieter voice. */
+        if (e != NULL && strcmp(e, "vnni") == 0) {
+            fatal("kernels: STOKE_Q4K_KERNEL=vnni is not available in a "
+                  "-DSTOKE_MINS_SIMD=0 build -- that arm exists to A/B the "
+                  "mins term and the VNNI kernel has only the SIMD spelling, "
+                  "so running it here would measure the same mins term twice");
+        }
+        /* An ASKED-FOR vnni is refused above; the COMPILED-IN default just
+         * falls back, because `-DSTOKE_MINS_SIMD=0` is itself the request for
+         * the kernel that has both mins arms. */
+        g_q4k_vnni = 0;
+#endif
+#if defined(STOKE_MUT_NO_BOOKKEEP) || defined(STOKE_MUT_G4_DOTONLY) || \
+    defined(STOKE_MUT_G4_VNNI_CEIL) || defined(STOKE_MUT_G4_VNNI_A) || \
+    defined(STOKE_MUT_G4_VNNI_B)
+        /* These five are cut into the MADDUBS twin. Pin the arm to it, and
+         * refuse an explicit `vnni` rather than quietly overriding it. */
+        if (e != NULL && strcmp(e, "vnni") == 0) {
+            fatal("kernels: STOKE_Q4K_KERNEL=vnni in a build carrying a "
+                  "maddubs-twin speed mutant -- the mutation is not in the "
+                  "VNNI kernel, so this arm would measure an UNMUTATED kernel "
+                  "and report that the probe changed nothing");
+        }
+        g_q4k_vnni = 0;
+#endif
+#ifdef STOKE_MUT_Q4K_VNNI
+        /* And this one is cut into the VNNI kernel, so it pins the other way. */
+        if (e != NULL && strcmp(e, "maddubs") == 0) {
+            g_q4k_vnni = 0;   /* the deliberate control arm of the mutation test */
+        } else {
+            g_q4k_vnni = 1;
+        }
+#endif
+    }
+#if defined(STOKE_MUT_G4_VNNI_CEIL) || defined(STOKE_MUT_G4_VNNI_B) || \
+    defined(STOKE_MUT_G4_VNNI_A) || defined(STOKE_MUT_Q4K_VNNI)
+    static int announced = 0;
+    if (!announced) {
+        announced = 1;
+        fprintf(stderr,
+                "!! %s BUILD -- the Q4_K grouped kernel's per-sub-block scale "
+                "is DELIBERATELY dropped or misapplied. Never ship this "
+                "binary.\n",
+#if defined(STOKE_MUT_G4_VNNI_CEIL)
+                "STOKE_MUT_G4_VNNI_CEIL"
+#elif defined(STOKE_MUT_G4_VNNI_A)
+                "STOKE_MUT_G4_VNNI_A"
+#elif defined(STOKE_MUT_Q4K_VNNI)
+                "STOKE_MUT_Q4K_VNNI"
+#else
+                "STOKE_MUT_G4_VNNI_B"
+#endif
+        );
+    }
+#endif
 }
 
 static void rows_q6_k_batch_avx2(void* vctx, u64 begin, u64 end) {
@@ -443,7 +554,7 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
         if (simd && n_seq > 1u) {
             /* Resolved HERE, on the dispatching thread, before any worker
              * exists -- see q6k_select. */
-            if (!is_q4) q6k_select();
+            if (is_q4) q4k_select(); else q6k_select();
             pool_for_rows(n_out, is_q4 ? rows_q4_k_batch_avx2
                                        : rows_q6_k_batch_avx2, &j);
         } else {
