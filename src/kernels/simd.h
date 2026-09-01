@@ -223,14 +223,33 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n);
  *
  * `out` is ROW-MAJOR, out[rr * n_seq + s], and `wrows` is the first of n_rows
  * rows spaced `row_bytes` apart. */
-/* 32 IS MEASURED, NOT CHOSEN. End-to-end matmul time on the 525-token prefill,
- * two units per arm interleaved: 8 -> 6014 ms, 16 -> 5649, 32 -> 5434, 64 ->
- * 5545. Larger tiles amortize the super-block's activation slice over more
- * rows -- the whole point -- but a tile's rows span n_rows*row_bytes of weight
- * that has to stream through L1 alongside it, and past 32 that starts costing
- * more than the reuse is worth. The curve has a floor, so it was swept. */
+/* 64 IS MEASURED, NOT CHOSEN -- AND IT WAS 32 UNTIL THE KERNEL UNDER IT
+ * CHANGED. Larger tiles amortize the super-block's activation slice over more
+ * rows (the whole point), while a tile's rows span n_rows*row_bytes of weight
+ * that must stream through L1 alongside it. Where those two cross is a
+ * property of the KERNEL, not of the machine, so it moves when the kernel does.
+ *
+ * Swept against the maddubs kernel (2026-08-31), matmul ms on the 525-token
+ * prefill: 8 -> 6014, 16 -> 5649, **32 -> 5434**, 64 -> 5545.
+ *
+ * Re-swept against the AVX-VNNI kernel (2026-09-01), which spends 9 uops on
+ * ports 0-1 per (super-block, sequence) where maddubs spends 16 and carries a
+ * 4 KiB permuted-activation buffer besides: 16 -> 4487.6, 32 -> 4325.1,
+ * **64 -> 4255.9**, 128 -> 4356.3 (flat with 64, inside that block's 1.1%
+ * control drift). **The optimum moved UP: 64 was 2% worse and is now 1.6%
+ * better.** Four units per arm, ABBA, ranges DISJOINT (worst 64 beats best 32),
+ * with the untouched `attention` bucket as a null arm at 1.003x.
+ *
+ * ⏹ AND IT IS BETTER ON BOTH AXES -- batched decode at 8 sequences reads
+ * 63.638 -> 65.240 tok/s (1.025x, ranges disjoint), so this is not a
+ * prefill-for-decode trade. Bit-exact, checked rather than assumed:
+ * `test_matvec_batch` 180/180 on both Q4_K kernels, and id streams `cmp`-equal
+ * to the ROW_TILE=32 binary at n_seq=1 and at 4-way batch.
+ *
+ * ⚠ A SWEPT CONSTANT IS SCOPED TO THE KERNEL IT WAS SWEPT AGAINST. Re-run this
+ * after any change to the inner loop's instruction mix or working set. */
 #ifndef KERNELS_ROW_TILE
-#define KERNELS_ROW_TILE 32u
+#define KERNELS_ROW_TILE 64u
 #endif
 void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
                                const void* const* arows, u32 n_seq, u64 n,
