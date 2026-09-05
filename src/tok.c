@@ -228,8 +228,26 @@ static u32 utf8_decode_one(const u8* buf, u64 len, u64 pos, u32* out_len) {
     return 0xFFFD;
 }
 
+/* Which pre-tokenizer regex this model's tokenizer.ggml.pre selects. The
+ * two differ in EXACTLY ONE 5-character insertion -- `\p{N}` becomes
+ * `\p{N}{1,3}` in alternative 3, and nothing else (llama-vocab.cpp:289 vs
+ * :379, compared by character-level diff, since two ~100-char regexes are
+ * exactly where a second difference hides). Same 7 alternatives, same
+ * order, so this is a parameter on one matcher rather than a second
+ * pre-tokenizer.
+ *
+ * ⚠ Only the two strings that have been graded against the oracle are
+ * accepted. llama.cpp maps "llama3", "llama-v3" and "llama-bpe" to one
+ * LLAMA3 pre-type (llama-vocab.cpp:2134-2146), so those aliases select a
+ * regex this file now implements -- but no model on this box declares
+ * them, so accepting them would be a claim, not a test. */
+typedef enum {
+    TOK_PRE_QWEN2 = 0,  /* \p{N}      -- one number character per fragment */
+    TOK_PRE_LLAMA3 = 1, /* \p{N}{1,3} -- runs of up to three */
+} TokPreType;
+
 /* ===========================================================================
- * qwen2 pre-tokenizer regex, hand-implemented as 7
+ * qwen2/llama3 pre-tokenizer regex, hand-implemented as 7
  * alternative matchers tried in order at each position -- first match
  * wins, matching standard ordered-alternation regex semantics. Every
  * codepoint is exactly one of {letter, number, whitespace, other}
@@ -305,10 +323,17 @@ static u64 match_alt2(const DecodedCp* cps, u64 n, u64 i) {
     return (j - i) + letters;
 }
 
-/* alt3: \p{N} -- exactly one number character (digits emit one id each). */
-static u64 match_alt3(const DecodedCp* cps, u64 n, u64 i) {
-    (void)n;
-    return cp_is_number(&cps[i]) ? 1 : 0;
+/* alt3, and the ONLY alternative that differs between the two pre-types:
+ * qwen2's `\p{N}` (exactly one number character, so digits emit one id
+ * each) against llama3's `\p{N}{1,3}` (a greedy run of up to three).
+ * Greedy with nothing following it in the alternative means "take
+ * min(3, run length)" -- there is no tail for the quantifier to have to
+ * backtrack for, unlike alt5/alt6. */
+static u64 match_alt3(const DecodedCp* cps, u64 n, u64 i, TokPreType pre) {
+    u64 max_run = (pre == TOK_PRE_LLAMA3) ? 3 : 1;
+    u64 k = i;
+    while (k < n && (k - i) < max_run && cp_is_number(&cps[k])) k++;
+    return k - i;
 }
 
 /* alt4: ' '?[^\s\p{L}\p{N}]+[\r\n]* -- an optional literal space (not any
@@ -374,16 +399,17 @@ static u64 match_alt7(const DecodedCp* cps, u64 n, u64 i) {
 /* Returns how many codepoints starting at cps[i] the first matching
  * alternative consumes (always > 0 for i < n -- see the block comment
  * above this section). */
-static u64 match_fragment(const DecodedCp* cps, u64 n, u64 i) {
+static u64 match_fragment(const DecodedCp* cps, u64 n, u64 i,
+                           TokPreType pre) {
     u64 m;
     if ((m = match_alt1(cps, n, i)) > 0) return m;
     if ((m = match_alt2(cps, n, i)) > 0) return m;
-    if ((m = match_alt3(cps, n, i)) > 0) return m;
+    if ((m = match_alt3(cps, n, i, pre)) > 0) return m;
     if ((m = match_alt4(cps, n, i)) > 0) return m;
     if ((m = match_alt5(cps, n, i)) > 0) return m;
     if ((m = match_alt6(cps, n, i)) > 0) return m;
     if ((m = match_alt7(cps, n, i)) > 0) return m;
-    fatal("tok: internal -- qwen2 pre-tokenizer matched nothing at "
+    fatal("tok: internal -- the pre-tokenizer matched nothing at "
           "codepoint index %llu (cp=U+%04X) -- every codepoint must be "
           "letter/number/whitespace/other and alt4/alt7 always match "
           "the last two; this should be unreachable",
@@ -661,6 +687,8 @@ struct Tok {
 
     MergeMap merges;
 
+    TokPreType pre_type;
+
     u32  bos_id;
     u32  eos_id;
     bool add_bos_token;
@@ -688,9 +716,15 @@ Tok* tok_from_gguf(const GgufFile* f) {
               model);
     }
     const char* pre = gguf_meta_str(f, "tokenizer.ggml.pre");
-    if (strcmp(pre, "qwen2") != 0) {
-        fatal("tok: tokenizer.ggml.pre is '%s' -- expected 'qwen2' -- only "
-              "the qwen2 pre-tokenizer regex is implemented",
+    TokPreType  pre_type;
+    if (strcmp(pre, "qwen2") == 0) {
+        pre_type = TOK_PRE_QWEN2;
+    } else if (strcmp(pre, "llama-bpe") == 0) {
+        pre_type = TOK_PRE_LLAMA3;
+    } else {
+        fatal("tok: tokenizer.ggml.pre is '%s' -- expected 'qwen2' or "
+              "'llama-bpe' -- only those two pre-tokenizer regexes are "
+              "implemented",
               pre);
     }
 
@@ -702,6 +736,7 @@ Tok* tok_from_gguf(const GgufFile* f) {
     u32 vocab_size = (u32)vocab_size64;
 
     Tok* t = (Tok*)xcalloc(1, sizeof(Tok));
+    t->pre_type = pre_type;
     t->vocab_size = vocab_size;
     t->vocab_str = (char**)xcalloc(vocab_size, sizeof(char*));
     t->vocab_len = (u32*)xcalloc(vocab_size, sizeof(u32));
@@ -816,8 +851,19 @@ Tok* tok_from_gguf(const GgufFile* f) {
               (long long)eos64, vocab_size);
     }
     t->eos_id = (u32)eos64;
+    /* ⚠ The DEFAULT here is decided by the pre-tokenizer, not by GGUF.
+     * llama.cpp's base default is false (llama-vocab.cpp:1815) and the
+     * LLAMA3 pre-type raises it to true (:2144-2146); the GGUF key
+     * overrides whichever it is, but only WHEN PRESENT (:2557,
+     * required=false). Llama-3.2-3B-Instruct carries no add_bos_token key
+     * at all, so reading it with a hardcoded 0 default silently drops
+     * token 128000 from position 0 of every prompt -- a guaranteed
+     * divergence from the reference implementation that produces no
+     * error and would present as an architecture bug. */
+    i64 add_bos_default = (pre_type == TOK_PRE_LLAMA3) ? 1 : 0;
     t->add_bos_token =
-        gguf_meta_i64_or(f, "tokenizer.ggml.add_bos_token", 0) != 0;
+        gguf_meta_i64_or(f, "tokenizer.ggml.add_bos_token",
+                          add_bos_default) != 0;
 
     /* The one combination that cannot be served: asked to prepend a token
      * whose id was never supplied. Refusing here rather than defaulting to
@@ -1049,7 +1095,7 @@ static void bpe_encode_span(const Tok* t, const u8* utf8, u64 len, u32* ids,
 
     u64 ci = 0;
     while (ci < n_cp) {
-        u64 m = match_fragment(cps, n_cp, ci);
+        u64 m = match_fragment(cps, n_cp, ci, t->pre_type);
         u64 frag_end_ci = ci + m;
         u64 byte_start = cps[ci].canon_off;
         u64 byte_end =

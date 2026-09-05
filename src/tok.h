@@ -1,7 +1,13 @@
-/* src/tok.h -- byte-level BPE tokenizer: qwen2 pre-tokenizer regex split ->
+/* src/tok.h -- byte-level BPE tokenizer: pre-tokenizer regex split ->
  * GPT-2 byte<->unicode remap -> merge-rank BPE, and the exact reverse for
  * decode, plus the special-token parse path and the ChatML chat template,
  * layered on the same pipeline.
+ *
+ * Two pre-tokenizers are implemented, selected by tokenizer.ggml.pre:
+ * "qwen2" and "llama-bpe". They differ in exactly one alternative of the
+ * split regex (`\p{N}` vs `\p{N}{1,3}`) and in the DEFAULT value of
+ * tokenizer.ggml.add_bos_token when that key is absent -- see src/tok.c's
+ * TokPreType. Any other value of tokenizer.ggml.pre is refused.
  *
  * Contract:
  *   - tok_from_gguf() never returns NULL; fatal() on any malformed or
@@ -45,9 +51,9 @@ void tok_free(Tok* t);
 /* Encodes raw UTF-8 bytes `utf8[0..len)`: partitions the input against the
  * USER_DEFINED-type entries of the model's special-token table (exact,
  * leftmost-longest match), then, independently per gap between/around
- * matches, qwen2 pre-tokenizer split + per-fragment GPT-2 byte->unicode
- * remap + merge-rank BPE. Writes token ids to `ids` and returns the count
- * written.
+ * matches, this model's pre-tokenizer split + per-fragment GPT-2
+ * byte->unicode remap + merge-rank BPE. Writes token ids to `ids` and
+ * returns the count written.
  *
  * This matches the oracle's `--no-parse-special` mode: CONTROL-type
  * specials (e.g. `<|im_start|>`) are NOT matched and fall through to
@@ -74,8 +80,12 @@ void tok_free(Tok* t);
  * responsibility).
  *
  * add_special: when true, prepends BOS iff the model's
- * tokenizer.ggml.add_bos_token is true (Qwen3: false, so this adds
- * nothing for this model -- the general path is still implemented). */
+ * tokenizer.ggml.add_bos_token is true. ⚠ That key is OPTIONAL, and its
+ * DEFAULT when absent depends on the pre-tokenizer: false for qwen2, TRUE
+ * for llama-bpe (matching llama-vocab.cpp:1815 vs :2144-2146, where the
+ * GGUF key overrides the pre-type's default only when present).
+ * Qwen3-4B-Instruct sets it to false explicitly; Llama-3.2-3B-Instruct
+ * omits it entirely and therefore DOES prepend id 128000. */
 u32 tok_encode(const Tok* t, const char* utf8, u64 len, u32* ids, u32 cap,
                bool add_special);
 
@@ -103,8 +113,18 @@ typedef struct {
  * count. Always appends the generation prompt `<|im_start|>assistant\n`
  * (this is an inference engine; a non-generating variant is deferred until
  * a caller needs one). Llama-3 header format is M7. No BOS is ever added
- * (this model's tokenizer.ggml.add_bos_token is false; unlike tok_encode/
- * tok_encode_special, this function has no add_special parameter at all).
+ * (unlike tok_encode/tok_encode_special, this function has no add_special
+ * parameter at all).
+ *
+ * ⚠ That "no BOS" is safe for the models this engine loads today, but the
+ * reason is the ChatML gate, not the BOS rule: llama-bpe models default
+ * add_bos_token to TRUE, so a ChatML prompt built here would be missing
+ * their BOS -- except Llama-3.2-3B-Instruct's vocab contains neither
+ * `<|im_start|>` nor `<|im_end|>` (checked against the file, not assumed),
+ * so tok_has_chatml() is false for it and src/stoke.c:728 refuses the chat
+ * path before ever reaching here. When the Llama-3 header template lands
+ * at M7, THAT template must prepend BOS itself; do not inherit this
+ * comment's "no BOS" as though it were a property of chat prompts.
  *
  * Injection safety: this does NOT render the whole conversation to one
  * string and parse-special-encode it -- that would let

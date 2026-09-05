@@ -388,7 +388,10 @@ TEST(regex_alt3_number_matches_exactly_one_digit) {
     Tok* t = open_tiny_tok();
     /* '1','2' stay SEPARATE fragments (alt3 = \p{N}, not \p{N}+), so the
        "1 2"->"12" rule (id 267) never gets a chance -- it would need both
-       digits in the SAME fragment to be adjacent BPE symbols. */
+       digits in the SAME fragment to be adjacent BPE symbols.
+       ⚠ This is now the QWEN2 arm of alt3 specifically: tiny_tok.gguf
+       declares pre = "qwen2", and llama-bpe takes runs of up to three
+       through the same matcher (see the llama-bpe section below). */
     u32 want[] = {49, 50};
     assert_encode_eq(t, "12", want, 2);
     tok_free(t);
@@ -606,6 +609,111 @@ TEST(empty_input_yields_zero_tokens) {
     u32  ids[4];
     u32  n = tok_encode(t, "", 0, ids, 4, false);
     ASSERT_EQ_U32(n, 0);
+    tok_free(t);
+}
+
+/* ===========================================================================
+ * The llama-bpe (LLAMA3) pre-tokenizer.
+ *
+ * Llama-3.2-3B-Instruct declares tokenizer.ggml.pre = "llama-bpe". Against
+ * qwen2 that is TWO deltas, and both are silent -- neither produces an
+ * error, each produces a different token stream that would present as
+ * somebody else's bug:
+ *
+ *   (1) the split regex differs in exactly one 5-character insertion,
+ *       `\p{N}` -> `\p{N}{1,3}` (llama-vocab.cpp:289 vs :379, compared by
+ *       character-level diff, not by eye);
+ *   (2) the LLAMA3 pre-type raises llama.cpp's add_bos default to true
+ *       (llama-vocab.cpp:2144-2146), and the GGUF key overrides that only
+ *       when present (:2557) -- Llama-3.2-3B-Instruct carries no
+ *       add_bos_token key at all, so the pre-type alone decides it.
+ *
+ * Both are graded here against tests/data/tiny_tok_llama3.gguf and its
+ * control tests/data/tiny_tok_no_add_bos_key.gguf, which differ in exactly
+ * one KV (tokenizer.ggml.pre) -- see make_tok_fixture.py's digit-run block
+ * comment for the merge-rank reasoning that makes the run length
+ * observable at exactly three.
+ *
+ * A third llama-bpe delta, ignore_merges, is deliberately NOT implemented
+ * here: how often it changes a stream was unmeasured, and the corpus gate
+ * against the real oracle answers that directly (see docs/superpowers/
+ * design-notes/2026-09-05-m7-b5-entry.md §4b).
+ * ===========================================================================
+ */
+
+static Tok* open_named_fixture(const char* path) {
+    GgufFile* f = gguf_open(path);
+    Tok*      t = tok_from_gguf(f);
+    gguf_close(f);
+    return t;
+}
+
+/* The digit-run pair's shared ids (make_tok_fixture.py prints them):
+   '1'=49 '2'=50 '3'=51 '4'=52, "12"=267, "123"=271, "34"=272, bos=259. */
+
+TEST(llama_bpe_pre_is_accepted) {
+    /* Stage 1 of the ladder, and it fails LOUDLY rather than by assertion:
+       before llama-bpe was accepted this call fataled inside
+       tok_from_gguf with "tokenizer.ggml.pre is 'llama-bpe' -- expected
+       'qwen2'", killing the whole binary. Kept as its own test so the
+       acceptance is pinned independently of what the pre-type then does. */
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_llama3.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "hello", 5, ids, 8, /*add_special=*/false);
+    ASSERT_EQ_U32(n, 1);
+    ASSERT_EQ_U32(ids[0], 259); /* the base vocab's 4-merge "hello" chain */
+    tok_free(t);
+}
+
+TEST(llama_bpe_groups_digits_in_runs_of_exactly_three) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_llama3.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "1234", 4, ids, 8, /*add_special=*/false);
+    /* "123" | "4". Produced by a bound of 3 and by no other bound: 1 gives
+       four single-digit ids, 2 and 4 both give [267, 272] (see the
+       fixture's block comment -- rule "3 4" outranks "12 3" precisely so
+       that the wider fragment does NOT reconstruct the narrower split). */
+    u32 want[] = {271, 52};
+    ASSERT_EQ_U32(n, 2);
+    for (u32 i = 0; i < (n < 2 ? n : 2); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+/* The control: same tokenizer, `pre` = "qwen2", one id per digit. This one
+   passes before AND after the change -- it is a regression guard, not a
+   grader, and it is here because the whole point of a pre_type field is
+   that the Qwen path must not move. tests/tok_golden.sh proves the same
+   thing on the real 151k vocab. */
+TEST(qwen2_still_emits_one_fragment_per_digit) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_no_add_bos_key.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "1234", 4, ids, 8, /*add_special=*/false);
+    u32  want[] = {49, 50, 51, 52};
+    ASSERT_EQ_U32(n, 4);
+    for (u32 i = 0; i < (n < 4 ? n : 4); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+TEST(llama_bpe_prepends_bos_with_no_add_bos_token_key) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_llama3.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "world", 5, ids, 8, /*add_special=*/true);
+    u32  want[] = {259, 119, 111, 114, 108, 100}; /* BOS + unmerged "world" */
+    ASSERT_EQ_U32(n, 6);
+    for (u32 i = 0; i < (n < 6 ? n : 6); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+/* The control for the one above, and the reason the fix is not "default
+   add_bos_token to true": with an unconditional default this fixture would
+   silently prepend a BOS to every Qwen prompt, and no other test in the
+   suite could see it -- every real Qwen file carries the key explicitly. */
+TEST(qwen2_does_not_prepend_bos_with_no_add_bos_token_key) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_no_add_bos_key.gguf"));
+    u32  ids[8];
+    u32  ns = tok_encode(t, "world", 5, ids, 8, /*add_special=*/true);
+    ASSERT_EQ_U32(ns, 5);
+    ASSERT_EQ_U32(ids[0], 119); /* 'w', not a prepended BOS */
     tok_free(t);
 }
 

@@ -298,11 +298,20 @@ def make_bad_model():
 def make_bad_pre():
     """tokenizer.ggml.model correct (so that check passes) but
     tokenizer.ggml.pre wrong -- tok_from_gguf must fatal on the second
-    check, before touching tokens/merges."""
+    check, before touching tokens/merges.
+
+    ⚠ This fixture used to say "llama3", which stopped being an honest
+    example of an UNSUPPORTED pre-tokenizer the moment the llama-bpe
+    (LLAMA3) split landed: llama.cpp maps "llama3", "llama-v3" and
+    "llama-bpe" to the one LLAMA3 pre-type (llama-vocab.cpp:2134-2146), so
+    the string named here is now an alias of a regex stoke DOES implement,
+    and only the alias is unrecognised. "deepseek-coder" is a genuinely
+    different pre-tokenizer regex, so the fatal this fixture grades is the
+    one it claims to grade."""
     w = Writer()
     w.header(tensor_count=0, kv_count=2)
     w.kv_string("tokenizer.ggml.model", "gpt2")
-    w.kv_string("tokenizer.ggml.pre", "llama3")
+    w.kv_string("tokenizer.ggml.pre", "deepseek-coder")
     cur = w.tell()
     w.raw(b'\x00' * pad_to(cur, 32))
     return w.buf
@@ -339,7 +348,8 @@ def make_missing_byte():
 # ===========================================================================
 
 def _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count,
-                              write_bos_id=True, add_bos=True):
+                              write_bos_id=True, add_bos=True,
+                              pre="qwen2", write_add_bos=True):
     """The 7 tokenizer.ggml.* KVs every fixture below starts with
     (model/pre/tokens/merges/bos/eos/add_bos_token) -- callers add their
     own token_type (or not) afterward and pass the resulting total
@@ -349,16 +359,24 @@ def _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count,
     write_bos_id=False omits tokenizer.ggml.bos_token_id ENTIRELY (it is an
     OPTIONAL GGUF key and real publishers omit it -- unsloth's
     Qwen3-4B-Instruct-2507-Q4_K_M does). Remember to pass a kv_count one
-    lower when you do."""
+    lower when you do.
+
+    write_add_bos=False omits tokenizer.ggml.add_bos_token, which is ALSO
+    optional -- and whose absence is not a neutral default: llama.cpp's
+    base default is false but the LLAMA3 pre-type raises it to true, and
+    the GGUF key overrides that only when present (llama-vocab.cpp:2557).
+    Llama-3.2-3B-Instruct carries no such key, so its BOS behaviour is
+    decided entirely by `pre`. Same kv_count caveat."""
     w.header(tensor_count=0, kv_count=kv_count)
     w.kv_string("tokenizer.ggml.model", "gpt2")
-    w.kv_string("tokenizer.ggml.pre", "qwen2")
+    w.kv_string("tokenizer.ggml.pre", pre)
     w.kv_array_str("tokenizer.ggml.tokens", tokens)
     w.kv_array_str("tokenizer.ggml.merges", merges)
     if write_bos_id:
         w.kv_u32("tokenizer.ggml.bos_token_id", bos_id)
     w.kv_u32("tokenizer.ggml.eos_token_id", eos_id)
-    w.kv_bool("tokenizer.ggml.add_bos_token", add_bos)
+    if write_add_bos:
+        w.kv_bool("tokenizer.ggml.add_bos_token", add_bos)
 
 
 def make_no_token_type():
@@ -476,6 +494,96 @@ def make_add_bos_no_bos_id():
     return w.buf
 
 
+# ===========================================================================
+# The llama-bpe (LLAMA3) pre-tokenizer pair. Two fixtures that differ in
+# EXACTLY ONE KV -- tokenizer.ggml.pre -- so every behavioural difference
+# test_tok.c observes between them is attributable to the pre-tokenizer and
+# to nothing else. Both omit tokenizer.ggml.add_bos_token entirely, which
+# is what makes the raised llama-bpe default observable at all.
+#
+# Both carry two digit tokens + two merge rules ON TOP of the shared base
+# vocab, chosen so the run length of `\p{N}{1,3}` is pinned at EXACTLY three
+# rather than merely "more than one":
+#
+#   "1234", ranks: "1 2"=11 (base), "3 4"=15, "12 3"=16
+#     max=1 (qwen2)   1|2|3|4    -> [49, 50, 51, 52]
+#     max=2           12|34      -> [ID_12, ID_34]
+#     max=3 (llama3)  123|4      -> [ID_123, 52]
+#     max=4           1234       -> merge (1,2)@11, then (3,4)@15 beats
+#                                   (12,3)@16 -> [ID_12, ID_34]
+#   so [ID_123, 52] is produced by max==3 and by no other bound. The
+#   cross-boundary rule "3 4" outranking "12 3" is the whole reason this
+#   discriminates 3 from 4: without it, greedy BPE over the wider fragment
+#   reconstructs the narrower split's ids and the fixture would be blind to
+#   an off-by-one in the bound.
+# ===========================================================================
+
+DIGIT_RUN_EXTRA = ["123", "34"]  # appended at ids 271, 272
+
+
+def build_digit_run_vocab():
+    """Base vocab + the two digit tokens and two merge rules above.
+    Returns (tokens, merges, id_of, bos_id, eos_id, token_type) with one
+    USER_DEFINED special appended (token_type is required by
+    tok_from_gguf)."""
+    tokens, merges, id_of, bos_id, eos_id = build_base_vocab()
+
+    for s in DIGIT_RUN_EXTRA:
+        assert remap(s) not in id_of, f"digit token {s!r} collides"
+        id_of[remap(s)] = len(tokens)
+        tokens.append(remap(s))
+
+    # Rank 15 before rank 16 on purpose -- see the block comment above.
+    merges.append(f"{remap('3')} {remap('4')}")    # 15: 3 4  -> 34
+    merges.append(f"{remap('12')} {remap('3')}")   # 16: 12 3 -> 123
+    for m in merges[-2:]:
+        a, b = m.split(' ', 1)
+        assert a in id_of and b in id_of and (a + b) in id_of, m
+
+    specials = [("<think>", 4)]
+    for s, _ty in specials:
+        assert s not in id_of
+        id_of[s] = len(tokens)
+        tokens.append(s)
+    token_type = [1] * (BASE_VOCAB_SIZE + len(DIGIT_RUN_EXTRA)) + \
+                 [ty for _s, ty in specials]
+    assert len(token_type) == len(tokens)
+    return tokens, merges, id_of, bos_id, eos_id, token_type
+
+
+def _make_digit_run_fixture(pre):
+    tokens, merges, id_of, bos_id, eos_id, token_type = \
+        build_digit_run_vocab()
+    w = Writer()
+    # 7 KVs: model, pre, tokens, merges, bos_token_id, eos_token_id,
+    # token_type -- NO add_bos_token.
+    _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count=7,
+                              pre=pre, write_add_bos=False)
+    w.kv_array_i32("tokenizer.ggml.token_type", token_type)
+    cur = w.tell()
+    w.raw(b'\x00' * pad_to(cur, 32))
+    return w.buf, id_of
+
+
+def make_llama3():
+    """tokenizer.ggml.pre = "llama-bpe" -- the string Llama-3.2-3B-Instruct
+    actually carries. tok_from_gguf() must SUCCEED, digits must group in
+    runs of up to three, and add_special must prepend BOS even though this
+    file declares no add_bos_token key."""
+    return _make_digit_run_fixture("llama-bpe")[0]
+
+
+def make_no_add_bos_key():
+    """The CONTROL for the fixture above: byte-for-byte the same tokenizer
+    with pre = "qwen2". One digit per fragment, and NO BOS prepended --
+    because the raised default belongs to llama-bpe and to nothing else.
+
+    Without this control, "default add_bos_token to true unconditionally"
+    passes every other test in the suite: every real Qwen file carries the
+    key explicitly, so no existing fixture can see that mutation."""
+    return _make_digit_run_fixture("qwen2")[0]
+
+
 def main():
     data, tokens, merges, id_of, bos_id, eos_id = make_tiny_tok()
     path = os.path.join(OUT_DIR, "tiny_tok.gguf")
@@ -505,12 +613,19 @@ def main():
                       ("tiny_tok_no_imstart.gguf", make_no_imstart),
                       ("tiny_tok_no_bos_id.gguf", make_no_bos_id),
                       ("tiny_tok_add_bos_no_bos_id.gguf",
-                       make_add_bos_no_bos_id)):
+                       make_add_bos_no_bos_id),
+                      ("tiny_tok_llama3.gguf", make_llama3),
+                      ("tiny_tok_no_add_bos_key.gguf", make_no_add_bos_key)):
         p = os.path.join(OUT_DIR, name)
         d = fn()
         with open(p, 'wb') as f:
             f.write(d)
         print(f"wrote {p} ({len(d)} bytes)")
+
+    # The ids test_tok.c hardcodes for the llama-bpe/qwen2 digit-run pair.
+    _b, dr_id_of = _make_digit_run_fixture("llama-bpe")
+    for name in ("1", "2", "3", "4", "12", "34", "123"):
+        print(f"  digit-run id({name!r}) = {dr_id_of[remap(name)]}")
 
 
 if __name__ == "__main__":
