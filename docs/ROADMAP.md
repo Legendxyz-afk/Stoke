@@ -10,7 +10,11 @@ session reads. It is a map, not the territory: every milestone's binding
 detail lives in the linked spec/plan/design-note sections, and on any
 conflict the linked document wins. Master record + history:
 `../MEMORY.md`. Exact current position + in-flight state: the final
-NEXT-SESSION block of `.superpowers/sdd/progress.md`.*
+NEXT-SESSION block of `.superpowers/sdd/progress.md`. The ordered
+close-out QUEUE — what is left, in what order, blocked on what, done
+when — is `ROADMAP-SEQUENCE.md` (added 2026-09-01): a companion of a
+different TYPE, not a summary of this file and not a replacement for it,
+and this file still wins on any gate criterion.*
 
 **What stoke is:** a small, embeddable, from-scratch C11 LLM inference
 engine whose architecture is concurrent-first — paged KV + continuous
@@ -672,7 +676,14 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 ## Beyond Phase 1 (context, not tasks)
 
 Phase 1.5: CUDA (`.cu` behind `extern "C"`, onto the proven scheduler) +
-ARM NEON — planning doc is an M7 deliverable. Phase 2 (RE-ORDERED,
+ARM NEON — planning doc is an M7 deliverable. **ORDER DECIDED 2026-09-01
+(Kabir): ARM NEON FIRST, CUDA SECOND, and the stated goal is "embed on
+most of the hardware" — so Phase 1.5 is an EMBEDDABILITY phase, not a
+GPU phase.** Reasoning + the target matrix: `COMPANY.md` §7. The port
+surface is small by construction (only `simd.c`, `model.c:21` and
+`pool.c:154` gate on `__x86_64__`; threading is already pthreads; every
+SIMD kernel already has a scalar reference twin, so an ARM build is
+CORRECT before it is fast). Phase 2 (RE-ORDERED,
 Fable 08-02 Kabir-approved — supersedes the NPU-first line here and in
 `../MEMORY.md`'s rationale): **the BRIDGE LAYER, the Ollama half of the
 gap** — model alias registry + `stoke pull`, idle load/unload under an
