@@ -1,0 +1,15 @@
+﻿2026-09-06T01:17:02  M5 gate [2] -- the bars. stamp overnight-f8b06a2
+2026-09-06T01:17:02  cells: 8f32,16f32  arms: S,L  blocks: 2  threads: 8  ctx: 704  n: 128
+2026-09-06T01:17:02  exe: M:\New Drive\Desktop\Programming\stoke\build\win\stoke.exe
+2026-09-06T01:17:02  exe sha256 B68483EBC917   llama-bench sha256 1AFC0B22E21F
+2026-09-06T01:17:28  QUIESCE GATE PASSED on cpu 5%, 1% (<= 12% twice), standby 3.29 GB
+2026-09-06T01:17:32  BLOCK 1 starting (cpu 2%, standby 3.29 GB)
+2026-09-06T01:18:54    b1-8f32-S        14.496 tok/s   (78s wall, 487s cpu)
+2026-09-06T01:21:21    b1-16f32-S       14.872 tok/s   (143.2s wall, 922.1s cpu)
+2026-09-06T01:22:14    b1-L           tg  18.370  pp  78.170 tok/s  (48.9s)
+2026-09-06T01:22:18  BLOCK 2 starting (cpu 1%, standby 5.32 GB)
+2026-09-06T01:23:38    b2-8f32-S        14.539 tok/s   (76.3s wall, 484.3s cpu)
+2026-09-06T01:26:08    b2-16f32-S       14.619 tok/s   (145.7s wall, 944.9s cpu)
+2026-09-06T01:27:01    b2-L           tg  18.130  pp  76.520 tok/s  (49.2s)
+2026-09-06T01:27:01  all blocks done -- writing report
+2026-09-06T01:27:01  report: M:\New Drive\Desktop\Programming\stoke\docs\superpowers\gate-reports\overnight-f8b06a2-report.md
