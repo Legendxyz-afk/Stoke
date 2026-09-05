@@ -407,7 +407,7 @@ typedef struct {
 
 static void run_rope(void* p) {
     RopeCtx* c = (RopeCtx*)p;
-    rope_neox(c->v, c->head_dim, 1024, 1000000.0f);
+    rope_neox(c->v, c->head_dim, 1024, 1000000.0f, NULL);
 }
 
 typedef struct {

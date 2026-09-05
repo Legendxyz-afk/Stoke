@@ -22,22 +22,79 @@ void rmsnorm(const f32* x, const f32* w, u64 n, f32 eps, f32* y) {
     }
 }
 
-void rope_neox(f32* vec, u64 head_dim, u64 pos, f32 freq_base) {
+void rope_neox(f32* vec, u64 head_dim, u64 pos, f32 freq_base,
+               const f32* freq_factors) {
     u64 half = head_dim / 2;
     f32 theta_scale = powf(freq_base, -2.0f / (f32)head_dim);
     f32 theta = (f32)pos;
 
+    /* The NULL branch is a SEPARATE LOOP, not a `ff ? x/ff : x` inside one:
+     * a model with no factors must execute what it executed before this
+     * parameter existed, since every Qwen parity artefact in this project
+     * (the id-stream goldens, the m3 gate archive, the bit-exact kernel
+     * A/Bs) depends on rope being unmoved. */
+    if (!freq_factors) {
+        for (u64 k = 0; k < half; k++) {
+            f32 cos_theta = cosf(theta);
+            f32 sin_theta = sinf(theta);
+            f32 x0 = vec[k];
+            f32 x1 = vec[k + half];
+            vec[k]        = x0 * cos_theta - x1 * sin_theta;
+            vec[k + half] = x0 * sin_theta + x1 * cos_theta;
+            theta *= theta_scale; /* prepares theta_{k+1}; matches the
+                                      oracle's cache-init accumulation
+                                      (m2-probe-notes.md P3.3) rather than a
+                                      fresh powf per k */
+        }
+        return;
+    }
+
+    /* llama3 RoPE scaling. The DIVISION IS AT USE and the accumulator is
+     * untouched -- ggml_rope_cache_init does `rope_yarn(theta/ff, ...)`
+     * then `theta *= theta_scale` (ggml-cpu/ops.cpp:5846-5860). Dividing
+     * the accumulator instead would compound the factor across k. */
     for (u64 k = 0; k < half; k++) {
-        f32 cos_theta = cosf(theta);
-        f32 sin_theta = sinf(theta);
+        f32 theta_k = theta / freq_factors[k];
+        f32 cos_theta = cosf(theta_k);
+        f32 sin_theta = sinf(theta_k);
         f32 x0 = vec[k];
         f32 x1 = vec[k + half];
         vec[k]        = x0 * cos_theta - x1 * sin_theta;
         vec[k + half] = x0 * sin_theta + x1 * cos_theta;
-        theta *= theta_scale; /* prepares theta_{k+1}; matches the
-                                  oracle's cache-init accumulation
-                                  (m2-probe-notes.md P3.3) rather than a
-                                  fresh powf per k */
+        theta *= theta_scale;
+    }
+}
+
+void rope_norm(f32* vec, u64 head_dim, u64 pos, f32 freq_base,
+               const f32* freq_factors) {
+    u64 half = head_dim / 2;
+    f32 theta_scale = powf(freq_base, -2.0f / (f32)head_dim);
+    f32 theta = (f32)pos;
+
+    /* Same two-loop shape as rope_neox, and for the same reason: no model
+       without factors may pay for the branch or the divide. */
+    if (!freq_factors) {
+        for (u64 k = 0; k < half; k++) {
+            f32 cos_theta = cosf(theta);
+            f32 sin_theta = sinf(theta);
+            f32 x0 = vec[2 * k];
+            f32 x1 = vec[2 * k + 1];
+            vec[2 * k]     = x0 * cos_theta - x1 * sin_theta;
+            vec[2 * k + 1] = x0 * sin_theta + x1 * cos_theta;
+            theta *= theta_scale;
+        }
+        return;
+    }
+
+    for (u64 k = 0; k < half; k++) {
+        f32 theta_k = theta / freq_factors[k];
+        f32 cos_theta = cosf(theta_k);
+        f32 sin_theta = sinf(theta_k);
+        f32 x0 = vec[2 * k];
+        f32 x1 = vec[2 * k + 1];
+        vec[2 * k]     = x0 * cos_theta - x1 * sin_theta;
+        vec[2 * k + 1] = x0 * sin_theta + x1 * cos_theta;
+        theta *= theta_scale;
     }
 }
 

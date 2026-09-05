@@ -284,8 +284,47 @@ void rmsnorm(const f32* x, const f32* w, u64 n, f32 eps, f32* y);
  *   v[k]'          = v[k]*cos(theta_k) - v[k+half]*sin(theta_k)
  *   v[k+half]'     = v[k]*sin(theta_k) + v[k+half]*cos(theta_k)
  * At pos 0, theta is identically 0 for every k (0 * theta_scale stays
- * 0), so cos=1/sin=0 throughout and the transform is the exact identity. */
-void rope_neox(f32* vec, u64 head_dim, u64 pos, f32 freq_base);
+ * 0), so cos=1/sin=0 throughout and the transform is the exact identity.
+ *
+ * freq_factors: NULL for models with no RoPE-scaling correction (qwen3),
+ * or a head_dim/2-length f32 vector (llama3's `rope_freqs.weight`), in
+ * which case pair k rotates by theta_k / freq_factors[k].
+ * ⚠ THE ACCUMULATOR IS NOT DIVIDED -- the division applies per USE, so the
+ * theta chain is bit-identical with and without factors. That is ggml's
+ * own shape (`rope_yarn(theta/ff, ...)` then `theta *= theta_scale`,
+ * ggml-cpu/ops.cpp:5846-5860, read rather than assumed); folding the
+ * division into the accumulation would compound it across k and is wrong.
+ * ⚠ AND IT IS NOT A LONG-CONTEXT-ONLY CORRECTION, which the B5 entry note
+ * first assumed: Llama-3.2-3B-Instruct's vector runs 1.0 -> 32.0 with only
+ * 29 of its 64 entries equal to 1.0 (read out of the file), so it changes
+ * the rotation at EVERY position including pos 1 -- the magnitude just
+ * grows with pos. The NULL branch is hoisted out of the loop so a
+ * factor-free model executes the identical instruction stream it did
+ * before this parameter existed. */
+void rope_neox(f32* vec, u64 head_dim, u64 pos, f32 freq_base,
+               const f32* freq_factors);
+
+/* In-place NORM ("normal", GPT-J-style) rotary embedding -- the SAME angles
+ * as rope_neox, over a DIFFERENT pairing: pair k is the ADJACENT elements
+ * (2k, 2k+1) instead of (k, k+half).
+ *
+ * ⚠ WHICH ONE A MODEL WANTS IS A PROPERTY OF ITS ARCHITECTURE, NOT A STYLE
+ * CHOICE, and picking the wrong one produces plausible-looking garbage
+ * rather than an error (rope_neox's TRAP #3, from the other side).
+ * llama.cpp's `llama_model_rope_type()` returns ROPE_TYPE_NORM for
+ * LLM_ARCH_LLAMA and ROPE_TYPE_NEOX for LLM_ARCH_QWEN3
+ * (llama-model.cpp:1329/1367 vs :1386/1439) -- read, not assumed. The
+ * conversion script permutes Q/K on the way into a llama GGUF so that this
+ * adjacent pairing is the correct one for the stored weights.
+ *
+ * theta_k, the accumulation, freq_factors and the pos-0 identity are all
+ * exactly as documented for rope_neox above: ggml builds ONE cache indexed
+ * by k = i0/2 and both rope types read it, differing only in which two
+ * elements they rotate (`rotate_pairs(n_dims, 1, ..., scale=1)` for NORM
+ * against `rotate_pairs(n_dims, n_dims/2, ...)` for NEOX,
+ * ggml-cpu/ops.cpp:5934-5950, 6069-6077). */
+void rope_norm(f32* vec, u64 head_dim, u64 pos, f32 freq_base,
+               const f32* freq_factors);
 
 /* In-place softmax over x[0..n): max-subtract (numerically stable for
  * large-magnitude inputs that would otherwise overflow exp), exp,

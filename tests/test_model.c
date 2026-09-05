@@ -228,7 +228,22 @@ typedef enum {
      * would pass while leaving the block the real model actually uses (Qwen3
      * is 32 q-heads over 8 kv-heads) untested -- this project has already
      * recorded a test passing for a reason unrelated to its name four times. */
-    MUT_GQA4
+    MUT_GQA4,
+    /* Also not a defect: a VALID llama-flavoured file. general.architecture
+     * "llama", every hyperparameter key under the `llama.` prefix, NO
+     * attn_q_norm/attn_k_norm on any block, and a rope_freqs.weight vector.
+     * That is the exact shape of Llama-3.2-3B-Instruct, minus its size. */
+    MUT_LLAMA,
+    /* A defect that only exists once QK-norm is optional: block 0 carries
+     * attn_q_norm and block 1 does not. Neither "has QK-norm" nor "has no
+     * QK-norm" is true of the file, and the dangerous reading is the silent
+     * one -- norm the layers that happen to have the tensor. Must fatal. */
+    MUT_QK_NORM_PARTIAL,
+    /* rope_freqs.weight present but the wrong length (head_dim/2 + 1). The
+     * kernel indexes it by pair with no bound of its own, so the loader is
+     * the only thing standing between a short vector and a read past the
+     * tensor. Must fatal. */
+    MUT_ROPE_FREQS_BAD_LEN
 } Mutation;
 
 /* Writes a tiny, otherwise-self-consistent qwen3-shaped GGUF v3 file to
@@ -245,39 +260,57 @@ static void write_fixture(const char* path, Mutation mut) {
     u32 value_len = head_dim;
     if (mut == MUT_VALUE_LEN_MISMATCH) value_len = head_dim + 1u;
 
+    /* llama-flavoured variants: a different architecture name, hence a
+       different key prefix, no QK-norm tensors, and a rope_freqs vector. */
+    bool llama_flavour = (mut == MUT_LLAMA || mut == MUT_ROPE_FREQS_BAD_LEN);
+    const char* arch = llama_flavour ? "llama" : "qwen3";
+    bool qk_norm = !llama_flavour;
+    bool want_rope_freqs = llama_flavour;
+
+    /* Builds "<arch>.<suffix>" so this writer stays a single code path for
+       both flavours -- two hand-maintained key blocks would drift. */
+    char kbuf[96];
+#define AK(suffix_) (snprintf(kbuf, sizeof kbuf, "%s.%s", arch, suffix_), kbuf)
+
     Buf kvs;
     buf_init(&kvs);
     u32 kv_count = 0;
 
     if (mut != MUT_MISSING_ARCH) {
+        /* ⚠ "gemma3", not "llama": llama is a SUPPORTED architecture now, so
+           naming it here would make this fixture test "a supported arch with
+           no keys" instead of "an unsupported arch" -- green for the wrong
+           reason. Same trap as tests/data/tiny_tok_bad_pre.gguf's old
+           "llama3" pre-tokenizer string. */
         kv_string(&kvs, "general.architecture",
-                  mut == MUT_WRONG_ARCH ? "llama" : "qwen3");
+                  mut == MUT_WRONG_ARCH ? "gemma3" : arch);
         kv_count++;
     }
     kv_u32(&kvs, "general.alignment", FIX_ALIGNMENT);
     kv_count++;
     if (mut != MUT_MISSING_BLOCK_COUNT) {
-        kv_u32(&kvs, "qwen3.block_count", FIX_BLOCK_COUNT);
+        kv_u32(&kvs, AK("block_count"), FIX_BLOCK_COUNT);
         kv_count++;
     }
-    kv_u32(&kvs, "qwen3.context_length", FIX_CTX_LEN);
+    kv_u32(&kvs, AK("context_length"), FIX_CTX_LEN);
     kv_count++;
-    kv_u32(&kvs, "qwen3.embedding_length", FIX_N_EMBD);
+    kv_u32(&kvs, AK("embedding_length"), FIX_N_EMBD);
     kv_count++;
-    kv_u32(&kvs, "qwen3.feed_forward_length", FIX_N_FF);
+    kv_u32(&kvs, AK("feed_forward_length"), FIX_N_FF);
     kv_count++;
-    kv_u32(&kvs, "qwen3.attention.head_count", n_head);
+    kv_u32(&kvs, AK("attention.head_count"), n_head);
     kv_count++;
-    kv_u32(&kvs, "qwen3.attention.head_count_kv", n_head_kv);
+    kv_u32(&kvs, AK("attention.head_count_kv"), n_head_kv);
     kv_count++;
-    kv_u32(&kvs, "qwen3.attention.key_length", head_dim);
+    kv_u32(&kvs, AK("attention.key_length"), head_dim);
     kv_count++;
-    kv_u32(&kvs, "qwen3.attention.value_length", value_len);
+    kv_u32(&kvs, AK("attention.value_length"), value_len);
     kv_count++;
-    kv_f32(&kvs, "qwen3.rope.freq_base", 10000.0f);
+    kv_f32(&kvs, AK("rope.freq_base"), 10000.0f);
     kv_count++;
-    kv_f32(&kvs, "qwen3.attention.layer_norm_rms_epsilon", 1e-6f);
+    kv_f32(&kvs, AK("attention.layer_norm_rms_epsilon"), 1e-6f);
     kv_count++;
+#undef AK
 
     Buf tensors;
     buf_init(&tensors);
@@ -303,18 +336,29 @@ static void write_fixture(const char* path, Mutation mut) {
                                                         : (u64)q_dim;
         add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr, name, 2, d2);
 
-        snprintf(name, sizeof name, "blk.%u.attn_q_norm.weight", L);
-        d1[0] = head_dim;
-        add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr, name, 1, d1);
+        /* MUT_QK_NORM_PARTIAL keeps them on block 0 only, which is the
+           inconsistency the loader must refuse. */
+        bool this_layer_qk =
+            qk_norm && !(mut == MUT_QK_NORM_PARTIAL && L != 0);
+
+        if (this_layer_qk) {
+            snprintf(name, sizeof name, "blk.%u.attn_q_norm.weight", L);
+            d1[0] = head_dim;
+            add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr, name, 1,
+                           d1);
+        }
 
         snprintf(name, sizeof name, "blk.%u.attn_k.weight", L);
         d2[0] = FIX_N_EMBD;
         d2[1] = kv_dim;
         add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr, name, 2, d2);
 
-        snprintf(name, sizeof name, "blk.%u.attn_k_norm.weight", L);
-        d1[0] = head_dim;
-        add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr, name, 1, d1);
+        if (this_layer_qk) {
+            snprintf(name, sizeof name, "blk.%u.attn_k_norm.weight", L);
+            d1[0] = head_dim;
+            add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr, name, 1,
+                           d1);
+        }
 
         snprintf(name, sizeof name, "blk.%u.attn_v.weight", L);
         d2[0] = FIX_N_EMBD;
@@ -354,6 +398,13 @@ static void write_fixture(const char* path, Mutation mut) {
     d1[0] = FIX_N_EMBD;
     add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr,
                    "output_norm.weight", 1, d1);
+
+    if (want_rope_freqs) {
+        d1[0] = (mut == MUT_ROPE_FREQS_BAD_LEN) ? (u64)(head_dim / 2u) + 1u
+                                                 : (u64)(head_dim / 2u);
+        add_tensor_f32(&tensors, &data, &tensor_count, &fill_ctr,
+                       "rope_freqs.weight", 1, d1);
+    }
 
     Buf out;
     buf_init(&out);
@@ -404,6 +455,12 @@ static int model_test_child_main(int argc, char** argv) {
         (void)model_open(MODEL_FIXTURE_PATH);
     } else if (strcmp(s, "wrong_arch") == 0) {
         write_fixture(MODEL_FIXTURE_PATH, MUT_WRONG_ARCH);
+        (void)model_open(MODEL_FIXTURE_PATH);
+    } else if (strcmp(s, "qk_norm_partial") == 0) {
+        write_fixture(MODEL_FIXTURE_PATH, MUT_QK_NORM_PARTIAL);
+        (void)model_open(MODEL_FIXTURE_PATH);
+    } else if (strcmp(s, "rope_freqs_bad_len") == 0) {
+        write_fixture(MODEL_FIXTURE_PATH, MUT_ROPE_FREQS_BAD_LEN);
         (void)model_open(MODEL_FIXTURE_PATH);
     } else if (strcmp(s, "missing_block_count") == 0) {
         write_fixture(MODEL_FIXTURE_PATH, MUT_MISSING_BLOCK_COUNT);
@@ -600,8 +657,50 @@ TEST(model_open_missing_architecture_fatals) {
     assert_scenario_fatals("missing_arch", "general.architecture");
     remove(MODEL_FIXTURE_PATH);
 }
+/* The positive llama-flavour case: architecture "llama", every key under
+   the `llama.` prefix, NO attn_q_norm/attn_k_norm anywhere, and a
+   rope_freqs.weight vector. Before this rung it fataled three separate
+   ways (arch check, then the missing QK-norm tensors); it must now load and
+   run a forward pass to finite values.
+
+   ⚠ WHAT THIS TEST CANNOT SEE, said plainly: it does not grade the ROPE
+   KIND. Both pairings produce finite numbers from a synthetic weight fill,
+   and there is no accessor to ask the model which one it chose. NEOX-vs-NORM
+   is graded where it is actually observable -- generation against the real
+   Llama-3.2 file, where the wrong pairing is fluent-looking garbage. */
+TEST(model_open_llama_flavour_loads_without_qk_norm) {
+    write_fixture(MODEL_FIXTURE_PATH, MUT_LLAMA);
+    Model* m = model_open(MODEL_FIXTURE_PATH); /* must not fatal */
+    Kv*    kv = kv_open(model_n_layer(m), model_max_ctx(m),
+                        model_n_head_kv(m), model_head_dim(m));
+    f32    xout[FIX_N_EMBD];
+    model_forward_position(m, kv, 0u, 0u, NULL, xout);
+    for (u32 i = 0; i < FIX_N_EMBD; i++) {
+        ASSERT_TRUE(isfinite(xout[i]));
+    }
+    kv_close(kv);
+    model_close(m);
+    remove(MODEL_FIXTURE_PATH);
+}
+
 TEST(model_open_wrong_architecture_fatals) {
-    assert_scenario_fatals("wrong_arch", "expected exactly 'qwen3'");
+    assert_scenario_fatals("wrong_arch", "expected 'qwen3' or 'llama'");
+    remove(MODEL_FIXTURE_PATH);
+}
+/* QK-norm became optional so llama can load; the danger is that "optional"
+   silently becomes "per layer". The substring pins the guard's OWN wording,
+   not a generic tensor-missing message, because the pre-change code fataled
+   on this fixture too -- via layer_tensor's "no tensor named
+   blk.1.attn_q_norm.weight" -- so a test pinning that would be green before
+   AND after and would grade nothing. */
+TEST(model_open_partial_qk_norm_fatals) {
+    assert_scenario_fatals("qk_norm_partial", "on every block or on none");
+    remove(MODEL_FIXTURE_PATH);
+}
+/* A short rope_freqs vector is read past by the rope kernel, which indexes
+   it by pair and has no bound of its own. */
+TEST(model_open_bad_rope_freqs_length_fatals) {
+    assert_scenario_fatals("rope_freqs_bad_len", "rope_freqs.weight");
     remove(MODEL_FIXTURE_PATH);
 }
 TEST(model_open_missing_block_count_fatals) {

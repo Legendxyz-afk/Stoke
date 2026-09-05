@@ -463,6 +463,19 @@ TEST(rmsnorm_in_place_aliasing_matches_out_of_place) {
 
 /* ===========================================================================
  * rope_neox
+ *
+ * The freq_factors tests below use an EXACT equivalence rather than
+ * hand-computed constants, and it is worth stating because it is what makes
+ * them bit-exact assertions instead of tolerance ones:
+ *
+ *   theta_k = pos * theta_scale^k, and the factors divide theta_k at USE
+ *   without touching the accumulator, so dividing EVERY theta_k by F is
+ *   identical to running at position pos/F with no factors at all.
+ *
+ * With F a power of two, scaling by F only moves the exponent, so
+ * `32 * s^k` accumulated iteratively then divided by 32 is bit-identical to
+ * `s^k` accumulated iteratively -- no rounding difference to tolerate. Hence
+ * pos=32 with all-32 factors == pos=1 with NULL, exactly.
  * ===========================================================================
  */
 
@@ -481,7 +494,7 @@ TEST(rope_neox_pos0_identity) {
     f32 orig[128];
     memcpy(orig, v, sizeof v);
 
-    rope_neox(v, ROPE_HEAD_DIM, 0, ROPE_FREQ_BASE);
+    rope_neox(v, ROPE_HEAD_DIM, 0, ROPE_FREQ_BASE, NULL);
 
     for (int i = 0; i < 128; i++) {
         ASSERT_TRUE(v[i] == orig[i]); /* exact: theta stays 0 for every k,
@@ -493,7 +506,7 @@ TEST(rope_neox_pos1_known) {
     f32 v[128];
     fill_rope_vec(v);
 
-    rope_neox(v, ROPE_HEAD_DIM, 1, ROPE_FREQ_BASE);
+    rope_neox(v, ROPE_HEAD_DIM, 1, ROPE_FREQ_BASE, NULL);
 
     /* goldens: report §4 (theta_scale=0.78582996f, theta_0=1.0 exact,
        theta_1=0.78582996f, theta_63=2.5450757e-07f) */
@@ -509,7 +522,7 @@ TEST(rope_neox_pos17_known) {
     f32 v[128];
     fill_rope_vec(v);
 
-    rope_neox(v, ROPE_HEAD_DIM, 17, ROPE_FREQ_BASE);
+    rope_neox(v, ROPE_HEAD_DIM, 17, ROPE_FREQ_BASE, NULL);
 
     /* goldens: report §4 (theta_0=17.0 exact, theta_1=13.359109f,
        theta_63=4.3266296e-06f) */
@@ -519,6 +532,128 @@ TEST(rope_neox_pos17_known) {
     ASSERT_CLOSE_F32(v[65],   47.74979f,  1e-5f, 1e-4f);
     ASSERT_CLOSE_F32(v[63],   63.999447f, 1e-5f, 1e-4f);
     ASSERT_CLOSE_F32(v[127], 128.00027f,  1e-5f, 1e-4f);
+}
+
+/* A factor vector of all 1.0 must be BIT-IDENTICAL to no factors at all.
+   This one is a guard rather than a grader -- it passes before and after --
+   and it is here because the whole premise of the hoisted NULL branch is
+   that adding the parameter cannot perturb a model that has no factors.
+   Every Qwen parity artefact in this project depends on that. */
+TEST(rope_neox_all_ones_factors_equal_no_factors) {
+    f32 v_null[128], v_ones[128], ff[64];
+    fill_rope_vec(v_null);
+    fill_rope_vec(v_ones);
+    for (int k = 0; k < 64; k++) ff[k] = 1.0f;
+
+    rope_neox(v_null, ROPE_HEAD_DIM, 17, ROPE_FREQ_BASE, NULL);
+    rope_neox(v_ones, ROPE_HEAD_DIM, 17, ROPE_FREQ_BASE, ff);
+
+    for (int i = 0; i < 128; i++) ASSERT_TRUE(v_null[i] == v_ones[i]);
+}
+
+/* THE GRADER: dividing every theta by 32 is exactly position 32/32 = 1.
+   Bit-exact, both sides produced by this same kernel, so no golden constant
+   and no tolerance -- and it fails loudly if the factors are ignored,
+   applied to the accumulator instead of at use, or multiplied rather than
+   divided. */
+TEST(rope_neox_uniform_factors_are_a_position_divide) {
+    f32 v_scaled[128], v_ref[128], ff[64];
+    fill_rope_vec(v_scaled);
+    fill_rope_vec(v_ref);
+    for (int k = 0; k < 64; k++) ff[k] = 32.0f;
+
+    rope_neox(v_scaled, ROPE_HEAD_DIM, 32, ROPE_FREQ_BASE, ff);
+    rope_neox(v_ref, ROPE_HEAD_DIM, 1, ROPE_FREQ_BASE, NULL);
+
+    for (int i = 0; i < 128; i++) ASSERT_TRUE(v_scaled[i] == v_ref[i]);
+}
+
+/* ---- rope_norm: same angles, adjacent pairing -----------------------------
+ *
+ * THE GRADER IS AN EXACT PERMUTATION EQUIVALENCE, so it needs no golden and
+ * no tolerance: de-interleave the vector (w[k] = v[2k], w[k+half] = v[2k+1]),
+ * run the already-trusted rope_neox on w, and re-interleave. Both kernels
+ * walk the identical theta chain in the identical order, so the results must
+ * agree BIT FOR BIT. A rope_norm that pairs (k, k+half) -- i.e. TRAP #3, the
+ * defect this test exists for -- fails it immediately.
+ * --------------------------------------------------------------------------- */
+
+TEST(rope_norm_pairs_adjacent_elements_not_halves) {
+    f32 v[128], w[128];
+    fill_rope_vec(v);
+    for (int k = 0; k < 64; k++) {
+        w[k] = v[2 * k];
+        w[k + 64] = v[2 * k + 1];
+    }
+
+    rope_norm(v, ROPE_HEAD_DIM, 17, ROPE_FREQ_BASE, NULL);
+    rope_neox(w, ROPE_HEAD_DIM, 17, ROPE_FREQ_BASE, NULL);
+
+    for (int k = 0; k < 64; k++) {
+        ASSERT_TRUE(v[2 * k] == w[k]);
+        ASSERT_TRUE(v[2 * k + 1] == w[k + 64]);
+    }
+}
+
+/* The same equivalence must survive freq_factors -- the factors are indexed
+   by PAIR in both rope types (ggml builds one cache and both read it), so a
+   rope_norm that indexed them by element would pass the test above and fail
+   here. */
+TEST(rope_norm_freq_factors_are_indexed_by_pair_too) {
+    f32 v[128], w[128], ff[64];
+    fill_rope_vec(v);
+    for (int k = 0; k < 64; k++) {
+        w[k] = v[2 * k];
+        w[k + 64] = v[2 * k + 1];
+        ff[k] = (k >= 32) ? 8.0f : 1.0f;
+    }
+
+    rope_norm(v, ROPE_HEAD_DIM, 64, ROPE_FREQ_BASE, ff);
+    rope_neox(w, ROPE_HEAD_DIM, 64, ROPE_FREQ_BASE, ff);
+
+    for (int k = 0; k < 64; k++) {
+        ASSERT_TRUE(v[2 * k] == w[k]);
+        ASSERT_TRUE(v[2 * k + 1] == w[k + 64]);
+    }
+}
+
+TEST(rope_norm_pos0_is_the_identity) {
+    f32 v[128], orig[128];
+    fill_rope_vec(v);
+    memcpy(orig, v, sizeof v);
+    rope_norm(v, ROPE_HEAD_DIM, 0, ROPE_FREQ_BASE, NULL);
+    for (int i = 0; i < 128; i++) ASSERT_TRUE(v[i] == orig[i]);
+}
+
+/* THE SECOND GRADER, and the one the first cannot replace: the factors must
+   be indexed PER PAIR. A kernel that read ff[0] for every k, or indexed by
+   the element rather than the pair, passes the uniform test above and fails
+   here. Only pair 32 carries a factor, so only vec[32] and vec[96] may move
+   -- and they must land exactly where the all-32 run put them, since the
+   accumulator is untouched by the factors and both runs therefore rotate
+   pair 32 by the identical theta_32/32. */
+TEST(rope_neox_factors_are_indexed_per_pair) {
+    f32 v_sparse[128], v_null[128], v_all[128], ff_sparse[64], ff_all[64];
+    fill_rope_vec(v_sparse);
+    fill_rope_vec(v_null);
+    fill_rope_vec(v_all);
+    for (int k = 0; k < 64; k++) {
+        ff_sparse[k] = (k == 32) ? 32.0f : 1.0f;
+        ff_all[k] = 32.0f;
+    }
+
+    rope_neox(v_sparse, ROPE_HEAD_DIM, 32, ROPE_FREQ_BASE, ff_sparse);
+    rope_neox(v_null, ROPE_HEAD_DIM, 32, ROPE_FREQ_BASE, NULL);
+    rope_neox(v_all, ROPE_HEAD_DIM, 32, ROPE_FREQ_BASE, ff_all);
+
+    for (int i = 0; i < 128; i++) {
+        if (i == 32 || i == 96) {
+            ASSERT_TRUE(v_sparse[i] == v_all[i]);   /* moved, and moved there */
+            ASSERT_TRUE(v_sparse[i] != v_null[i]);  /* it really did move */
+        } else {
+            ASSERT_TRUE(v_sparse[i] == v_null[i]);  /* nothing else touched */
+        }
+    }
 }
 
 /* ===========================================================================

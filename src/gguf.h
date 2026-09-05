@@ -157,6 +157,16 @@ const GgufTensor* gguf_tensor(const GgufFile* f, u64 i);
 /* Fatal if no tensor named `name` exists. */
 const GgufTensor* gguf_tensor_by_name(const GgufFile* f, const char* name);
 
+/* Same lookup, but returns NULL instead of fataling when the tensor is
+ * absent -- for tensors that are genuinely OPTIONAL across architectures
+ * (qwen3 has attn_q_norm/attn_k_norm and no rope_freqs; llama is the exact
+ * opposite). ⚠ Use this ONLY where absence is a supported configuration,
+ * never to soften a required tensor into a NULL that some later
+ * dereference will find: the caller must decide what absence MEANS and say
+ * so loudly, which is why this is a separate function rather than a flag. */
+const GgufTensor* gguf_tensor_by_name_opt(const GgufFile* f,
+                                           const char* name);
+
 /* ---- ggml tensor-dtype enum --
  * Only the 4 values verified against real file bytes are named.
  * gguf_open() fatals on any tensor using a ggml_type outside this set --

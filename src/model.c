@@ -394,6 +394,10 @@ typedef struct {
     u32    n;        /* sets the arrays are sized for                 */
 } BatchViews;
 
+/* Which rotary pairing this model's architecture uses. Not a preference:
+   see the note at the arch check in model_open, and kernels.h's rope_norm. */
+typedef enum { ROPE_NEOX = 0, ROPE_NORM = 1 } RopeKind;
+
 struct Model {
     GgufFile* f; /* owned; kept open for the model's whole lifetime -- tensor
                     data is borrowed from its mmap (gguf.h) */
@@ -405,6 +409,13 @@ struct Model {
     const GgufTensor* tok_embd;
     const GgufTensor* output_norm;
     const GgufTensor* output; /* NULL => tied to tok_embd (M2 note TRAP #2) */
+
+    /* rope_freqs.weight (head_dim/2 f32, borrowed from the mmap) or NULL
+       when the model ships no RoPE-scaling correction. qwen3 has none;
+       llama3 does, and ignoring it is silent -- see kernels.h's rope_neox. */
+    const f32* rope_freqs;
+    RopeKind   rope_kind;
+    bool       has_qk_norm; /* qwen3 yes, llama no -- all layers or none */
 
     Layer* layers; /* [n_layer], xmalloc'd */
 
@@ -487,6 +498,39 @@ static const GgufTensor* layer_tensor(GgufFile* f, u32 L, const char* suffix) {
               L, suffix);
     }
     return gguf_tensor_by_name(f, name);
+}
+
+/* Same, but NULL when the layer does not carry that tensor -- for the
+ * per-architecture optional ones (attn_q_norm/attn_k_norm: qwen3 has them,
+ * llama has neither). The CALLER decides what absence means; see the
+ * all-or-nothing check in model_open. */
+static const GgufTensor* layer_tensor_opt(GgufFile* f, u32 L,
+                                           const char* suffix) {
+    char name[96];
+    int  n = snprintf(name, sizeof name, "blk.%u.%s.weight", L, suffix);
+    if (n < 0 || (size_t)n >= sizeof name) {
+        fatal("model: internal -- tensor name buffer too small for "
+              "blk.%u.%s.weight",
+              L, suffix);
+    }
+    return gguf_tensor_by_name_opt(f, name);
+}
+
+/* Builds "<arch>.<suffix>" into `buf` and returns it. Every hyperparameter
+ * key in a GGUF is namespaced by the architecture, and llama uses the SAME
+ * suffixes qwen3 does (verified key by key against both files, not assumed
+ * from the naming convention), so supporting a second architecture is a
+ * prefix change rather than a second block of lookups. `buf` is reused
+ * across calls: each returned key is consumed by its own lookup call
+ * before the next one is built. */
+static const char* arch_key(char* buf, size_t cap, const char* arch,
+                             const char* suffix) {
+    int n = snprintf(buf, cap, "%s.%s", arch, suffix);
+    if (n < 0 || (size_t)n >= cap) {
+        fatal("model: internal -- key buffer too small for '%s.%s'", arch,
+              suffix);
+    }
+    return buf;
 }
 
 /* Norm vectors (attn_norm/attn_q_norm/attn_k_norm/ffn_norm/output_norm) are
@@ -654,25 +698,42 @@ Model* model_open(const char* path) {
     GgufFile* f = gguf_open(path);
 
     const char* arch = gguf_meta_str(f, "general.architecture");
-    if (strcmp(arch, "qwen3") != 0) {
+    /* ⚠ The ROPE TYPE is a property of the architecture and choosing wrong
+     * produces plausible-looking garbage rather than an error: llama.cpp's
+     * llama_model_rope_type() is NORM for LLM_ARCH_LLAMA and NEOX for
+     * LLM_ARCH_QWEN3 (llama-model.cpp:1329/1367 vs :1386/1439). Adding an
+     * architecture here means reading that function for it, not assuming
+     * it matches the one already implemented. */
+    bool is_qwen3 = (strcmp(arch, "qwen3") == 0);
+    bool is_llama = (strcmp(arch, "llama") == 0);
+    if (!is_qwen3 && !is_llama) {
         char arch_buf[128];
         snprintf(arch_buf, sizeof arch_buf, "%s", arch);
         gguf_close(f);
         fatal("model: '%s' -- general.architecture is '%s', expected "
-              "exactly 'qwen3' (this loader implements qwen3 only)",
+              "'qwen3' or 'llama' (this loader implements those two)",
               path, arch_buf);
     }
+    RopeKind rope_kind = is_llama ? ROPE_NORM : ROPE_NEOX;
 
-    u32 n_layer = req_u32(f, "qwen3.block_count");
-    i64 ctx_len = gguf_meta_i64(f, "qwen3.context_length");
-    u32 n_embd = req_u32(f, "qwen3.embedding_length");
-    u32 n_ff = req_u32(f, "qwen3.feed_forward_length");
-    u32 n_head = req_u32(f, "qwen3.attention.head_count");
-    u32 n_head_kv = req_u32(f, "qwen3.attention.head_count_kv");
-    u32 head_dim = req_u32(f, "qwen3.attention.key_length");
-    u32 value_len = req_u32(f, "qwen3.attention.value_length");
-    f32 freq_base = req_f32(f, "qwen3.rope.freq_base");
-    f32 eps = req_f32(f, "qwen3.attention.layer_norm_rms_epsilon");
+    char kb[96];
+    u32 n_layer = req_u32(f, arch_key(kb, sizeof kb, arch, "block_count"));
+    i64 ctx_len =
+        gguf_meta_i64(f, arch_key(kb, sizeof kb, arch, "context_length"));
+    u32 n_embd = req_u32(f, arch_key(kb, sizeof kb, arch, "embedding_length"));
+    u32 n_ff =
+        req_u32(f, arch_key(kb, sizeof kb, arch, "feed_forward_length"));
+    u32 n_head =
+        req_u32(f, arch_key(kb, sizeof kb, arch, "attention.head_count"));
+    u32 n_head_kv =
+        req_u32(f, arch_key(kb, sizeof kb, arch, "attention.head_count_kv"));
+    u32 head_dim =
+        req_u32(f, arch_key(kb, sizeof kb, arch, "attention.key_length"));
+    u32 value_len =
+        req_u32(f, arch_key(kb, sizeof kb, arch, "attention.value_length"));
+    f32 freq_base = req_f32(f, arch_key(kb, sizeof kb, arch, "rope.freq_base"));
+    f32 eps = req_f32(
+        f, arch_key(kb, sizeof kb, arch, "attention.layer_norm_rms_epsilon"));
 
     if (n_layer == 0 || n_embd == 0 || n_ff == 0 || n_head == 0 ||
         n_head_kv == 0 || head_dim == 0) {
@@ -683,38 +744,38 @@ Model* model_open(const char* path) {
     }
     if (ctx_len <= 0) {
         gguf_close(f);
-        fatal("model: '%s' -- qwen3.context_length=%lld must be positive",
-              path, (long long)ctx_len);
+        fatal("model: '%s' -- %s.context_length=%lld must be positive",
+              path, arch, (long long)ctx_len);
     }
     if (value_len != head_dim) {
         gguf_close(f);
-        fatal("model: '%s' -- qwen3.attention.value_length=%u != "
-              "qwen3.attention.key_length=%u (M2 requires them equal)",
-              path, value_len, head_dim);
+        fatal("model: '%s' -- %s.attention.value_length=%u != "
+              "%s.attention.key_length=%u (M2 requires them equal)",
+              path, arch, value_len, arch, head_dim);
     }
     if (n_head % n_head_kv != 0) {
         gguf_close(f);
-        fatal("model: '%s' -- qwen3.attention.head_count=%u not divisible "
+        fatal("model: '%s' -- %s.attention.head_count=%u not divisible "
               "by head_count_kv=%u (GQA group size must be exact)",
-              path, n_head, n_head_kv);
+              path, arch, n_head, n_head_kv);
     }
     if (head_dim % 2 != 0) {
         gguf_close(f);
-        fatal("model: '%s' -- qwen3.attention.key_length=%u must be even "
-              "(NEOX rope pairs (k, k+head_dim/2))",
-              path, head_dim);
+        fatal("model: '%s' -- %s.attention.key_length=%u must be even "
+              "(both rope kinds rotate head_dim/2 pairs)",
+              path, arch, head_dim);
     }
     if (!(isfinite(freq_base) && freq_base > 0.0f)) {
         gguf_close(f);
-        fatal("model: '%s' -- qwen3.rope.freq_base=%g must be finite and "
+        fatal("model: '%s' -- %s.rope.freq_base=%g must be finite and "
               "positive",
-              path, (double)freq_base);
+              path, arch, (double)freq_base);
     }
     if (!(isfinite(eps) && eps >= 0.0f)) {
         gguf_close(f);
-        fatal("model: '%s' -- qwen3.attention.layer_norm_rms_epsilon=%g "
+        fatal("model: '%s' -- %s.attention.layer_norm_rms_epsilon=%g "
               "must be finite and non-negative",
-              path, (double)eps);
+              path, arch, (double)eps);
     }
 
     u32 max_ctx = ((u64)ctx_len < (u64)STOKE_M2_MAX_CTX)
@@ -779,15 +840,51 @@ Model* model_open(const char* path) {
     m->tok_embd = tok_embd;
     m->output_norm = output_norm;
     m->output = output;
+    m->rope_kind = rope_kind;
+
+    /* rope_freqs.weight -- llama3's per-pair RoPE-scaling correction.
+     * OPTIONAL: absent means no correction, which is qwen3 and also plenty
+     * of llama models. Validated to head_dim/2 F32 when present, because
+     * the alternative to a length check here is reading past the tensor in
+     * the rope kernel.
+     *
+     * ⚠ NOT a long-context-only concern, which is the first thing assumed
+     * about it: Llama-3.2-3B-Instruct's vector runs 1.0 -> 32.0 with 29 of
+     * 64 entries at 1.0, so it changes the rotation at EVERY position. */
+    m->rope_freqs = NULL;
+    {
+        const GgufTensor* rf = gguf_tensor_by_name_opt(f, "rope_freqs.weight");
+        if (rf) {
+            u64 want[1];
+            want[0] = head_dim / 2u;
+            model_check_tensor_shape(rf, 1, want);
+            if (rf->type != GGUF_GGML_TYPE_F32) {
+                fatal("model: tensor 'rope_freqs.weight' has ggml type %u, "
+                      "expected F32(%u) -- the rope correction is read "
+                      "straight off the mmap as f32",
+                      rf->type, (u32)GGUF_GGML_TYPE_F32);
+            }
+            m->rope_freqs = (const f32*)rf->data;
+        }
+    }
+
+    /* QK-norm is OPTIONAL and ALL-OR-NOTHING. qwen3 carries attn_q_norm/
+     * attn_k_norm on every block; llama carries neither. Deciding from
+     * block 0 and then REQUIRING every other block to agree is the point:
+     * a file with the tensors on some layers and not others is malformed,
+     * and silently norming only the layers that happen to have them would
+     * be a wrong answer with no error -- exactly the failure mode this
+     * whole rung is about. */
+    m->has_qk_norm = (layer_tensor_opt(f, 0, "attn_q_norm") != NULL);
 
     m->layers = (Layer*)xmalloc((size_t)n_layer * sizeof(Layer));
     for (u32 L = 0; L < n_layer; L++) {
         Layer* ly = &m->layers[L];
         ly->attn_norm = layer_tensor(f, L, "attn_norm");
         ly->attn_q = layer_tensor(f, L, "attn_q");
-        ly->attn_q_norm = layer_tensor(f, L, "attn_q_norm");
+        ly->attn_q_norm = layer_tensor_opt(f, L, "attn_q_norm");
         ly->attn_k = layer_tensor(f, L, "attn_k");
-        ly->attn_k_norm = layer_tensor(f, L, "attn_k_norm");
+        ly->attn_k_norm = layer_tensor_opt(f, L, "attn_k_norm");
         ly->attn_v = layer_tensor(f, L, "attn_v");
         ly->attn_output = layer_tensor(f, L, "attn_output");
         ly->ffn_norm = layer_tensor(f, L, "ffn_norm");
@@ -795,9 +892,20 @@ Model* model_open(const char* path) {
         ly->ffn_up = layer_tensor(f, L, "ffn_up");
         ly->ffn_down = layer_tensor(f, L, "ffn_down");
 
+        if ((ly->attn_q_norm != NULL) != m->has_qk_norm ||
+            (ly->attn_k_norm != NULL) != m->has_qk_norm) {
+            fatal("model: '%s' -- block %u %s attn_q_norm/attn_k_norm while "
+                  "block 0 %s them; QK-norm must be present on every block "
+                  "or on none",
+                  path, L, m->has_qk_norm ? "is missing" : "has",
+                  m->has_qk_norm ? "has" : "is missing");
+        }
+
         check_norm_tensor(ly->attn_norm, n_embd);
-        check_norm_tensor(ly->attn_q_norm, head_dim);
-        check_norm_tensor(ly->attn_k_norm, head_dim);
+        if (m->has_qk_norm) {
+            check_norm_tensor(ly->attn_q_norm, head_dim);
+            check_norm_tensor(ly->attn_k_norm, head_dim);
+        }
         check_norm_tensor(ly->ffn_norm, n_embd);
 
         check_weight_tensor(ly->attn_q, n_embd, (u64)n_head * head_dim);
@@ -1463,22 +1571,41 @@ typedef struct {
     u32                head_dim;
     f32                eps;
     f32                freq_base;
+    const f32*         freq_factors; /* rope_freqs.weight, or NULL */
+    RopeKind           rope_kind;
 } QkRopeJob;
 
 static void qkrope_run(void* vctx, u64 s_begin, u64 s_end) {
     const QkRopeJob* j = (const QkRopeJob*)vctx;
+    /* Both branches are resolved ONCE per dispatch, not per head: a model
+       with QK-norm and NEOX rope must run the instruction sequence it ran
+       before either became optional. `qn` is NULL exactly when the model
+       has no QK-norm (model_open enforces all-or-nothing). */
+    const bool do_qk_norm = (j->qn != NULL);
     for (u64 s = s_begin; s < s_end; s++) {
         SeqScratch* sc  = j->scs[s];
         const u32   pos = j->positions[s];
         for (u32 h = 0; h < j->n_head; h++) {
             f32* qh = sc->s_q + (u64)h * j->head_dim;
-            rmsnorm(qh, j->qn, j->head_dim, j->eps, qh);
-            rope_neox(qh, j->head_dim, (u64)pos, j->freq_base);
+            if (do_qk_norm) rmsnorm(qh, j->qn, j->head_dim, j->eps, qh);
+            if (j->rope_kind == ROPE_NORM) {
+                rope_norm(qh, j->head_dim, (u64)pos, j->freq_base,
+                          j->freq_factors);
+            } else {
+                rope_neox(qh, j->head_dim, (u64)pos, j->freq_base,
+                          j->freq_factors);
+            }
         }
         for (u32 h = 0; h < j->n_head_kv; h++) {
             f32* kh = sc->s_k + (u64)h * j->head_dim;
-            rmsnorm(kh, j->kn, j->head_dim, j->eps, kh);
-            rope_neox(kh, j->head_dim, (u64)pos, j->freq_base);
+            if (do_qk_norm) rmsnorm(kh, j->kn, j->head_dim, j->eps, kh);
+            if (j->rope_kind == ROPE_NORM) {
+                rope_norm(kh, j->head_dim, (u64)pos, j->freq_base,
+                          j->freq_factors);
+            } else {
+                rope_neox(kh, j->head_dim, (u64)pos, j->freq_base,
+                          j->freq_factors);
+            }
         }
     }
 }
@@ -1582,8 +1709,13 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
                      (u64)m->n_head_kv * m->head_dim, vw->aq, n_seq);
         PROF_ADD(PROF_QKV); }
 
-        const f32* qn = (const f32*)ly->attn_q_norm->data;
-        const f32* kn = (const f32*)ly->attn_k_norm->data;
+        /* NULL when this architecture has no QK-norm (llama). The job's
+           branch is on qn, so this is the one place the distinction is
+           made. */
+        const f32* qn =
+            ly->attn_q_norm ? (const f32*)ly->attn_q_norm->data : NULL;
+        const f32* kn =
+            ly->attn_k_norm ? (const f32*)ly->attn_k_norm->data : NULL;
 
         /* ▶▶ M5 E1: TWO PHASES, NOT ONE SEQUENCE-OUTER BLOCK. Phase 1 is every
          * sequence's QK-norm, rope, token note and KV append; phase 2 is ONE
@@ -1597,7 +1729,7 @@ static void forward_batch_body(Model* m, SeqScratch* const* scs,
            BEFORE rope) */
         QkRopeJob qj = {scs,       positions,    qn,          kn,
                         m->n_head, m->n_head_kv, m->head_dim, m->eps,
-                        m->freq_base};
+                        m->freq_base, m->rope_freqs, m->rope_kind};
         pool_for_units(n_seq, 1u, qkrope_run, &qj);
         PROF_ADD(PROF_QKNORM); }
 

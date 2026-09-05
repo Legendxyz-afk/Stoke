@@ -1110,10 +1110,18 @@ const GgufTensor* gguf_tensor(const GgufFile* f, u64 i) {
     return &f->tensors[i];
 }
 
-const GgufTensor* gguf_tensor_by_name(const GgufFile* f, const char* name) {
+const GgufTensor* gguf_tensor_by_name_opt(const GgufFile* f,
+                                           const char* name) {
     for (u64 i = 0; i < f->tensor_count; i++) {
         if (strcmp(f->tensors[i].name, name) == 0) return &f->tensors[i];
     }
-    fatal("gguf: gguf_tensor_by_name -- no tensor named '%s'", name);
-    return NULL; /* unreachable */
+    return NULL;
+}
+
+const GgufTensor* gguf_tensor_by_name(const GgufFile* f, const char* name) {
+    const GgufTensor* t = gguf_tensor_by_name_opt(f, name);
+    if (!t) {
+        fatal("gguf: gguf_tensor_by_name -- no tensor named '%s'", name);
+    }
+    return t;
 }
