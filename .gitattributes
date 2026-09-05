@@ -27,3 +27,14 @@ tests/data/http_corpus/*.raw -text
 # stays green. Measured with `git checkout-index` on 2026-08-29: unpinned, this
 # checkout turns tests/data/serve.golden into 86 CRLF lines.
 tests/data/*.golden -text
+# ⚠ THE PATTERN ABOVE DOES NOT REACH A SUBDIRECTORY, and the generation-parity
+# goldens live in one. Without these two lines a fresh Windows clone
+# (core.autocrlf=true here) rewrites them to CRLF on checkout and
+# tests/llama_gen_golden.sh fails every case, while the tree that wrote them
+# stays green -- the precise failure the paragraph above was written about,
+# reappearing one directory deeper.
+tests/data/llama_gen/*.golden -text
+# And the prompts are exempt for the same reason tests/data/parity/*.txt is:
+# the file IS the prompt, so rewriting \n to \r\n changes the tokenization and
+# therefore what the model is asked, silently, on checkout only.
+tests/data/llama_gen/*.txt -text
