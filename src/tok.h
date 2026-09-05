@@ -154,7 +154,13 @@ u32 tok_decode(const Tok* t, u32 id, char* buf, u32 cap);
  * other. A server has to be able to ask BEFORE it calls. */
 int tok_has_chatml(const Tok* t);
 
-u32 tok_bos(const Tok* t); /* tokenizer.ggml.bos_token_id */
+/* tokenizer.ggml.bos_token_id -- ⚠ that key is OPTIONAL in GGUF, and this
+   returns 0 for a model that omits it. 0 is a real token in every vocab, so
+   do NOT prepend this id without checking the model actually declares one:
+   tok_from_gguf() refuses the only case where that matters
+   (add_bos_token set with no bos_token_id), and the encode path reads
+   bos_id solely under add_bos_token. */
+u32 tok_bos(const Tok* t);
 u32 tok_eos(const Tok* t); /* tokenizer.ggml.eos_token_id */
 
 #endif /* STOKE_TOK_H */

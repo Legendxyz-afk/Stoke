@@ -785,11 +785,29 @@ Tok* tok_from_gguf(const GgufFile* f) {
 
     strmap_free(&smap);
 
-    i64 bos64 = gguf_meta_i64(f, "tokenizer.ggml.bos_token_id");
-    if (bos64 < 0 || (u64)bos64 >= vocab_size) {
-        fatal("tok: tokenizer.ggml.bos_token_id %lld out of vocab range "
-              "[0,%u)",
-              (long long)bos64, vocab_size);
+    /* ⚠ bos_token_id is OPTIONAL in GGUF and this loader used to REQUIRE
+     * it, which is stricter than its own use: bos_id is read at exactly
+     * one site (encode_entry's `add_special && add_bos_token` branch), and
+     * add_bos_token itself is read below with the OPTIONAL accessor. So a
+     * file that would never have its bos_id read was refused for not
+     * carrying it -- found 2026-09-05 on unsloth's
+     * Qwen3-4B-Instruct-2507-Q4_K_M, whose tensor table is byte-identical
+     * to bartowski's and which omits this key with add_bos_token=0.
+     *
+     * Read it optionally; validate it where it is actually CONSUMED. A
+     * present-but-out-of-range id is still a hard error whether or not
+     * add_bos_token is set, because a wrong id in the file is a defect in
+     * the file either way and staying silent about it would trade one
+     * over-strictness for an under-strictness. */
+    bool has_bos = gguf_meta_has(f, "tokenizer.ggml.bos_token_id");
+    i64  bos64   = 0;
+    if (has_bos) {
+        bos64 = gguf_meta_i64(f, "tokenizer.ggml.bos_token_id");
+        if (bos64 < 0 || (u64)bos64 >= vocab_size) {
+            fatal("tok: tokenizer.ggml.bos_token_id %lld out of vocab range "
+                  "[0,%u)",
+                  (long long)bos64, vocab_size);
+        }
     }
     i64 eos64 = gguf_meta_i64(f, "tokenizer.ggml.eos_token_id");
     if (eos64 < 0 || (u64)eos64 >= vocab_size) {
@@ -797,10 +815,21 @@ Tok* tok_from_gguf(const GgufFile* f) {
               "[0,%u)",
               (long long)eos64, vocab_size);
     }
-    t->bos_id = (u32)bos64;
     t->eos_id = (u32)eos64;
     t->add_bos_token =
         gguf_meta_i64_or(f, "tokenizer.ggml.add_bos_token", 0) != 0;
+
+    /* The one combination that cannot be served: asked to prepend a token
+     * whose id was never supplied. Refusing here rather than defaulting to
+     * 0 is the point -- id 0 is a real token in every vocab, so a default
+     * would corrupt every prompt silently. */
+    if (t->add_bos_token && !has_bos) {
+        fatal("tok: tokenizer.ggml.add_bos_token is set but "
+              "tokenizer.ggml.bos_token_id is absent -- cannot prepend a "
+              "begin-of-sequence token whose id this model does not "
+              "declare");
+    }
+    t->bos_id = (u32)bos64;
 
     /* ---- special-token table ----
      * Deliberately built LAST (after tokens/merges/byte_to_id are already

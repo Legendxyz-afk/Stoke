@@ -74,6 +74,13 @@ static int tok_test_child_main(int argc, char** argv) {
         Tok*      t = tok_from_gguf(f);
         tok_free(t);
         gguf_close(f);
+    } else if (strcmp(s, "add_bos_no_bos_id") == 0) {
+        /* add_bos_token=true but NO bos_token_id key: the tokenizer is
+           asked to prepend a token whose id it was never told. */
+        GgufFile* f = gguf_open(FIXTURE("tiny_tok_add_bos_no_bos_id.gguf"));
+        Tok*      t = tok_from_gguf(f);
+        tok_free(t);
+        gguf_close(f);
     } else if (strcmp(s, "decode_id_out_of_range") == 0) {
         Tok* t = open_tiny_tok();
         char buf[16];
@@ -536,6 +543,35 @@ TEST(add_special_prepends_bos_iff_add_bos_token) {
     tok_free(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * bos_token_id is OPTIONAL in GGUF, and stoke used to require it.
+ *
+ * The key was read with the REQUIRED accessor (gguf_meta_i64) but consumed
+ * at exactly ONE site, guarded by add_bos_token -- which is itself read
+ * with the OPTIONAL accessor two lines below. So a file that would never
+ * have its bos_id read was refused for not carrying it. Found 2026-09-05
+ * on unsloth's Qwen3-4B-Instruct-2507-Q4_K_M; every Qwen file this engine
+ * had seen until then happened to carry the key, so nothing caught it.
+ * --------------------------------------------------------------------------- */
+TEST(no_bos_id_key_loads_when_add_bos_is_false) {
+    GgufFile* f = gguf_open(FIXTURE("tiny_tok_no_bos_id.gguf"));
+    Tok*      t = tok_from_gguf(f); /* must NOT fatal */
+    gguf_close(f);
+
+    /* The fixture sets add_bos_token=false, so encoding must be identical
+       with and without add_special -- i.e. nothing was prepended, and in
+       particular no id 0 stand-in crept in where bos_id would have been. */
+    u32 ids_special[8], ids_plain[8];
+    u32 ns = tok_encode(t, "world", 5, ids_special, 8, /*add_special=*/true);
+    u32 np = tok_encode(t, "world", 5, ids_plain, 8, /*add_special=*/false);
+    ASSERT_EQ_U32(ns, 5);
+    ASSERT_EQ_U32(np, 5);
+    for (u32 i = 0; i < 5; i++) ASSERT_EQ_U32(ids_special[i], ids_plain[i]);
+    ASSERT_EQ_U32(ids_special[0], 119); /* 'w', not a prepended BOS */
+
+    tok_free(t);
+}
+
 /* Same as the test above but through tok_encode_special: before the
  * encode_entry refactor, tok_encode and tok_encode_special were
  * near-verbatim copies of this exact BOS-prepend logic, and every test
@@ -851,6 +887,17 @@ TEST(bad_pre_fatals) {
 }
 TEST(missing_byte_fatals) {
     assert_scenario_fatals("missing_byte", "0x41");
+}
+/* The other half of no_bos_id_key_loads_when_add_bos_is_false, and the
+   reason that fix is not merely "stop requiring the key": with the check
+   deleted outright this shape would load and silently prepend id 0.
+   ⚠ The substring is "add_bos_token" and NOT "bos_token_id" on purpose.
+   The pre-fix code already fataled here -- via the required-accessor
+   lookup, which says nothing about add_bos_token -- so a test pinning
+   "bos_token_id" passes before AND after and grades nothing. Pinning the
+   guard's own wording is what makes this red before the fix. */
+TEST(add_bos_without_bos_id_fatals) {
+    assert_scenario_fatals("add_bos_no_bos_id", "add_bos_token");
 }
 
 /* ===========================================================================

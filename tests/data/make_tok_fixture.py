@@ -338,20 +338,27 @@ def make_missing_byte():
 # exercise its fatal.
 # ===========================================================================
 
-def _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count):
+def _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count,
+                              write_bos_id=True, add_bos=True):
     """The 7 tokenizer.ggml.* KVs every fixture below starts with
     (model/pre/tokens/merges/bos/eos/add_bos_token) -- callers add their
     own token_type (or not) afterward and pass the resulting total
     kv_count up front, since GGUF's header declares kv_count before any KV
-    bytes follow."""
+    bytes follow.
+
+    write_bos_id=False omits tokenizer.ggml.bos_token_id ENTIRELY (it is an
+    OPTIONAL GGUF key and real publishers omit it -- unsloth's
+    Qwen3-4B-Instruct-2507-Q4_K_M does). Remember to pass a kv_count one
+    lower when you do."""
     w.header(tensor_count=0, kv_count=kv_count)
     w.kv_string("tokenizer.ggml.model", "gpt2")
     w.kv_string("tokenizer.ggml.pre", "qwen2")
     w.kv_array_str("tokenizer.ggml.tokens", tokens)
     w.kv_array_str("tokenizer.ggml.merges", merges)
-    w.kv_u32("tokenizer.ggml.bos_token_id", bos_id)
+    if write_bos_id:
+        w.kv_u32("tokenizer.ggml.bos_token_id", bos_id)
     w.kv_u32("tokenizer.ggml.eos_token_id", eos_id)
-    w.kv_bool("tokenizer.ggml.add_bos_token", True)
+    w.kv_bool("tokenizer.ggml.add_bos_token", add_bos)
 
 
 def make_no_token_type():
@@ -417,6 +424,58 @@ def make_no_imstart():
     return w.buf
 
 
+def make_no_bos_id():
+    """Fully valid tokenizer with add_bos_token=FALSE and NO
+    tokenizer.ggml.bos_token_id key at all. tok_from_gguf() must SUCCEED.
+
+    bos_token_id is OPTIONAL in GGUF. stoke read it with the REQUIRED
+    accessor while consuming it at exactly one site, guarded by
+    add_bos_token -- so it refused real files over a key it would never
+    read. Found 2026-09-05 on unsloth's Qwen3-4B-Instruct-2507-Q4_K_M,
+    which omits the key and sets add_bos_token=0; every Qwen file this
+    engine had ever seen happened to carry it."""
+    tokens, merges, id_of, bos_id, eos_id = build_base_vocab()
+    specials = [("<think>", 4)]
+    for s, _ty in specials:
+        assert s not in id_of
+        id_of[s] = len(tokens)
+        tokens.append(s)
+    token_type = [1] * BASE_VOCAB_SIZE + [ty for _s, ty in specials]
+
+    w = Writer()
+    _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count=7,
+                              write_bos_id=False, add_bos=False)
+    w.kv_array_i32("tokenizer.ggml.token_type", token_type)
+    cur = w.tell()
+    w.raw(b'\x00' * pad_to(cur, 32))
+    return w.buf
+
+
+def make_add_bos_no_bos_id():
+    """The SAME omission, but with add_bos_token=TRUE -- so the tokenizer
+    is asked to prepend a token whose id it was never told.
+    tok_from_gguf() must FATAL.
+
+    This fixture is the reason the fix is not simply 'stop requiring the
+    key': without it, deleting the check entirely would pass every other
+    test, and a file in this shape would silently prepend id 0."""
+    tokens, merges, id_of, bos_id, eos_id = build_base_vocab()
+    specials = [("<think>", 4)]
+    for s, _ty in specials:
+        assert s not in id_of
+        id_of[s] = len(tokens)
+        tokens.append(s)
+    token_type = [1] * BASE_VOCAB_SIZE + [ty for _s, ty in specials]
+
+    w = Writer()
+    _write_base_tokenizer_kvs(w, tokens, merges, bos_id, eos_id, kv_count=7,
+                              write_bos_id=False, add_bos=True)
+    w.kv_array_i32("tokenizer.ggml.token_type", token_type)
+    cur = w.tell()
+    w.raw(b'\x00' * pad_to(cur, 32))
+    return w.buf
+
+
 def main():
     data, tokens, merges, id_of, bos_id, eos_id = make_tiny_tok()
     path = os.path.join(OUT_DIR, "tiny_tok.gguf")
@@ -443,7 +502,10 @@ def main():
                        make_bad_token_type_len),
                       ("tiny_tok_bad_token_type_value.gguf",
                        make_bad_token_type_value),
-                      ("tiny_tok_no_imstart.gguf", make_no_imstart)):
+                      ("tiny_tok_no_imstart.gguf", make_no_imstart),
+                      ("tiny_tok_no_bos_id.gguf", make_no_bos_id),
+                      ("tiny_tok_add_bos_no_bos_id.gguf",
+                       make_add_bos_no_bos_id)):
         p = os.path.join(OUT_DIR, name)
         d = fn()
         with open(p, 'wb') as f:
