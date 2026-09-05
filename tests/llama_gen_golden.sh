@@ -1,11 +1,32 @@
 #!/bin/sh
-# tests/llama_gen_golden.sh -- GREEDY GENERATION parity for the second model.
+# tests/llama_gen_golden.sh -- GREEDY GENERATION regression gate for the
+# second model.
 #
-# tests/tok_llama_golden.sh proves stoke's TOKENIZER matches llama.cpp on
-# Llama-3.2-3B-Instruct. This gate proves the FORWARD PASS does: same prompt,
-# greedy, and the decoded completion must match byte for byte. It is the
-# standing form of B5's done-when, so that "Llama works" stops being a claim
-# somebody made once and becomes something `make test` re-checks.
+# ⚠⚠ READ THIS BEFORE CITING THIS GATE AS M7 PARITY. IT IS NOT THAT.
+# The binding Fable ruling of 2026-08-05 (docs/ROADMAP.md:619-627, and the M3
+# RULING memo it re-instantiates) says M7's FORWARD-PASS parity criterion is
+# the §M3 v2 shape -- twins + a ref probe grid + targeted tests for the deltas,
+# with τ re-frozen from M7's own entry probe over position bands
+# [600,1200)/[1200,∞) BEFORE any parity evidence is graded -- and that it is
+# "NEVER a 50/50 live-oracle token bar for any model". A byte-exact live-oracle
+# generation comparison is structurally that forbidden shape.
+#
+# So what IS this? A REGRESSION DETECTOR with a referent-derived baseline. It
+# pins stoke's current behaviour on four prompts against llama.cpp as of
+# b10037, and it will catch a change in stoke that moves any of them. That is
+# genuinely useful and it is why it is wired into `make test`.
+#
+# ⚠ AND ITS CASES ARE SELECTED ON SUCCESS, which must be stated because it
+# bounds what a green here means: these four prompts are the ones that came
+# back byte-identical. Others did NOT -- a 1426-token prompt diverges by one
+# token, and on the unsloth Qwen file three of four prompts diverge. Those are
+# not in here, so this gate's green says "these four still agree", never
+# "stoke and llama.cpp agree".
+#
+# tests/tok_llama_golden.sh is different and IS the ruled criterion for its
+# half: the tokenizer gate is M1-style byte-exact via llama-tokenize, exactly
+# as the ruling requires, because tokenization is a discrete domain where
+# exactness is reachable.
 #
 # ⚠ THE GOLDENS COME FROM llama.cpp, NOT FROM stoke. A golden regenerated from
 # stoke's own output would pin stoke to itself and pass forever no matter how
