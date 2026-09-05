@@ -717,6 +717,59 @@ TEST(qwen2_does_not_prepend_bos_with_no_add_bos_token_key) {
     tok_free(t);
 }
 
+/* ---------------------------------------------------------------------------
+ * ignore_merges -- the third llama-bpe delta.
+ *
+ * llama-vocab.cpp:618: when the whole pre-tokenized fragment is ITSELF a
+ * vocab entry, LLAMA3 emits that id directly instead of running the merge
+ * loop over it. This was implemented only after being MEASURED rather than
+ * assumed: on tests/data/tok_corpus.txt against the real Llama-3.2 file it
+ * fires 77 times, and it was the ONLY remaining difference from the oracle
+ * (the two streams decoded to byte-identical text, 0 joins, 0 unclassified).
+ *
+ * "zqx" is a vocab entry with no merge rule on any path to it, so the merge
+ * loop provably cannot rebuild it -- the same shape as the real ' مدينة'
+ * (id 117188), which the oracle keeps whole and the merge loop breaks into
+ * three. A token the base vocab CAN rebuild (e.g. "hello" -> 259) is blind
+ * to this defect: both arms agree.
+ * --------------------------------------------------------------------------- */
+
+TEST(llama_bpe_emits_a_whole_fragment_vocab_entry_without_merging) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_llama3.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "zqx", 3, ids, 8, /*add_special=*/false);
+    ASSERT_EQ_U32(n, 1);
+    ASSERT_EQ_U32(ids[0], 273);
+    tok_free(t);
+}
+
+/* The control: qwen2 sets ignore_merges = false, so the same vocab entry
+   must still go through the merge loop and come out as three byte ids. */
+TEST(qwen2_always_runs_the_merge_loop) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_no_add_bos_key.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "zqx", 3, ids, 8, /*add_special=*/false);
+    u32  want[] = {122, 113, 120}; /* 'z','q','x' */
+    ASSERT_EQ_U32(n, 3);
+    for (u32 i = 0; i < (n < 3 ? n : 3); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
+/* ignore_merges applies to a WHOLE fragment, never to a prefix of one.
+   "zqxz" is one alt2 fragment and is NOT a vocab entry, so it must merge
+   normally -- an implementation that looked up progressively longer
+   prefixes, or that shortcut the longest matching prefix, would emit
+   [273, 122] here and pass the test above. */
+TEST(llama_bpe_ignore_merges_does_not_fire_on_a_prefix) {
+    Tok* t = open_named_fixture(FIXTURE("tiny_tok_llama3.gguf"));
+    u32  ids[8];
+    u32  n = tok_encode(t, "zqxz", 4, ids, 8, /*add_special=*/false);
+    u32  want[] = {122, 113, 120, 122};
+    ASSERT_EQ_U32(n, 4);
+    for (u32 i = 0; i < (n < 4 ? n : 4); i++) ASSERT_EQ_U32(ids[i], want[i]);
+    tok_free(t);
+}
+
 /* ===========================================================================
  * Special-token partition tests. tiny_tok.gguf's synthetic specials
  * (tests/data/make_tok_fixture.py SPECIALS): id 271

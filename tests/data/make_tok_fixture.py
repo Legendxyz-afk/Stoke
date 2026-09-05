@@ -518,18 +518,28 @@ def make_add_bos_no_bos_id():
 #   an off-by-one in the bound.
 # ===========================================================================
 
-DIGIT_RUN_EXTRA = ["123", "34"]  # appended at ids 271, 272
+# Appended at ids 271, 272, 273. "zqx" is the ignore_merges discriminator:
+# it is a whole vocab entry with NO merge rule anywhere on the path to it,
+# so the merge loop cannot reconstruct it and must emit three byte ids --
+# unless ignore_merges short-circuits the whole fragment to the one id.
+#
+# That asymmetry is the entire point, and it is not hypothetical: it is the
+# shape measured on the real Llama-3.2 file, where the oracle emits id
+# 117188 ' مدينة' for a fragment stoke's merge loop broke into
+# [' م', 'دي', 'نة']. A token like "hello" (which the base vocab CAN
+# rebuild by merging) is blind to this defect -- both arms give [259].
+DIGIT_RUN_EXTRA = ["123", "34", "zqx"]
 
 
 def build_digit_run_vocab():
-    """Base vocab + the two digit tokens and two merge rules above.
-    Returns (tokens, merges, id_of, bos_id, eos_id, token_type) with one
-    USER_DEFINED special appended (token_type is required by
-    tok_from_gguf)."""
+    """Base vocab + the two digit tokens and two merge rules above, plus the
+    unreachable ignore_merges probe token. Returns (tokens, merges, id_of,
+    bos_id, eos_id, token_type) with one USER_DEFINED special appended
+    (token_type is required by tok_from_gguf)."""
     tokens, merges, id_of, bos_id, eos_id = build_base_vocab()
 
     for s in DIGIT_RUN_EXTRA:
-        assert remap(s) not in id_of, f"digit token {s!r} collides"
+        assert remap(s) not in id_of, f"extra token {s!r} collides"
         id_of[remap(s)] = len(tokens)
         tokens.append(remap(s))
 
@@ -622,10 +632,10 @@ def main():
             f.write(d)
         print(f"wrote {p} ({len(d)} bytes)")
 
-    # The ids test_tok.c hardcodes for the llama-bpe/qwen2 digit-run pair.
+    # The ids test_tok.c hardcodes for the llama-bpe/qwen2 fixture pair.
     _b, dr_id_of = _make_digit_run_fixture("llama-bpe")
-    for name in ("1", "2", "3", "4", "12", "34", "123"):
-        print(f"  digit-run id({name!r}) = {dr_id_of[remap(name)]}")
+    for name in ("1", "2", "3", "4", "12", "34", "123", "z", "q", "x", "zqx"):
+        print(f"  pair id({name!r}) = {dr_id_of[remap(name)]}")
 
 
 if __name__ == "__main__":

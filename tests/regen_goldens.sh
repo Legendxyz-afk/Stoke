@@ -43,6 +43,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 model="models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+llama_model="models/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 oracle="bench/vendor/llama-b10037/llama-tokenize.exe"
 
 if [ ! -f "$model" ]; then
@@ -59,11 +60,18 @@ if [ ! -f "$oracle" ]; then
     exit 0
 fi
 
-# regen <corpus> <golden> [oracle-flag...]
+# regen <model> <corpus> <golden> [oracle-flag...]
+#
+# The model is an explicit parameter rather than the enclosing `$model`
+# because there are now TWO reference models with their own goldens, and a
+# regen that silently picked up the wrong one would rewrite a committed
+# golden with correct-looking output from the wrong tokenizer -- the same
+# class as the "every bank must be keyed by the binary" rule.
 regen() {
-    corpus="$1"
-    golden="$2"
-    shift 2
+    rmodel="$1"
+    corpus="$2"
+    golden="$3"
+    shift 3
     echo "regen_goldens: regenerating $golden ..."
 
     raw="$golden.tmp_raw"
@@ -75,7 +83,7 @@ regen() {
     # both inspect a failing command's exit code AND stop `set -e` from
     # aborting the script right here, before the check below ever runs).
     rc=0
-    "$oracle" -m "$model" -f "$corpus" --ids --no-escape --no-bos "$@" \
+    "$oracle" -m "$rmodel" -f "$corpus" --ids --no-escape --no-bos "$@" \
         > "$raw" || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "regen_goldens: FAILED -- oracle exited $rc regenerating" \
@@ -120,18 +128,41 @@ regen() {
 }
 
 # --no-parse-special: tok_encode's mode (plain `stoke tokenize`).
-regen tests/data/tok_corpus.txt tests/data/tok_corpus.ids.golden \
+regen "$model" tests/data/tok_corpus.txt tests/data/tok_corpus.ids.golden \
     --no-parse-special
 
 # Oracle default (parse-special ON): tok_encode_special's mode
 # (`stoke tokenize --special`).
-regen tests/data/tok_special_corpus.txt \
+regen "$model" tests/data/tok_special_corpus.txt \
     tests/data/tok_special_corpus.ids.golden
 
 # --no-parse-special again, same corpus: tok_encode's corrected OFF-mode
 # behavior (`stoke tokenize`, no --special) on the specials+ChatML corpus.
-regen tests/data/tok_special_corpus.txt \
+regen "$model" tests/data/tok_special_corpus.txt \
     tests/data/tok_special_corpus.plain.golden --no-parse-special
 
-echo "regen_goldens: OK -- regenerated 3 goldens; review with" \
-     "'git diff tests/data/*.golden' before committing"
+# The same three directions on the SECOND model -- the llama-bpe
+# pre-tokenizer (tests/tok_llama_golden.sh). Gated separately so a box that
+# has only the Qwen file still regenerates the three above rather than
+# failing partway.
+#
+# ⚠ tests/data/unicode_sweep.txt is deliberately NOT regenerated against
+# this model: stoke and the oracle disagree on one id there for a measured
+# Unicode-version reason, and committing that golden would either bake in a
+# red gate or pretend the disagreement does not exist. The gate script's
+# header carries the full mechanism.
+if [ -f "$llama_model" ]; then
+    regen "$llama_model" tests/data/tok_corpus.txt \
+        tests/data/tok_corpus.llama.ids.golden --no-parse-special
+    regen "$llama_model" tests/data/tok_special_corpus.txt \
+        tests/data/tok_special_corpus.llama.ids.golden
+    regen "$llama_model" tests/data/tok_special_corpus.txt \
+        tests/data/tok_special_corpus.llama.plain.golden --no-parse-special
+    echo "regen_goldens: OK -- regenerated 6 goldens; review with" \
+         "'git diff tests/data/*.golden' before committing"
+else
+    echo "regen_goldens: OK -- regenerated 3 goldens ($llama_model not" \
+         "present, so the 3 llama-bpe goldens were SKIPPED and are" \
+         "UNCHANGED); review with 'git diff tests/data/*.golden' before" \
+         "committing"
+fi

@@ -497,11 +497,18 @@ static u32 next_pow2_at_least(u32 want) {
     return (u32)cap;
 }
 
-/* ---- temporary string(bytes,len) -> vocab id map (init-time only) ----
+/* ---- string(bytes,len) -> vocab id map ----
  * Keys point into Tok->vocab_str[], which the map does not own -- callers
  * must free the map (strmap_free) before freeing anything the keys point
- * into stops being safe, but since this map is scoped entirely inside
- * tok_from_gguf() and never outlives it, that's automatic. */
+ * into stops being safe.
+ *
+ * Built by tok_from_gguf() to resolve merge-rule halves. It is then FREED
+ * for qwen2 (nothing else needs it) and RETAINED IN Tok for llama-bpe,
+ * whose ignore_merges rule asks "is this whole fragment itself a vocab
+ * entry?" on the hot path -- see bpe_encode_fragment. Retaining it costs
+ * next_pow2(2*vocab_size) slots (~6 MB on Llama-3.2's 128k vocab), which
+ * is why it is conditional rather than unconditional. Read-only after
+ * construction, so sharing one Tok across the pool's threads stays safe. */
 
 typedef struct {
     const char* key;
@@ -689,6 +696,16 @@ struct Tok {
 
     TokPreType pre_type;
 
+    /* llama-bpe's ignore_merges: emit a whole-fragment vocab entry
+       directly rather than merging into it. `vocab_map` is populated ONLY
+       when this is true (slots==NULL otherwise), and `max_token_len` is
+       the longest vocab string in bytes -- a fragment longer than that
+       cannot be a vocab entry, which lets the hot path reject most
+       fragments without hashing anything. */
+    bool ignore_merges;
+    StrMap vocab_map;
+    u32    max_token_len;
+
     u32  bos_id;
     u32  eos_id;
     bool add_bos_token;
@@ -751,6 +768,7 @@ Tok* tok_from_gguf(const GgufFile* f) {
         memcpy(owned, s, slen + 1);
         t->vocab_str[id] = owned;
         t->vocab_len[id] = (u32)slen;
+        if ((u32)slen > t->max_token_len) t->max_token_len = (u32)slen;
         strmap_insert(&smap, owned, (u32)slen, id);
     }
 
@@ -818,7 +836,19 @@ Tok* tok_from_gguf(const GgufFile* f) {
         mergemap_insert(&t->merges, id_a, id_b, rank, id_ab);
     }
 
-    strmap_free(&smap);
+    /* llama-bpe sets ignore_merges (llama-vocab.cpp:2145): a fragment that
+     * is itself a vocab entry is emitted as that one id instead of being
+     * run through the merge loop. That needs the vocab string map to
+     * OUTLIVE construction, so it is handed to Tok here and freed by
+     * tok_free(); qwen2 keeps the original behaviour of dropping it, and
+     * pays nothing. Keys point into t->vocab_str[], which tok_free()
+     * releases after the map. */
+    t->ignore_merges = (pre_type == TOK_PRE_LLAMA3);
+    if (t->ignore_merges) {
+        t->vocab_map = smap;
+    } else {
+        strmap_free(&smap);
+    }
 
     /* ⚠ bos_token_id is OPTIONAL in GGUF and this loader used to REQUIRE
      * it, which is stricter than its own use: bos_id is read at exactly
@@ -939,6 +969,12 @@ Tok* tok_from_gguf(const GgufFile* f) {
 
 void tok_free(Tok* t) {
     if (!t) return;
+    /* Before vocab_str: the map's keys point INTO those strings. free()
+       never dereferences them, so the order is defensive rather than
+       load-bearing -- but a later change that walked the map here would
+       depend on it. NULL slots (the qwen2 path freed it at init) is a
+       no-op for free(). */
+    strmap_free(&t->vocab_map);
     for (u32 i = 0; i < t->vocab_size; i++) free(t->vocab_str[i]);
     free(t->vocab_str);
     free(t->vocab_len);
@@ -972,10 +1008,52 @@ void tok_free(Tok* t) {
  * byte 0..255 has a byte_to_id[] entry, so this can never fail on content.
  */
 
+/* llama-bpe's ignore_merges (llama-vocab.cpp:618): if the WHOLE fragment,
+ * in GPT-2 byte->unicode remapped space, is itself a vocab entry, that id
+ * is emitted and the merge loop never runs. The remapped space is the
+ * point -- the vocab stores 'Ġ' for a space, so the raw bytes would never
+ * match. `scratch` is caller-owned and must hold 2*nbytes (every remapped
+ * codepoint is 1 or 2 UTF-8 bytes: printable ASCII stays itself, and every
+ * other byte maps into U+00A1..U+0142); it is a parameter rather than
+ * state on Tok because one Tok is shared across the pool's threads.
+ *
+ * Returns true if it emitted. The length guard is exact, not a heuristic:
+ * remapping never shrinks, so a fragment longer than the longest vocab
+ * string cannot possibly be one. */
+static bool ignore_merges_whole_fragment(const Tok* t, const u8* bytes,
+                                          u64 nbytes, u8* scratch, u32* ids,
+                                          u32* n_out, u32 cap,
+                                          const char* fn) {
+    if (nbytes > (u64)t->max_token_len) return false;
+    u64 w = 0;
+    for (u64 i = 0; i < nbytes; i++) {
+        w += utf8_encode_cpt(t->byte_to_cpt[bytes[i]], scratch + w);
+        if (w > (u64)t->max_token_len) return false;
+    }
+    u32 id;
+    if (!strmap_find(&t->vocab_map, (const char*)scratch, (u32)w, &id)) {
+        return false;
+    }
+    if (*n_out >= cap) {
+        fatal("tok: %s -- output cap %u exceeded emitting whole-fragment "
+              "vocab id %u (see src/tok.h's tok_encode contract for cap "
+              "sizing)",
+              fn, cap, id);
+    }
+    ids[(*n_out)++] = id;
+    return true;
+}
+
 static void bpe_encode_fragment(const Tok* t, const u8* bytes, u64 nbytes,
                                  u32* ids, u32* n_out, u32 cap,
-                                 const char* fn) {
+                                 const char* fn, u8* remap_scratch) {
     if (nbytes == 0) return;
+
+    if (t->ignore_merges &&
+        ignore_merges_whole_fragment(t, bytes, nbytes, remap_scratch, ids,
+                                      n_out, cap, fn)) {
+        return;
+    }
 
     u32* sym = (u32*)xcalloc(nbytes, sizeof(u32));
     u64  sym_count = nbytes;
@@ -1093,6 +1171,13 @@ static void bpe_encode_span(const Tok* t, const u8* utf8, u64 len, u32* ids,
     u64        canon_len = 0;
     u64        n_cp = decode_utf8_all(utf8, len, cps, canon, &canon_len);
 
+    /* ignore_merges scratch, allocated per CALL (never on Tok: one Tok is
+       shared by every pool thread). No fragment exceeds the span, and the
+       GPT-2 remap expands each byte to at most 2, so 2x the canonical
+       length is a hard bound. Nothing is allocated for qwen2. */
+    u8* remap_scratch =
+        t->ignore_merges ? (u8*)xcalloc(canon_len * 2 + 4, 1) : NULL;
+
     u64 ci = 0;
     while (ci < n_cp) {
         u64 m = match_fragment(cps, n_cp, ci, t->pre_type);
@@ -1102,11 +1187,12 @@ static void bpe_encode_span(const Tok* t, const u8* utf8, u64 len, u32* ids,
             (frag_end_ci < n_cp) ? cps[frag_end_ci].canon_off : canon_len;
 
         bpe_encode_fragment(t, canon + byte_start, byte_end - byte_start,
-                             ids, n_out, cap, fn);
+                             ids, n_out, cap, fn, remap_scratch);
 
         ci = frag_end_ci;
     }
 
+    free(remap_scratch);
     free(cps);
     free(canon);
 }
