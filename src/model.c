@@ -716,6 +716,17 @@ Model* model_open(const char* path) {
     }
     RopeKind rope_kind = is_llama ? ROPE_NORM : ROPE_NEOX;
 
+    /* ⚠ OWN THE ARCHITECTURE STRING BEFORE ANY gguf_close(). `arch` points at
+     * kv->str_val inside `f`, and gguf_close() frees it -- so every fatal()
+     * below that names the architecture would be reading freed memory, on
+     * exactly the error paths that are hardest to notice. This is the same
+     * trap the token_embd block below already guards against by copying its
+     * fields to locals first; the arch string joined it when the hyperparameter
+     * keys became architecture-prefixed. */
+    char arch_own[64];
+    snprintf(arch_own, sizeof arch_own, "%s", arch);
+    arch = arch_own;
+
     char kb[96];
     u32 n_layer = req_u32(f, arch_key(kb, sizeof kb, arch, "block_count"));
     i64 ctx_len =
