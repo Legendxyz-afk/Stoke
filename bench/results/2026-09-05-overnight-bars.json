@@ -1,0 +1,163 @@
+{
+  "block": "2026-09-05-overnight-bars",
+  "generated": "2026-09-06T10:35:21",
+  "git_rev": "99494f6",
+  "purpose": "Stage 0.3 -- the authorized llama-server sitting, extended to @16 and to ollama-default.",
+  "method": "M0's own harness (bench/run_matrix.py), 3 runs per cell, S2 = 512 prompt tokens x 128 generated. llamacpp-tuned @8 measured THREE times, before and after the other cells, so drift inside the block is separable from drift between sittings.",
+  "power_scheme": "Turbo (same as the 2026-09-01 referent run)",
+  "referent_cells": {
+    "p1-llamacpp-8a": {
+      "config": "llamacpp-tuned",
+      "scenario": "s2-closed-8",
+      "runs_banked": 3,
+      "runs_valid": 3,
+      "aggregate_decode_tps": [
+        19.879,
+        19.817,
+        20.161
+      ],
+      "median": 19.879,
+      "spread_pct": 1.73,
+      "ttft_p50_s": 52.7,
+      "wall_s": 77.9
+    },
+    "p2-llamacpp-16": {
+      "config": "llamacpp-tuned",
+      "scenario": "s2-closed-16",
+      "runs_banked": 3,
+      "runs_valid": 3,
+      "aggregate_decode_tps": [
+        16.145,
+        16.307,
+        16.355
+      ],
+      "median": 16.307,
+      "spread_pct": 1.29,
+      "ttft_p50_s": 78.7,
+      "wall_s": 152.6
+    },
+    "p3-llamacpp-8b": {
+      "config": "llamacpp-tuned",
+      "scenario": "s2-closed-8",
+      "runs_banked": 3,
+      "runs_valid": 3,
+      "aggregate_decode_tps": [
+        20.122,
+        20.065,
+        20.067
+      ],
+      "median": 20.067,
+      "spread_pct": 0.28,
+      "ttft_p50_s": 51.8,
+      "wall_s": 76.6
+    },
+    "p4-ollama-8a": {
+      "config": "ollama-default",
+      "scenario": "s2-closed-8",
+      "runs_banked": 3,
+      "runs_valid": 3,
+      "aggregate_decode_tps": [
+        9.25,
+        9.246,
+        9.233
+      ],
+      "median": 9.246,
+      "spread_pct": 0.19,
+      "ttft_p50_s": 57.8,
+      "wall_s": 116.7
+    },
+    "p5-ollama-16": {
+      "config": "ollama-default",
+      "scenario": "s2-closed-16",
+      "runs_banked": 3,
+      "runs_valid": 1,
+      "aggregate_decode_tps": [
+        8.933
+      ],
+      "median": 8.933,
+      "spread_pct": 0.0,
+      "ttft_p50_s": 116.8,
+      "wall_s": 234.5
+    },
+    "p7-llamacpp-8c": {
+      "config": "llamacpp-tuned",
+      "scenario": "s2-closed-8",
+      "runs_banked": 3,
+      "runs_valid": 3,
+      "aggregate_decode_tps": [
+        19.241,
+        19.444,
+        19.847
+      ],
+      "median": 19.444,
+      "spread_pct": 3.12,
+      "ttft_p50_s": 54.2,
+      "wall_s": 80.0
+    }
+  },
+  "stoke_same_block": {
+    "source": "docs/superpowers/gate-reports/overnight-f8b06a2-report.md",
+    "8f32": {
+      "aggregate_m0": 14.518,
+      "blocks": [
+        14.496,
+        14.539
+      ],
+      "decode_only_tps": 41.32,
+      "ttft_p50_s": 31.9
+    },
+    "16f32": {
+      "aggregate_m0": 14.745,
+      "blocks": [
+        14.872,
+        14.619
+      ],
+      "decode_only_tps": 49.44,
+      "ttft_p50_s": 59.4
+    },
+    "llama_bench_health": {
+      "tg128": 18.25,
+      "pp512": 77.345
+    }
+  },
+  "ratios_same_block": {
+    "stoke_over_llamacpp_tuned": {
+      "at8": 0.73,
+      "at16": 0.904
+    },
+    "stoke_over_ollama_default": {
+      "at8": 1.57,
+      "at16": 1.651,
+      "clause2_requires": 2.0,
+      "verdict": "MISS at both widths"
+    },
+    "ttft_stoke_better_than_llamacpp": {
+      "at8": 1.65,
+      "at16": 1.33
+    },
+    "ttft_stoke_better_than_ollama": {
+      "at16": 1.97
+    }
+  },
+  "bars_recomputed_from_this_block": {
+    "at8": {
+      "llamacpp_tuned": 19.879,
+      "two_x_ollama": 18.492,
+      "binding": 19.879,
+      "recorded_bar": 17.7,
+      "direction": "harder"
+    },
+    "at16": {
+      "llamacpp_tuned": 16.307,
+      "two_x_ollama": 17.866,
+      "binding": 17.866,
+      "recorded_bar": 16.8,
+      "direction": "harder"
+    }
+  },
+  "caveats": [
+    "ollama-default @16 is ONE valid run, not a 3-run median: the box OOM'd during the cell (run1 completed 9/16 with 7 HTTP 500s, run2 0/16). ollama at 16 parallel slots spawns its own llama-server holding 6.69 GB and exhausts a 15.6 GB box.",
+    "Every aggregate here was reconstructed from the raw per-client fields before publication (sum(n_tokens-1) / (max(last_token_abs) - min(first_token_abs))); all 17 matched to 3dp.",
+    "The ABSOLUTES are not stable across sittings: this same llamacpp-tuned @8 cell has read 17.664 (2026-07-17), 24.608 (2026-09-01) and ~19.9 (tonight) with no code change, while within a sitting it repeats to 1-2% (bracket p1 vs p3 = 0.95%). Publish the RATIO and name the block."
+  ]
+}
