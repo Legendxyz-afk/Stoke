@@ -53,12 +53,40 @@
 # Model-gated with a loud SKIP + exit 0 like every other golden gate.
 #
 # Usage: sh tests/llama_gen_golden.sh <builddir> [exe-suffix]
+#
+# ⚠⚠⚠ OPT-IN, AND THE REASON IS MEASURED, NOT CAUTIONARY. This gate was wired
+# into `make test` on 2026-09-06 and the Linux leg immediately failed it while
+# Windows passed: the SAME source and model produce different greedy text on
+# the two platforms.
+#     short2  Windows "if n <= 0: return 0"   Linux "if n <= 1: return n"
+#     short3  Windows "three astronauts"      Linux "astronauts"
+# `make` aborts on the first failure, so it also stopped serve_golden,
+# run_sampling, serve_raw and serve_openai from running at all.
+#
+# In the SAME Linux run every discrete-domain golden passed -- golden_info,
+# tok_golden, tok_special_golden, unicode_sweep_golden and tok_llama_golden.
+# That contrast is the whole point: TOKENIZATION is exact across platforms and
+# GENERATION is not, because the forward pass runs f32 transcendentals
+# (rope's cosf/sinf/powf) through a different libm and a different compiler on
+# each leg. A byte-exact generation bar is therefore not portable, which is
+# precisely why the binding ruling says forward-pass parity must never be one.
+#
+# So it runs only when asked: STOKE_RUN_GEN_PARITY=1 sh tests/llama_gen_golden.sh ...
+# and the goldens it compares against are WINDOWS-generated.
 set -u
 
 . "$(dirname "$0")/golden_lib.sh"
 
 builddir="${1:?usage: llama_gen_golden.sh <builddir> [exe-suffix]}"
 exe="${2:-}"
+
+if [ "${STOKE_RUN_GEN_PARITY:-0}" != "1" ]; then
+    echo "llama_gen_golden: SKIP -- opt-in only (set STOKE_RUN_GEN_PARITY=1)." \
+         "Greedy text is NOT reproducible across platforms: this gate's" \
+         "goldens are Windows-generated and the Linux leg differs on 2 of 4" \
+         "cases, while every tokenizer golden passes on both."
+    exit 0
+fi
 
 model="models/Llama-3.2-3B-Instruct-Q4_K_M.gguf"
 dir="tests/data/llama_gen"
