@@ -1,0 +1,203 @@
+{
+ "a": {
+  "file": "C:/Users/Kabir/AppData/Local/Temp/claude/M--New-Drive-Desktop-Programming/9875ed23-8ad7-48b4-9fdd-06eac768dad0/scratchpad/m7/ctl250.ref-serial.json",
+  "mode": "teacher-force/serial",
+  "n_ids": 250,
+  "seconds": 9628.529,
+  "env": {
+   "OPENBLAS_NUM_THREADS": "6",
+   "OMP_NUM_THREADS": "6",
+   "MKL_NUM_THREADS": "6",
+   "affinity_mask": "0xfff",
+   "numpy": "2.4.0"
+  }
+ },
+ "b": {
+  "file": "C:/Users/Kabir/AppData/Local/Temp/claude/M--New-Drive-Desktop-Programming/9875ed23-8ad7-48b4-9fdd-06eac768dad0/scratchpad/m7/ctl12.ref-serial.json",
+  "mode": "teacher-force/serial",
+  "n_ids": 12,
+  "seconds": 388.15,
+  "env": {
+   "OPENBLAS_NUM_THREADS": "6",
+   "OMP_NUM_THREADS": "6",
+   "MKL_NUM_THREADS": "6",
+   "affinity_mask": "0xfff",
+   "numpy": "2.4.0"
+  }
+ },
+ "ids_verified_identical_over_range": true,
+ "common_positions": 12,
+ "position_range": [
+  0,
+  11
+ ],
+ "argmax_disagreements": 0,
+ "bit_identical_positions": 12,
+ "unanchorable_positions": 0,
+ "anchored_max": 0.0,
+ "anchored_p95": 0.0,
+ "raw_max": 0.0,
+ "trend": [
+  {
+   "positions": [
+    0,
+    1
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    2,
+    3
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    4,
+    6
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    7,
+    8
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    9,
+    11
+   ],
+   "anchored_max": 0.0
+  }
+ ],
+ "rows": [
+  {
+   "pos": 0,
+   "band": "[0,100)",
+   "argmax_a": 2,
+   "argmax_b": 2,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 1,
+   "band": "[0,100)",
+   "argmax_a": 315,
+   "argmax_b": 315,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 2,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 3,
+   "band": "[0,100)",
+   "argmax_a": 20930,
+   "argmax_b": 20930,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 4,
+   "band": "[0,100)",
+   "argmax_a": 3577,
+   "argmax_b": 3577,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 5,
+   "band": "[0,100)",
+   "argmax_a": 304,
+   "argmax_b": 304,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 6,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 7,
+   "band": "[0,100)",
+   "argmax_a": 220,
+   "argmax_b": 220,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 8,
+   "band": "[0,100)",
+   "argmax_a": 46487,
+   "argmax_b": 46487,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 9,
+   "band": "[0,100)",
+   "argmax_a": 9478,
+   "argmax_b": 9478,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 10,
+   "band": "[0,100)",
+   "argmax_a": 14110,
+   "argmax_b": 14110,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 11,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  }
+ ],
+ "label": "C2 null arm: serial(250) vs serial(12) at 0..11",
+ "threshold": 0.001,
+ "require_exact": true,
+ "passed": true
+}

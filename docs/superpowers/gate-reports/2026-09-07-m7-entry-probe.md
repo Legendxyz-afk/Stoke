@@ -29,9 +29,8 @@ live on this model.
    here probes past 1371, so "τ does not grow" is established **to 1371, not to
    2914**. `m7_probe.py --phase a --only …` accumulates into the same directory,
    so finishing costs only the missing streams.
-2. **C2, the null arm** (§1). Until a second pinned serial run reproduces the
-   first bit-for-bit, the reference's own reproducibility is asserted by its
-   configuration rather than measured.
+2. ~~C2, the null arm~~ — **DONE, and it passed bit-identically** (§1). The
+   pinned reference has no noise floor of its own.
 3. ⚠ **THE FOURTH TARGETED DELTA IS NOT IMPLEMENTED AT ALL — "header-format
    template #2".** §8.8 lists four silent-garbage deltas needing targeted tests:
    QK-norm presence gating ✅, the llama3 rope scaling formula ✅, the llama-bpe
@@ -163,10 +162,34 @@ same envelope C1 measured, and it does not grow out to position 1199 — which
 makes at every T; that is C1's job, and C1's reach — 250 positions — remains the
 stated limit of the independent evidence.
 
-### C2 — the null arm
+### C2 — the null arm: **BIT-IDENTICAL, and it makes the other two readable**
 
-**STATUS: see §6.** Its job is the instrument's own noise floor: a second serial
-run must reproduce the first bit-for-bit, or no Δ below that floor is readable.
+A second pinned serial run, over a *different-length* stream (12 ids vs 250),
+compared at the 12 shared positions with the id prefix verified element by
+element:
+
+| | |
+|---|---|
+| common positions | 12 (0..11), ids verified identical |
+| argmax disagreements | **0** |
+| bit-identical top-5 | **12 / 12** |
+| anchored \|Δ\| max | **0.0 — exactly zero** |
+
+**The pinned reference has NO noise floor of its own.** That is the result the
+null arm exists to produce, and it is what makes C1 and C3 mean anything: their
+~2e-5 is *entirely* attributable to the difference under test (serial-vs-batched,
+and batch shape), with nothing hiding underneath from run-to-run variation.
+
+⚠ It also settles the question Kabir's P-core catch raised. Unpinned, OpenBLAS
+sizes itself to all 16 logical CPUs and splits every reduction across them, so
+the last bits of every logit depended on how many threads it happened to pick.
+Pinned to `0xFFF` with `OPENBLAS_NUM_THREADS=6`, the reference is **exactly
+reproducible** — a property that had been asserted by configuration and is now
+measured.
+
+⚠ Scope, stated: 12 positions in `[0,100)`. Reproducibility is a property that
+shows at every position if it fails at all, so this does not need many — but it
+is 12, not 250, and it was run short deliberately for time.
 
 ---
 
@@ -269,7 +292,7 @@ Divergent positions graded: **9**
 | T3 | band with < 20 agreeing positions | any | none | no |
 | T4 | adjacent-band p95 growth | > 1.5× | max 1.116x | no |
 | T5 | serial-vs-batched control | ≥ 1e-3 | **1.907e-05** | no |
-| T6 | serial null arm not bit-identical | any | *(see §1)* | |
+| T6 | serial null arm not bit-identical | any | **bit-identical, max Δ = 0.0** | no |
 
 ---
 
@@ -282,10 +305,7 @@ Divergent positions graded: **9**
 - **Anything about performance.** No perf number was taken here and none may be
   quoted from it.
 - **The B6 (unsloth) rung.** Separate referent, separate rung.
-- **C2, the null arm** — see §1. Until a second pinned serial run reproduces the
-  first bit-for-bit, the reference's own reproducibility is asserted by its
-  configuration rather than measured. The C1 and C3 numbers (~2e-5) bound how
-  much this could matter, but they do not replace it.
+- ~~C2, the null arm~~ — **closed**: bit-identical, max Δ exactly 0.0 (§1).
 - **The `[600,1200)` and `[1200,∞)` bands, unless §2 shows streams in them.**
   §8.9 names those bands specifically; a grid that stops short of them has not
   met the criterion no matter how quiet the bands below are.
