@@ -685,7 +685,7 @@ class ModelRef:
             X = f32(X + f32(f32(silu(gate) * up)
                             @ self.gf.tensor_dequant_full(layer["ffn_down"]).T))
             if progress is not None:
-                progress(L, self.n_layer)
+                progress(L, self.n_layer, "layers")
 
         onorm = self.gf.tensor_dequant_full(self.output_norm_t)
         out = []
@@ -844,7 +844,17 @@ def run_environment() -> dict:
     affinity = None
     try:                                   # Windows
         import ctypes
-        k32 = ctypes.windll.kernel32
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # ⚠ argtypes/restype are NOT optional here. Without them ctypes passes
+        # the HANDLE as a 32-bit int on win64 and the call fails, so the
+        # recorder wrote null while the launcher had already verified the mask
+        # took -- an env block that silently records nothing.
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.GetProcessAffinityMask.argtypes = [wintypes.HANDLE,
+                                               ctypes.POINTER(ctypes.c_size_t),
+                                               ctypes.POINTER(ctypes.c_size_t)]
+        k32.GetProcessAffinityMask.restype = wintypes.BOOL
         proc = ctypes.c_size_t(0)
         sysm = ctypes.c_size_t(0)
         if k32.GetProcessAffinityMask(k32.GetCurrentProcess(),
@@ -915,13 +925,18 @@ def run_teacher_force(args) -> int:
     t0 = _time.time()
     last = [t0]
 
-    def progress(t, total):
+    def progress(t, total, unit="positions"):
         now = _time.time()
         if now - last[0] >= 10.0 or t + 1 == total:
             done = t + 1
             rate = done / max(now - t0, 1e-9)
-            print(f"ref teacher-force: {done}/{total} positions, "
-                  f"{rate:.3f} pos/s, eta {(total - done) / max(rate, 1e-9):.0f}s",
+            # ⚠ The unit is a PARAMETER because the two modes count different
+            # things: serial walks positions, batched walks layers. A batched
+            # run that printed "28/28 positions" for a 2851-token stream is a
+            # readout that contradicts the run it is describing.
+            print(f"ref teacher-force: {done}/{total} {unit}, "
+                  f"{rate:.3f} {unit[:3]}/s, "
+                  f"eta {(total - done) / max(rate, 1e-9):.0f}s",
                   file=sys.stderr, flush=True)
             last[0] = now
 

@@ -66,23 +66,35 @@ ESCALATE = "ESCALATE"
 
 # Position bands (ruling section 8.9). Keyed by ABSOLUTE position =
 # prompt_len + generated_index, because the error term the bands exist to
-# track (rope_neox theta accumulation) grows with absolute position.
-BANDS = ((0, 100), (100, 300), (300, 600))
+# track (rope theta accumulation) grows with absolute position.
+#
+# ▶ THE LAST TWO BANDS ARE M7's, ADDED 2026-09-07 UNDER THE RULING'S OWN NAMED
+# TRIGGER (§8.9: "the M7 entry probe adds [600,1200) and [1200,inf) bands on
+# the Llama-3.2 corpus and re-freezes tau there before any parity evidence is
+# graded"). Adding the RANGE is not adding a tolerance: no tau exists for these
+# bands until an M7 entry probe freezes one, and classify_records() fatals on a
+# band that is absent from the table it was handed. So the fail-safe that
+# band_of() used to provide by RAISING is now provided by the empty table, and
+# an M3-era tau table still cannot be stretched over an M7-era context -- it
+# simply has no entry there. What changes is only that the refusal now names
+# the missing tau instead of the missing band.
+BANDS = ((0, 100), (100, 300), (300, 600), (600, 1200), (1200, None))
+
+
+def band_name(lo, hi) -> str:
+    return f"[{lo},{hi})" if hi is not None else f"[{lo},inf)"
 
 
 def band_of(abs_position: int) -> str:
-    """Name the band an absolute position falls in. Positions at or beyond the
-    last band's end are NOT silently folded into it -- M7 adds bands there
-    (ruling 8.9) and a Qwen3-era tau must not be stretched over an M7-era
-    context by accident."""
+    """Name the band an absolute position falls in. The final band is
+    open-ended, so nothing lands outside the table any more -- but a position
+    is still only GRADEABLE where a tau was frozen for its band."""
     if abs_position < 0:
         raise ValueError(f"absolute position {abs_position} is negative")
     for lo, hi in BANDS:
-        if lo <= abs_position < hi:
-            return f"[{lo},{hi})"
-    raise ValueError(
-        f"absolute position {abs_position} is beyond the last frozen band "
-        f"{BANDS[-1]}; ruling 8.9 requires a tau re-freeze before grading here")
+        if lo <= abs_position and (hi is None or abs_position < hi):
+            return band_name(lo, hi)
+    raise ValueError(f"absolute position {abs_position} matches no band in {BANDS}")
 
 
 def _as_pairs(top5, who):
@@ -340,11 +352,29 @@ def run_selftest() -> int:
     check("band [0,100)", band_of(87) == "[0,100)")
     check("band [100,300)", band_of(100) == "[100,300)")
     check("band [300,600)", band_of(553) == "[300,600)")
+    # M7's two bands (ruling 8.9). Boundaries checked on BOTH sides, because an
+    # off-by-one here silently grades a position under its neighbour's tau.
+    check("band [600,1200) lower edge", band_of(600) == "[600,1200)")
+    check("band [600,1200) upper edge", band_of(1199) == "[600,1200)")
+    check("band [1200,inf) lower edge", band_of(1200) == "[1200,inf)")
+    check("band [1200,inf) is open-ended", band_of(999999) == "[1200,inf)")
+    check("band [300,600) upper edge still ends at 599", band_of(599) == "[300,600)")
     try:
-        band_of(1200)
-        check("a position past the frozen bands is refused, not folded in", False)
+        band_of(-1)
+        check("a negative position is refused", False)
     except ValueError:
-        check("a position past the frozen bands is refused, not folded in", True)
+        check("a negative position is refused", True)
+    # ⚠ THE FAIL-SAFE MOVED, IT DID NOT GO AWAY. band_of() used to refuse
+    # anything past 600; now the refusal is the ABSENT TAU, and this asserts it
+    # is still a refusal rather than a silent grading under an M3-era constant.
+    m3_table = {"f32_intcore": {"[0,100)": TAU, "[100,300)": TAU, "[300,600)": TAU}}
+    long_rec = {"prompt": "long2", "abs_position": 1400, "pair": "f32_intcore",
+                "x": {"top5": x, "chose": 438}, "y": {"top5": y, "chose": 714}}
+    try:
+        classify_records([long_rec], m3_table)
+        check("an M3-era tau table cannot grade an M7-era position", False)
+    except SystemExit:
+        check("an M3-era tau table cannot grade an M7-era position", True)
 
     # --- a tau that was never frozen is fatal, not defaulted ----------------
     rec = {"prompt": "p02", "abs_position": 39, "pair": "f32_intcore",
