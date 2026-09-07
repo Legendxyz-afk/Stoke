@@ -38,3 +38,17 @@ tests/data/llama_gen/*.golden -text
 # the file IS the prompt, so rewriting \n to \r\n changes the tokenization and
 # therefore what the model is asked, silently, on checkout only.
 tests/data/llama_gen/*.txt -text
+# ⚠ AND ONE DIRECTORY DEEPER AGAIN, for the chat-template gate. The comment
+# above says "the pattern does not reach a subdirectory" and the same trap
+# reappears verbatim in tests/data/llama_chat/. Three file kinds, all
+# byte-compared or byte-consumed:
+#   *.ids.golden          the referent's token ids, diffed byte for byte
+#   *.naive-unsafe.ids    the CONTRAST the injection case must NOT equal --
+#                         a CRLF rewrite makes "differs" true for the wrong
+#                         reason, which is worse than failing
+#   *.user.txt            the message IS its bytes, and trim.user.txt exists
+#                         precisely to carry leading/trailing whitespace that
+#                         eol conversion would rewrite
+#   *.render.txt          llama.cpp's own render, kept so the golden's
+#                         provenance is checkable
+tests/data/llama_chat/* -text
