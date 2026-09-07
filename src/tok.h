@@ -174,6 +174,66 @@ u32 tok_decode(const Tok* t, u32 id, char* buf, u32 cap);
  * other. A server has to be able to ask BEFORE it calls. */
 int tok_has_chatml(const Tok* t);
 
+/* Renders the LLAMA-3 HEADER template for `msgs[0..n)` and encodes it.
+ * §8.8's fourth targeted delta; the ChatML doc above says "Llama-3 header
+ * format is M7" and this is it.
+ *
+ * SHAPE, transcribed from the model's own tokenizer.chat_template and
+ * CONFIRMED against llama.cpp's renderer (llama-template-analysis):
+ *   <|begin_of_text|>
+ *   <|start_header_id|>system<|end_header_id|>
+
+
+ *     Cutting Knowledge Date: December 2023
+Today Date: {date}
+
+{system}
+ *   <|eot_id|>
+ *   ... <|start_header_id|>{role}<|end_header_id|>
+
+{content|trim}<|eot_id|>
+ *   <|start_header_id|>assistant<|end_header_id|>
+
+      (generation prompt)
+ *
+ * THREE THINGS THAT ARE NOT 'CHATML WITH DIFFERENT TAGS':
+ *  1. IT EMITS BOS ITSELF. The template's first statement is {{- bos_token }},
+ *     llama-bpe defaults add_bos_token TRUE, and nothing re-tokenizes this
+ *     function's output -- so if it did not emit BOS, nothing would. That is
+ *     the exact opposite of tok_apply_chatml's 'no BOS is ever added'.
+ *  2. THE SYSTEM BLOCK IS UNCONDITIONAL, preamble included, even when the
+ *     caller passes no system message.
+ *  3. Each content is `| trim`'d, per the template.
+ *
+ * `date` NULL means TODAY, which is what llama.cpp emits (it defines
+ * strftime_now over the current local time). That makes the output
+ * NON-DETERMINISTIC ACROSS DAYS on purpose. Pass a fixed string to pin it --
+ * a golden over this output is impossible otherwise, since one built on the
+ * real clock passes today and fails tomorrow.
+ *
+ * Injection-safe on the same terms as tok_apply_chatml: content is encoded
+ * with CONTROL specials NOT matched, so a literal <|eot_id|> in a user
+ * message is text, never a turn boundary. Fatal if `cap` is exceeded, or if
+ * the vocab lacks any of the four specials (call time, not load time). */
+u32 tok_apply_llama3(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
+                      u32 cap, const char* date);
+
+/* Whether this vocab has all four Llama-3 header specials. Same role for
+ * tok_apply_llama3 that tok_has_chatml has for tok_apply_chatml: a server
+ * must be able to ask BEFORE it calls, because the answer is a REFUSAL of one
+ * request rather than the death of the process. */
+int tok_has_llama3_header(const Tok* t);
+
+/* Renders whichever chat template this model HAS -- ChatML if the vocab
+ * carries <|im_start|>/<|im_end|>, else the Llama-3 header format. Fatal if
+ * it has neither, so callers that cannot survive a fatal must ask first
+ * (tok_has_chatml / tok_has_llama3_header); src/stoke.c does exactly that.
+ *
+ * The precedence lives HERE and nowhere else: a ternary repeated at each
+ * call site is how two of them end up disagreeing. */
+u32 tok_apply_chat(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
+                    u32 cap);
+
 /* tokenizer.ggml.bos_token_id -- ⚠ that key is OPTIONAL in GGUF, and this
    returns 0 for a model that omits it. 0 is a real token in every vocab, so
    do NOT prepend this id without checking the model actually declares one:

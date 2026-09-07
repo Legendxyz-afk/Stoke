@@ -25,7 +25,12 @@
 
 #define PROMPT   "The capital of France is"
 #define MAX_TOK  16
-#define MAX_IDS  512
+#define MAX_IDS 2048
+/* Sized for stoke_chat_template_bound's FIXED part, which grew from 64 to
+ * 512 when the Llama-3 header template landed: that template prepends BOS
+ * and an UNCONDITIONAL system block with a ~62-byte preamble, none of
+ * which ChatML has. The bound is an UPPER bound over both templates, so it
+ * pays the larger fixed cost even for a ChatML model. */
 
 static int fail(const char* what) {
     fprintf(stderr, "abi_smoke: FAIL %s: %s\n", what, stoke_last_error());

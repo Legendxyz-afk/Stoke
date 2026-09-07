@@ -55,6 +55,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>   /* tok_apply_llama3's Today Date */
 
 /* ===========================================================================
  * GPT-2 byte<->unicode map
@@ -723,6 +724,15 @@ struct Tok {
                          for any valid gpt2/qwen2 model regardless of
                          whether it has ChatML-style specials at all. */
     u32 im_end_id;   /* same, for literal "<|im_end|>" */
+    /* Llama-3 header format (M7). Same caching rule and the same
+     * call-time-fatal rule as the ChatML pair above: a model with none
+     * of these still loads, and only tok_apply_llama3 refuses. */
+    u32 bot_id;       /* "<|begin_of_text|>" -- the template's FIRST
+                          statement is {{- bos_token }}, so this format
+                          emits BOS ITSELF; see tok_apply_llama3. */
+    u32 hdr_start_id; /* "<|start_header_id|>" */
+    u32 hdr_end_id;   /* "<|end_header_id|>" */
+    u32 eot_id;       /* "<|eot_id|>" */
 };
 
 Tok* tok_from_gguf(const GgufFile* f) {
@@ -954,6 +964,10 @@ Tok* tok_from_gguf(const GgufFile* f) {
 
     t->im_start_id = UINT32_MAX;
     t->im_end_id = UINT32_MAX;
+    t->bot_id = UINT32_MAX;
+    t->hdr_start_id = UINT32_MAX;
+    t->hdr_end_id = UINT32_MAX;
+    t->eot_id = UINT32_MAX;
     for (u32 i = 0; i < t->n_specials; i++) {
         const SpecialEntry* e = &t->specials[i];
         if (e->len == 12 && memcmp(e->str, "<|im_start|>", 12) == 0) {
@@ -961,6 +975,18 @@ Tok* tok_from_gguf(const GgufFile* f) {
         }
         if (e->len == 10 && memcmp(e->str, "<|im_end|>", 10) == 0) {
             t->im_end_id = e->id;
+        }
+        if (e->len == 17 && memcmp(e->str, "<|begin_of_text|>", 17) == 0) {
+            t->bot_id = e->id;
+        }
+        if (e->len == 19 && memcmp(e->str, "<|start_header_id|>", 19) == 0) {
+            t->hdr_start_id = e->id;
+        }
+        if (e->len == 17 && memcmp(e->str, "<|end_header_id|>", 17) == 0) {
+            t->hdr_end_id = e->id;
+        }
+        if (e->len == 10 && memcmp(e->str, "<|eot_id|>", 10) == 0) {
+            t->eot_id = e->id;
         }
     }
 
@@ -1374,6 +1400,199 @@ u32 tok_apply_chatml(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
                         /*match_control=*/false, "tok_apply_chatml");
 
     return n_out;
+}
+
+/* Unicode-aware whitespace trim, matching Jinja's `| trim` (Python
+ * str.strip()). It uses the SAME UNICODE_FLAG_WHITESPACE table the
+ * pre-tokenizer's \s alternative uses, rather than a private ASCII list, so
+ * "what counts as space" cannot drift between the template and the regex that
+ * tokenizes its output.
+ *
+ * WARNING: Python's str.isspace() is White_Space PLUS the controls 0x1C-0x1F,
+ * which this table does not carry. Content beginning with U+001C would keep it
+ * where llama.cpp strips it. Named rather than papered over; test_tok.c pins
+ * the ASCII and U+00A0 cases that actually occur. */
+static void trim_ws(const char* s, u64 len, const char** out, u64* out_len) {
+    u64 b = 0;
+    while (b < len) {
+        u32 clen;
+        u32 cp = utf8_decode_one((const u8*)s, len, b, &clen);
+        if (!(unicode_cpt_flags(cp) & UNICODE_FLAG_WHITESPACE)) break;
+        b += clen;
+    }
+    /* Trailing: scan FORWARD from b, remembering the last non-space end. A
+     * backward scan would have to find UTF-8 lead bytes by hand, which works
+     * until it meets a continuation byte. */
+    u64 last_end = b;
+    u64 pos = b;
+    while (pos < len) {
+        u32 clen;
+        u32 cp = utf8_decode_one((const u8*)s, len, pos, &clen);
+        pos += clen;
+        if (!(unicode_cpt_flags(cp) & UNICODE_FLAG_WHITESPACE)) last_end = pos;
+    }
+    *out = s + b;
+    *out_len = last_end - b;
+}
+
+int tok_has_llama3_header(const Tok* t) {
+    return t->bot_id != UINT32_MAX && t->hdr_start_id != UINT32_MAX
+           && t->hdr_end_id != UINT32_MAX && t->eot_id != UINT32_MAX;
+}
+
+/* One `<|start_header_id|>role<|end_header_id|>\n\nbody<|eot_id|>` turn.
+ *
+ * THE SPLIT POINTS ARE NOT ARBITRARY. llama.cpp renders the whole template to
+ * ONE string and tokenizes it with specials matched, so every special is a hard
+ * boundary and the text BETWEEN two specials is tokenized as a unit. This emits
+ * exactly those units: `role` alone (between the two header ids), then
+ * "\n\n"+body (between <|end_header_id|> and <|eot_id|>). Splitting anywhere
+ * else -- encoding "\n\n" separately from body, say -- tokenizes differently
+ * for a body starting with whitespace, which is the trap tok_apply_chatml's
+ * one-string comment already records. */
+static void llama3_turn(const Tok* t, const char* role, u64 role_len,
+                        const char* body, u64 body_len,
+                        u32* ids, u32* n_out, u32 cap, bool close_turn) {
+    if (*n_out >= cap) {
+        fatal("tok: tok_apply_llama3 -- cap %u exceeded at <|start_header_id|>", cap);
+    }
+    ids[(*n_out)++] = t->hdr_start_id;
+    encode_partitioned(t, role, role_len, ids, n_out, cap,
+                        /*match_control=*/false, "tok_apply_llama3");
+    if (*n_out >= cap) {
+        fatal("tok: tok_apply_llama3 -- cap %u exceeded at <|end_header_id|>", cap);
+    }
+    ids[(*n_out)++] = t->hdr_end_id;
+
+    u64   total = checked_add_u64(2, body_len, "2+body_len", "tok_apply_llama3");
+    char* buf = (char*)xmalloc((size_t)total);
+    buf[0] = '\n';
+    buf[1] = '\n';
+    if (body_len) memcpy(buf + 2, body, (size_t)body_len);
+    /* match_control=false IS the injection-safety property, unchanged from
+     * tok_apply_chatml: a literal "<|eot_id|>" inside untrusted content is
+     * byte-BPE'd as text here, never matched as a turn boundary. */
+    encode_partitioned(t, buf, total, ids, n_out, cap,
+                        /*match_control=*/false, "tok_apply_llama3");
+    free(buf);
+
+    if (close_turn) {
+        if (*n_out >= cap) {
+            fatal("tok: tok_apply_llama3 -- cap %u exceeded at <|eot_id|>", cap);
+        }
+        ids[(*n_out)++] = t->eot_id;
+    }
+}
+
+u32 tok_apply_llama3(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
+                      u32 cap, const char* date) {
+    if (!tok_has_llama3_header(t)) {
+        fatal("tok: tok_apply_llama3 -- this model's vocab lacks one of "
+              "'<|begin_of_text|>' / '<|start_header_id|>' / "
+              "'<|end_header_id|>' / '<|eot_id|>' -- it cannot use the "
+              "Llama-3 header template");
+    }
+
+    u32 n_out = 0;
+    /* BOS IS THE TEMPLATE'S JOB HERE, and that is the OPPOSITE of
+     * tok_apply_chatml. The Jinja template's first statement is
+     * `{{- bos_token }}`, llama-bpe models default add_bos_token to TRUE, and
+     * this function returns a finished id stream that nothing re-tokenizes --
+     * so if it did not emit BOS, nothing would. */
+    if (n_out >= cap) fatal("tok: tok_apply_llama3 -- cap %u exceeded at BOS", cap);
+    ids[n_out++] = t->bot_id;
+
+    /* The system message is EXTRACTED from msgs[0] when it is one, and the
+     * system block is emitted UNCONDITIONALLY either way -- including its fixed
+     * knowledge-cutoff preamble. That is the template, not a choice: a
+     * conversation with no system turn still gets the block, with nothing after
+     * the preamble. */
+    const char* sys_body = "";
+    u64         sys_len = 0;
+    u32         first = 0;
+    if (n > 0 && msgs[0].role_len == 6 && memcmp(msgs[0].role, "system", 6) == 0) {
+        trim_ws(msgs[0].content, msgs[0].content_len, &sys_body, &sys_len);
+        first = 1;
+    }
+
+    /* THE DATE IS TODAY'S, AND THAT MAKES THIS FUNCTION NON-DETERMINISTIC
+     * ACROSS DAYS -- deliberately, because the referent is. llama.cpp defines
+     * strftime_now (common/jinja/value.cpp) over the current local time, and
+     * llama-template-analysis rendered "Today Date: 07 Sep 2026" on the day
+     * this was written. The template's own "26 Jul 2024" fallback is for a
+     * renderer with NO clock and is never what llama.cpp emits.
+     *
+     * `date` is a PARAMETER so a test can pin it. That is the only way a golden
+     * over this output can exist at all: one built on the real clock passes
+     * today and fails tomorrow for a reason nobody can fix. */
+    char datebuf[32];
+    if (!date) {
+        time_t     now = time(NULL);
+        struct tm  tmv;
+        struct tm* lt = NULL;
+#if defined(_WIN32)
+        if (localtime_s(&tmv, &now) == 0) lt = &tmv;
+#else
+        lt = localtime_r(&now, &tmv);
+#endif
+        /* "%d %b %Y" written out rather than strftime'd: %b is LOCALE-DEPENDENT,
+         * and a French-locale box would emit "07 sept. 2026" where the referent
+         * emits "07 Sep 2026". */
+        static const char* kMon[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+        if (lt && lt->tm_mon >= 0 && lt->tm_mon < 12) {
+            snprintf(datebuf, sizeof datebuf, "%02d %s %d", lt->tm_mday,
+                     kMon[lt->tm_mon], 1900 + lt->tm_year);
+        } else {
+            snprintf(datebuf, sizeof datebuf, "26 Jul 2024");
+        }
+        date = datebuf;
+    }
+
+    {
+        const char* pre1 = "Cutting Knowledge Date: December 2023\nToday Date: ";
+        u64         p1 = strlen(pre1);
+        u64         dl = strlen(date);
+        u64         a = checked_add_u64(p1, dl, "preamble+date", "tok_apply_llama3");
+        u64         b = checked_add_u64(a, 2, "preamble+2", "tok_apply_llama3");
+        u64         total = checked_add_u64(b, sys_len, "preamble+system",
+                                             "tok_apply_llama3");
+        char*       body = (char*)xmalloc((size_t)total);
+        memcpy(body, pre1, (size_t)p1);
+        memcpy(body + p1, date, (size_t)dl);
+        body[p1 + dl] = '\n';
+        body[p1 + dl + 1] = '\n';
+        if (sys_len) memcpy(body + p1 + dl + 2, sys_body, (size_t)sys_len);
+        llama3_turn(t, "system", 6, body, total, ids, &n_out, cap, true);
+        free(body);
+    }
+
+    for (u32 i = first; i < n; i++) {
+        const char* c;
+        u64         cl;
+        trim_ws(msgs[i].content, msgs[i].content_len, &c, &cl);
+        llama3_turn(t, msgs[i].role, msgs[i].role_len, c, cl,
+                     ids, &n_out, cap, true);
+    }
+
+    /* The generation prompt: an assistant header with NO <|eot_id|>, which is
+     * what leaves the model generating rather than closing a turn. */
+    llama3_turn(t, "assistant", 9, "", 0, ids, &n_out, cap, false);
+    return n_out;
+}
+
+u32 tok_apply_chat(const Tok* t, const StokeMsg* msgs, u32 n, u32* ids,
+                    u32 cap) {
+    /* One dispatcher so the precedence lives in ONE place. Repeating the
+     * ternary at each call site is how two of them end up disagreeing. */
+    if (tok_has_chatml(t)) return tok_apply_chatml(t, msgs, n, ids, cap);
+    if (tok_has_llama3_header(t)) {
+        return tok_apply_llama3(t, msgs, n, ids, cap, /*date=*/NULL);
+    }
+    fatal("tok: tok_apply_chat -- this model's vocab has neither the ChatML "
+          "specials ('<|im_start|>'/'<|im_end|>') nor the Llama-3 header "
+          "specials -- it has no chat template this engine can render");
+    return 0; /* unreachable; fatal() does not return */
 }
 
 u32 tok_decode(const Tok* t, u32 id, char* buf, u32 cap) {

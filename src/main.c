@@ -289,7 +289,7 @@ static void tokenize_cmd_setup(const char* model_path, const char* text_path,
 }
 
 static void cmd_tokenize(const char* model_path, const char* text_path,
-                          bool special) {
+                          bool special, bool chat, const char* chat_date) {
     Tok*  t;
     char* buf;
     u64   len;
@@ -297,11 +297,36 @@ static void cmd_tokenize(const char* model_path, const char* text_path,
     tokenize_cmd_setup(model_path, text_path, "stoke tokenize", &t, &buf,
                         &len, &cap);
 
+    /* --chat exists for the same reason `stoke tokenize` itself does: it makes
+     * a thing GRADEABLE against the referent that is otherwise only reachable
+     * through a whole generation. The chat template is a pure function from
+     * (messages, date) to ids, and without a way to print those ids the only
+     * way to check it against llama.cpp is to infer it from generated text.
+     *
+     * --chat-date pins "Today Date:". The renderer uses TODAY by default
+     * because llama.cpp does, which means an unpinned golden over this output
+     * would pass today and fail tomorrow. */
+    cap += 512; /* the Llama-3 header path's fixed cost -- BOS, the
+                 * unconditional system block, the generation prompt */
     u32* ids = (u32*)xcalloc(cap > 0 ? cap : 1, sizeof(u32));
 
-    u32 n = special
+    u32 n;
+    if (chat) {
+        StokeMsg msg;
+        msg.role = "user";
+        msg.role_len = 4;
+        msg.content = buf;
+        msg.content_len = len;
+        if (tok_has_chatml(t)) {
+            n = tok_apply_chatml(t, &msg, 1, ids, cap);
+        } else {
+            n = tok_apply_llama3(t, &msg, 1, ids, cap, chat_date);
+        }
+    } else {
+        n = special
                 ? tok_encode_special(t, buf, len, ids, cap, /*add_special=*/false)
                 : tok_encode(t, buf, len, ids, cap, /*add_special=*/false);
+    }
 
     printf("[");
     for (u32 i = 0; i < n; i++) {
@@ -569,10 +594,14 @@ static void cmd_run(int argc, char** argv) {
     gguf_close(gf); /* Tok is self-contained after construction (src/tok.h) */
 
     /* cap sizing: tok_encode/tok_encode_special need cap >= 3*len (raw,
-     * add_special=false); tok_apply_chatml needs cap >= 8 + 3*(role_len +
+     * add_special=false); tok_apply_chat needs, for ChatML, cap >= 8 + 3*(role_len +
      * content_len) + 31 for one message (role_len=4 here) -- both
-     * comfortably covered by 3*len + 64. */
-    u32  cap = (u32)(text_len * 3) + 64;
+     * comfortably covered by 3*len + 512.
+     * 512 AND NOT 64: the Llama-3 header path adds BOS, an UNCONDITIONAL
+     * system block with a ~62-byte fixed preamble, and a generation-prompt
+     * header -- a few hundred ids of FIXED cost that ChatML has no
+     * equivalent of. At 64 a short prompt overflows and fatals. */
+    u32  cap = (u32)(text_len * 3) + 512;
     u32* prompt_ids = (u32*)xcalloc(cap, sizeof(u32));
     u32  n_prompt;
     if (raw) {
@@ -584,7 +613,7 @@ static void cmd_run(int argc, char** argv) {
         msg.role_len = 4;
         msg.content = text;
         msg.content_len = text_len;
-        n_prompt = tok_apply_chatml(tok, &msg, 1, prompt_ids, cap);
+        n_prompt = tok_apply_chat(tok, &msg, 1, prompt_ids, cap);
     }
     if (n_prompt == 0) {
         fatal("stoke run: prompt tokenized to zero ids");
@@ -887,7 +916,7 @@ static void cmd_bench_serve(int argc, char** argv) {
             text = src[p];
             text_len = (u64)strlen(src[p]);
         }
-        u32 cap = (u32)(text_len * 3) + 64;
+        u32 cap = (u32)(text_len * 3) + 512;
         ids[p] = (u32*)xcalloc(cap, sizeof(u32));
         if (raw) {
             n_ids[p] = tok_encode(tok, text, text_len, ids[p], cap, false);
@@ -897,7 +926,7 @@ static void cmd_bench_serve(int argc, char** argv) {
             msg.role_len = 4;
             msg.content = text;
             msg.content_len = text_len;
-            n_ids[p] = tok_apply_chatml(tok, &msg, 1, ids[p], cap);
+            n_ids[p] = tok_apply_chat(tok, &msg, 1, ids[p], cap);
         }
         if (n_ids[p] == 0)
             fatal("stoke bench --serve: prompt %u tokenized to zero ids", p);
@@ -1341,7 +1370,7 @@ static void cmd_batch(int argc, char** argv) {
             fatal("stoke batch: prompt %u is %llu bytes -- too large", p,
                   (unsigned long long)text_len);
         }
-        u32 cap = (u32)(text_len * 3) + 64;
+        u32 cap = (u32)(text_len * 3) + 512;
         ids[p] = (u32*)xcalloc(cap, sizeof(u32));
         if (raw) {
             n_ids[p] = tok_encode(tok, text, text_len, ids[p], cap,
@@ -1352,7 +1381,7 @@ static void cmd_batch(int argc, char** argv) {
             msg.role_len = 4;
             msg.content = text;
             msg.content_len = text_len;
-            n_ids[p] = tok_apply_chatml(tok, &msg, 1, ids[p], cap);
+            n_ids[p] = tok_apply_chat(tok, &msg, 1, ids[p], cap);
         }
         if (n_ids[p] == 0) {
             fatal("stoke batch: prompt %u tokenized to zero ids", p);
@@ -1674,17 +1703,46 @@ int main(int argc, char** argv) {
             finish_stdout_or_fatal();
             return 0;
         }
-        bool special = false;
-        int  model_argi = 2;
-        if (argc >= 3 && strcmp(argv[2], "--special") == 0) {
-            special = true;
-            model_argi = 3;
+        bool        special = false;
+        bool        chat = false;
+        const char* chat_date = NULL;
+        int         model_argi = 2;
+        while (model_argi < argc) {
+            if (strcmp(argv[model_argi], "--special") == 0) {
+                special = true;
+                model_argi++;
+            } else if (strcmp(argv[model_argi], "--chat") == 0) {
+                chat = true;
+                model_argi++;
+            } else if (strcmp(argv[model_argi], "--chat-date") == 0) {
+                if (model_argi + 1 >= argc) {
+                    fatal("stoke tokenize: --chat-date needs an argument, "
+                          "e.g. \"26 Jul 2024\"");
+                }
+                chat_date = argv[model_argi + 1];
+                model_argi += 2;
+            } else {
+                break;
+            }
+        }
+        /* Refused rather than ignored: --special asks for the raw encoder with
+         * CONTROL specials matched, --chat asks for the template, and the
+         * template deliberately does NOT match specials in content (that is its
+         * injection-safety property). Accepting both would silently honour one. */
+        if (chat && special) {
+            fatal("stoke tokenize: --chat and --special are mutually exclusive "
+                  "-- the template encodes content with CONTROL specials NOT "
+                  "matched, which is the opposite of what --special asks for");
+        }
+        if (chat_date && !chat) {
+            fatal("stoke tokenize: --chat-date applies only to --chat");
         }
         if (argc < model_argi + 2) {
-            fatal("usage: stoke tokenize [--special] <path.gguf> "
-                  "<text-file>");
+            fatal("usage: stoke tokenize [--special] [--chat [--chat-date S]] "
+                  "<path.gguf> <text-file>");
         }
-        cmd_tokenize(argv[model_argi], argv[model_argi + 1], special);
+        cmd_tokenize(argv[model_argi], argv[model_argi + 1], special,
+                      chat, chat_date);
         finish_stdout_or_fatal();
         return 0;
     }

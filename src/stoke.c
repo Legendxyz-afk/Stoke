@@ -693,7 +693,13 @@ int64_t stoke_chat_template_bound(const stoke_chat_message* msgs, int32_t n) {
         return fail(STOKE_ERR_INVALID_ARG,
                     "stoke_chat_template_bound: msgs must be non-NULL and n > 0");
     }
-    u64 total = 64;
+    /* 512, not 64: the Llama-3 header template prepends a FIXED system block
+     * ("Cutting Knowledge Date: ... / Today Date: ...") that ChatML has no
+     * equivalent of, plus BOS and a generation-prompt header. A bound that did
+     * not cover it would refuse a legitimate request with TOO_LONG -- safe
+     * direction, still wrong. This is an UPPER bound, so raising it only ever
+     * makes callers allocate more. */
+    u64 total = 512;
     for (int32_t i = 0; i < n; i++) {
         if (!msgs[i].role || !msgs[i].content) {
             return fail(STOKE_ERR_INVALID_ARG,
@@ -725,7 +731,7 @@ int32_t stoke_apply_chat_template(const stoke_engine* e,
                     "stoke_apply_chat_template: engine, msgs and out must be "
                     "non-NULL with n > 0 and cap > 0");
     }
-    if (!tok_has_chatml(e->tok)) {
+    if (!tok_has_chatml(e->tok) && !tok_has_llama3_header(e->tok)) {
         return fail(STOKE_ERR_NO_TEMPLATE,
                     "stoke_apply_chat_template: this model's vocab has no "
                     "'<|im_start|>'/'<|im_end|>' specials");
@@ -753,11 +759,21 @@ int32_t stoke_apply_chat_template(const stoke_engine* e,
 
     /* No fatal() is reachable from here -- see the section note. That is what
      * makes this allocation safe to hold across the call. */
-    u32 got = tok_apply_chatml(e->tok, m, (u32)n, out, (u32)cap);
+    /* CHATML FIRST, AND THE ORDER IS NOT ARBITRARY. The two formats are
+     * distinguished by which specials the vocab HAS, and no model on this box
+     * has both -- Qwen3 has <|im_start|>/<|im_end|> and no header ids;
+     * Llama-3.2 has the header ids and neither im_ token (checked against both
+     * files, not assumed). A model carrying both would be ambiguous, and this
+     * resolves that case by precedence rather than by picking silently: ChatML
+     * wins because it is the one every banked artifact in this project was
+     * produced with. */
+    u32 got = tok_has_chatml(e->tok)
+        ? tok_apply_chatml(e->tok, m, (u32)n, out, (u32)cap)
+        : tok_apply_llama3(e->tok, m, (u32)n, out, (u32)cap, /*date=*/NULL);
     free(m);
     return (int32_t)got;
 }
 
 int32_t stoke_has_chat_template(const stoke_engine* e) {
-    return (e && tok_has_chatml(e->tok)) ? 1 : 0;
+    return (e && (tok_has_chatml(e->tok) || tok_has_llama3_header(e->tok))) ? 1 : 0;
 }
