@@ -1,0 +1,9 @@
+05:00:45  starting server: 3720s budget, port 18179, build build/linux-asan
+05:00:47  server up (pid 1071)
+05:00:47  RSS at t=0: 72 MB
+05:00:47  driver: 12 chunk(s) of 300s
+05:00:47  corpus: 51 files
+05:06:08  chunk 1/12 rc=0 rss=2717MB gens=46
+05:06:08    serve_fuzz: 127.0.0.1:18179 for 300s, 4 clients, 51 corpus files, seed 20260911, read 20000ms, max_tok<=3 serve_fuzz: 152 actions, 109 answered exchanges, 0 refused serve_fuzz: 31 requests asked for a sampler (9 of those for a repeat penalty) serve_fuzz: OK 
+05:11:27  chunk 2/12 rc=0 rss=2975MB gens=103
+05:11:27    serve_fuzz: 127.0.0.1:18179 for 300s, 4 clients, 51 corpus files, seed 20260912, read 20000ms, max_tok<=3 serve_fuzz: 186 actions, 127 answered exchanges, 0 refused serve_fuzz: 44 requests asked for a sampler (10 of those for a repeat penalty) serve_fuzz: OK 
