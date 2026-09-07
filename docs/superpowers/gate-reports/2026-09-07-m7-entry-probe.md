@@ -32,6 +32,48 @@ live on this model.
 2. **C2, the null arm** (§1). Until a second pinned serial run reproduces the
    first bit-for-bit, the reference's own reproducibility is asserted by its
    configuration rather than measured.
+3. ⚠ **THE FOURTH TARGETED DELTA IS NOT IMPLEMENTED AT ALL — "header-format
+   template #2".** §8.8 lists four silent-garbage deltas needing targeted tests:
+   QK-norm presence gating ✅, the llama3 rope scaling formula ✅, the llama-bpe
+   regex ✅, and **the Llama-3 chat template ⬜**. `src/tok.h:115` says so in as
+   many words — *"Llama-3 header format is M7"* — and nothing has been built.
+   Llama-3.2's vocab has neither `<|im_start|>` nor `<|im_end|>`, so
+   `tok_has_chatml()` is false, `stoke_apply_chat_template` returns
+   `STOKE_ERR_NO_TEMPLATE`, and `stoke serve` warns at startup and answers
+   **501** on `/v1/chat/completions`. Raw completions are unaffected.
+
+   **This is a documented refusal, not a bug — and it is still an unmet part of
+   the criterion.** It is recorded here because a forward-pass grid can be
+   perfect and leave this untouched: I checked the parity items and would have
+   called B5 closed without looking at the template. That is
+   [[fixture-can-be-blind-to-the-defect]] #14 exactly — an enumeration of what
+   remains is scoped by which source you read it from.
+
+   ⚠ And `tok.h` already names one trap for whoever builds it: **that template
+   must prepend BOS itself.** `tok_apply_chatml`'s "no BOS" is a property of the
+   ChatML gate, not of chat prompts — llama-bpe models default `add_bos_token`
+   to true, so a Llama-3 header built on the ChatML assumption would silently
+   omit BOS and diverge at position 0. **The file confirms it: the template's
+   first statement is `{{- bos_token }}`.**
+
+   ⭐ **Read out of the GGUF rather than assumed — and it is NOT "ChatML with
+   different tags".** `tokenizer.chat_template` is 3,827 bytes of Jinja2. Turns
+   are `<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>`, but
+   a system block is emitted **unconditionally**, even with no system message,
+   and it carries a fixed preamble:
+
+   ```
+   Cutting Knowledge Date: December 2023
+   Today Date: {date_string}
+   ```
+
+   ⚠⚠ **`date_string` is `strftime_now("%d %b %Y")` — TODAY'S DATE**, falling
+   back to `"26 Jul 2024"` when the renderer has no clock. So a faithful
+   implementation **emits a different prompt every day**, and any golden pinning
+   its output breaks at midnight unless the date is pinned deliberately. That is
+   a design decision to take *before* writing it, not a bug to find afterwards.
+   (The template also has tool-calling and `tools_in_user_message` branches; the
+   Qwen-equivalent subset is system + user/assistant turns.)
 
 ---
 
