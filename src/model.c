@@ -2158,13 +2158,14 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     ModelTiming* timing) {
     return model_generate_sampled(m, kv, prompt_ids, n_prompt, n_gen, eos_id,
                                   out_ids, dump_dir, probe_pos, probe_out,
-                                  timing, NULL);
+                                  timing, NULL, NULL);
 }
 
 u32 model_generate_sampled(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
                     i32 probe_pos, ModelProbeEntry probe_out[5],
-                    ModelTiming* timing, const SampleParams* sp) {
+                    ModelTiming* timing, const SampleParams* sp,
+                    ModelProbeEntry* probe_all) {
     if (n_prompt == 0) {
         fatal("model: generate -- prompt_ids must be non-empty");
     }
@@ -2209,6 +2210,9 @@ u32 model_generate_sampled(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt
     if (probe_pos == 0) {
         record_top5(m->scratch.s_logits, m->n_vocab, probe_out);
     }
+    if (probe_all) {
+        record_top5(m->scratch.s_logits, m->n_vocab, probe_all);
+    }
     /* ⚠⚠ THE DRAW IS KEYED ON pos - 1, NOT pos, AND THE OFF-BY-ONE IS NOT
      * COSMETIC: it is what makes this path agree with the engine. `pos` is the
      * position the NEXT forward will occupy; the id being chosen right now came
@@ -2234,6 +2238,9 @@ u32 model_generate_sampled(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt
         model_compute_logits(m, m->scratch.s_xout, m->scratch.s_logits);
         if (probe_pos >= 0 && (u32)probe_pos == count) {
             record_top5(m->scratch.s_logits, m->n_vocab, probe_out);
+        }
+        if (probe_all) {
+            record_top5(m->scratch.s_logits, m->n_vocab, probe_all + (size_t)count * 5u);
         }
         next_id = pick_next(sp, m, pos - 1u, samp_hist, pos, samp_scratch);
         if (samp_hist) samp_hist[pos - 1u] = next_id;

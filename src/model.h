@@ -238,10 +238,30 @@ u32 model_generate(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
  * returns for the same prompt and parameters, which is the point of teaching
  * the CLI to sample at all: a divergence gets bisected here, not through a
  * socket. */
+/* `probe_all`, when non-NULL, must point at 5*n_gen entries and receives the
+ * top-5 at EVERY generated position -- entry k*5+i is rank i at generated index
+ * k, the same object probe_pos=k would have produced. Only the first
+ * 5*returned_count entries are written.
+ *
+ * ▶ WHY IT EXISTS. M7's ruled parity criterion (M3 RULING §2.3/§8.8) freezes a
+ * per-band tolerance from a PROBE GRID, and a band's p95 taken over three
+ * samples is not a p95. Getting a dense grid through probe_pos costs one full
+ * re-prefill per probe -- at a 1200-token prefix that is the entire cost of the
+ * run, paid again for each of 64 positions. The logits are ALREADY computed at
+ * every generated position (the loop needs them to pick the next id), so
+ * recording all of them is one record_top5 per position against a whole forward
+ * pass.
+ *
+ * ⚠ IT CANNOT MOVE THE TOKEN STREAM, and that is a property, not a hope:
+ * record_top5 reads s_logits and writes only into the caller's array, exactly
+ * as the probe_pos path already does; pick_next reads s_logits afterwards and
+ * is not passed this array at all. The unit test asserts the ids are identical
+ * with and without it, and that entry k matches probe_pos=k. */
 u32 model_generate_sampled(Model* m, Kv* kv, const u32* prompt_ids, u32 n_prompt,
                     u32 n_gen, i64 eos_id, u32* out_ids, const char* dump_dir,
                     i32 probe_pos, ModelProbeEntry probe_out[5],
-                    ModelTiming* timing, const SampleParams* sp);
+                    ModelTiming* timing, const SampleParams* sp,
+                    ModelProbeEntry* probe_all);
 
 /* One sequence's slot in a static batch. */
 typedef struct {

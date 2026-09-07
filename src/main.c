@@ -393,13 +393,20 @@ static void cmd_tokenize_roundtrip(const char* model_path,
  * `--probe-pos N` (M2 W3 brief addition, for the W4 near-tie waiver
  * protocol): after generation, prints the top-5 (id, logit) at generated
  * position N to stderr, 5 lines, `probe pos=N: id=<u32> logit=<%.6f>`.
+ * `--probe-all` (M7 entry probe): the same lines for EVERY generated
+ * position, ascending. It exists because M7's ruled parity criterion freezes
+ * a per-band tolerance from a probe grid, and building that grid out of
+ * --probe-pos costs one whole re-prefill per probe -- at a 1200-token prefix
+ * that is the entire run, paid 64 times over. Mutually exclusive with
+ * --probe-pos: they share a line format, so both at once would report one
+ * position twice with nothing distinguishing the copies.
  * ===========================================================================
  */
 
 static void cmd_run(int argc, char** argv) {
     if (argc < 3) {
         fatal("usage: stoke run <model.gguf> [--raw] [-n N] "
-              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] "
+              "[-p \"text\" | -f file] [--dump dir] [--probe-pos N] [--probe-all] "
               "[--timing] [--threads N] [--kv f32|q8] [--temp F] [--top-k N] "
               "[--top-p F] [--repeat-penalty F] [--seed N]");
     }
@@ -415,6 +422,7 @@ static void cmd_run(int argc, char** argv) {
     const char* prompt_file = NULL;
     const char* dump_dir = NULL;
     long long   probe_pos_long = -1;
+    bool        probe_all_flag = false;
     bool        report_timing = false;
     /* M4 gate item 4 needs the KV-ON/KV-OFF pair to be gradeable by the
      * ruling's section 6 rule, which compares LOGITS at the divergence --
@@ -470,6 +478,8 @@ static void cmd_run(int argc, char** argv) {
                 fatal("stoke run: --probe-pos needs an argument");
             }
             probe_pos_long = strtoll(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--probe-all") == 0) {
+            probe_all_flag = true;
         } else if (strcmp(argv[i], "--kv") == 0) {
             if (i + 1 >= argc) fatal("stoke run: --kv needs f32 or q8");
             const char* w = argv[++i];
@@ -526,6 +536,14 @@ static void cmd_run(int argc, char** argv) {
     }
     if (probe_pos_long < -1 || probe_pos_long > (long long)INT32_MAX) {
         fatal("stoke run: --probe-pos %lld out of range", probe_pos_long);
+    }
+    /* Refused rather than merged: both print `probe pos=N: ...` to stderr, so
+     * accepting both would emit the SAME position twice with nothing in the
+     * stream saying which line came from which flag -- a parser would silently
+     * count one probe as two. */
+    if (probe_all_flag && probe_pos_long >= 0) {
+        fatal("stoke run: --probe-all and --probe-pos are mutually exclusive "
+              "(both write `probe pos=` lines to stderr)");
     }
     u32 n = (u32)n_long;
     i32 probe_pos = (i32)probe_pos_long;
@@ -601,6 +619,9 @@ static void cmd_run(int argc, char** argv) {
         probe[i].id = 0;
         probe[i].logit = 0.0f;
     }
+    ModelProbeEntry* probe_all = probe_all_flag
+        ? (ModelProbeEntry*)xcalloc((size_t)n * 5u, sizeof(ModelProbeEntry))
+        : NULL;
 
     i64         eos_id = (i64)tok_eos(tok);
     ModelTiming timing;
@@ -609,7 +630,7 @@ static void cmd_run(int argc, char** argv) {
     int wants_sampling = (samp.temperature > 0.0f) || (samp.repeat_penalty > 1.0f);
     u32 count = model_generate_sampled(model, kv, prompt_ids, n_prompt, n, eos_id,
                                 out_ids, dump_dir, probe_pos, probe, &timing,
-                                wants_sampling ? &samp : NULL);
+                                wants_sampling ? &samp : NULL, probe_all);
 
     /* stderr, ALWAYS -- stdout is byte-compared against the goldens and
      * against ref_forward.py, so a rate printed there would break the one
@@ -658,6 +679,22 @@ static void cmd_run(int argc, char** argv) {
             fprintf(stderr, "probe pos=%d: id=%u logit=%.6f\n", probe_pos,
                     probe[i].id, (double)probe[i].logit);
         }
+    }
+
+    /* Same line format as --probe-pos, emitted for every generated position in
+     * ascending order, so ONE parser reads both and ref_forward.py's mirrored
+     * output needs no second reader. Only the positions that were actually
+     * generated are printed: eos stops the loop, and printing a zeroed entry
+     * for a position that does not exist is how a probe file starts lying. */
+    if (probe_all) {
+        for (u32 k = 0; k < count; k++) {
+            for (int i = 0; i < 5; i++) {
+                ModelProbeEntry* e = probe_all + (size_t)k * 5u + (size_t)i;
+                fprintf(stderr, "probe pos=%u: id=%u logit=%.6f\n", k,
+                        e->id, (double)e->logit);
+            }
+        }
+        free(probe_all);
     }
 
     free(out_ids);
@@ -1542,7 +1579,7 @@ int main(int argc, char** argv) {
         fatal("usage: stoke <command> [args] (commands: info <path.gguf>, "
               "tokenize [--special | --roundtrip] <path.gguf> <text-file>, "
               "run <path.gguf> [--raw] [-n N] [-p \"text\" | -f file] "
-              "[--dump dir] [--probe-pos N] [--timing], "
+              "[--dump dir] [--probe-pos N|--probe-all] [--timing], "
               "batch <path.gguf> [--raw] [-n N] (-p \"text\" | -f file)... "
               "[--seqs N] [--ctx N] [--threads N] [--timing], "
               "bench --ops <path.gguf> [--reps N] [--jsonl], "

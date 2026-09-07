@@ -900,6 +900,52 @@ TEST(model_generate_tiny_fixture_coherence_dump_probe_determinism) {
         ASSERT_TRUE(probe[i].logit >= probe[i + 1].logit);
     }
 
+    /* ---------------------------------------------------------------- M7
+     * probe_all: entry k MUST be the object probe_pos=k produces, and it must
+     * not move the stream. Both halves are asserted, because "it only reads
+     * logits" is an argument and this is a test: a probe array that shifted
+     * every entry by one, or that perturbed the ids, would still look like a
+     * dense grid and would silently misalign every comparison built on it. */
+    Kv* kv_all = kv_open(model_n_layer(m), model_max_ctx(m),
+                          model_n_head_kv(m), model_head_dim(m));
+    u32              out_all[5];
+    ModelProbeEntry* all = (ModelProbeEntry*)xcalloc((size_t)n_gen * 5u,
+                                                     sizeof(ModelProbeEntry));
+    u32 count_all = model_generate_sampled(m, kv_all, prompt, 3, n_gen,
+                                            /*eos_id=*/-1, out_all, NULL,
+                                            /*probe_pos=*/-1, NULL, NULL, NULL,
+                                            all);
+    kv_close(kv_all);
+    ASSERT_EQ_U32(count_all, count1);
+    for (u32 i = 0; i < count_all; i++) {
+        ASSERT_EQ_U32(out_all[i], out1[i]);      /* the stream is untouched */
+    }
+    /* entry 2 == the probe_pos=2 run, id AND logit, bit-for-bit */
+    for (int i = 0; i < 5; i++) {
+        ASSERT_EQ_U32(all[2 * 5 + i].id, probe[i].id);
+        ASSERT_TRUE(all[2 * 5 + i].logit == probe[i].logit);
+    }
+    /* and EVERY entry is a real, sorted top-5 -- not just the one compared */
+    for (u32 k = 0; k < count_all; k++) {
+        for (int i = 0; i < 4; i++) {
+            ASSERT_TRUE(all[k * 5 + i].logit >= all[k * 5 + i + 1].logit);
+        }
+        /* rank 0 is the id the same position generated: probe and argmax read
+         * the same logits, so a mismatch means one of them read stale ones. */
+        ASSERT_EQ_U32(all[k * 5].id, out_all[k]);
+    }
+    /* Positions differ from each other -- a probe_all that wrote entry 0
+     * everywhere would pass every check above. */
+    {
+        int any_diff = 0;
+        for (u32 k = 1; k < count_all; k++) {
+            if (all[k * 5].id != all[0].id
+                || all[k * 5].logit != all[0].logit) any_diff = 1;
+        }
+        ASSERT_TRUE(any_diff);
+    }
+    free(all);
+
     /* --dump wrote one file per layer, each exactly n_embd f32's. */
     for (u32 L = 0; L < FIX_BLOCK_COUNT; L++) {
         char path[256];
