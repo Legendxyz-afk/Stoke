@@ -1,37 +1,58 @@
 # 2026-09-07 — M7 ENTRY PROBE: gate report
 
-## STATUS: **ALL FIVE RULED BANDS COVERED, ZERO BUG-CLASS — AND TWO THINGS ARE STILL OUTSTANDING**
+## STATUS: **THE FULL GRID RAN. 16/16 STREAMS, ZERO BUG-CLASS, ALL THREE CONTROLS PASS.**
 
 | | |
 |---|---|
-| streams banked | **10 of 16 declared** |
-| probes | **640** — 631 agreeing, 9 divergent (1.406%) |
-| bands covered | **all five**: `[0,100)` `[100,300)` `[300,600)` `[600,1200)` `[1200,∞)` |
-| τ frozen from | 268 / 163 / 76 / 62 / 62 agreeing positions — every band over T3's floor of 20 |
-| verdicts | **9 ARITHMETIC-CLASS, 0 BUG** |
-| tripwires | T1 no · T2 no · T3 no · T4 no · T5 no |
+| streams banked | **16 of 16 declared** |
+| probes | **1024** — 1010 agreeing, 14 divergent (**1.367%**) |
+| bands covered | **all five**, out to absolute position **2914** |
+| τ frozen from | 268 / 163 / 138 / 188 / 253 agreeing positions — every band far over T3's floor of 20 |
+| verdicts | **14 ARITHMETIC-CLASS, 0 BUG** |
+| tripwires | T1 no · T2 no · T3 no · T4 no · T5 no · T6 no |
+| controls | C1 **PASS** (1.907e-05 vs 1e-3) · C2 **BIT-IDENTICAL** · C3 measured at ~2e-5, flat |
 
-⭐ **The substantive result: τ does NOT grow with position.**
-0.418 → 0.305 → 0.290 → **0.277** → 0.310. §8.9 required this re-freeze on the
-premise that it *might* — the `rope` theta accumulation is a position-growing
-term and is the ruling's own named first suspect. Measured, over 640 probes out
-to position 1371, **it does not show up**: the smallest τ in the table is the
-`[600,1200)` band, and adjacent-band p95 growth peaks at 1.116× against T4's
-1.5×. This is the first evidence in the project that the named suspect is not
-live on this model.
+### ⚠ CORRECTION TO THIS REPORT'S OWN EARLIER READING
+
+An earlier revision of this file, written from a **10-stream partial grid**,
+said in bold: *"τ does NOT grow with position … the smallest τ in the table is
+`[600,1200)` … growth peaks at 1.116×."* **The full grid does not support that,
+and the claim is withdrawn.**
+
+| transition | p95 growth (16 streams) |
+|---|---|
+| `[0,100)` → `[100,300)` | 0.730× |
+| `[100,300)` → `[300,600)` | 1.059× |
+| `[300,600)` → `[600,1200)` | 0.957× |
+| **`[600,1200)` → `[1200,∞)`** | **1.322×** |
+
+τ is **flat from 100 to 1200** (1.06×, 0.96×) and then **rises 1.322× into
+`[1200,∞)`**, whose τ (0.409411) is the second-largest in the table. The
+direction at long context is *upward* — which is what §8.9 anticipated when it
+required this re-freeze, naming the `rope` theta accumulation as the first
+suspect.
+
+**Why the earlier reading was wrong is the useful part:** the partial grid had
+exactly one stream in `[1200,∞)`, sampling only 1308–1371 — the band's low edge.
+Adding `L-1900`, `L-2500` and `L-2851` extended it to 2914 and moved that band's
+p95 by 32%. A band sampled at its edge is not a sample of the band, and the
+conclusion drawn from it was undersampled rather than merely imprecise.
+
+**T4 still does not fire** (1.322× < 1.5×), so §8.9 would *permit* collapsing to
+a single constant. Per-band τ is kept anyway: it is strictly the more
+conservative table, and it is the one the grading below actually used.
+
+⏳ **Not settled here:** whether that 1.322× is the theta accumulation or just a
+longer-context population. The switch to test it exists —
+`ref_forward.py --rope-theta accum` — and re-running `[1200,∞)` under it is the
+named next probe.
 
 ### Still outstanding — B5 is NOT closed by this report
 
-1. **Six declared streams were not run** (`L-520`, `L-900`, `L-1120`, `L-1900`,
-   `L-2500`, `L-2851`). The grid is *less dense* than pre-registered, and the
-   consequence is specific: **`[1200,∞)` is sampled only at its low end
-   (1308–1371)**. The band is open-ended and the corpus reaches 2914; nothing
-   here probes past 1371, so "τ does not grow" is established **to 1371, not to
-   2914**. `m7_probe.py --phase a --only …` accumulates into the same directory,
-   so finishing costs only the missing streams.
-2. ~~C2, the null arm~~ — **DONE, and it passed bit-identically** (§1). The
-   pinned reference has no noise floor of its own.
-3. ⚠ **THE FOURTH TARGETED DELTA IS NOT IMPLEMENTED AT ALL — "header-format
+**The grid, the τ freeze and all three controls are DONE.** What remains is not
+a measurement:
+
+1. ⚠ **THE FOURTH TARGETED DELTA IS NOT IMPLEMENTED AT ALL — "header-format
    template #2".** §8.8 lists four silent-garbage deltas needing targeted tests:
    QK-norm presence gating ✅, the llama3 rope scaling formula ✅, the llama-bpe
    regex ✅, and **the Llama-3 chat template ⬜**. `src/tok.h:115` says so in as
@@ -195,7 +216,7 @@ is 12, not 250, and it was run short deliberately for time.
 
 ## 2. THE GRID
 
-**10 of 16 declared streams banked.**
+**16 of 16 declared streams banked.**
 
 | stream | target | realized n_prompt | probes | absolute positions | bands touched | agree | selected-on-success |
 |---|---|---|---|---|---|---|---|
@@ -207,10 +228,16 @@ is 12, not 250, and it was run short deliberately for time.
 | `L-160` | 160 | 171 | 64 | 170–233 | [100,300) | 63/64 | no |
 | `L-240` | 240 | 249 | 64 | 248–311 | [100,300), [300,600) | 63/64 | no |
 | `L-380` | 380 | 386 | 64 | 385–448 | [300,600) | 64/64 | no |
+| `L-520` | 520 | 522 | 64 | 521–584 | [300,600) | 62/64 | no |
 | `L-660` | 660 | 671 | 64 | 670–733 | [600,1200) | 62/64 | no |
+| `L-900` | 900 | 926 | 64 | 925–988 | [600,1200) | 63/64 | no |
+| `L-1120` | 1120 | 1132 | 64 | 1131–1194 | [600,1200) | 63/64 | no |
 | `L-1300` | 1300 | 1309 | 64 | 1308–1371 | [1200,inf) | 62/64 | no |
+| `L-1900` | 1900 | 1896 | 64 | 1895–1958 | [1200,inf) | 63/64 | no |
+| `L-2500` | 2500 | 2509 | 64 | 2508–2571 | [1200,inf) | 64/64 | no |
+| `L-2851` | full | 2851 | 64 | 2850–2913 | [1200,inf) | 64/64 | YES |
 
-**Total: 640 probes, 631 agreeing, 9 divergent (1.406%).**
+**Total: 1024 probes, 1010 agreeing, 14 divergent (1.367%).**
 
 Per band:
 
@@ -218,9 +245,9 @@ Per band:
 |---|---|---|---|
 | `[0,100)` | 271 | 268 | 3 |
 | `[100,300)` | 165 | 163 | 2 |
-| `[300,600)` | 76 | 76 | 0 |
-| `[600,1200)` | 64 | 62 | 2 |
-| `[1200,inf)` | 64 | 62 | 2 |
+| `[300,600)` | 140 | 138 | 2 |
+| `[600,1200)` | 192 | 188 | 4 |
+| `[1200,inf)` | 256 | 253 | 3 |
 
 ---
 
@@ -234,18 +261,27 @@ Pair key: **`f32_intcore_llama32_q4km`** — its own, never a Qwen3 or Q8_0 key 
 |---|---|---|
 | `[0,100)` | 268 | **0.418357** |
 | `[100,300)` | 163 | **0.305446** |
-| `[300,600)` | 76 | **0.290104** |
-| `[600,1200)` | 62 | **0.277461** |
-| `[1200,inf)` | 62 | **0.309627** |
+| `[300,600)` | 138 | **0.323372** |
+| `[600,1200)` | 188 | **0.309588** |
+| `[1200,inf)` | 253 | **0.409411** |
+
+⚠ **One outlier worth naming rather than smoothing:** the largest anchored Δ
+anywhere in the grid is **0.9847 at `L-1120` position 1175**, in `[600,1200)` —
+an *agreeing* position (both sides chose the same token) whose margins
+nonetheless differ by 6× that band's p95 of 0.1548. It is inside the envelope
+the freeze is built from, so it widens τ rather than being hidden by it; it is
+flagged because a single value that far above p95 is the shape a real defect
+would make, and nothing here has ruled that out — only shown that no *decision*
+turned on it.
 
 Freeze detail, as the tool printed it:
 
 ```
   [0,100): n=1315 max=0.526021 p95=0.209179 => tau=0.418357
   [100,300): n=797 max=0.306960 p95=0.152723 => tau=0.305446
-  [1200,inf): n=299 max=0.330494 p95=0.154814 => tau=0.309627
-  [300,600): n=374 max=0.421999 p95=0.145052 => tau=0.290104
-  [600,1200): n=307 max=0.236189 p95=0.138730 => tau=0.277461
+  [1200,inf): n=1232 max=0.398487 p95=0.204705 => tau=0.409411
+  [300,600): n=682 max=0.446165 p95=0.161686 => tau=0.323372
+  [600,1200): n=926 max=0.984710 p95=0.154794 => tau=0.309588
 ```
 
 Adjacent-band p95 growth (T4's 1.5× collapse test):
@@ -253,30 +289,35 @@ Adjacent-band p95 growth (T4's 1.5× collapse test):
 | transition | growth |
 |---|---|
 | [0,100)->[100,300) | 0.730× |
-| [100,300)->[300,600) | 0.950× |
-| [300,600)->[600,1200) | 0.956× |
-| [600,1200)->[1200,inf) | 1.116× |
+| [100,300)->[300,600) | 1.059× |
+| [300,600)->[600,1200) | 0.957× |
+| [600,1200)->[1200,inf) | 1.322× |
 
 ---
 
 ## 4. THE GRADING
 
-Divergent positions graded: **9**
+Divergent positions graded: **14**
 
 | verdict | n |
 |---|---|
-| ARITHMETIC-CLASS | 9 |
+| ARITHMETIC-CLASS | 14 |
 
 | stream | position | band | verdict | reason |
 |---|---|---|---|---|
-| `L-1300` | 1310 | `[1200,inf)` | **ARITHMETIC-CLASS** | worst margin 0.027637 < tau (0.309627) and the top-5 sets agree modulo the rank-5 tolerance |
-| `L-1300` | 1371 | `[1200,inf)` | **ARITHMETIC-CLASS** | worst margin 0.034638 < tau (0.309627) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-1120` | 1168 | `[600,1200)` | **ARITHMETIC-CLASS** | worst margin 0.077913 < tau (0.309588) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-1300` | 1310 | `[1200,inf)` | **ARITHMETIC-CLASS** | worst margin 0.027637 < tau (0.409411) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-1300` | 1371 | `[1200,inf)` | **ARITHMETIC-CLASS** | worst margin 0.034638 < tau (0.409411) and the top-5 sets agree modulo the rank-5 tolerance |
 | `L-160` | 223 | `[100,300)` | **ARITHMETIC-CLASS** | worst margin 0.051472 < tau (0.305446) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-1900` | 1914 | `[1200,inf)` | **ARITHMETIC-CLASS** | worst margin 0.159678 < tau (0.409411) and the top-5 sets agree modulo the rank-5 tolerance |
 | `L-240` | 271 | `[100,300)` | **ARITHMETIC-CLASS** | worst margin 0.125896 < tau (0.305446) and the top-5 sets agree modulo the rank-5 tolerance |
 | `L-40` | 66 | `[0,100)` | **ARITHMETIC-CLASS** | worst margin 0.103031 < tau (0.418357) and the top-5 sets agree modulo the rank-5 tolerance |
 | `L-40` | 75 | `[0,100)` | **ARITHMETIC-CLASS** | worst margin 0.049315 < tau (0.418357) and the top-5 sets agree modulo the rank-5 tolerance |
-| `L-660` | 704 | `[600,1200)` | **ARITHMETIC-CLASS** | worst margin 0.049232 < tau (0.277461) and the top-5 sets agree modulo the rank-5 tolerance |
-| `L-660` | 708 | `[600,1200)` | **ARITHMETIC-CLASS** | worst margin 0.106217 < tau (0.277461) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-520` | 564 | `[300,600)` | **ARITHMETIC-CLASS** | worst margin 0.069839 < tau (0.323372) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-520` | 578 | `[300,600)` | **ARITHMETIC-CLASS** | worst margin 0.130295 < tau (0.323372) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-660` | 704 | `[600,1200)` | **ARITHMETIC-CLASS** | worst margin 0.049232 < tau (0.309588) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-660` | 708 | `[600,1200)` | **ARITHMETIC-CLASS** | worst margin 0.106217 < tau (0.309588) and the top-5 sets agree modulo the rank-5 tolerance |
+| `L-900` | 956 | `[600,1200)` | **ARITHMETIC-CLASS** | worst margin 0.010860 < tau (0.309588) and the top-5 sets agree modulo the rank-5 tolerance |
 | `S-a2` | 54 | `[0,100)` | **ARITHMETIC-CLASS** | worst margin 0.074510 < tau (0.418357) and the top-5 sets agree modulo the rank-5 tolerance |
 
 **PASS RULE — zero BUG-class: PASS**
@@ -287,12 +328,12 @@ Divergent positions graded: **9**
 
 | # | tripwire | threshold | measured | fired |
 |---|---|---|---|---|
-| T1 | divergence rate | > 2% | **1.406%** | no |
+| T1 | divergence rate | > 2% | **1.367%** | no |
 | T2 | any BUG-class | ≥ 1 | **0** | no |
 | T3 | band with < 20 agreeing positions | any | none | no |
-| T4 | adjacent-band p95 growth | > 1.5× | max 1.116x | no |
+| T4 | adjacent-band p95 growth | > 1.5× | max 1.322x | no |
 | T5 | serial-vs-batched control | ≥ 1e-3 | **1.907e-05** | no |
-| T6 | serial null arm not bit-identical | any | **bit-identical, max Δ = 0.0** | no |
+| T6 | serial null arm not bit-identical | any | *(see §1)* | |
 
 ---
 
