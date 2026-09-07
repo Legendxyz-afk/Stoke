@@ -114,6 +114,34 @@ pinning before any comparison is believed. If the two runs are not
 bit-identical, the instrument has a noise floor of its own and every Δ below
 that floor is unreadable — that number goes in the gate report either way.
 
+### 2.3 ⚠ The control does not reach the long bands, and a third arm covers why
+
+**Stated because it is the weakest joint in this protocol.** The serial arm is
+affordable to a few hundred positions, so C1 licenses the batched arm at
+positions in `[0,300)` and says nothing directly about position 2900 — and the
+mechanism by which a GEMM-order difference could grow with position is precisely
+that the GEMM gets bigger.
+
+So a third control, declared here with the others:
+
+| # | control | what it measures |
+|---|---|---|
+| C1 | serial(250) vs batched(250), pinned | licenses the batched arm — T5's threshold applies to this |
+| C2 | serial(40) vs serial(250) at positions 0–39 | the instrument's own noise floor (expect bit-identical) |
+| C3 | batched(T=2915) vs batched(T=250) at positions 0–249, and vs batched(T=1200) at 0–1199 | whether the batched answer depends on the BATCH it was computed in |
+
+C3 is the one that speaks to long positions, and it is cheap. Causal attention
+means position *p*'s state depends only on ids[0..*p*], so both runs **must**
+produce the same logits at *p* — the only thing that differs is the GEMM shape,
+which is exactly the freedom BLAS uses. If C3 is bit-identical, the batched
+arm's answer at a position does not depend on how much came after it, and C1's
+licence extends. If C3 is not, the size of that dependence is the honest bound
+on the long bands and it goes in the report as such.
+
+⚠ C3 is a **self-consistency** check, not an independent one: it cannot detect
+an error the batched path makes at every T. That is C1's job, and C1's reach is
+the stated limit.
+
 ---
 
 ## 3. THE CORPUS — fixed here, before any grading
@@ -153,10 +181,14 @@ intended is recorded as such and the band is read from the realized position —
 positions are what the bands are keyed on, and no probe is discarded for
 landing where it landed.
 
-### 3.2 ⚠ Three streams are inherited from a corpus that WAS selected on success
+### 3.2 ⚠ Four streams are inherited from a corpus that WAS selected on success
 
 `short1/short2/short3` are the prompts that came back byte-identical to
-llama.cpp; using them re-imports that selection. They are kept, because they are
+llama.cpp, and `L-2851` is long2 at its full length, which is the fourth.
+Using them re-imports that selection. (The count was wrong in the first
+draft of this sentence -- it said three while the table flagged four -- and
+`m7_probe.py --selftest` caught the disagreement between the prose and the
+table it is supposed to mirror.) They are kept, because they are
 the model's real short-context behaviour and dropping them would be its own
 selection — but they are **flagged in every table**, and `[0,100)` also carries
 two unselected streams (`L-40`, `L-80`) so no band rests only on selected

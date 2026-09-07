@@ -543,7 +543,7 @@ class ModelRef:
                   f"not exist.")
         return out_ids, probe_out
 
-    def teacher_force(self, ids, probe_positions, progress=None):
+    def teacher_force(self, ids, probe_positions, progress=None, bank=None):
         """TEACHER-FORCED forward over EXACTLY `ids`, sampling nothing.
 
         This is the M7 entry-probe instrument, and teacher forcing is the
@@ -583,10 +583,21 @@ class ModelRef:
             if t in wanted:
                 h = rmsnorm(x, self.gf.tensor_dequant_full(self.output_norm_t), self.eps)
                 lg = self.logits(h)
-                out.append({"pos": t,
-                            "argmax": int(np.argmax(lg)),
-                            "next_id": int(ids[t + 1]) if t + 1 < total else None,
-                            "top5": top5_from_logits(lg)})
+                rec = {"pos": t,
+                       "argmax": int(np.argmax(lg)),
+                       "next_id": int(ids[t + 1]) if t + 1 < total else None,
+                       "top5": top5_from_logits(lg)}
+                out.append(rec)
+                # ⚠ BANKED AS IT LANDS, and this is a standing project rule, not
+                # a nicety: a serial pass over a long prefix runs for HOURS, and
+                # this box has killed long runs three times with no message. A
+                # runner that banks only at the end converts every one of those
+                # into a total loss. The JSONL is flushed per probe so a killed
+                # run is still worth what it reached.
+                if bank is not None:
+                    import json as _j
+                    bank.write(_j.dumps(rec) + "\n")
+                    bank.flush()
             if progress is not None:
                 progress(t, total)
         return out
@@ -942,9 +953,19 @@ def run_teacher_force(args) -> int:
 
     try:
         model = ModelRef(args.gguf, theta_mode=args.rope_theta)
-        runner = (model.teacher_force_batched if args.mode == "batched"
-                  else model.teacher_force)
-        probes = runner(ids, want, progress=progress if args.progress else None)
+        if args.mode == "batched":
+            # The batched pass has no per-position boundary to bank at -- it
+            # computes every position inside one layer sweep -- so incremental
+            # banking is a SERIAL-path property and is not faked here. It does
+            # not need one: it finishes in minutes where serial takes hours.
+            probes = model.teacher_force_batched(
+                ids, want, progress=progress if args.progress else None)
+        else:
+            bank_path = args.probe_out + ".partial.jsonl"
+            with open(bank_path, "w", encoding="utf-8") as bank:
+                probes = model.teacher_force(
+                    ids, want, progress=progress if args.progress else None,
+                    bank=bank)
     except GgufError as e:
         print(f"fatal: {e}", file=sys.stderr)
         return 1
