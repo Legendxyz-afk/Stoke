@@ -45,6 +45,20 @@ REPO_ROOT = adapters.REPO_ROOT
 
 CONFIG_LABELS = ["ollama-default", "ollama-tuned", "llamacpp-default", "llamacpp-tuned"]
 
+# stoke is deliberately NOT in CONFIG_LABELS. Those four ARE the M0 baseline
+# matrix and its published numbers, and adapters.build_configs already refuses to
+# add a fifth for the same reason: it would silently change what "all configs"
+# means for every existing caller. These are selectable BY NAME only, and the
+# default set below is unchanged.
+#
+# ▶ WHY THIS EXISTS (2026-09-08). stoke's serving numbers on record come from
+# `stoke bench --serve`, which drives the scheduler IN-PROCESS, while every
+# referent number comes through HTTP + SSE. Comparing them is comparing two
+# things measured by different code over different transports. This label makes
+# stoke a cell of the SAME matrix, so the comparison changes exactly one thing.
+EXTRA_CONFIG_LABELS = ["stoke-default", "stoke-tuned"]
+ALL_CONFIG_LABELS = CONFIG_LABELS + EXTRA_CONFIG_LABELS
+
 SCENARIOS = [scenarios.S1] + scenarios.S2 + [scenarios.S3, scenarios.S4]
 SCENARIO_NAMES = [s.name for s in SCENARIOS]
 SCENARIOS_BY_NAME = {s.name: s for s in SCENARIOS}
@@ -106,6 +120,27 @@ def build_adapter(config_label, scenario):
         return adapters.LlamaCppAdapter()
     if config_label == "llamacpp-tuned":
         return adapters.LlamaCppAdapter(parallel=p, ctx=(8192 if is_s4 else p * 2048))
+    if config_label == "stoke-default":
+        return adapters.StokeAdapter()
+    if config_label == "stoke-tuned":
+        # ⚠ ctx 704 and threads 8 are NOT a fresh tuning choice -- they are the
+        # values the banked in-process arm used (`run_m5_bars.ps1`: ctx 704,
+        # threads 8, seqs N), and this cell exists to change exactly ONE thing
+        # against that arm: the transport. Re-tuning here would confound the
+        # comparison it was built to make.
+        #
+        # ⚠ stoke's --ctx is PER SEQUENCE where llama-server's is TOTAL across
+        # slots, so llamacpp-tuned's `p * 2048` is 2048 per slot against stoke's
+        # 704. S2 needs 525 + 128 = 653 positions, so both are sufficient and the
+        # surplus is slack neither engine can spend -- but it is an asymmetry and
+        # it is written down rather than absorbed.
+        #
+        # Prefix dedup is OFF here without a flag: stoke.c:180 reads
+        # dedup_prefix from stoke_open_opts defaulting to 0 and `stoke serve`
+        # exposes no switch, so the server path already matches the banked arm's
+        # explicit --no-dedup. That matters because S2's prompts differ by ONE
+        # DIGIT, so dedup-on would adopt nearly every prompt position.
+        return adapters.StokeAdapter(seqs=p, ctx=(8192 if is_s4 else 704), threads=8)
     raise ValueError(f"unknown config label: {config_label!r}")
 
 
@@ -306,8 +341,8 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--runs", type=int, default=3, help="measured runs per cell (default 3)")
     parser.add_argument(
-        "--only-config", action="append", choices=CONFIG_LABELS, default=None,
-        help="restrict to this config label; repeatable (default: all four)",
+        "--only-config", action="append", choices=ALL_CONFIG_LABELS, default=None,
+        help="restrict to this config label; repeatable (default: the four M0 baselines; stoke-* are selectable but never in the default set)",
     )
     parser.add_argument(
         "--only-scenario", action="append", choices=SCENARIO_NAMES, default=None,
@@ -341,7 +376,7 @@ def main(argv=None):
 
     only_configs = args.only_config or list(CONFIG_LABELS)
     only_scenarios = args.only_scenario or list(SCENARIO_NAMES)
-    ordered_configs = [c for c in CONFIG_LABELS if c in only_configs]
+    ordered_configs = [c for c in ALL_CONFIG_LABELS if c in only_configs]
     ordered_scenarios = [s for s in SCENARIO_NAMES if s in only_scenarios]
 
     env = capture_environment()
