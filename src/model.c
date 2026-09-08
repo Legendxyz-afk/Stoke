@@ -295,15 +295,52 @@ void model_set_prefill_chunk(u32 chunk) {
     g_prefill_chunk = chunk;
 }
 
+/* ⚠⚠ A BAD VALUE IS REFUSED, NOT DEFAULTED, AND THAT IS THE WHOLE POINT OF
+ * THESE KNOBS EXISTING. Every one of them is an A/B arm selector. Silently
+ * falling back to the default means an A/B that sets it runs the SAME arm
+ * twice, sees the two arms agree bit-for-bit -- which they will, because they
+ * are the same arm -- and records that agreement as a finding about the
+ * kernel. That is [[fixture-can-be-blind-to-the-defect]]'s "a bit-exact A/B
+ * cannot detect that one arm never ran", reached through a typo.
+ *
+ * It also makes STOKE_PREFILL_CHUNK's own header true for the first time: it
+ * promises "a bad value is REFUSED rather than rounded", but until this change
+ * an out-of-range or non-numeric value was swallowed HERE and the fatal below
+ * never saw it.
+ *
+ * This is the same idiom STOKE_Q6K_KERNEL / STOKE_Q4K_KERNEL already use, and
+ * for the same reason recorded as standing rule 10: the arms are bit-identical
+ * by construction, so a refusal is the only NON-CIRCULAR evidence that the
+ * switch is live. */
 static u32 env_u32(const char* name, u32 dflt, u32 lo, u32 hi) {
     const char* s = getenv(name);
     if (!s || !s[0]) return dflt;
     char*         end = NULL;
     unsigned long v = strtoul(s, &end, 10);
     if (!end || *end != '\0' || v < (unsigned long)lo || v > (unsigned long)hi) {
-        return dflt;
+        fatal("model: %s=\"%s\" is not an integer in [%u,%u] -- REFUSED rather "
+              "than defaulted, because a knob that silently takes the default "
+              "makes an A/B that sets it measure one arm twice and read the "
+              "agreement as a result",
+              name, s, lo, hi);
     }
     return (u32)v;
+}
+
+/* A knob that was DELETED must refuse too, for the reason att_env_init's own
+ * header has stated since M5 -- and did not enforce. Two tooling scripts in
+ * this repo still set STOKE_ATT_LANES / STOKE_ATT_GQA
+ * (tests/tooling/run_att_par_verify.ps1, run_m5_e2_verify.ps1), so this trap
+ * was armed rather than hypothetical: those runs' "arms" were all one arm. */
+static void env_refuse_removed(const char* name, const char* gone_in) {
+    const char* s = getenv(name);
+    if (s && s[0]) {
+        fatal("model: %s is REMOVED (%s) and is set to \"%s\" -- unset it. It "
+              "is refused rather than ignored because an A/B that sets a dead "
+              "knob measures the same arm on both sides and records the "
+              "agreement as a finding about the kernel",
+              name, gone_in, s);
+    }
 }
 
 static void att_env_init(void) {
@@ -311,6 +348,8 @@ static void att_env_init(void) {
      * accepted-and-ignored: a knob that silently does nothing is worse than one
      * that does not exist, because a later A/B would set it, see no difference,
      * and record that as a finding about the kernel. */
+    env_refuse_removed("STOKE_ATT_LANES", "deleted with the lanes arm, M5");
+    env_refuse_removed("STOKE_ATT_GQA", "deleted with the pre-E2 gqa arm, M5");
     g_att_par = env_u32("STOKE_ATT_PAR", 1u, 0u, 1u);
 
     /* STOKE_PREFILL_CHUNK: 1 turns E3 off (position-by-position, the pre-M5
