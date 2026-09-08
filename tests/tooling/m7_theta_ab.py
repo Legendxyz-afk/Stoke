@@ -185,6 +185,74 @@ def null_arm(path_a, path_b):
 # ---------------------------------------------------------------------------
 
 
+def markdown(report) -> str:
+    """The report's result section, GENERATED from the artifact.
+
+    Same rule m7_report.py follows: a number that a tool published is never
+    retyped into prose by hand. ⚠ Needs PYTHONIOENCODING=utf-8 when piped --
+    this console is cp1252 and the text legitimately contains tau and Delta."""
+    L = []
+    g = report["growth"]
+    L.append("| band | arm | n | p95 | max |")
+    L.append("|---|---|---:|---:|---:|")
+    order = [cls.band_name(lo, hi) for lo, hi in cls.BANDS]
+    for b in sorted(set(report["closed"]["bands"]) | set(report["accum"]["bands"]),
+                    key=order.index):
+        for arm in ("closed", "accum"):
+            r = report[arm]["bands"].get(b)
+            if r is None:
+                L.append(f"| `{b}` | {arm} | — | — | — |")
+            else:
+                L.append(f"| `{b}` | {arm} | {r['n']} | **{r['p95']:.6f}** | "
+                         f"{r['max']:.6f} |")
+    L.append("")
+    if "closed" in g:
+        L.append(f"| | growth `{LO_BAND}`→`{HI_BAND}` |")
+        L.append("|---|---|")
+        L.append(f"| closed (the ruled default, the freeze's arm) | "
+                 f"**{g['closed']:.4f}×** |")
+        L.append(f"| accum (the diagnostic arm) | **{g['accum']:.4f}×** |")
+        L.append(f"| excess removed | **{g['excess_removed']:.4f}** |")
+        L.append(f"| **verdict** | **{g['verdict']}** |")
+        L.append("")
+    L.append("Reference closed-vs-accum logit Δ (the bound):")
+    L.append("")
+    L.append("| band | positions | median position | max \\|Δ\\| | p95 \\|Δ\\| |")
+    L.append("|---|---:|---:|---:|---:|")
+    for b in sorted(report["delta"]["by_band"], key=order.index):
+        r = report["delta"]["by_band"][b]
+        L.append(f"| `{b}` | {r['n']} | {r['median_position']} | "
+                 f"{r['max']:.6e} | {r['p95']:.6e} |")
+    L.append("")
+    L.append(f"Reference argmax flips between the arms: "
+             f"**{report['delta']['ref_argmax_flips']} of "
+             f"{report['delta']['n_positions']}** probed positions.")
+    L.append("")
+    bd = report["bound"]
+    if bd["2x_delta_max_hi_band"] is not None:
+        L.append(f"2 × max Δ in `{HI_BAND}` = **{bd['2x_delta_max_hi_band']:.6e}** "
+                 f"against the {bd['threshold']} refusal threshold ⇒ "
+                 f"**{'CANNOT account for the rise' if bd['cannot_explain_the_rise'] else 'could contribute'}**.")
+        L.append("")
+    L.append("| # | tripwire | fired |")
+    L.append("|---|---|---|")
+    names = {"R1_stoke_side_differs": "R1 — stoke's own probes differ between arms",
+             "R2_closed_arm_does_not_reproduce": "R2 — closed arm does not reproduce the banked p95/n",
+             "R3_null_arm_not_bit_identical": "R3 — null arm not bit-identical",
+             "R4_switch_changed_nothing": "R4 — the switch changed nothing (vacuous A/B)",
+             "R5_theta_mode_mismatch": "R5 — a probe file's theta_mode is not its arm's"}
+    for k, v in report["tripwires"].items():
+        L.append(f"| | {names.get(k, k)} | {'**FIRED**' if v else 'no'} |")
+    if isinstance(report.get("R3"), dict):
+        n = report["R3"]
+        L.append("")
+        L.append(f"R3 detail: {n['positions']} probed positions, "
+                 f"{n['positions_differing']} differing, max \\|Δ\\| = "
+                 f"**{n['max_abs_delta']:.6e}**"
+                 f"{' — **bit-identical**' if n['bit_identical'] else ''}.")
+    return "\n".join(L) + "\n"
+
+
 def run_selftest() -> int:
     """The grading arithmetic and the banked-freeze parser, on numbers whose
     answer is known by hand. Neither needs a model, a binary or a probe."""
@@ -276,6 +344,8 @@ def main() -> int:
     p.add_argument("--null-a")
     p.add_argument("--null-b")
     p.add_argument("--out")
+    p.add_argument("--markdown", help="write the report's result section, "
+                                      "generated from the artifact")
     p.add_argument("--shakedown", action="store_true",
                    help="pipeline check on a corpus that does not cover the "
                         "transition: prints the per-band p95, the delta and the "
@@ -360,9 +430,19 @@ def main() -> int:
     dbb = delta_by_band(rows)
     all_d = [r["delta"] for r in rows if r["delta"] is not None]
     fired["R4_switch_changed_nothing"] = (max(all_d, default=0.0) == 0.0)
+    # How often the switch moved a TOKEN DECISION, not just a logit. A delta
+    # that never crosses an argmax is a different kind of small from one that
+    # does, and the aggregate cannot distinguish them.
+    flipped = [r for r in rows if r["ref_chose_closed"] != r["ref_chose_accum"]]
     report["delta"] = {"by_band": dbb,
                        "max_anywhere": max(all_d, default=None),
-                       "n_positions": len(all_d)}
+                       "n_positions": len(all_d),
+                       "ref_argmax_flips": len(flipped),
+                       "ref_argmax_flip_detail": flipped[:20],
+                       # banked per position so "it grows with position" is
+                       # auditable from the artifact, not only from two
+                       # band aggregates
+                       "positions": rows}
     bound_hi = 2.0 * dbb[HI_BAND]["max"] if HI_BAND in dbb else None
     report["bound"] = {"2x_delta_max_hi_band": bound_hi,
                        "threshold": BOUND_THRESHOLD,
@@ -413,6 +493,9 @@ def main() -> int:
         print(f"    2 x max delta in {HI_BAND} = {bound_hi:.6e} vs the "
               f"{BOUND_THRESHOLD} threshold -> "
               f"{'CANNOT explain the rise' if bound_hi < BOUND_THRESHOLD else 'could contribute'}")
+    print(f"    ref argmax flips between the arms: "
+          f"{report['delta']['ref_argmax_flips']} of "
+          f"{report['delta']['n_positions']} probed positions")
     print("")
     print("  tripwires:")
     for k, v in fired.items():
@@ -433,6 +516,9 @@ def main() -> int:
         pathlib.Path(a.out).write_text(json.dumps(report, indent=1),
                                        encoding="utf-8")
         print(f"\n  -> {a.out}")
+    if a.markdown:
+        pathlib.Path(a.markdown).write_text(markdown(report), encoding="utf-8")
+        print(f"  -> {a.markdown}")
     return 0
 
 

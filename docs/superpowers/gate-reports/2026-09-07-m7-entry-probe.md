@@ -47,13 +47,35 @@ longer-context population. The switch to test it exists —
 `ref_forward.py --rope-theta accum` — and re-running `[1200,∞)` under it is the
 named next probe.
 
+> ✅ **SETTLED 2026-09-08 — `2026-09-08-m7-rope-theta-ab.md`: REFUTED.** Running
+> the seven streams that feed these two bands under BOTH arms: growth 1.3224×
+> (closed) vs **1.3232×** (accum), `excess_removed = −0.0025`. The mechanism is
+> real and confirmed — the closed-vs-accum logit Δ is **linear in position**,
+> flat at 6.0e-08…1.3e-07 per position — and it is three orders of magnitude too
+> small, **0 argmax flips in 448 probed positions**. The closed arm reproduced
+> this report's p95 and n **exactly** from a different binary, which is what
+> licenses the comparison; and the batched reference was shown **bit-identical**
+> across two runs, extending C2 from the serial path to the one these probes
+> actually use. ⚠ The rise is therefore *not the angle arithmetic*; "population"
+> is what is left, not what was shown.
+
 ### Still outstanding — B5 is NOT closed by this report
+
+*(⏹ Both items below have since been closed — see the marks. This section is
+left standing as it was written, because what it got wrong is the point: it was
+compiled by checking the parity items, and item 1 was found only by reading a
+different source.)*
 
 **The grid, the τ freeze and all three controls are DONE.** What remains is not
 a measurement:
 
 1. ⚠ **THE FOURTH TARGETED DELTA IS NOT IMPLEMENTED AT ALL — "header-format
-   template #2".** §8.8 lists four silent-garbage deltas needing targeted tests:
+   template #2".** ✅ **CLOSED 2026-09-07 by `c3b4691`** — `tok_apply_llama3()`
+   / `tok_has_llama3_header()` / `tok_apply_chat()`, token-stream identical to
+   llama.cpp's minja render on the plain and trim cases, gated by
+   `tests/tok_llama_chat_golden.sh`. The BOS trap named below was real and is
+   handled; the date is a parameter (production gets today, the gate pins it).
+   §8.8 lists four silent-garbage deltas needing targeted tests:
    QK-norm presence gating ✅, the llama3 rope scaling formula ✅, the llama-bpe
    regex ✅, and **the Llama-3 chat template ⬜**. `src/tok.h:115` says so in as
    many words — *"Llama-3 header format is M7"* — and nothing has been built.
