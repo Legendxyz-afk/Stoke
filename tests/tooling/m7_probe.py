@@ -161,21 +161,32 @@ def stoke_probe_all(prompt_file: pathlib.Path):
 
 
 def ref_probe(ids, positions, out_json: pathlib.Path, work: pathlib.Path,
-              stream_id: str, mode="batched"):
+              stream_id: str, mode="batched", theta="closed"):
     ids_file = work / f"{stream_id}.stream.ids"
     ids_file.write_text("\n".join(str(i) for i in ids), encoding="ascii")
     argv = ["powershell", "-NoProfile", "-File", str(LAUNCHER),
             "-Gguf", str(MODEL), "-IdsFile", str(ids_file),
-            "-Out", str(out_json), "-Mode", mode,
+            "-Out", str(out_json), "-Mode", mode, "-RopeTheta", theta,
             "-ProbeAt", ",".join(str(p) for p in positions)]
     r = _run(argv)
     if not out_json.exists():
         raise ProbeError(f"ref probe wrote no file for {stream_id} "
                          f"(rc={r.returncode}): {r.stderr.strip()[:400]}")
-    return json.loads(out_json.read_text(encoding="utf-8"))
+    doc = json.loads(out_json.read_text(encoding="utf-8"))
+    # ⚠ R5, AND IT IS NOT PEDANTRY. A -RopeTheta that is dropped anywhere
+    # between here and rope_thetas() produces two arms that are both 'closed',
+    # which is bit-identical, reads as "the switch changed nothing", and is the
+    # exact shape of the answer the diagnostic is looking for. The tool RECORDS
+    # what it built the angles with; that record is checked against what was
+    # asked, here, at the moment the file is written.
+    got = doc.get("theta_mode")
+    if got != theta:
+        raise ProbeError(f"{stream_id}: asked --rope-theta {theta!r} but the "
+                         f"probe file records theta_mode={got!r}")
+    return doc
 
 
-def phase_a(out_dir: pathlib.Path, only=None):
+def phase_a(out_dir: pathlib.Path, only=None, theta="closed"):
     work = out_dir / "work"
     work.mkdir(parents=True, exist_ok=True)
     banked = []
@@ -193,7 +204,8 @@ def phase_a(out_dir: pathlib.Path, only=None):
         # stream_ids[n_prompt-1+k].
         positions = [n_prompt - 1 + k for k in range(len(gen))]
         ref = ref_probe(stream_ids, positions,
-                        out_dir / f"{st['id']}.ref.json", work, st["id"])
+                        out_dir / f"{st['id']}.ref.json", work, st["id"],
+                        theta=theta)
         r_probes = {int(p["pos"]): [tuple(t) for t in p["top5"]] for p in ref["probes"]}
         missing = [p for p in positions if p not in r_probes]
         if missing:
@@ -202,6 +214,9 @@ def phase_a(out_dir: pathlib.Path, only=None):
         rec = {"stream": st["id"], "src": st["src"], "selected_on_success": st["selected"],
                "target_tokens": st["target"], "n_prompt": n_prompt,
                "n_gen": len(gen), "gen_ids": gen, "ref_env": ref["env"],
+               # taken from the ref's OWN output, never from the argument that
+               # asked for it -- see the refusal in ref_probe.
+               "ref_theta_mode": ref["theta_mode"],
                "ref_seconds": ref["seconds"], "ids_sha256": ref["ids_sha256"],
                "positions": []}
         for k, pos in enumerate(positions):
@@ -230,11 +245,28 @@ def load_grids(out_dir: pathlib.Path):
              for p in sorted(out_dir.glob("*.grid.json"))]
     if not grids:
         raise ProbeError(f"no *.grid.json in {out_dir} -- phase A has not run")
+    # ⚠ PHASE A ACCUMULATES INTO ONE DIRECTORY -- that is what makes a partial
+    # grid completable without losing work, and it is also what would let two
+    # rope-theta arms pile into the same folder and freeze tau from a MIXTURE.
+    # A mixed freeze is not loud: it produces a perfectly plausible table.
+    modes = {g.get("ref_theta_mode") for g in grids}
+    if None in modes:
+        raise ProbeError(
+            f"{out_dir}: a grid file carries no 'ref_theta_mode' -- it predates "
+            f"the arm tag and cannot be attributed to an arm. Re-run phase A.")
+    if len(modes) > 1:
+        raise ProbeError(
+            f"{out_dir}: grid files mix rope-theta arms {sorted(modes)}. One "
+            f"directory is one arm; tau frozen from a mixture grades nothing.")
     return grids
 
 
-def phase_b(out_dir: pathlib.Path, tau_out: pathlib.Path):
-    grids = load_grids(out_dir)
+def build_envelope(grids):
+    """The class-noise envelope tau is frozen from: agreeing positions only.
+
+    Factored out of phase_b so the 2026-09-08 rope-theta A/B measures the SAME
+    quantity through the SAME code. A second construction of the envelope is a
+    second thing that can drift from the one the freeze used."""
     envelope, agreeing_positions = [], {}
     total = divergent = 0
     for g in grids:
@@ -253,6 +285,12 @@ def phase_b(out_dir: pathlib.Path, tau_out: pathlib.Path):
                              "stream": g["stream"]})
             agreeing_positions.setdefault(p["band"], 0)
             agreeing_positions[p["band"]] += 1
+    return envelope, agreeing_positions, total, divergent
+
+
+def phase_b(out_dir: pathlib.Path, tau_out: pathlib.Path):
+    grids = load_grids(out_dir)
+    envelope, agreeing_positions, total, divergent = build_envelope(grids)
 
     table, report = mcp.freeze_tau(envelope, min_per_band=8, pair=PAIR)
     # ⚠ THE RULING'S FLOOR IS 20 AGREEING POSITIONS, AND freeze_tau's
@@ -268,6 +306,8 @@ def phase_b(out_dir: pathlib.Path, tau_out: pathlib.Path):
     rate = divergent / max(total, 1)
     growth = _band_growth(envelope)
     out = {"pair": PAIR, "tau": table[PAIR],
+           "ref_theta_mode": grids[0]["ref_theta_mode"],
+           "streams": sorted(g["stream"] for g in grids),
            "frozen_from": {"probes_total": total, "agreeing": total - divergent,
                            "divergent": divergent, "divergence_rate": rate,
                            "agreeing_positions_per_band": agreeing_positions},
@@ -411,6 +451,38 @@ def run_selftest() -> int:
     check("an identical pair anchors to all-zero deltas",
           prof is not None and max(prof["anchored"]) == 0.0)
 
+    # ---- the rope-theta arm tag (2026-09-08 diagnostic) ----
+    # A mixed directory is the failure this tag exists to prevent, and it is
+    # silent: freeze_tau over a mixture produces a table that looks fine.
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        d = pathlib.Path(td)
+
+        def _write(name, mode):
+            rec = {"stream": name, "positions": []}
+            if mode is not None:
+                rec["ref_theta_mode"] = mode
+            (d / f"{name}.grid.json").write_text(json.dumps(rec), encoding="utf-8")
+
+        def _refuses(label):
+            try:
+                load_grids(d)
+                return False
+            except ProbeError:
+                return True
+
+        _write("one", "closed")
+        _write("two", "closed")
+        check("a single-arm directory loads", len(load_grids(d)) == 2)
+        _write("three", "accum")
+        check("a directory mixing closed and accum arms is REFUSED",
+              _refuses("mixed"))
+        for f in d.glob("*.grid.json"):
+            f.unlink()
+        _write("legacy", None)
+        check("a grid file with no arm tag is REFUSED, not assumed closed",
+              _refuses("untagged"))
+
     print(f"\n{'ALL GREEN' if not fails else str(len(fails)) + ' FAILED'}")
     return 1 if fails else 0
 
@@ -423,6 +495,11 @@ def main() -> int:
     p.add_argument("--tau-out")
     p.add_argument("--tau")
     p.add_argument("--verdicts")
+    p.add_argument("--rope-theta", choices=("closed", "accum"), default="closed",
+                   help="which arm phase A banks. 'closed' is the ruled default "
+                        "and the one the M7 freeze was taken under; 'accum' is "
+                        "the 2026-09-08 diagnostic arm. ONE DIRECTORY IS ONE "
+                        "ARM -- phase B refuses a mixed one.")
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
     if a.selftest:
@@ -434,7 +511,8 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     try:
         if a.phase == "a":
-            phase_a(out_dir, set(a.only.split(",")) if a.only else None)
+            phase_a(out_dir, set(a.only.split(",")) if a.only else None,
+                    theta=a.rope_theta)
         elif a.phase == "b":
             if not a.tau_out:
                 print("fatal: --phase b needs --tau-out", file=sys.stderr)
