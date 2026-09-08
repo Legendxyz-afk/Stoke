@@ -93,21 +93,30 @@ def main() -> int:
     p.add_argument("--cooldown", type=float, default=45.0)
     p.add_argument("--timeout-s", type=int, default=900)
     p.add_argument("--out", required=True)
+    p.add_argument("--append", action="store_true",
+                   help="add units to an existing bank instead of truncating it. "
+                        "A stopped sitting keeps every unit it banked, and the "
+                        "analysis reads the whole bank -- so resuming is the "
+                        "normal case, not a special one.")
     a = p.parse_args()
 
     scenario = run_matrix.SCENARIOS_BY_NAME[a.scenario]
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    fh = out.open("w", encoding="utf-8")
+    prior = []
+    if a.append and out.exists():
+        prior = [json.loads(L) for L in out.read_text(encoding="utf-8").splitlines() if L.strip()]
+        print(f"resuming: {len(prior)} unit(s) already banked in {out}")
+    fh = out.open("a" if a.append else "w", encoding="utf-8")
 
-    banked = []
+    banked = list(prior)
     t_start = time.time()
     for k in range(a.pairs):
         # ABBA within a pair: the order flips every pair, so neither arm
         # systematically occupies the hotter half of the sitting.
         order = (a.arm_a, a.arm_b) if k % 2 == 0 else (a.arm_b, a.arm_a)
         for label in order:
-            if a.cooldown > 0 and banked:
+            if a.cooldown > 0 and len(banked) > len(prior):
                 time.sleep(a.cooldown)
             rec = unit(label, scenario, a.timeout_s)
             rec["pair"] = k
