@@ -18,8 +18,12 @@ thermal state and separates the arms by half an hour.
 ▶ WHAT THIS DOES INSTEAD.
   - ONE measured run per unit, one adapter lifetime per unit (fresh server).
   - Arms ALTERNATE (A B A B ...), so drift is shared rather than assigned.
-  - A cool-down between units, because the drift above is thermal in shape --
-    a step at the end of a 35-minute sustained load, not a gradual slope.
+  - A cool-down between units. NOTE: the drift that voided attempt 1 turned out
+    to be Kabir opening Chrome and VS Code mid-block, NOT thermal load -- the
+    cool-down is cheap insurance, not the fix for that. The fix for that is a
+    quiesce gate, which bench/run_matrix.py still lacks (it prints a checklist
+    and gates on nothing, where run_m5_bars.ps1 FAILS a unit that does not pass
+    its own quiesce instrument).
   - Drift is read from EACH ARM'S OWN repeats across the sitting, which is the
     only control that works when both arms move together.
   - Every unit is banked as it completes: a run that dies at unit 7 keeps 6.

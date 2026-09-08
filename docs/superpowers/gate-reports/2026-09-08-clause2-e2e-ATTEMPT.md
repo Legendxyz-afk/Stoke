@@ -34,14 +34,33 @@ pair (p1, p2) sits 4.7 min apart and agrees to 0.7%, which is tempting;
 **refused**, because "probably fine" is not what a pre-registered bracket is
 for.
 
-⇒ [[measurement-needs-interleaving]] had already ruled this out: *one unit per
-PROCESS, counterbalance the order, detect drift from the arms' own repeats.* A
-block-sequential matrix violates all three. The 2026-09-05 block got away with
-sequential cells because it **swept the box between them**; this one reproduced
-its shape without its care, under 35 minutes of sustained 8-thread load.
+### ⚠⚠ CORRECTION — the CAUSE was reported afterwards and my first story was wrong
 
-**Method finding, and it generalises:** *a ~35-minute sequential bench on this
-box drifts ~20%.* Every future serving measurement here has to be interleaved.
+**Kabir, after the run: *"box was drifting a bit i opened chrome and vs code."***
+
+So the 18.4% was **background load from an interactive box change**, not thermal
+drift under sustained compute. **The method finding I first wrote — "a
+~35-minute sequential bench on this box drifts ~20%" — is WITHDRAWN.** It
+generalised a duration law out of a one-off event, which is the same
+fit-the-story-to-the-number error this project keeps catching; the drift had a
+cause and the cause was not elapsed time.
+
+⭐ **What survives is better, and it is actionable: THE M0 HARNESS HAS NO
+QUIESCE GATE.** `bench/run_matrix.py` prints a manual checklist —
+
+> *close browsers and other heavy apps · don't use this machine until the matrix
+> finishes*
+
+— **and then gates on nothing.** `run_m5_bars.ps1`, by contrast, carries its own
+quiesce instrument and FAILS a unit that does not pass it, which is why the
+2026-09-05 block was safe under the same conditions. A printed checklist
+discharges the author's honesty and nothing else
+([[stated-limitation-is-not-a-managed-one]]).
+
+⇒ **Two fixes, and the bracket is not one of them** (it worked — it caught this):
+`run_matrix.py` needs a per-cell quiesce gate like the bars runner's, and
+interleaving stays required regardless, per
+[[measurement-needs-interleaving]].
 
 ## 2. Attempt 2 — the instrument works; the ENGINE is the variance
 
@@ -70,6 +89,14 @@ sixth is missing because the sitting was stopped, not because it failed).
 ⭐ **The box was NOT drifting this time** — llama repeated to 0.8% over 15
 minutes. So the interleaving fixed attempt 1's problem, and exposed a different
 one underneath it.
+
+⭐⭐ **And the interleaving does more than share drift — it BRACKETS each unit,
+which is what makes the next section a lead at all.** The slow stoke unit
+(t+10.4) sits between llama units at **t+3.0 (88.0 s)** and **t+14.2 (87.3 s)**
+that agree to **0.8%**. A box-wide slowdown — Chrome and VS Code included —
+would have hit those too. It did not. ⚠ **The residual escape is a transient
+lasting only the ~3.5 minutes of that one unit**, which cannot be excluded from
+n=2 and is exactly why §3 stays a hypothesis.
 
 ## 3. ⚠⚠ The lead: stoke is repeatable WITHIN a server lifetime and variable ACROSS server starts
 
@@ -100,8 +127,11 @@ this report was measured through, and the one that ships — **nothing calls it.
 
 ⚠⚠ **This is a HYPOTHESIS, not a measurement.** What is established: the serve
 path lacks a call the bench path has, and stoke's cross-process spread has the
-shape a startup-fixed QoS decision would produce. What is NOT established: that
-this is the cause. **n = 2.**
+shape a startup-fixed QoS decision would produce, **bracketed on both sides by
+llama units agreeing to 0.8%**. What is NOT established: that this is the cause.
+**n = 2**, and a ~3.5-minute transient covering exactly that unit remains an
+untested competing explanation — Kabir opened Chrome and VS Code during this
+sitting.
 
 **If it is true it is not a bench nuisance — it is a defect in the shipping
 server**, and it would mean an unknown fraction of `stoke serve` deployments run
