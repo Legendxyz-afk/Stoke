@@ -123,6 +123,25 @@ def build_adapter(config_label, scenario):
         return adapters.LlamaCppAdapter(parallel=p, ctx=(8192 if is_s4 else p * 2048))
     if config_label == "stoke-default":
         return adapters.StokeAdapter()
+    if config_label.startswith("stoke-tuned@"):
+        # ▶ A/B VARIANTS OF THE TUNED CELL (2026-09-11): `stoke-tuned@spin=20000`,
+        # `stoke-tuned@pin=0xFFF`, `stoke-tuned@spin=2000,pin=0xFFF`. Everything else about the
+        # cell is the banked arm's configuration, so the variant changes exactly the one runtime
+        # setting it names. Only `stoke-tuned` takes a suffix: the referents are not ours to tune
+        # here, and stoke-default exists to be the untouched default.
+        env, affinity, threads = {}, None, 8
+        for opt in config_label.split("@", 1)[1].split(","):
+            key, _, val = opt.partition("=")
+            if key == "spin" and val.isdigit():
+                env["STOKE_POOL_SPIN"] = val
+            elif key == "pin" and val:
+                affinity = int(val, 0)
+            elif key == "threads" and val.isdigit():
+                threads = int(val)
+            else:
+                raise ValueError(f"unknown stoke-tuned option {opt!r} in {config_label!r}")
+        return adapters.StokeAdapter(seqs=p, ctx=(8192 if is_s4 else 704), threads=threads,
+                                     env=env, affinity=affinity, label=config_label)
     if config_label == "stoke-tuned":
         # ⚠ ctx 704 and threads 8 are NOT a fresh tuning choice -- they are the
         # values the banked in-process arm used (`run_m5_bars.ps1`: ctx 704,

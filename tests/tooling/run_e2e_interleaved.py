@@ -75,18 +75,27 @@ _TRACE_HDR = re.compile(
     r"pool trace: t=\+([\d.]+)s dispatches=(\d+) chunks=(\d+) cpu_user=([\d.]+)s "
     r"cpu_kernel=([\d.]+)s ecores=(\S+)")
 _TRACE_THR = re.compile(r"pool trace: thr (\d+) tid=(\d+) ideal=(-?\d+) P=(\d+) E=(\d+) \|")
+_TRACE_ON = re.compile(r"pool trace: on, every [\d.]+s, (\d+) threads, spin=(\d+)")
 
 
 def parse_trace(lines):
     """The pool's periodic placement tables, compacted: one record per report,
-    per-thread (ideal, P-chunks, E-chunks). Empty for engines that print none."""
-    reports, cur = [], None
+    per-thread (ideal, P-chunks, E-chunks). Empty for engines that print none.
+    The 'on' line's spin budget is attached to every report, so an A/B arm
+    that asked for a spin can be checked against what the pool read."""
+    reports, cur, spin, nthr = [], None, None, None
     for ln in lines:
+        m = _TRACE_ON.search(ln)
+        if m:
+            spin = int(m.group(2))
+            nthr = int(m.group(1))
+            continue
         m = _TRACE_HDR.search(ln)
         if m:
             cur = {"t_s": float(m.group(1)), "dispatches": int(m.group(2)),
                    "chunks": int(m.group(3)), "cpu_user_s": float(m.group(4)),
-                   "cpu_kernel_s": float(m.group(5)), "ecores": m.group(6), "thr": []}
+                   "cpu_kernel_s": float(m.group(5)), "ecores": m.group(6), "spin": spin, "threads": nthr,
+                   "thr": []}
             reports.append(cur)
             continue
         m = _TRACE_THR.search(ln)
@@ -106,7 +115,15 @@ def trace_summary(reports):
     e_all = sum(t["E"] for t in last["thr"])
     out = {"reports": len(reports), "e_share_total": (e_all / (p_all + e_all)) if (p_all + e_all) else None,
            "ideal": [t["ideal"] for t in last["thr"]],
-           "threads_with_e_ideal": None}
+           "threads_with_e_ideal": None, "spin": last.get("spin"), "threads": last.get("threads"),
+           # The dispatcher's chunk count against the helpers' median: the wake-latency
+           # (or per-chunk speed) gap the 2026-09-11 sitting exposed at ~1.4x.
+           "dispatcher_over_helper": None}
+    if len(last["thr"]) >= 2:
+        helpers = sorted(t["P"] + t["E"] for t in last["thr"][1:])
+        med = helpers[len(helpers) // 2]
+        d = last["thr"][0]["P"] + last["thr"][0]["E"]
+        out["dispatcher_over_helper"] = round(d / med, 3) if med else None
     if last["ecores"].startswith("0x"):
         mask = int(last["ecores"], 16)
         out["threads_with_e_ideal"] = sum(1 for t in last["thr"] if t["ideal"] >= 0 and (mask >> t["ideal"]) & 1)
@@ -254,7 +271,8 @@ def main() -> int:
                 if "cpu_user_s" in proc:
                     extra += f" cpu={proc['cpu_user_s']:6.1f}s faults={proc.get('page_faults', '?')}"
                 if tr.get("e_share_total") is not None:
-                    extra += f" E-share={tr['e_share_total']:.3f} last={tr.get('e_share_last_interval')}"
+                    extra += (f" E-share={tr['e_share_total']:.3f} d/h={tr.get('dispatcher_over_helper')}"
+                              f" spin={tr.get('spin')} thr={tr.get('threads')} aff={proc.get('affinity_mask')}")
                 print(f"  [{rec['t_min']:5.1f}m] {label:16s} wall={rec['wall_s']:7.1f}s "
                       f"agg={rec['aggregate_decode_tps']:6.3f} "
                       f"warm={rec['warmup_aggregate_decode_tps'] or 0:6.3f} "

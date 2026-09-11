@@ -195,6 +195,27 @@ def process_stats(pid):
     return out
 
 
+def set_process_affinity(pid, mask):
+    """Windows: SetProcessAffinityMask on a live process; threads created afterwards inherit it.
+    Returns False off Windows or on any failure -- callers that need the pin must treat False as
+    'the arm did not happen', never measure and label it pinned."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        PROCESS_SET_INFORMATION, PROCESS_QUERY_INFORMATION = 0x0200, 0x0400
+        h = k32.OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION, False, int(pid))
+        if not h:
+            return False
+        try:
+            return bool(k32.SetProcessAffinityMask(h, ctypes.c_size_t(int(mask))))
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return False
+
+
 def _ollama_env(extra=None):
     """Copy of the ambient environment with OLLAMA_HOST pinned to our expected address -- both the
     `ollama serve` subprocess and the `ollama create`/`ollama list` CLI calls in
@@ -438,15 +459,23 @@ class StokeAdapter(Adapter):
     HOST = "127.0.0.1"
     PORT = STOKE_PORT
 
-    def __init__(self, seqs=None, ctx=None, threads=None):
-        label = "stoke-tuned" if seqs else "stoke-default"
+    def __init__(self, seqs=None, ctx=None, threads=None, env=None, affinity=None, label=None):
+        base = "stoke-tuned" if seqs else "stoke-default"
         self.root_url = f"http://{self.HOST}:{self.PORT}"
         # base_url is the server ROOT: bench.timed_stream() appends /v1/chat/completions itself.
-        super().__init__(label, base_url=self.root_url, host=self.HOST, port=self.PORT)
+        super().__init__(label or base, base_url=self.root_url, host=self.HOST, port=self.PORT)
         self.seqs = seqs
         self.ctx = ctx
         self.threads = threads
         self.model_name = STOKE_MODEL_NAME
+        # ▶ A/B knobs (2026-09-11), so one binary can be measured under two runtime settings in
+        # one interleaved sitting: extra environment for the server (STOKE_POOL_SPIN,
+        # STOKE_POOL_TRACE, ...) and a process affinity mask applied right after spawn -- before
+        # the model load finishes and long before the pool's threads exist, which inherit it.
+        # Both are VERIFIABLE from the bank: process_stats() records the affinity mask, and the
+        # pool trace header prints the spin budget it read.
+        self.env = dict(env or {})
+        self.affinity = affinity
 
     def _spawn(self):
         argv = [
@@ -462,9 +491,18 @@ class StokeAdapter(Adapter):
         # No --max-requests: that option exists so the golden gate's server exits on its own, and
         # here the harness owns the lifecycle -- Adapter.stop() tree-kills and then blocks until
         # the port is verifiably free.
-        return subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        env = None
+        if self.env:
+            env = os.environ.copy()
+            env.update(self.env)
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env,
         )
+        if self.affinity is not None:
+            if not set_process_affinity(proc.pid, self.affinity):
+                proc.kill()
+                raise RuntimeError(f"{self.label}: could not set affinity {self.affinity:#x}")
+        return proc
 
     def _healthy(self):
         # stoke binds the port only AFTER the 2.5GB model is loaded, so a refused connection means

@@ -331,8 +331,8 @@ static void trace_init(u32 n_threads) {
     for (u32 i = 0; i < n_threads; i++) g_trace[i].ideal = -1;
     trace_read_ecores();
     fprintf(stderr,
-            "pool trace: on, every %.1fs, %u threads, ecores=%s0x%llx\n",
-            v, n_threads, g_trace_ecores_known ? "" : "unknown/",
+            "pool trace: on, every %.1fs, %u threads, spin=%u, ecores=%s0x%llx\n",
+            v, n_threads, g_spin, g_trace_ecores_known ? "" : "unknown/",
             (unsigned long long)g_trace_ecores);
 }
 
@@ -496,10 +496,6 @@ void pool_start(u32 n_threads) {
      * eligible for an efficiency core. */
     thread_prefer_performance();
     g_worker_idx = 0u; /* the dispatching thread is worker 0 */
-    /* Rows first, then this thread's own row: helpers created below inherit
-     * a table that already exists. */
-    trace_init(n_threads);
-    trace_thread_start();
     /* Read once here, never in the wait loop: a getenv() per dispatch would
      * cost more than the spin it configures. */
     g_spin = POOL_SPIN_DEFAULT;
@@ -511,6 +507,11 @@ void pool_start(u32 n_threads) {
             if (end && *end == '\0' && v <= 10000000ul) g_spin = (u32)v;
         }
     }
+    /* Rows first, then this thread's own row: helpers created below inherit
+     * a table that already exists. After the spin budget is read, so the
+     * trace header can print the budget this pool actually runs with. */
+    trace_init(n_threads);
+    trace_thread_start();
     if (n_threads <= 1u) {
         /* Inert on purpose: pool_for_rows runs inline and no thread is
          * created, so a single-threaded run has exactly the cost and exactly
