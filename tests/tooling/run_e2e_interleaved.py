@@ -207,7 +207,14 @@ def main() -> int:
     banked = list(prior)
     t_start = time.time()
     refused = False
-    for k in range(a.pairs):
+    # A sitting sliced into `--pairs 1` invocations (the foreground rule) must
+    # keep flipping: the pair index continues from what the bank already holds,
+    # or every invocation would run the same order and the counterbalance is gone.
+    # ⚠ Not "the arm with fewer units goes first": a bank that is one unit
+    # uneven (a stopped sitting) would then run the SAME order on every
+    # invocation, because each pair preserves the imbalance. Pair parity only.
+    k0 = sum(1 for r in prior if not r.get("error")) // 2
+    for k in range(k0, k0 + a.pairs):
         # ABBA within a pair: the order flips every pair, so neither arm
         # systematically occupies the hotter half of the sitting.
         order = (a.arm_a, a.arm_b) if k % 2 == 0 else (a.arm_b, a.arm_a)
@@ -231,6 +238,9 @@ def main() -> int:
             rec["quiesce"] = gate
             rec["pair"] = k
             rec["t_min"] = round((time.time() - t_start) / 60.0, 2)
+            # Absolute rates belong to a SITTING; a bank that spans several needs
+            # the wall-clock stamp to group them (t_min restarts per invocation).
+            rec["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
             fh.write(json.dumps(rec) + "\n")
             fh.flush()
             banked.append(rec)

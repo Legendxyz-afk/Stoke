@@ -2,6 +2,11 @@
 
 ## STATUS: ⛔ **NOT MEASURED. Both attempts are unreadable, for two DIFFERENT reasons — and the second reason is a lead worth more than the measurement.**
 
+> **2026-09-11: SUPERSEDED by `2026-09-11-clause2-e2e-8.md`** — measured on a
+> quiesced, gated box with the instruments of §3a: llama half **0.980× (MISS
+> by 2.0%)** @8; stoke's cross-process spread **1.30% over 6 starts**, so §3's
+> variance was the box, not the engine.
+
 Protocol: `docs/superpowers/design-notes/2026-09-08-clause2-end-to-end-preregistration.md`
 (committed `bfda9ec`, before either run).
 
