@@ -29,6 +29,7 @@ import platform
 import re
 import subprocess
 import sys
+import time
 
 # Windows consoles default to a legacy code page (cp1252) that can't encode the "x" (multiply)
 # and other punctuation used in the console output this module prints; force UTF-8 with a
@@ -264,8 +265,70 @@ def power_protocol(env, skip_power_check):
     print("=" * 78)
 
 
+# -- quiesce gate ---------------------------------------------------------------------------------
+# ▶ WHY THIS EXISTS (2026-09-08 → 11). The checklist above is a request, not a gate: this runner
+# printed "close browsers" and then measured whatever the box was doing. On 2026-09-08 a block was
+# voided by its own bracket at 18.4% because Chrome and VS Code were opened mid-block -- and the
+# same afternoon `tests/tooling/run_m5_bars.ps1`, which FAILS a unit that does not pass its quiesce
+# instrument, would have refused to start it. A printed checklist discharges the author's honesty
+# and nothing else. This is that instrument, ported: the CPU-busy fraction from the raw perf
+# counter (two samples 800 ms apart), quiet meaning <= QUIET_CPU_PCT on two consecutive reads,
+# tried up to `tries` times 20 s apart. A sample that cannot be taken reads as NOT quiet, never as
+# 0 -- a failed measurement that reads as "perfectly quiet" is the one error a gate must not make.
+QUIET_CPU_PCT = 12.0
+_CPU_BUSY_PS = (
+    "$a = Get-CimInstance Win32_PerfRawData_PerfOS_Processor -Filter \"Name='_Total'\";"
+    "Start-Sleep -Milliseconds 800;"
+    "$b = Get-CimInstance Win32_PerfRawData_PerfOS_Processor -Filter \"Name='_Total'\";"
+    "$dI = [double]$b.PercentIdleTime - [double]$a.PercentIdleTime;"
+    "$dT = [double]$b.Timestamp_Sys100NS - [double]$a.Timestamp_Sys100NS;"
+    "if ($dT -le 0) { 'unusable' } else { [math]::Round(100.0 * (1.0 - $dI / $dT), 1) };"
+    "(Get-Process | Where-Object { $_.ProcessName -match 'ISLC|Intelligent' } | Measure-Object).Count"
+)
+
+
+def cpu_busy_pct():
+    """(busy_pct, islc_running). busy_pct is 999.0 when the sample is unusable, so it fails the
+    gate rather than passing it."""
+    if os.name != "nt":
+        return 999.0, False
+    out = _capture(["powershell", "-NoProfile", "-Command", _CPU_BUSY_PS], timeout=30)
+    lines = [ln.strip() for ln in str(out).splitlines() if ln.strip()]
+    try:
+        busy = float(lines[0])
+        islc = int(lines[1]) > 0
+    except (IndexError, ValueError):
+        return 999.0, False
+    return busy, islc
+
+
+def quiesce_gate(tries=10, wait_s=20.0, quiet_pct=QUIET_CPU_PCT, say=print):
+    """Returns {"passed": bool, "reads": [...], "islc": bool}. Passes on two consecutive reads at or
+    under `quiet_pct`; ISLC running fails it outright (it purges the standby cache the model load
+    depends on -- see run_m5_bars.ps1's -AllowISLC for why that is a deliberate override)."""
+    reads, quiet = [], 0
+    for t in range(tries):
+        busy, islc = cpu_busy_pct()
+        reads.append(busy)
+        if islc:
+            say("  !! quiesce gate: ISLC is running -- refusing (stop it, or measure knowing the cache is purged)")
+            return {"passed": False, "reads": reads, "islc": True}
+        if busy <= quiet_pct:
+            quiet += 1
+            if quiet >= 2:
+                say(f"  quiesce gate PASSED on cpu {reads[-2]}%, {reads[-1]}% (<= {quiet_pct}% twice)")
+                return {"passed": True, "reads": reads, "islc": False}
+        else:
+            quiet = 0
+            say(f"  waiting: cpu {busy}% > {quiet_pct}% (try {t + 1}/{tries})")
+        if t + 1 < tries:
+            time.sleep(wait_s)
+    say(f"  !! quiesce gate NOT MET after {tries} tries -- last reads {reads[-2:]}")
+    return {"passed": False, "reads": reads, "islc": False}
+
+
 # -- cell protocol --------------------------------------------------------------------------------
-def run_cell(config_label, scenario, runs, timeout_s):
+def run_cell(config_label, scenario, runs, timeout_s, keep_log=False):
     """Run one (config, scenario) cell: construct+start the adapter, one discarded warmup +
     `runs` measured bench.run_scenario calls (each salted so cross-run prefix/prompt caching
     can't inflate later runs), stop the adapter, return the cell dict. On any exception the error
@@ -281,6 +344,7 @@ def run_cell(config_label, scenario, runs, timeout_s):
         "warmup": None,
         "runs": [],
         "adapter_log_tail": None,
+        "proc": None,
         "ollama_show": None,
         "error": None,
     }
@@ -326,6 +390,12 @@ def run_cell(config_label, scenario, runs, timeout_s):
     finally:
         if adapter is not None:
             cell["adapter_log_tail"] = adapter._log_tail(40)
+            if keep_log:
+                cell["adapter_log"] = list(adapter._log_lines)
+            # The process is still alive here, so its CPU-seconds and faults describe the
+            # runs above; after stop() there is nothing left to ask.
+            if adapter.proc is not None:
+                cell["proc"] = adapters.process_stats(adapter.proc.pid)
             try:
                 adapter.stop()
             except Exception as exc:
@@ -360,6 +430,15 @@ def build_arg_parser():
     parser.add_argument(
         "--skip-power-check", action="store_true",
         help="skip the power-plan switch (env capture still records the active plan)",
+    )
+    parser.add_argument(
+        "--no-quiesce-gate", action="store_true",
+        help="measure without the per-cell CPU-quiet gate (every cell then banks quiesce.passed=false "
+             "and its rates are INDICATIVE, not gate-grade)",
+    )
+    parser.add_argument(
+        "--quiesce-tries", type=int, default=10,
+        help="attempts, 20 s apart, for the per-cell quiesce gate before the cell is REFUSED (default 10)",
     )
     return parser
 
@@ -398,7 +477,21 @@ def main(argv=None):
             print(f"SKIP (exists): {name}", flush=True)
             continue
 
+        # The gate is a START condition per cell and is banked WITH the cell, so a reader of
+        # any raw file sees whether its numbers were taken on a quiet box. A cell that cannot
+        # pass it is refused and the matrix stops: a noisy box has a human on it, and the
+        # remaining cells would be measured under conditions this one already rejected.
+        if args.no_quiesce_gate:
+            gate = {"passed": False, "reads": [], "skipped": True}
+        else:
+            gate = quiesce_gate(tries=args.quiesce_tries)
+            if not gate["passed"]:
+                print(f"REFUSED: {name} -- the box is not quiet; re-run when it is "
+                      f"(cells already banked are kept)", flush=True)
+                return 2
+
         cell = run_cell(config_label, scenario, args.runs, args.timeout_s)
+        cell["quiesce"] = gate
         with open(raw_path, "w", encoding="utf-8") as f:
             json.dump(cell, f, indent=2)
 

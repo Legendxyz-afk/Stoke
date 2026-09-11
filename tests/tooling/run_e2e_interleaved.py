@@ -32,6 +32,23 @@ thermal state and separates the arms by half an hour.
 run_matrix.run_cell -- the same code the referents are measured by, which is the
 entire point of the exercise it serves.
 
+▶ WHAT EACH UNIT NOW CARRIES BESIDE ITS RATE (2026-09-11). Attempt 2 found
+stoke 0.2% repeatable inside one server lifetime and 11.7% apart across two,
+and the bank could not say why, because it held rates and nothing about the
+process that produced them. Every unit now banks: the WARMUP run's aggregate
+(a within-lifetime repeat, free); the live process's CPU-seconds, page faults
+and affinity/priority/EcoQoS state (`proc`, from bench/adapters.process_stats,
+the two tells the 2026-08-17 EcoQoS finding named); and, for stoke, the pool's
+placement trace (`STOKE_POOL_TRACE`, src/pool.c) -- per thread, the chunks it
+claimed on P-cores against E-cores, sampled every --trace seconds, so a slow
+process can be read as "its work sat on the efficiency cores from t=0" or
+"something happened at t=90" rather than guessed at.
+
+▶ AND A QUIESCE GATE PER UNIT. bench/run_matrix.py's checklist gated on
+nothing; its quiesce_gate() now does, and a unit that cannot pass it is
+REFUSED and the sitting stops (exit 2) -- a noisy box has a human on it.
+--append resumes.
+
 Usage:
   python tests/tooling/run_e2e_interleaved.py --scenario s2-closed-8 \
       --pairs 3 --cooldown 45 --out bench/results/<block>/interleaved-8.jsonl
@@ -40,7 +57,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
+import re
 import statistics as st
 import sys
 import time
@@ -52,10 +71,65 @@ sys.path.insert(0, str(REPO / "bench"))
 import run_matrix  # noqa: E402
 import scenarios as scen_mod  # noqa: E402
 
+_TRACE_HDR = re.compile(
+    r"pool trace: t=\+([\d.]+)s dispatches=(\d+) chunks=(\d+) cpu_user=([\d.]+)s "
+    r"cpu_kernel=([\d.]+)s ecores=(\S+)")
+_TRACE_THR = re.compile(r"pool trace: thr (\d+) tid=(\d+) ideal=(-?\d+) P=(\d+) E=(\d+) \|")
+
+
+def parse_trace(lines):
+    """The pool's periodic placement tables, compacted: one record per report,
+    per-thread (ideal, P-chunks, E-chunks). Empty for engines that print none."""
+    reports, cur = [], None
+    for ln in lines:
+        m = _TRACE_HDR.search(ln)
+        if m:
+            cur = {"t_s": float(m.group(1)), "dispatches": int(m.group(2)),
+                   "chunks": int(m.group(3)), "cpu_user_s": float(m.group(4)),
+                   "cpu_kernel_s": float(m.group(5)), "ecores": m.group(6), "thr": []}
+            reports.append(cur)
+            continue
+        m = _TRACE_THR.search(ln)
+        if m and cur is not None:
+            cur["thr"].append({"w": int(m.group(1)), "ideal": int(m.group(3)),
+                               "P": int(m.group(4)), "E": int(m.group(5))})
+    return reports
+
+
+def trace_summary(reports):
+    """E-core share of all chunks over the whole lifetime, and over the LAST
+    interval alone -- the pair that separates a startup state from a transient."""
+    if not reports:
+        return None
+    last = reports[-1]
+    p_all = sum(t["P"] for t in last["thr"])
+    e_all = sum(t["E"] for t in last["thr"])
+    out = {"reports": len(reports), "e_share_total": (e_all / (p_all + e_all)) if (p_all + e_all) else None,
+           "ideal": [t["ideal"] for t in last["thr"]],
+           "threads_with_e_ideal": None}
+    if last["ecores"].startswith("0x"):
+        mask = int(last["ecores"], 16)
+        out["threads_with_e_ideal"] = sum(1 for t in last["thr"] if t["ideal"] >= 0 and (mask >> t["ideal"]) & 1)
+    if len(reports) >= 2:
+        prev = reports[-2]
+        dp = sum(t["P"] for t in last["thr"]) - sum(t["P"] for t in prev["thr"])
+        de = sum(t["E"] for t in last["thr"]) - sum(t["E"] for t in prev["thr"])
+        out["e_share_last_interval"] = (de / (dp + de)) if (dp + de) else None
+    # Per-report E share, so a reader can see the time course without the raw lines.
+    course = []
+    for i, r in enumerate(reports):
+        p = sum(t["P"] for t in r["thr"]); e = sum(t["E"] for t in r["thr"])
+        if i:
+            pp = sum(t["P"] for t in reports[i - 1]["thr"]); pe = sum(t["E"] for t in reports[i - 1]["thr"])
+            p, e = p - pp, e - pe
+        course.append(round(e / (p + e), 3) if (p + e) else None)
+    out["e_share_course"] = course
+    return out
+
 
 def unit(config_label, scenario, timeout_s):
     """One adapter lifetime, one discarded warmup, ONE measured run."""
-    cell = run_matrix.run_cell(config_label, scenario, runs=1, timeout_s=timeout_s)
+    cell = run_matrix.run_cell(config_label, scenario, runs=1, timeout_s=timeout_s, keep_log=True)
     if cell["error"]:
         return {"config": config_label, "error": cell["error"]}
     r = cell["runs"][0]
@@ -75,15 +149,21 @@ def unit(config_label, scenario, timeout_s):
                 "error": f"token counts {sorted({p['n_tokens'] for p in pcs})} "
                          f"!= {scenario.max_tokens}"}
     ttfts = sorted(p["ttft_ms"] / 1000.0 for p in pcs)
+    log = cell.get("adapter_log") or []
+    reports = parse_trace(log)
     return {
         "config": config_label,
         "scenario": scenario.name,
         "wall_s": r["wall_s"],
         "aggregate_decode_tps": r["aggregate_decode_tps"],
+        "warmup_aggregate_decode_tps": (cell.get("warmup") or {}).get("aggregate_decode_tps"),
         "ttft50_s": ttfts[len(ttfts) // 2],
         "ttft_min_s": ttfts[0],
         "completed": r["completed"],
         "adapter_log_head": (cell.get("adapter_log_tail") or "").splitlines()[:2],
+        "proc": cell.get("proc"),
+        "trace": trace_summary(reports),
+        "trace_reports": reports,
         "error": None,
     }
 
@@ -102,7 +182,18 @@ def main() -> int:
                         "A stopped sitting keeps every unit it banked, and the "
                         "analysis reads the whole bank -- so resuming is the "
                         "normal case, not a special one.")
+    p.add_argument("--trace", type=float, default=10.0,
+                   help="STOKE_POOL_TRACE interval in seconds for the stoke arm's "
+                        "server (0 = off). Inherited by the spawned process.")
+    p.add_argument("--quiesce-tries", type=int, default=10,
+                   help="attempts, 20 s apart, for the per-unit quiesce gate (0 = no gate; "
+                        "every unit then banks quiesce.passed=false)")
     a = p.parse_args()
+
+    if a.trace > 0:
+        os.environ["STOKE_POOL_TRACE"] = str(a.trace)
+    else:
+        os.environ.pop("STOKE_POOL_TRACE", None)
 
     scenario = run_matrix.SCENARIOS_BY_NAME[a.scenario]
     out = pathlib.Path(a.out)
@@ -115,6 +206,7 @@ def main() -> int:
 
     banked = list(prior)
     t_start = time.time()
+    refused = False
     for k in range(a.pairs):
         # ABBA within a pair: the order flips every pair, so neither arm
         # systematically occupies the hotter half of the sitting.
@@ -122,7 +214,21 @@ def main() -> int:
         for label in order:
             if a.cooldown > 0 and len(banked) > len(prior):
                 time.sleep(a.cooldown)
+            if a.quiesce_tries > 0:
+                gate = run_matrix.quiesce_gate(tries=a.quiesce_tries)
+                if not gate["passed"]:
+                    rec = {"config": label, "error": "quiesce gate not met", "quiesce": gate,
+                           "pair": k, "t_min": round((time.time() - t_start) / 60.0, 2)}
+                    fh.write(json.dumps(rec) + "\n")
+                    fh.flush()
+                    print(f"  [{rec['t_min']:5.1f}m] {label:16s} REFUSED: box not quiet "
+                          f"(reads {gate['reads'][-3:]}) -- resume with --append", flush=True)
+                    refused = True
+                    break
+            else:
+                gate = {"passed": False, "reads": [], "skipped": True}
             rec = unit(label, scenario, a.timeout_s)
+            rec["quiesce"] = gate
             rec["pair"] = k
             rec["t_min"] = round((time.time() - t_start) / 60.0, 2)
             fh.write(json.dumps(rec) + "\n")
@@ -132,9 +238,19 @@ def main() -> int:
                 print(f"  [{rec['t_min']:5.1f}m] {label:16s} ERROR: {rec['error']}",
                       flush=True)
             else:
+                proc = rec.get("proc") or {}
+                tr = rec.get("trace") or {}
+                extra = ""
+                if "cpu_user_s" in proc:
+                    extra += f" cpu={proc['cpu_user_s']:6.1f}s faults={proc.get('page_faults', '?')}"
+                if tr.get("e_share_total") is not None:
+                    extra += f" E-share={tr['e_share_total']:.3f} last={tr.get('e_share_last_interval')}"
                 print(f"  [{rec['t_min']:5.1f}m] {label:16s} wall={rec['wall_s']:7.1f}s "
                       f"agg={rec['aggregate_decode_tps']:6.3f} "
-                      f"ttft50={rec['ttft50_s']:5.1f}s", flush=True)
+                      f"warm={rec['warmup_aggregate_decode_tps'] or 0:6.3f} "
+                      f"ttft50={rec['ttft50_s']:5.1f}s{extra}", flush=True)
+        if refused:
+            break
     fh.close()
 
     ok = [r for r in banked if not r.get("error")]
@@ -155,7 +271,23 @@ def main() -> int:
         worst = max(100 * (max(w) - min(w)) / st.median(w) for w in walls.values())
         print(f"  ⚠ largest single-arm spread this sitting: {worst:.1f}% -- a ratio "
               f"is only readable if it exceeds this")
-    return 0
+    # The per-process table: what each unit's process looked like beside its
+    # rate, so a slow one can be read rather than guessed at.
+    rows = [r for r in ok if r.get("proc") or r.get("trace")]
+    if rows:
+        print("\n== per unit: process state ==")
+        print(f"  {'t+min':>6} {'arm':16s} {'wall':>7} {'agg':>7} {'warm':>7} {'cpu_u':>7} "
+              f"{'faults':>8} {'E-share':>8} {'E-ideal':>8}")
+        for r in rows:
+            proc = r.get("proc") or {}
+            tr = r.get("trace") or {}
+            es = tr.get("e_share_total")
+            print(f"  {r['t_min']:6.1f} {r['config']:16s} {r['wall_s']:7.1f} "
+                  f"{r['aggregate_decode_tps']:7.3f} {(r.get('warmup_aggregate_decode_tps') or 0):7.3f} "
+                  f"{proc.get('cpu_user_s', float('nan')):7.1f} {str(proc.get('page_faults', '?')):>8} "
+                  f"{(f'{es:.3f}' if es is not None else '-'):>8} "
+                  f"{str(tr.get('threads_with_e_ideal', '-')):>8}")
+    return 2 if refused else 0
 
 
 if __name__ == "__main__":

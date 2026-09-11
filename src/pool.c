@@ -8,12 +8,27 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #ifdef _WIN32
-/* For SetThreadInformation -- see thread_prefer_performance(). */
+/* For SetThreadInformation -- see thread_prefer_performance() -- and for the
+ * placement trace's GetCurrentProcessorNumber / GetProcessTimes /
+ * GetLogicalProcessorInformationEx. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+/* ⚠ NOT <sched.h>, AND NOT _GNU_SOURCE. `-Isrc` makes every `<sched.h>` in
+ * this tree -- including the one inside glibc's own <pthread.h> -- resolve to
+ * OUR src/sched.h, the request scheduler. That has been silently true since
+ * K5 and costs nothing under plain _POSIX_C_SOURCE, because pthread.h then
+ * needs nothing from the real sched.h. Define _GNU_SOURCE and it does
+ * (cpu_set_t), and the build breaks four lines into pthread.h. So the trace
+ * asks the CPU number of the hardware directly (RDTSCP's TSC_AUX carries it
+ * on Linux/x86-64) and falls back to the raw getcpu syscall elsewhere. */
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 /* The measured default -- see pool.h for the full reasoning. EIGHT, and
@@ -150,6 +165,256 @@ static void thread_prefer_performance(void) {}
 
 void pool_prefer_performance_here(void) { thread_prefer_performance(); }
 
+/* ▶▶ THE PLACEMENT TRACE: STOKE_POOL_TRACE=<seconds>. WHERE DID THE WORK RUN?
+ *
+ * Every claim this file makes about the scheduler -- E-core parking, the QoS
+ * opt-out, "the caller is a worker too" -- has so far been argued from
+ * throughput and CPU-seconds, never OBSERVED. On 2026-09-08 `stoke serve` read
+ * 0.2% repeatable inside one server lifetime and 11.7% apart across two server
+ * starts, the shape of a per-process state fixed at startup, and the first
+ * suspect named for it (the caller missing the opt-out) was refuted by reading
+ * pool_start. What was missing was not a hypothesis but an instrument.
+ *
+ * This is it. When enabled, every thread counts the chunks it claims BY THE
+ * LOGICAL PROCESSOR IT WAS RUNNING ON when it claimed them, records the ideal
+ * processor Windows assigned it at start, and the dispatching thread prints
+ * the whole table every <seconds> together with the process's CPU times. Read
+ * against the P/E map (printed once, from EfficiencyClass, not assumed) that
+ * says directly whether a slow process is a process whose work sat on the
+ * efficiency cores -- and, because it is periodic, whether that was true from
+ * the first second (a startup state) or began partway (a transient).
+ *
+ * COST WHEN OFF: one predictable branch per chunk and one per dispatch.
+ * COST WHEN ON: a GetCurrentProcessorNumber (RDPID/RDTSCP, ~tens of cycles)
+ * per 64-row chunk of a matvec that costs tens of thousands, plus a clock
+ * read every 64 dispatches. Each row is single-writer (its own thread) and
+ * read racily-by-design by the reporter through relaxed atomics, so the trace
+ * is TSan-clean and never takes the pool's mutex.
+ *
+ * ⚠ It counts CHUNKS CLAIMED THROUGH THE POOL. Work the pool runs inline on
+ * the caller (n_threads <= 1, or fewer than POOL_MIN_CHUNKS chunks) is not a
+ * placement question and is not counted. */
+#define TRACE_MAX_CPUS 64u
+
+typedef struct {
+    _Alignas(64) atomic_ullong n[TRACE_MAX_CPUS]; /* chunks claimed on LP i */
+    i64  ideal;                                   /* ideal LP at start; -1 unknown */
+    u64  tid;
+    char pad[48];                                 /* rows never share a line */
+} TraceRow;
+
+static double    g_trace_every_ms;  /* 0 = off */
+static TraceRow* g_trace;           /* g_trace_rows rows, one per worker */
+static u32       g_trace_rows;
+static u64       g_trace_ecores;    /* bit i = LP i is an efficiency core; 0 = unknown/homogeneous */
+static int       g_trace_ecores_known;
+static u64       g_trace_dispatches;
+static double    g_trace_t0_ms;
+static double    g_trace_last_ms;
+
+static u32 trace_cpu_now(void) {
+#if defined(_WIN32)
+    return (u32)GetCurrentProcessorNumber();
+#elif defined(__linux__) && defined(__x86_64__)
+    /* Linux writes (node << 12 | cpu) into IA32_TSC_AUX; RDTSCP reads it in
+     * ~30 cycles with no syscall and no header the tree can shadow. */
+    unsigned aux = 0;
+    (void)__builtin_ia32_rdtscp(&aux);
+    return (u32)(aux & 0xfffu);
+#elif defined(__linux__)
+    /* Declared here because <unistd.h> hides syscall() under strict POSIX. */
+    extern long syscall(long number, ...);
+    unsigned cpu = 0, node = 0;
+    if (syscall(SYS_getcpu, &cpu, &node, (void*)0) != 0) return 0u;
+    return (u32)cpu;
+#else
+    return 0u;
+#endif
+}
+
+static i64 trace_ideal_here(void) {
+#ifdef _WIN32
+    typedef BOOL(WINAPI * GetIdealFn)(HANDLE, PPROCESSOR_NUMBER);
+    HANDLE k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) return -1;
+    GetIdealFn get = (GetIdealFn)(void (*)(void))GetProcAddress(
+        (HMODULE)k32, "GetThreadIdealProcessorEx");
+    PROCESSOR_NUMBER pn;
+    memset(&pn, 0, sizeof pn);
+    if (!get || !get(GetCurrentThread(), &pn)) return -1;
+    return (i64)pn.Number + 64 * (i64)pn.Group;
+#else
+    return -1;
+#endif
+}
+
+static u64 trace_tid_here(void) {
+#ifdef _WIN32
+    return (u64)GetCurrentThreadId();
+#else
+    return (u64)(uintptr_t)pthread_self();
+#endif
+}
+
+/* The P/E map, from the OS, once. Windows reports EfficiencyClass per core;
+ * on a homogeneous box every core reads the same class and the mask stays 0
+ * with `known` set, which the report distinguishes from "could not ask". */
+static void trace_read_ecores(void) {
+    g_trace_ecores       = 0;
+    g_trace_ecores_known = 0;
+#ifdef _WIN32
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    if (len == 0) return;
+    char* buf = (char*)xmalloc(len);
+    if (!GetLogicalProcessorInformationEx(
+            RelationProcessorCore, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf,
+            &len)) {
+        free(buf);
+        return;
+    }
+    u64 by_class[256];
+    memset(by_class, 0, sizeof by_class);
+    int max_class = 0;
+    for (char* p = buf; p < buf + len;) {
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX e =
+            (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
+        if (e->Relationship == RelationProcessorCore &&
+            e->Processor.GroupCount >= 1 && e->Processor.GroupMask[0].Group == 0) {
+            int cls = (int)e->Processor.EfficiencyClass;
+            by_class[cls] |= (u64)e->Processor.GroupMask[0].Mask;
+            if (cls > max_class) max_class = cls;
+        }
+        p += e->Size;
+    }
+    free(buf);
+    g_trace_ecores_known = 1;
+    /* Windows: a HIGHER class is a MORE performant core, so on a hybrid part
+     * the efficiency cores are every class below the top one. */
+    for (int c = 0; c < max_class; c++) g_trace_ecores |= by_class[c];
+#endif
+}
+
+static void trace_cpu_times(double* user_s, double* kernel_s) {
+    *user_s = *kernel_s = 0.0;
+#ifdef _WIN32
+    FILETIME c, e, k, u;
+    if (GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u)) {
+        u64 ku = ((u64)k.dwHighDateTime << 32) | k.dwLowDateTime;
+        u64 uu = ((u64)u.dwHighDateTime << 32) | u.dwLowDateTime;
+        *kernel_s = (double)ku / 1e7;
+        *user_s   = (double)uu / 1e7;
+    }
+#else
+    struct rusage ru;
+    if (getrusage(RUSAGE_SELF, &ru) == 0) {
+        *user_s   = (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec / 1e6;
+        *kernel_s = (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec / 1e6;
+    }
+#endif
+}
+
+/* Called from pool_start, after g_n_threads is set and before any helper
+ * exists, so the rows are in place before the first thread could count. */
+static void trace_init(u32 n_threads) {
+    g_trace_every_ms = 0.0;
+    const char* s = getenv("STOKE_POOL_TRACE");
+    if (!s || !s[0]) return;
+    char*  end = NULL;
+    double v   = strtod(s, &end);
+    if (!end || *end != '\0' || !(v > 0.0)) return;
+    g_trace_every_ms   = v * 1000.0;
+    g_trace_rows       = n_threads;
+    g_trace            = (TraceRow*)xcalloc((size_t)n_threads, sizeof(TraceRow));
+    g_trace_dispatches = 0;
+    g_trace_t0_ms = g_trace_last_ms = now_ms();
+    for (u32 i = 0; i < n_threads; i++) g_trace[i].ideal = -1;
+    trace_read_ecores();
+    fprintf(stderr,
+            "pool trace: on, every %.1fs, %u threads, ecores=%s0x%llx\n",
+            v, n_threads, g_trace_ecores_known ? "" : "unknown/",
+            (unsigned long long)g_trace_ecores);
+}
+
+/* Per thread, once, from the thread itself: its ideal processor and id. */
+static void trace_thread_start(void) {
+    if (!g_trace || g_worker_idx >= g_trace_rows) return;
+    g_trace[g_worker_idx].ideal = trace_ideal_here();
+    g_trace[g_worker_idx].tid   = trace_tid_here();
+}
+
+/* One chunk, claimed by this thread, on the LP it is running on right now.
+ * Single writer per row, so a relaxed load+store is a plain increment. */
+static inline void trace_count_chunk(void) {
+    u32 c = trace_cpu_now();
+    if (c >= TRACE_MAX_CPUS) c = TRACE_MAX_CPUS - 1u;
+    atomic_ullong* slot = &g_trace[g_worker_idx].n[c];
+    atomic_store_explicit(
+        slot, atomic_load_explicit(slot, memory_order_relaxed) + 1ull,
+        memory_order_relaxed);
+}
+
+u64 pool_trace_chunks(u32 worker) {
+    if (!g_trace || worker >= g_trace_rows) return 0;
+    u64 total = 0;
+    for (u32 c = 0; c < TRACE_MAX_CPUS; c++) {
+        total += atomic_load_explicit(&g_trace[worker].n[c], memory_order_relaxed);
+    }
+    return total;
+}
+
+u32 pool_trace_report(FILE* out) {
+    if (!g_trace) return 0;
+    double user_s, kernel_s;
+    trace_cpu_times(&user_s, &kernel_s);
+    u64 chunks = 0;
+    for (u32 w = 0; w < g_trace_rows; w++) chunks += pool_trace_chunks(w);
+    fprintf(out,
+            "pool trace: t=+%.1fs dispatches=%llu chunks=%llu cpu_user=%.1fs "
+            "cpu_kernel=%.1fs ecores=%s0x%llx\n",
+            (now_ms() - g_trace_t0_ms) / 1000.0,
+            (unsigned long long)g_trace_dispatches, (unsigned long long)chunks,
+            user_s, kernel_s, g_trace_ecores_known ? "" : "unknown/",
+            (unsigned long long)g_trace_ecores);
+    for (u32 w = 0; w < g_trace_rows; w++) {
+        u64 on_p = 0, on_e = 0;
+        for (u32 c = 0; c < TRACE_MAX_CPUS; c++) {
+            u64 n = atomic_load_explicit(&g_trace[w].n[c], memory_order_relaxed);
+            if (g_trace_ecores >> c & 1ull) on_e += n; else on_p += n;
+        }
+        fprintf(out, "pool trace: thr %u tid=%llu ideal=%lld P=%llu E=%llu |", w,
+                (unsigned long long)g_trace[w].tid, (long long)g_trace[w].ideal,
+                (unsigned long long)on_p, (unsigned long long)on_e);
+        for (u32 c = 0; c < TRACE_MAX_CPUS; c++) {
+            u64 n = atomic_load_explicit(&g_trace[w].n[c], memory_order_relaxed);
+            if (n) fprintf(out, " %u:%llu", c, (unsigned long long)n);
+        }
+        fputc('\n', out);
+    }
+    fflush(out);
+    return g_trace_rows;
+}
+
+/* Dispatch thread, once per dispatch: the periodic report, clock read only
+ * every 64th call so the trace never adds a syscall-rate cost to dispatch. */
+static inline void trace_tick(void) {
+    g_trace_dispatches++;
+    if ((g_trace_dispatches & 63ull) != 0) return;
+    double now = now_ms();
+    if (now - g_trace_last_ms < g_trace_every_ms) return;
+    g_trace_last_ms = now;
+    pool_trace_report(stderr);
+}
+
+static void trace_stop(void) {
+    if (!g_trace) return;
+    pool_trace_report(stderr);
+    free(g_trace);
+    g_trace          = NULL;
+    g_trace_rows     = 0;
+    g_trace_every_ms = 0.0;
+}
+
 static inline void pool_relax(void) {
 #if defined(__x86_64__) || defined(__i386__)
     __builtin_ia32_pause();
@@ -172,6 +437,7 @@ static void run_chunks(void) {
         u64 end = begin + chunk;
         if (end > n_rows) end = n_rows;
         g_job.fn(g_job.ctx, begin, end);
+        if (g_trace) trace_count_chunk();
     }
 }
 
@@ -182,6 +448,7 @@ static void* worker_main(void* arg) {
      * and two workers see the same number. */
     g_worker_idx = (u32)(uintptr_t)arg;
     thread_prefer_performance();
+    trace_thread_start();
     u64 served = 0;
     for (;;) {
         /* Spin for a bounded budget, then fall back to the condvar. On quit the
@@ -229,6 +496,10 @@ void pool_start(u32 n_threads) {
      * eligible for an efficiency core. */
     thread_prefer_performance();
     g_worker_idx = 0u; /* the dispatching thread is worker 0 */
+    /* Rows first, then this thread's own row: helpers created below inherit
+     * a table that already exists. */
+    trace_init(n_threads);
+    trace_thread_start();
     /* Read once here, never in the wait loop: a getenv() per dispatch would
      * cost more than the spin it configures. */
     g_spin = POOL_SPIN_DEFAULT;
@@ -273,6 +544,7 @@ void pool_stop(void) {
         free(g_threads);
         g_threads = NULL;
     }
+    trace_stop(); /* after the join: every row's writer is gone */
     g_started = 0;
     g_n_threads = 1u;
 }
@@ -326,4 +598,5 @@ void pool_for_units(u64 n_rows, u32 chunk, void (*fn)(void*, u64, u64),
         pthread_cond_wait(&g_done, &g_mu);
     }
     pthread_mutex_unlock(&g_mu);
+    if (g_trace) trace_tick();
 }

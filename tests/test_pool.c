@@ -300,6 +300,46 @@ TEST(pool_worker_index_is_in_range_and_the_caller_is_zero) {
     ASSERT_TRUE(distinct > 1u);
 }
 
+/* The placement trace counts CHUNKS, and the count must be the dispatch's own
+ * chunk count -- every chunk once, on some row, and nothing when the trace is
+ * off. The per-LP split it prints cannot be asserted (it is the scheduler's
+ * decision, which is the whole point of the instrument), but a table whose
+ * total disagrees with the dispatch would be reporting placement of work that
+ * did not happen. setenv is POSIX and MinGW lacks it; putenv is what MinGW
+ * has and glibc hides it under -std=c11, hence the split. */
+static void set_trace_env(const char* value) {
+#ifdef _WIN32
+    char buf[64];
+    snprintf(buf, sizeof buf, "STOKE_POOL_TRACE=%s", value);
+    _putenv(buf);
+#else
+    if (value[0]) setenv("STOKE_POOL_TRACE", value, 1);
+    else          unsetenv("STOKE_POOL_TRACE");
+#endif
+}
+
+TEST(pool_trace_counts_every_chunk_exactly_once) {
+    pool_stop();
+    set_trace_env("3600"); /* on, but the periodic report never fires */
+    pool_start(4u);
+    memset(g_visits, 0, sizeof g_visits);
+    /* 1000 units at chunk 8 = 125 chunks, spread over four claimants. */
+    pool_for_units(N_OUT, 8u, count_visit, NULL);
+    u64 total = 0;
+    for (u32 w = 0; w < 4u; w++) total += pool_trace_chunks(w);
+    ASSERT_EQ_I64(total, 125);
+    ASSERT_EQ_U32(pool_trace_report(stderr), 4u);
+    pool_stop();
+    ASSERT_EQ_I64(pool_trace_chunks(0), 0); /* freed with the pool */
+
+    set_trace_env("");
+    pool_start(4u);
+    pool_for_units(N_OUT, 8u, count_visit, NULL);
+    ASSERT_EQ_I64(pool_trace_chunks(0), 0);
+    ASSERT_EQ_U32(pool_trace_report(stderr), 0u);
+    pool_stop();
+}
+
 TEST(pool_thread_count_reports_and_defaults) {
     pool_stop();
     ASSERT_EQ_U32(pool_threads(), 1u);

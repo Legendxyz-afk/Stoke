@@ -100,6 +100,21 @@ void pool_prefer_performance_here(void);
 /* Total workers including the caller; 1 when the pool is not started. */
 u32 pool_threads(void);
 
+/* ▶ THE PLACEMENT TRACE -- STOKE_POOL_TRACE=<seconds>, read at pool_start.
+ * When set, every thread counts the chunks it claims by the logical processor
+ * it was running on, and the dispatching thread prints the table to stderr
+ * every <seconds> along with the process's CPU times and the P/E core map the
+ * OS reports. It exists because the pool's scheduler story (E-core parking,
+ * the QoS opt-out, cross-process variance) had only ever been inferred from
+ * throughput; see pool.c for the 2026-09-08 case that needed it. Off by
+ * default and costs one branch per chunk when off.
+ *
+ * pool_trace_report prints the table now (returns the number of worker rows,
+ * 0 when the trace is off); pool_trace_chunks returns one worker's running
+ * chunk count, for a test to check the table against a dispatch it made. */
+u32 pool_trace_report(FILE* out);
+u64 pool_trace_chunks(u32 worker);
+
 /* Runs `fn(ctx, row_begin, row_end)` over every row in [0, n_rows),
  * partitioned into chunks of POOL_CHUNK_ROWS claimed atomically. Returns
  * only when all chunks are done. The CALLING THREAD participates -- it is

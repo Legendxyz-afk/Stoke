@@ -149,6 +149,80 @@ their scheduler/sampling thread on an efficiency core.
    until stoke's cross-process spread is under ~2%, a 1% ratio cannot be read no
    matter how many units are added.
 
+## 3a. ⛔ 2026-09-11 — §3's named suspect is REFUTED BY READING, and the instrument it needed now exists
+
+**The "read, don't run" step above was done with the wrong grep.** It searched
+for `pool_prefer_performance_here` (one hit, `bench.c`) and concluded the
+serve path's calling thread never opts out. But the opt-out is the *static*
+`thread_prefer_performance()`, and **`pool_start` calls it on the dispatching
+thread at `src/pool.c:230`** — since `76dee7f` (2026-08-17), with a comment
+saying exactly why (*"the caller runs chunks too … otherwise one of the N
+workers is still eligible for an efficiency core"*), and `pool.h` states it in
+so many words: *"`pool_start` already does this for the dispatching thread and
+every worker, so nothing that runs the engine needs to call it."*
+`server_run` (`src/server.c`) is single-threaded: `stoke_open` → `pool_start`
+and every `stoke_step` run on the same thread. **The serve path IS covered.
+`bench.c:739` exists only because `bench --ops` never starts the pool.**
+
+So the code-level candidate for the 11.7% is dead, the A/B named in §3's
+step 2 (`STOKE_NO_QOS`) would test a mechanism that is not there, and it is
+**not run**. What survives from §3 is only the observation: 0.2% within a
+lifetime, 11.7% across two, bracketed by a stable referent — at n = 2, with a
+transient still not excluded.
+
+**What was actually missing was an instrument, not a hypothesis.** Every
+scheduler claim in `pool.c` had been argued from throughput and CPU-seconds;
+nobody had ever *looked* at where the chunks ran. Landed the same day:
+
+- **`STOKE_POOL_TRACE=<seconds>`** (`src/pool.c`): each thread counts the
+  chunks it claims by the logical processor it ran on; the dispatching thread
+  prints the table every `<seconds>` with the process's CPU times and the P/E
+  map read from `EfficiencyClass` (this box: `ecores=0xf000`, LPs 12–15).
+  Periodic, so a slow unit reads as *"E-share 0.4 from t=0"* (a startup
+  state) or *"0.03 until t+90 then 0.4"* (a transient). Unit test pins the
+  count to the dispatch's own chunk count. Off by default; one branch per
+  chunk when off.
+- **Positive control, run before trusting it** (`stoke batch`, p00, t=6,
+  n=48, the `run_ecoqos_repro.ps1` induction): baseline **E-share 0.028 at
+  14.29 tok/s**; process-level EcoQoS + `STOKE_NO_QOS=1` **E-share 1.000
+  exactly, 1.374 tok/s, 55.5 CPU-s** (the 08-17 collapse, seen directly for
+  the first time); throttled + the opt-out **E-share 0.005, 13.76 tok/s**. The
+  trace sees the defect it was built for.
+- **`bench/adapters.process_stats`** and `run_cell`'s `cell["proc"]`: the
+  live engine's CPU user/kernel seconds, page faults, peak WS, affinity mask,
+  priority class and process-level power-throttling state, taken *before* it
+  is killed — the two tells (CPU-seconds, faults) that §2's bank never held.
+- **`bench/run_matrix.py::quiesce_gate`** — §1's fix. The CPU-busy sampler
+  from `run_m5_bars.ps1` (two reads 800 ms apart, quiet = ≤12% twice, ISLC
+  running fails it outright, an unusable sample reads 999 not 0). The matrix
+  runner now REFUSES a cell that cannot pass it (exit 2, banked cells kept)
+  and banks the gate's reads with every cell; `run_e2e_interleaved.py` gates
+  every unit the same way.
+- `run_e2e_interleaved.py` now banks, per unit: the warmup run's aggregate (a
+  free within-lifetime repeat), `proc`, and the parsed trace (E-share total,
+  last interval, and its time course; ideal processors; how many threads were
+  handed an E-core ideal).
+
+A probe of what Windows hands a fresh 8-thread process on this box
+(`GetThreadIdealProcessorEx`, six runs): main thread ideal LP 2 every time,
+helpers `8 10 12 13 14 15 1` in five of six runs — **four of seven helpers
+get an E-core as their ideal processor**, near-deterministically, so *the
+ideal set* is not the per-process variable. Busy threads were all on P-cores
+within 50 ms regardless. Under the real forward (8 threads, condvar sleeps
+between ~250 dispatches per token) the trace read E-share 0.056 on an unquiet
+box, with the four E-ideal threads at ~7% each against the caller's 0.6%.
+
+### The named next check, revised
+
+1. ~~A/B `STOKE_NO_QOS`~~ — refuted by reading; not run.
+2. **Re-run the interleaved sitting with the instruments on** (`--pairs 6
+   --append` onto `interleaved-8.jsonl`, box quiet, gate on). Every stoke
+   unit then carries its own placement record; a slow unit is READ, not
+   guessed at.
+3. Only after the cross-process spread is explained (or shown to be < ~2% on
+   a quiet box, in which case attempt 2's 11.7% was the box) does clause 2's
+   ratio become readable.
+
 ## 4. What this does NOT establish
 
 - **Clause 2, either way.** Undecided; the criterion change is pre-registered
@@ -156,5 +230,7 @@ their scheduler/sampling thread on an efficiency core.
 - **That stoke is slower.** 0.9938× is inside the noise, not a result.
 - **That stoke is faster.** The banked 1.025×/1.056× from 2026-09-05 remains
   in-process-vs-HTTP and is not gate-grade either.
-- **That the EcoQoS gap is the cause of anything.** Named suspect, matching
-  signature, n=2, unmeasured.
+- **That the EcoQoS gap is the cause of anything.** ~~Named suspect, matching
+  signature, n=2, unmeasured.~~ **There is no gap — refuted by reading on
+  2026-09-11 (§3a).** The cross-process variance itself remains unexplained
+  and now has an instrument.

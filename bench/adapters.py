@@ -120,6 +120,81 @@ def _probe_status(url, timeout=2.0):
         return None
 
 
+def process_stats(pid):
+    """Best-effort snapshot of a LIVE engine process, taken by the harness before it is killed.
+
+    ▶ WHY (2026-09-11). On 2026-09-08 two `stoke serve` lifetimes measured the same workload
+    11.7% apart while llama-server beside them repeated to 0.8%, and nothing in the bank could
+    say WHY: the harness recorded rates and nothing about the process that produced them. The
+    2026-08-17 EcoQoS finding had already named the two tells that separate "the code was slow"
+    from "the OS placed it badly" -- CPU-seconds (the same work costs ~4x more processor time on
+    an efficiency core, so a sick run reads HIGH here) and page faults (0.8-0.9M healthy vs
+    1.5-2.7M sick) -- and neither was being written down. Now both are, per cell, for every
+    engine, so the next such unit carries its own explanation.
+
+    Windows only (everything here is a kernel32 call; psapi's memory counters are exported by
+    kernel32 as K32GetProcessMemoryInfo). Elsewhere, and on any failure, returns what it could
+    get plus an `error` field -- a missing tool degrades one field, not the cell."""
+    out = {"pid": pid}
+    if os.name != "nt":
+        out["error"] = "process_stats: Windows only"
+        return out
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not h:
+            out["error"] = f"OpenProcess failed: {ctypes.get_last_error()}"
+            return out
+        try:
+            # CPU times: FILETIME in 100 ns units.
+            c, e, kt, ut = (wintypes.FILETIME() for _ in range(4))
+            if k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(ut)):
+                ft = lambda f: ((f.dwHighDateTime << 32) | f.dwLowDateTime) / 1e7  # noqa: E731
+                out["cpu_user_s"] = ft(ut)
+                out["cpu_kernel_s"] = ft(kt)
+                # Creation time is an absolute FILETIME (since 1601); the process's age is
+                # what a reader wants beside its CPU-seconds.
+                now = wintypes.FILETIME()
+                k32.GetSystemTimeAsFileTime(ctypes.byref(now))
+                out["age_s"] = ft(now) - ft(c)
+
+            class _PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                            ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            pmc = _PMC()
+            pmc.cb = ctypes.sizeof(pmc)
+            if k32.K32GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb):
+                out["page_faults"] = int(pmc.PageFaultCount)
+                out["peak_ws_mb"] = round(pmc.PeakWorkingSetSize / 2**20, 1)
+                out["ws_mb"] = round(pmc.WorkingSetSize / 2**20, 1)
+
+            pmask, smask = ctypes.c_size_t(), ctypes.c_size_t()
+            if k32.GetProcessAffinityMask(h, ctypes.byref(pmask), ctypes.byref(smask)):
+                out["affinity_mask"] = hex(pmask.value)
+            out["priority_class"] = hex(k32.GetPriorityClass(h))
+
+            # Process-level EcoQoS: the state Windows may apply to a process it deems
+            # background. ControlMask bit set + StateMask bit set == throttled.
+            class _PPT(ctypes.Structure):
+                _fields_ = [("Version", ctypes.c_ulong), ("ControlMask", ctypes.c_ulong),
+                            ("StateMask", ctypes.c_ulong)]
+            ppt = _PPT(1, 0, 0)
+            if k32.GetProcessInformation(h, 4, ctypes.byref(ppt), ctypes.sizeof(ppt)):
+                out["power_throttling"] = {"control": ppt.ControlMask, "state": ppt.StateMask}
+        finally:
+            k32.CloseHandle(h)
+    except Exception as exc:
+        out["error"] = f"process_stats: {exc}"
+    return out
+
+
 def _ollama_env(extra=None):
     """Copy of the ambient environment with OLLAMA_HOST pinned to our expected address -- both the
     `ollama serve` subprocess and the `ollama create`/`ollama list` CLI calls in
