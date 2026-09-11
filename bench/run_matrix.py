@@ -129,7 +129,7 @@ def build_adapter(config_label, scenario):
         # cell is the banked arm's configuration, so the variant changes exactly the one runtime
         # setting it names. Only `stoke-tuned` takes a suffix: the referents are not ours to tune
         # here, and stoke-default exists to be the untouched default.
-        env, affinity, threads = {}, None, 8
+        env, affinity, threads = {}, None, None   # threads None = the shipping default
         for opt in config_label.split("@", 1)[1].split(","):
             key, _, val = opt.partition("=")
             if key == "spin" and val.isdigit():
@@ -143,11 +143,20 @@ def build_adapter(config_label, scenario):
         return adapters.StokeAdapter(seqs=p, ctx=(8192 if is_s4 else 704), threads=threads,
                                      env=env, affinity=affinity, label=config_label)
     if config_label == "stoke-tuned":
-        # ⚠ ctx 704 and threads 8 are NOT a fresh tuning choice -- they are the
-        # values the banked in-process arm used (`run_m5_bars.ps1`: ctx 704,
-        # threads 8, seqs N), and this cell exists to change exactly ONE thing
-        # against that arm: the transport. Re-tuning here would confound the
-        # comparison it was built to make.
+        # ⚠ ctx 704 is NOT a fresh tuning choice -- it is the value the banked
+        # in-process arm used (`run_m5_bars.ps1`: ctx 704, seqs N), and this
+        # cell was built to change exactly ONE thing against that arm: the
+        # transport. Re-tuning ctx here would confound the comparison.
+        #
+        # ▶ THREADS FOLLOW THE SHIPPING DEFAULT (2026-09-11, `bc95312`): this
+        # cell no longer pins --threads 8. The serve default for a concurrent
+        # engine is now 10 (stoke.c STOKE_DEFAULT_THREADS_CONCURRENT; measured
+        # +5.8% wall over 8 at N=8, docs/superpowers/gate-reports/
+        # 2026-09-11-pool-ab-8.md), and "tuned" must not mean "slower than the
+        # default". ⚠ Banks BEFORE that commit labelled `stoke-tuned` ran 8
+        # threads; `stoke-tuned@threads=8` reproduces that cell exactly, and
+        # every record since 2026-09-11 carries the count in `trace.threads`
+        # when the trace is on (run_e2e_interleaved.py turns it on).
         #
         # ⚠ stoke's --ctx is PER SEQUENCE where llama-server's is TOTAL across
         # slots, so llamacpp-tuned's `p * 2048` is 2048 per slot against stoke's
@@ -155,12 +164,17 @@ def build_adapter(config_label, scenario):
         # surplus is slack neither engine can spend -- but it is an asymmetry and
         # it is written down rather than absorbed.
         #
-        # Prefix dedup is OFF here without a flag: stoke.c:180 reads
-        # dedup_prefix from stoke_open_opts defaulting to 0 and `stoke serve`
-        # exposes no switch, so the server path already matches the banked arm's
-        # explicit --no-dedup. That matters because S2's prompts differ by ONE
-        # DIGIT, so dedup-on would adopt nearly every prompt position.
-        return adapters.StokeAdapter(seqs=p, ctx=(8192 if is_s4 else 704), threads=8)
+        # ⚠ CORRECTED 2026-09-11: prefix dedup is ON on this path, not off.
+        # `stoke serve` sets dedup_prefix = 1 (main.c cmd_serve, since M6 A3
+        # `b24066c`) and exposes no switch, so this cell has ALWAYS run dedup
+        # on -- which is the like-for-like configuration against llama-server's
+        # default `--slot-prompt-similarity 0.10` prompt cache, and NOT the
+        # banked in-process arm's explicit --no-dedup as the earlier comment
+        # claimed. It is immaterial for S2: the per-client salt
+        # (`[run r1 client N] ...`) sits at the FRONT of every user message, so
+        # the shareable prefix is the template header plus ~8 tokens of 525,
+        # and prefix dedup cannot adopt past the first differing token.
+        return adapters.StokeAdapter(seqs=p, ctx=(8192 if is_s4 else 704), threads=None)
     raise ValueError(f"unknown config label: {config_label!r}")
 
 

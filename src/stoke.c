@@ -32,6 +32,21 @@
 
 #define STOKE_DEFAULT_SEQS 8u
 
+/* The thread count an engine opened for CONCURRENCY runs with when the caller
+ * asks for the default (n_threads == 0). The pool's own default is 8, from the
+ * 2026-08-04 N=1 sweep (pool.h). At N=8 SERVING the optimum has moved up,
+ * exactly as pool.h's note said it would when the kernels got faster: measured
+ * 2026-09-11 on Qwen3-4B Q4_K_M, one server lifetime per unit, interleaved,
+ * 10 threads finish the same work in 5.8% less wall than 8 (both pairs, arm
+ * spreads under 0.6%) and turn clause 2's llama half from 0.980x to 1.013x
+ * (docs/superpowers/gate-reports/2026-09-11-pool-ab-8.md and
+ * 2026-09-11-clause2-e2e-8-10t.md). N=1 is UNCHANGED at 10 (0.993x, inside
+ * noise; 10.6 vs 10.6 tok/s in the 08-04 sweep too), so a single-sequence
+ * engine keeps the pool default: the optimum is a property of the WORKLOAD
+ * SHAPE, not of the machine. 128 greedy tokens are byte-identical at 1, 8 and
+ * 10 threads -- the count does not enter the arithmetic on this path. */
+#define STOKE_DEFAULT_THREADS_CONCURRENT 10u
+
 /* ---- sampling state ----------------------------------------------------
  *
  * One slot per LIVE request. Small and fixed: the scheduler admits at most
@@ -178,6 +193,12 @@ stoke_engine* stoke_open_abi(const char* gguf_path, const stoke_open_opts* opts,
         uint32_t n_threads = opt_u32(opts, offsetof(stoke_open_opts, n_threads), 0);
         int32_t  kv_q8     = opt_i32(opts, offsetof(stoke_open_opts, kv_q8), 0);
         int32_t  dedup     = opt_i32(opts, offsetof(stoke_open_opts, dedup_prefix), 0);
+
+        /* 0 = "the engine's default" (stoke.h), which depends on the shape the
+         * engine is opened for: see STOKE_DEFAULT_THREADS_CONCURRENT. max_seqs
+         * 0 means STOKE_DEFAULT_SEQS (8), i.e. concurrent. */
+        if (n_threads == 0u && (max_seqs == 0u || max_seqs > 1u))
+            n_threads = STOKE_DEFAULT_THREADS_CONCURRENT;
 
         /* Same order main.c uses for `bench --serve`, deliberately: this is a
          * second caller of a stack that is already gated, not a new one. */

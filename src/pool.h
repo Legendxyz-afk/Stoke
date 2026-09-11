@@ -74,7 +74,18 @@
  * Not gate-grade: alternating passes on an unquiesced box, no sidecar. The
  * pass-to-pass drift (~10%%) is the same size as the 6-vs-8 gap, which is
  * why the default is set to the middle of a plateau rather than to whichever
- * single number came out highest. */
+ * single number came out highest.
+ *
+ * RE-MEASURED 2026-09-11, AS THE PARAGRAPH ABOVE ASKED: at N=8 SERVING the
+ * optimum has moved UP. 10 threads beat 8 by 5.8% on end-to-end wall (one
+ * server lifetime per unit, interleaved, both pairs, arm spreads <0.6%, at
+ * +13% CPU-seconds); 12 adds ~1.5% for another +15% CPU at n=1; pinning to
+ * the P-cores is 8.6% SLOWER, so the E-cores carry real work. N=1 is
+ * unchanged at 10 (0.993x). So the default now depends on the shape the
+ * engine is opened for: this pool's own default stays 8 (the N=1 paths --
+ * `run`, `batch --seqs 1`), and stoke_open resolves 0 to
+ * STOKE_DEFAULT_THREADS_CONCURRENT (10) when max_seqs > 1 (stoke.c). Reports:
+ * docs/superpowers/gate-reports/2026-09-11-pool-ab-8.md. */
 void pool_start(u32 n_threads);
 
 /* Stops all workers and joins them. Safe to call when not started. */
