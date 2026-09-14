@@ -13,6 +13,12 @@ change a verdict; it can only fail to print one.
 
 CLI:
   python m7_report.py --grid DIR --tau TAU.json [--verdicts V.json]
+      [--set llama32|unsloth] [--c1 C1.json] [--t6 T6.json]
+
+--set orders the streams by that set's declared table (2026-09-14, B6). --c1
+and --t6 print the banked control results in the tripwire table; without them
+the T5 row prints the 09-07 Llama value it was written with, which is a
+literal and says so.
 """
 from __future__ import annotations
 
@@ -33,7 +39,11 @@ def main() -> int:
     p.add_argument("--grid", required=True)
     p.add_argument("--tau", required=True)
     p.add_argument("--verdicts")
+    p.add_argument("--set", choices=tuple(m7.MODEL_SETS), default="llama32")
+    p.add_argument("--c1", help="m7_control --out file of the serial-vs-batched control")
+    p.add_argument("--t6", help="m7_control --out file of the serial null arm")
     a = p.parse_args()
+    m7.select_set(a.set)
 
     grids = [json.loads(pathlib.Path(f).read_text(encoding="utf-8"))
              for f in sorted(glob.glob(str(pathlib.Path(a.grid) / "*.grid.json")))]
@@ -78,7 +88,7 @@ def main() -> int:
             print(f"| `{b}` | {v['n']} | {v['agree']} | {v['n'] - v['agree']} |")
 
     print("\n---\n\n## 3. THE τ FREEZE\n")
-    print(f"Pair key: **`{tau['pair']}`** — its own, never a Qwen3 or Q8_0 key "
+    print(f"Pair key: **`{tau['pair']}`** — its own, never another file's key "
           "(`classify.py`'s fatal fires on an ABSENT key, never on a present "
           "and wrong one).\n")
     print("τ(band) = max(0.10, 2 × band p95 of the anchored Δ-profile over "
@@ -150,8 +160,23 @@ def main() -> int:
     print(f"| T4 | adjacent-band p95 growth | > {m7.T4_BAND_GROWTH}× | "
           f"{f'max {gmax:.3f}x' if gmax is not None else 'n/a'} | "
           f"{'**YES**' if tw['T4_band_growth']['fired'] else 'no'} |")
-    print("| T5 | serial-vs-batched control | ≥ 1e-3 | **1.907e-05** | no |")
-    print("| T6 | serial null arm not bit-identical | any | *(see §1)* | |")
+    if a.c1:
+        c1 = json.loads(pathlib.Path(a.c1).read_text(encoding="utf-8"))
+        print(f"| T5 | serial-vs-batched control | ≥ {c1['threshold']:g} anchored, or any "
+              f"argmax disagreement | **{c1['anchored_max']:.3e}** over "
+              f"{c1['common_positions']} positions, {c1['argmax_disagreements']} "
+              f"argmax disagreements | {'no' if c1['passed'] else '**YES**'} |")
+    else:
+        print("| T5 | serial-vs-batched control | ≥ 1e-3 | **1.907e-05** "
+              "(the 09-07 Llama value, a literal) | no |")
+    if a.t6:
+        t6 = json.loads(pathlib.Path(a.t6).read_text(encoding="utf-8"))
+        print(f"| T6 | serial null arm not bit-identical | any | "
+              f"{t6['bit_identical_positions']}/{t6['common_positions']} bit-identical, "
+              f"{t6['argmax_disagreements']} argmax disagreements | "
+              f"{'no' if t6['passed'] else '**YES**'} |")
+    else:
+        print("| T6 | serial null arm not bit-identical | any | *(see §1)* | |")
     return 0
 
 

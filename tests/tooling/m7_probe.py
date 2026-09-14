@@ -27,10 +27,14 @@ band_of from classify. A second implementation of a frozen constant's formula is
 a second thing that can drift from the ruling.
 
 CLI:
-  python m7_probe.py --phase a --out-dir DIR [--only STREAM,...]
-  python m7_probe.py --phase b --out-dir DIR --tau-out TAU.json
-  python m7_probe.py --phase c --out-dir DIR --tau TAU.json [--verdicts V.json]
+  python m7_probe.py [--set llama32|unsloth] --phase a --out-dir DIR [--only STREAM,...]
+  python m7_probe.py [--set ...] --phase b --out-dir DIR --tau-out TAU.json
+  python m7_probe.py [--set ...] --phase c --out-dir DIR --tau TAU.json [--verdicts V.json]
   python m7_probe.py --selftest
+
+--set (2026-09-14): B6 runs the same protocol on the unsloth Qwen3 file under
+its own pair key and corpus (see MODEL_SETS). The default is the 09-07
+configuration, unchanged.
 """
 from __future__ import annotations
 
@@ -87,6 +91,65 @@ STREAMS = [
     {"id": "L-2500", "src": LONG, "target": 2500, "selected": False},
     {"id": "L-2851", "src": LONG, "target": None, "selected": True},
 ]
+
+# ============================================================================
+# MODEL SETS (2026-09-14). B6 -- the unsloth Qwen3 file's forward half -- is
+# the same three-phase protocol on a different file, pair key and corpus
+# (docs/superpowers/design-notes/2026-09-14-m7-b6-unsloth-probe-preregistration.md
+# §3.3, authoritative). `--set llama32` is the default and is byte-for-byte the
+# configuration the 09-07 entry probe ran; every grid file records its set,
+# and phase B refuses a directory that mixes sets for the same reason it
+# refuses mixed rope-theta arms. The unsloth corpus is the M3 G5 grid (the
+# six prompts the bartowski file was gated on) plus the 09-07 long2 cuts, so
+# that [600,1200) and [1200,inf) are probed on a Qwen3 file for the first time.
+# ============================================================================
+PARITY = "tests/data/parity/{}.txt"
+MODEL_SETS = {
+    "llama32": {
+        "model": ROOT / "models" / "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        "pair": PAIR,
+        "streams": STREAMS,
+        # full-file streams' token counts, for the selftest's band tiling
+        "full_tokens": {"S-a1": 5, "S-a2": 12, "S-a3": 17, "L-2851": 2851},
+        "n_selected": 4,
+    },
+    "unsloth": {
+        "model": ROOT / "models" / "unsloth-Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "pair": "f32_intcore_unsloth_q4km",
+        "streams": [
+            {"id": "P-00",   "src": PARITY.format("p00"), "target": None, "selected": False},
+            {"id": "P-10",   "src": PARITY.format("p10"), "target": None, "selected": False},
+            {"id": "P-20",   "src": PARITY.format("p20"), "target": None, "selected": False},
+            {"id": "P-30",   "src": PARITY.format("p30"), "target": None, "selected": False},
+            {"id": "P-45",   "src": PARITY.format("p45"), "target": None, "selected": False},
+            {"id": "P-41",   "src": PARITY.format("p41"), "target": None, "selected": False},
+            {"id": "L-160",  "src": LONG, "target": 160,  "selected": False},
+            {"id": "L-240",  "src": LONG, "target": 240,  "selected": False},
+            {"id": "L-660",  "src": LONG, "target": 660,  "selected": False},
+            {"id": "L-900",  "src": LONG, "target": 900,  "selected": False},
+            {"id": "L-1120", "src": LONG, "target": 1120, "selected": False},
+            {"id": "L-1300", "src": LONG, "target": 1300, "selected": False},
+            {"id": "L-1900", "src": LONG, "target": 1900, "selected": False},
+            {"id": "L-2500", "src": LONG, "target": 2500, "selected": False},
+            {"id": "L-2851", "src": LONG, "target": None, "selected": False},
+        ],
+        # tests/data/parity/MANIFEST.md counts (Qwen3 tokenizer); long2's
+        # full length under the Qwen3 tokenizer is measured by phase A --
+        # 2851 is the Llama count and only tiles the band check here.
+        "full_tokens": {"P-00": 23, "P-10": 24, "P-20": 64, "P-30": 53,
+                        "P-45": 14, "P-41": 477, "L-2851": 2851},
+        "n_selected": 0,
+    },
+}
+SET_NAME = "llama32"
+
+
+def select_set(name: str):
+    """Point MODEL / PAIR / STREAMS at a model set. Module globals, because
+    every phase reads them by name and the selftest asserts on them."""
+    global MODEL, PAIR, STREAMS, SET_NAME
+    s = MODEL_SETS[name]
+    MODEL, PAIR, STREAMS, SET_NAME = s["model"], s["pair"], s["streams"], name
 
 # Tripwires, from §5 of the pre-registration. Named constants so a later reader
 # can see they were set before the grid ran, not tuned to it.
@@ -212,6 +275,7 @@ def phase_a(out_dir: pathlib.Path, only=None, theta="closed"):
             raise ProbeError(f"{st['id']}: ref returned no probe at {missing[:5]}")
 
         rec = {"stream": st["id"], "src": st["src"], "selected_on_success": st["selected"],
+               "set": SET_NAME, "pair": PAIR, "model": MODEL.name,
                "target_tokens": st["target"], "n_prompt": n_prompt,
                "n_gen": len(gen), "gen_ids": gen, "ref_env": ref["env"],
                # taken from the ref's OWN output, never from the argument that
@@ -258,6 +322,19 @@ def load_grids(out_dir: pathlib.Path):
         raise ProbeError(
             f"{out_dir}: grid files mix rope-theta arms {sorted(modes)}. One "
             f"directory is one arm; tau frozen from a mixture grades nothing.")
+    # Same hazard, second axis (2026-09-14): a directory mixing model sets --
+    # or holding grids from another set than the one this invocation was
+    # asked for -- would freeze one file's tau from another file's envelope.
+    # Grids that predate the set tag are read as the Llama set they were.
+    sets = {g.get("set", "llama32") for g in grids}
+    if len(sets) > 1:
+        raise ProbeError(
+            f"{out_dir}: grid files mix model sets {sorted(sets)}. One "
+            f"directory is one set.")
+    if sets != {SET_NAME}:
+        raise ProbeError(
+            f"{out_dir}: grid files are set {sorted(sets)} but this invocation "
+            f"is --set {SET_NAME}; refusing to read one file's grid as another's.")
     return grids
 
 
@@ -359,6 +436,13 @@ def _band_growth(envelope):
 def phase_c(out_dir: pathlib.Path, tau_file: pathlib.Path,
             verdicts_out: pathlib.Path | None):
     tau_doc = json.loads(tau_file.read_text(encoding="utf-8"))
+    # ⚠ THE ONE CHECK classify.py CANNOT MAKE. Its fatal fires on a pair key
+    # that is ABSENT from the table; a tau file frozen for another pair is
+    # present under its own key and would grade this pair's divergences
+    # silently against another file's envelope.
+    if tau_doc["pair"] != PAIR:
+        raise ProbeError(f"{tau_file}: tau is frozen for pair {tau_doc['pair']!r}, "
+                         f"but --set {SET_NAME} grades pair {PAIR!r}")
     tau_table = {tau_doc["pair"]: tau_doc["tau"]}
     grids = load_grids(out_dir)
     records = []
@@ -398,6 +482,17 @@ def phase_c(out_dir: pathlib.Path, tau_file: pathlib.Path,
 # selftest -- everything above that needs neither model nor binary
 # ============================================================================
 
+def _roundtrip_select() -> bool:
+    before = (MODEL, PAIR, len(STREAMS), SET_NAME)
+    select_set("unsloth")
+    mid = (MODEL.name, PAIR, len(STREAMS), SET_NAME)
+    select_set("llama32")
+    after = (MODEL, PAIR, len(STREAMS), SET_NAME)
+    return (before == after
+            and mid == ("unsloth-Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                        "f32_intcore_unsloth_q4km", 15, "unsloth"))
+
+
 def run_selftest() -> int:
     fails = []
 
@@ -406,6 +501,8 @@ def run_selftest() -> int:
         if not ok:
             fails.append(label)
 
+    # The Llama set is the 09-07 configuration and must stay it.
+    check("the default set is llama32", SET_NAME == "llama32")
     check("the corpus has 16 streams", len(STREAMS) == 16)
     check("stream ids are unique",
           len({s["id"] for s in STREAMS}) == len(STREAMS))
@@ -416,6 +513,34 @@ def run_selftest() -> int:
           sum(1 for s in STREAMS if s["selected"]) == 4)
     check("the pair key is not a Qwen3/Q8_0 key",
           PAIR != mcp.PAIR and "q8_0" not in PAIR and "qwen" not in PAIR)
+
+    # The unsloth set must equal §3.3 of ITS pre-registration (2026-09-14).
+    u = MODEL_SETS["unsloth"]
+    check("unsloth: 15 streams", len(u["streams"]) == 15)
+    check("unsloth: ids unique", len({s["id"] for s in u["streams"]}) == 15)
+    check("unsloth: no stream is flagged selected-on-success",
+          sum(1 for s in u["streams"] if s["selected"]) == u["n_selected"] == 0)
+    check("unsloth: the pair key is its own -- not the bartowski, Q8_0 or Llama key",
+          u["pair"] != mcp.PAIR and "q8_0" not in u["pair"]
+          and "llama" not in u["pair"] and "unsloth" in u["pair"])
+    check("unsloth: the six G5 prompts are p00 p10 p20 p30 p45 p41, full length",
+          [s["src"] for s in u["streams"][:6]] ==
+          [PARITY.format(p) for p in ("p00", "p10", "p20", "p30", "p45", "p41")]
+          and all(s["target"] is None for s in u["streams"][:6]))
+    check("unsloth: the long2 cuts are the 09-07 targets 160/240/660/900/1120/1300/1900/2500 + full",
+          [s["target"] for s in u["streams"][6:]] ==
+          [160, 240, 660, 900, 1120, 1300, 1900, 2500, None])
+    check("unsloth: the model file is the unsloth Q4_K_M, not bartowski's",
+          "unsloth" in u["model"].name and "Q4_K_M" in u["model"].name)
+    covered_u = set()
+    for s in u["streams"]:
+        t = s["target"] or u["full_tokens"][s["id"]]
+        for k in range(N_GEN):
+            covered_u.add(cls.band_of(t - 1 + k))
+    check("unsloth: the declared streams tile every band",
+          covered_u == {cls.band_name(lo, hi) for lo, hi in cls.BANDS})
+    check("select_set swaps the globals and back",
+          _roundtrip_select())
 
     # The position mapping is the one thing that, if wrong, silently misaligns
     # every comparison in the grid while looking perfectly healthy.
@@ -483,6 +608,43 @@ def run_selftest() -> int:
         check("a grid file with no arm tag is REFUSED, not assumed closed",
               _refuses("untagged"))
 
+        # ---- the model-set tag (2026-09-14), run red before it is trusted ----
+        def _write_set(name, setname):
+            rec = {"stream": name, "positions": [], "ref_theta_mode": "closed"}
+            if setname is not None:
+                rec["set"] = setname
+            (d / f"{name}.grid.json").write_text(json.dumps(rec), encoding="utf-8")
+
+        for f in d.glob("*.grid.json"):
+            f.unlink()
+        _write_set("a", "llama32")
+        _write_set("b", None)
+        check("an untagged grid reads as the llama32 set it predates",
+              len(load_grids(d)) == 2)
+        _write_set("c", "unsloth")
+        check("a directory mixing llama32 and unsloth grids is REFUSED",
+              _refuses("mixed sets"))
+        for f in d.glob("*.grid.json"):
+            f.unlink()
+        _write_set("u1", "unsloth")
+        _write_set("u2", "unsloth")
+        check("an unsloth directory is REFUSED under --set llama32",
+              _refuses("wrong set"))
+        select_set("unsloth")
+        check("...and loads under --set unsloth", len(load_grids(d)) == 2)
+        # phase C must refuse a tau frozen for another pair, even though
+        # classify.py would happily grade under that pair's own key.
+        tau = d / "wrong.tau.json"
+        tau.write_text(json.dumps({"pair": "f32_intcore_llama32_q4km", "tau": {}}),
+                       encoding="utf-8")
+        try:
+            phase_c(d, tau, None)
+            refused_tau = False
+        except ProbeError:
+            refused_tau = True
+        check("phase C refuses a tau file frozen for another pair", refused_tau)
+        select_set("llama32")
+
     print(f"\n{'ALL GREEN' if not fails else str(len(fails)) + ' FAILED'}")
     return 1 if fails else 0
 
@@ -500,10 +662,16 @@ def main() -> int:
                         "and the one the M7 freeze was taken under; 'accum' is "
                         "the 2026-09-08 diagnostic arm. ONE DIRECTORY IS ONE "
                         "ARM -- phase B refuses a mixed one.")
+    p.add_argument("--set", choices=tuple(MODEL_SETS), default="llama32",
+                   help="which model set: llama32 (the 09-07 entry probe, the "
+                        "default) or unsloth (B6, 2026-09-14). One directory is "
+                        "one set -- phase B refuses a mixed one, and phase C "
+                        "refuses a tau file frozen for another pair.")
     p.add_argument("--selftest", action="store_true")
     a = p.parse_args()
     if a.selftest:
         return run_selftest()
+    select_set(a.set)
     if not a.phase or not a.out_dir:
         print("fatal: --phase and --out-dir are required", file=sys.stderr)
         return 1

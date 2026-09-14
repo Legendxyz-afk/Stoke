@@ -1,0 +1,21 @@
+05:37:04  === M7 soak pre-flight (stamp 2026-09-14-m7-rss-probe, mode probe) ===
+05:37:04  ⚠ NOTE -- build/linux is not a sanitizer build. The soak will still run and the RSS slope is still meaningful, but the use-after-free and leak classes this gate exists for will NOT be watched.
+05:37:04  memory available: 7208 MB
+05:37:04  arena: 4 seqs x 16 blocks = 64 blocks x 4718592 B (n_layer=36 n_head_kv=8 head_dim=128 f32 K+V) = 288 MiB; model file 2381 MiB (mmap'd, file-backed)
+05:37:04  starting server: 1920s budget, port 18182, build build/linux, --ctx 256 --seqs 4 --threads 4
+05:37:05  server up (pid 425)
+05:37:05  RSS at t=0: 39 MB (anon 26, file 12, data 341; arena resident 0 MiB in 1 mapping(s) totalling 294920 KiB against 2 x 147456) -- before any request
+05:37:05  driver: 30 chunk(s) of 60s
+05:37:05  corpus: 51 files
+05:38:18  chunk 1/30 rc=0 rss=2481MB (anon 92 file 2388 data 378 arena 0/288) gens=13 exch=30 canary=200/0.767833s
+05:38:18    serve_fuzz: 127.0.0.1:18182 for 60s, 4 clients, 51 corpus files, seed 20260916, read 20000ms, max_tok<=3 serve_fuzz: 45 actions, 30 answered exchanges, 0 refused serve_fuzz: 12 requests asked for a sampler (6 of those for a repeat penalty) serve_fuzz: OK 
+05:39:23  chunk 2/30 rc=0 rss=2573MB (anon 184 file 2388 data 378 arena 0/288) gens=33 exch=44 canary=200/0.811194s
+05:39:23    serve_fuzz: 127.0.0.1:18182 for 60s, 4 clients, 51 corpus files, seed 20260917, read 20000ms, max_tok<=3 serve_fuzz: 74 actions, 44 answered exchanges, 0 refused serve_fuzz: 16 requests asked for a sampler (5 of those for a repeat penalty) serve_fuzz: OK 
+05:40:26  chunk 3/30 rc=0 rss=2642MB (anon 253 file 2388 data 378 arena 0/288) gens=53 exch=32 canary=200/0.794230s
+05:40:26    serve_fuzz: 127.0.0.1:18182 for 60s, 4 clients, 51 corpus files, seed 20260918, read 20000ms, max_tok<=3 serve_fuzz: 46 actions, 32 answered exchanges, 0 refused serve_fuzz: 17 requests asked for a sampler (8 of those for a repeat penalty) serve_fuzz: OK 
+05:41:29  chunk 4/30 rc=0 rss=2647MB (anon 259 file 2388 data 378 arena 0/288) gens=71 exch=32 canary=200/0.795435s
+05:41:29    serve_fuzz: 127.0.0.1:18182 for 60s, 4 clients, 51 corpus files, seed 20260919, read 20000ms, max_tok<=3 serve_fuzz: 43 actions, 32 answered exchanges, 0 refused serve_fuzz: 14 requests asked for a sampler (4 of those for a repeat penalty) serve_fuzz: OK 
+05:42:31  chunk 5/30 rc=0 rss=2669MB (anon 280 file 2388 data 378 arena 0/288) gens=84 exch=35 canary=200/0.803442s
+05:42:31    serve_fuzz: 127.0.0.1:18182 for 60s, 4 clients, 51 corpus files, seed 20260920, read 20000ms, max_tok<=3 serve_fuzz: 56 actions, 35 answered exchanges, 0 refused serve_fuzz: 10 requests asked for a sampler (2 of those for a repeat penalty) serve_fuzz: OK 
+05:43:34  chunk 6/30 rc=0 rss=2678MB (anon 290 file 2388 data 379 arena 255/288) gens=101 exch=37 canary=200/0.814695s
+05:43:34    serve_fuzz: 127.0.0.1:18182 for 60s, 4 clients, 51 corpus files, seed 20260921, read 20000ms, max_tok<=3 serve_fuzz: 56 actions, 37 answered exchanges, 0 refused serve_fuzz: 12 requests asked for a sampler (4 of those for a repeat penalty) serve_fuzz: OK 
