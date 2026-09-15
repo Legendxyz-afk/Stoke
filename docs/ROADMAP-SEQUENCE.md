@@ -218,7 +218,7 @@ deliverable. Everything remaining is packaging, porting and paperwork.
 |---|---|---|
 | [1] scheduler invariants in sim | ✅ MET | 7 traces × 3 seeds × 2 cost models = 42 green, plus a 1,000,130-step soak over 11,870 traces with 5,142 preemptions, every invariant after EVERY step |
 | [2] the bars | ❌ **MISSED at 0.51× when M5 closed; now 0.955× @8 / 1.023× @16 against stale bars, 0.687× against a live referent** | **measured, NOT gate-stamped** — see Stage 1.3 |
-| clause 2 (Phase 1), llama half @8, on the pre-registered END-TO-END WALL | ⚠ **PARITY, criterion NOT met (2026-09-15)** — 8T 0.980× miss; 10T 1.013× thin pass (09-11) then **0.970× miss, 5/5 pairs (09-15)** at the shipping default; sign flips between sittings with no code change | `gate-reports/2026-09-15-clause2-e2e-8-confirm.md`; ollama half unmeasured (predicted miss); @16 unmeasured |
+| clause 2 (Phase 1), llama half @8, on the pre-registered END-TO-END WALL | ✅ **PASS WITH MARGIN 1.181×, 5/5 pairs (2026-09-15 afternoon)** after the multi-key attention kernels (bit-identical, −6.9%), 12 threads and chunk 256; the morning's default-config sitting read 0.970× (parity) | `gate-reports/2026-09-15-clause2-e2e-8-graded.md`; 12T not yet the shipping default, chunk 256 = Kabir's call; ollama half unmeasured (predicted miss); @16 unmeasured |
 | [3] ITL <250 ms under co-running prefill | ❌ MISSED, structural | 738 ms at the smallest legal chunk; 4.4× at M5 close |
 | [4] S3 fanout ≥13.3 | ✅ MET | median 13.535 (1.018×), all three counterbalanced blocks clear on their own. Dedup is worth **2.284×** here and is the difference between missing by 2.2× and clearing |
 | [5] 1 h soak | ✅ MET | — |
