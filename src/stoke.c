@@ -44,8 +44,17 @@
  * noise; 10.6 vs 10.6 tok/s in the 08-04 sweep too), so a single-sequence
  * engine keeps the pool default: the optimum is a property of the WORKLOAD
  * SHAPE, not of the machine. 128 greedy tokens are byte-identical at 1, 8 and
- * 10 threads -- the count does not enter the arithmetic on this path. */
-#define STOKE_DEFAULT_THREADS_CONCURRENT 10u
+ * 10 threads -- the count does not enter the arithmetic on this path.
+ *
+ * RE-MEASURED AGAIN 2026-09-15, AFTER THE MULTI-KEY ATTENTION KERNELS: 12
+ * threads beat 10 by 4.0% on the in-process @8 wall (single-shot screen, drift
+ * control 0.3%; ALL of it in the prefill phase, whose GEMM is compute-bound and
+ * takes the P-cores' SMT siblings -- the decode tail did not move) and, with
+ * the kernels and chunk 256, graded clause 2's llama half at 1.181x over five
+ * pairs (docs/superpowers/gate-reports/2026-09-15-clause2-e2e-8-graded.md,
+ * 2026-09-15-s2-phase-screen.txt). Cost: +15% CPU-seconds. N=1 keeps the
+ * pool's 8 (12T read 9.5 vs 10.6 tok/s there in the 08-04 sweep). */
+#define STOKE_DEFAULT_THREADS_CONCURRENT 12u
 
 /* ---- sampling state ----------------------------------------------------
  *

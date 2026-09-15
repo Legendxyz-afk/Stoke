@@ -84,8 +84,11 @@
  * unchanged at 10 (0.993x). So the default now depends on the shape the
  * engine is opened for: this pool's own default stays 8 (the N=1 paths --
  * `run`, `batch --seqs 1`), and stoke_open resolves 0 to
- * STOKE_DEFAULT_THREADS_CONCURRENT (10) when max_seqs > 1 (stoke.c). Reports:
- * docs/superpowers/gate-reports/2026-09-11-pool-ab-8.md. */
+ * STOKE_DEFAULT_THREADS_CONCURRENT when max_seqs > 1 (stoke.c) -- 10 on
+ * 2026-09-11, 12 since 2026-09-15 (the multi-key attention kernels moved the
+ * prefill phase's optimum up again: 12T -4.0% wall, all in prefill). Reports:
+ * docs/superpowers/gate-reports/2026-09-11-pool-ab-8.md,
+ * 2026-09-15-s2-phase-screen.txt. */
 void pool_start(u32 n_threads);
 
 /* Stops all workers and joins them. Safe to call when not started. */
