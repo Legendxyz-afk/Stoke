@@ -13,6 +13,7 @@
 | controls | C1-Q **PASS** (5.150e-05 vs 1e-3, 87/87 argmax) · T6 **BIT-IDENTICAL** 40/40 |
 | T1 disposition | `docs/superpowers/memos/2026-09-15-m7-b6-tripwire-anomaly-memo.md` — threshold kept, FIRED reported, carried expectation confirmed (bartowski 3.10% · this file 2.40% · Llama 1.37%) |
 | T4 disposition | §7 — the pre-registered rope-theta test **REFUTED** (excess removed 0.0007, 0 flips in 448), and two probes for the outlier that drives part of the rise, both **HELD** (stoke bit-identical across prefill paths; reference stable across batch shapes to 7e-5) |
+| llama.cpp survey (§8) | **llama.cpp is as far from the f32 reference as stoke is** (medians 0.39–0.45 both pairs, 3 streams × 64 positions); at the `L-2851` boundary it sides with **stoke** (the reference is the odd one out — engine class); at the 11.88 position it sides with the **reference** (stoke 13–15 off) — and that position is a **knife-edge**: stoke's own `--kv q8` arm lands with the reference, the ladder shows a smooth 1000× amplification through layers 13–25 with no step, and a one-token substitution 1500 tokens earlier makes the gap vanish |
 
 ### What a reader should take from this page
 
@@ -423,3 +424,154 @@ discriminator is llama.cpp's logits at these few positions** — the optional
 survey the 08-05 ruling permits, a tooling task (`llama-perplexity`'s logit
 dump or a small harness on `llama-cli`), and Kabir's call. It is the named
 follow-up. Nothing in this report depends on its answer.
+
+> ✅ **RUN 2026-09-15 at Kabir's sign-off — §8. The hypothesis above is
+> FALSIFIED at the headline position and CONFIRMED at the others: llama.cpp
+> sides with the f32 reference at position 1893 (stoke is the odd one out by
+> 13–15 logits) and with stoke at `L-2851`'s boundary (the reference is the
+> odd one out by 1–3). The 1893 gap is a knife-edge, not a path defect.**
+
+---
+
+## 8. THE llama.cpp SURVEY — the third arm, ordered by Kabir at sign-off
+
+The optional survey the 08-05 ruling permits. Nothing in §§0–7 depends on
+it; it exists to say which side of the pair the §7D outlier belongs to.
+
+### 8.1 The instrument, and why it is not `llama-server`
+
+`llama-perplexity --save-all-logits` is the only stock one-shot that emits
+logits, and it quantises them into a **16-logit window below the max** — at
+1893 every id of interest read "≥ 16, clamped", which is the one number the
+survey was after. `llama-server` would give them exactly but is a long-lived
+server (ask-first rule). So: **`tests/tooling/llama_logits.c`**, ~180 lines
+against the pinned build's own `llama.dll` (version 10037, `56d6e9dde`) —
+loads the GGUF, teacher-forces the banked `*.stream.ids` in one batch (the
+SAME ids the reference and stoke saw; nothing is re-tokenized), prints
+full-precision logits at the asked positions, exits. Layout drift between
+the newer header and the DLL is checked at runtime by dumping the DLL's own
+`llama_context_default_params` (the run of `-1` enums must begin where the
+header says; it does). **Harness check:** at `L-2851` position 2871 it
+reproduces the stock tool's quantised margins (0.374422 / 6.592122 /
+10.906155 vs 0.375 / 6.592 / 10.906, step 2.4e-4). Default llama.cpp
+configuration (f16 KV, flash attention auto), 6 threads, `n_ubatch` 512.
+Artifacts: `2026-09-15-m7-b6-llama-survey-{L-1900,L-2500,L-2851}.json`
+(all 64 positions each) and `…-ladder-and-perturbations.json`.
+
+### 8.2 Three arms, three long streams, all 64 positions each
+
+Per-position max anchored |Δ| over the shared top-5 ids, same statistic for
+every pair:
+
+| stream | stoke–ref (median / p95 / max) | llama–ref | llama–stoke | argmax agree l–s / l–r / s–r |
+|---|---|---|---|---|
+| `L-1900` | 0.42 / 1.13 / **11.88** | 0.45 / 1.11 / 1.91 | 0.37 / 0.80 / **15.16** | 63 / 62 / 63 of 64 |
+| `L-2500` | 0.39 / 1.06 / 1.84 | 0.39 / 0.93 / 1.36 | 0.38 / 1.19 / 2.09 | 64 / 64 / 64 |
+| `L-2851` | 0.43 / 1.48 / 3.50 | 0.44 / 1.43 / 2.67 | 0.40 / 0.85 / 1.38 | 59 / 60 / 61 |
+
+**llama.cpp is exactly as far from the f32 reference as stoke is** — medians
+0.39–0.45 for both pairs, p95 0.93–1.43 against 1.06–1.48 — and slightly
+closer to stoke than to the reference (the two Q8_K-activation engines share
+part of their deviation from f32). ⇒ **The `[1200,∞)` envelope widening past
+~1500 tokens is a property of the f32-reference-vs-Q8_K-engine pair on this
+text, not of stoke**: the engine people actually run shows the same
+envelope. One position is different in kind, and it is the headline one.
+
+### 8.3 The `L-2851` boundary — the reference is the odd one out
+
+Exact margins below stoke's chosen id (the grid's anchor):
+
+| position | id | stoke | reference | llama.cpp |
+|---|---|---|---|---|
+| 2871 | 3598 / 5089 / 1376 | 0.62 / 6.35 / 10.07 | 1.38 / 8.56 / 13.57 | **0.37 / 6.59 / 10.91** |
+| 2872 | 1429 / 1493 / 3351 | 14.35 / 14.79 / 15.47 | 17.08 / 17.60 / 17.78 | **15.06 / 15.21 / 15.73** |
+| 2873 | 3598 / 29658 / 8538 | 3.77 / 4.99 / 5.72 | 5.10 / 6.75 / 6.81 | **4.26 / 5.65 / 5.87** |
+
+llama.cpp sits with stoke (|l–s| 0.25–1.4) against the reference (|l–r|
+1.0–2.7). The one-sided shrink §7D described is real and it is the **engine
+class** — both Q8_K engines read the peaked distributions at this boundary
+flatter than f32 does — exactly the hypothesis, confirmed where it was
+cheap to confirm.
+
+### 8.4 `L-1900` position 1893 — stoke is the odd one out, and it is a knife-edge
+
+| id | stoke (f32 KV) | reference | llama.cpp | stoke (`--kv q8`) |
+|---|---|---|---|---|
+| **387 (top)** | **37.27** | **50.03** | **50.24** | **50.91** |
+| 1371 | 19.92 | 25.21 | 25.07 | 25.67 |
+| 1012 | 20.78 | 24.70 | 24.75 | 23.73 |
+| 1660 | 22.55 | 23.43 | 23.32 | 22.71 |
+| 8639 | — | 22.98 | 23.19 | 22.97 |
+
+llama.cpp agrees with the reference to 0.35 on every anchored margin; stoke's
+default arm is 13–15 off on all of them; **and stoke's own Q8-KV arm lands
+with the reference and llama.cpp**, not with stoke's f32-KV arm. Three of
+four implementations in one basin, the graded one in another. Two more
+probes said which kind of thing that is:
+
+**The M2 ladder at 1893** (`ref_forward.py --mode batched --dump-layers
+--dump-at`, new; `stoke run --dump` on a prefix verified id-for-id on both
+tokenizers — prompt + the 6 bytes of `could`), cosine between the post-block
+hidden states, stoke arm vs reference:
+
+| layer | 1892 (a normal position) | 1893, f32-KV arm | 1893, q8-KV arm |
+|---|---|---|---|
+| L0 | 0.99988 (max \|Δ\| 0.010) | 0.99982 (0.011) | 0.99978 (0.016) |
+| L10 | 0.99962 | 0.99816 | 0.99696 |
+| L15 | 0.99959 | 0.98615 | 0.99568 |
+| L20 | 0.99948 | 0.83025 | 0.96706 |
+| L23 | — | **0.67286** | 0.95974 |
+| L30 | 0.99955 | 0.84993 | 0.99010 |
+| L35 | 0.99831 (max \|Δ\| 2.1) | 0.76505 (max \|Δ\| 39.9) | 0.98277 (12.3) |
+
+Same floor at L0 as the normal position; **no step** — a smooth departure
+through layers 13–25, both stoke arms in the same layers, the f32 arm more
+than the q8 arm (0.67 vs 0.94 at worst), and a partial re-convergence
+afterwards. That is amplification, not a fault at one op.
+
+**Two one-token substitutions ~1500 tokens earlier** (the word "the" to
+"a" at absolute positions 381 and 386, token count unchanged, verified; same
+"could" continuation; all three arms at 1893):
+
+| variant | stoke f32 top · margins | stoke q8 | reference |
+|---|---|---|---|
+| pos 381 | 44.80 · 21.4 / 21.8 / 22.7 | 44.76 · 21.4 / 21.6 / 23.2 | 47.89 · 24.2 / 26.1 / 24.6 |
+| pos 386 | 48.64 · 24.8 / 25.3 / 26.7 | 48.26 · 24.1 / 25.4 / 26.2 | 47.93 · 23.5 / 23.7 / 25.0 |
+
+The 13-logit gap is gone in both: stoke's two arms agree with each other to
+0.5 and with the reference to ~1.5 (variant 2) or shrink together by ~3
+(variant 1 — the §8.3 engine-class shape). An index-class defect would have
+survived a substitution that keeps every position and index identical; a
+value-triggered fault would show a step in the ladder. Neither did.
+
+**Reading:** position 1893 of this stream is a **knife-edge** — the forward
+pass amplifies rounding-level implementation differences (1e-2 at layer 0,
+the same as everywhere else) ~1000× into the final logits, and which basin
+an implementation lands in is, for practical purposes, a coin: stoke-f32
+fell one way, stoke-q8 / llama.cpp / the f32 reference the other. The token
+decision never moved (stoke's margin was still 14.7). **Not a stoke defect;
+a property of the model at this position**, and the first one this project
+has caught, because the grid probes 960 positions and T4 reads the band's
+tail.
+
+### 8.5 What this changes in §§3–7, and what it does not
+
+- The `[1200,∞)` τ of 1.520 stands as frozen; the ruling freezes from
+  agreeing positions and 1893 is one. **None of the six verdicts in that band
+  depends on the widened τ**: their worst margins (0.684, 0.571, 0.618,
+  0.455, 0.209, 0.147) are all inside the *neighbouring* band's 0.772 too.
+- T4's rise is now accounted for in three parts, each with its arm: the
+  rope-theta suspect **refuted** (§7A); the engine-class shrink at peaked
+  boundary positions, **shared by llama.cpp** (§8.3); the knife-edge at 1893,
+  **shared by nobody and reproducible by no one** (§8.4). The remaining
+  widening past ~1500 is the same size in llama.cpp's own deviation from f32
+  (§8.2).
+- §7D's hypothesis is half right: the shrink is the engine class where the
+  distribution is merely peaked, and something else where the network is
+  unstable.
+- **Carried forward, not fixed:** stoke's f32-KV path is the *most* precise
+  of the four arms and still fell on the far side; on a knife-edge that is a
+  coin, not a ranking. A future grid that wants to *grade* such positions
+  needs a second arm of the same engine (`--kv q8` is one, free) so an
+  agreeing-position outlier can be labelled "knife-edge" mechanically rather
+  than by a day's survey.

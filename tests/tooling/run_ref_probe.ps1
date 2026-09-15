@@ -37,7 +37,11 @@ param(
     # (12-15) are excluded: a thread that migrates there runs the same
     # arithmetic at a different speed, which corrupts the cost model, and with
     # a different thread count it can corrupt the last bits too.
-    [string]$Affinity = "0xFFF"
+    [string]$Affinity = "0xFFF",
+    # Optional per-layer dump of ONE position (batched mode; 2026-09-15, B6 §8):
+    # both or neither.
+    [string]$DumpLayers = "",
+    [int]$DumpAt = -1
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,9 +68,14 @@ $env:MKL_NUM_THREADS = "$Threads"
 Write-Host ("run_ref_probe: affinity=0x{0:x} threads={1} mode={2} rope-theta={3}" `
             -f $got, $Threads, $Mode, $RopeTheta)
 
+$dump = @()
+if ($DumpLayers -ne "" -or $DumpAt -ge 0) {
+    if ($DumpLayers -eq "" -or $DumpAt -lt 0) { throw "run_ref_probe: -DumpLayers and -DumpAt go together" }
+    $dump = @("--dump-layers", $DumpLayers, "--dump-at", "$DumpAt")
+}
 & python -u (Join-Path $here "ref_forward.py") $Gguf `
     --force-ids $IdsFile --probe-at $ProbeAt --probe-out $Out `
-    --mode $Mode --rope-theta $RopeTheta --progress
+    --mode $Mode --rope-theta $RopeTheta --progress @dump
 $rc = $LASTEXITCODE
 if ($rc -ne 0) { throw "run_ref_probe: ref_forward.py exited $rc" }
 

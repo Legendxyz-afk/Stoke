@@ -624,7 +624,14 @@ class ModelRef:
     # stream. It has to be, because "three orders below tau" is exactly the
     # kind of claim this project has had to withdraw when it was argued
     # instead of measured.
-    def teacher_force_batched(self, ids, probe_positions, progress=None):
+    def teacher_force_batched(self, ids, probe_positions, progress=None,
+                              dump_dir=None, dump_pos=None):
+        """dump_dir/dump_pos (2026-09-15, B6 §8): write the post-block hidden
+        state of ONE position after every layer as L00.f32..L35.f32 -- the
+        same files the serial path's --dump-layers writes for its last prefill
+        position, so l2_diff.py reads them unchanged. Exists because the M2
+        ladder at position 1893 costs the serial path ~21 h and this path
+        three minutes; the batched arm is licensed for it by C1-Q/C3."""
         total = len(ids)
         if total > self.max_ctx:
             fatal(f"forced length {total} exceeds max_ctx {self.max_ctx}")
@@ -632,6 +639,10 @@ class ModelRef:
         for p in want:
             if not (0 <= p < total):
                 fatal(f"probe position {p} outside the forced range [0,{total})")
+        if dump_dir is not None:
+            if dump_pos is None or not (0 <= int(dump_pos) < total):
+                fatal(f"--dump-layers in batched mode needs --dump-at inside [0,{total})")
+            os.makedirs(dump_dir, exist_ok=True)
 
         D, H, HK = self.head_dim, self.n_head, self.n_head_kv
         half = D // 2
@@ -695,6 +706,8 @@ class ModelRef:
             up = f32(F_ @ self.gf.tensor_dequant_full(layer["ffn_up"]).T)
             X = f32(X + f32(f32(silu(gate) * up)
                             @ self.gf.tensor_dequant_full(layer["ffn_down"]).T))
+            if dump_dir is not None:
+                X[int(dump_pos)].copy().tofile(os.path.join(dump_dir, f"L{L:02d}.f32"))
             if progress is not None:
                 progress(L, self.n_layer, "layers")
 
@@ -771,6 +784,11 @@ def main() -> int:
                    help="print a position counter to stderr (long prefixes "
                         "take minutes to hours; a silent run is "
                         "indistinguishable from a hung one).")
+    p.add_argument("--dump-at", type=int, default=None, metavar="N",
+                   help="with --mode batched and --dump-layers DIR: the ONE "
+                        "absolute position whose post-block hidden state is "
+                        "written per layer (L00.f32..), for l2_diff.py against "
+                        "a `stoke run --dump` of the same position (2026-09-15).")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args()
 
@@ -895,11 +913,19 @@ def run_teacher_force(args) -> int:
         print("fatal: --force-ids requires --probe-out FILE", file=sys.stderr)
         return 1
     for name, val in (("--ids", args.ids), ("--probe-pos", args.probe_pos),
-                      ("--probe-all", args.probe_all),
-                      ("--dump-layers", args.dump_layers)):
+                      ("--probe-all", args.probe_all)):
         if val is not None:
             print(f"fatal: {name} does not apply to --force-ids", file=sys.stderr)
             return 1
+    # --dump-layers under --force-ids is the BATCHED path's one-position dump
+    # (2026-09-15); the serial teacher-force path has no dump and refuses.
+    if args.dump_layers is not None and (args.mode != "batched" or args.dump_at is None):
+        print("fatal: --dump-layers with --force-ids needs --mode batched and --dump-at N",
+              file=sys.stderr)
+        return 1
+    if args.dump_at is not None and args.dump_layers is None:
+        print("fatal: --dump-at needs --dump-layers DIR", file=sys.stderr)
+        return 1
 
     try:
         with open(args.force_ids, "r", encoding="utf-8") as fh:
@@ -959,7 +985,8 @@ def run_teacher_force(args) -> int:
             # banking is a SERIAL-path property and is not faked here. It does
             # not need one: it finishes in minutes where serial takes hours.
             probes = model.teacher_force_batched(
-                ids, want, progress=progress if args.progress else None)
+                ids, want, progress=progress if args.progress else None,
+                dump_dir=args.dump_layers, dump_pos=args.dump_at)
         else:
             bank_path = args.probe_out + ".partial.jsonl"
             with open(bank_path, "w", encoding="utf-8") as bank:
