@@ -46,7 +46,10 @@ HI_BAND = "[1200,inf)"
 EXPLAINED_AT = 0.50      # excess_removed >= this  -> EXPLAINED
 REFUTED_BELOW = 0.10     # excess_removed <  this  -> REFUTED
 R2_TOL = 1e-6            # closed arm must reproduce the banked p95 to this
-BOUND_THRESHOLD = 0.0125  # a quarter of the banked rise (0.049911)
+BOUND_THRESHOLD = 0.0125  # a quarter of the 09-07 Llama freeze's rise (0.049911)
+BOUND_QUARTER = 0.25     # --bound-threshold banked: this fraction of the
+                         # banked rise, so a second pair gets ITS OWN quarter
+                         # (2026-09-15, B6) instead of the Llama literal
 
 
 class AbError(RuntimeError):
@@ -230,8 +233,10 @@ def markdown(report) -> str:
     L.append("")
     bd = report["bound"]
     if bd["2x_delta_max_hi_band"] is not None:
+        src = bd.get("threshold_source", "literal")
         L.append(f"2 × max Δ in `{HI_BAND}` = **{bd['2x_delta_max_hi_band']:.6e}** "
-                 f"against the {bd['threshold']} refusal threshold ⇒ "
+                 f"against the {bd['threshold']:.6g} refusal threshold "
+                 f"({'a quarter of this pair’s banked rise' if src == 'banked' else 'the 09-08 literal'}) ⇒ "
                  f"**{'CANNOT account for the rise' if bd['cannot_explain_the_rise'] else 'could contribute'}**.")
         L.append("")
     L.append("| # | tripwire | fired |")
@@ -326,6 +331,13 @@ def run_selftest() -> int:
         # R2_TOL must exceed the rounding in the banked line (6 decimals).
         check("R2_TOL is loose enough for the banked 6-decimal rounding",
               R2_TOL > 5e-7)
+        # --bound-threshold banked must be the rule the 0.0125 literal was
+        # computed by: a quarter of the Llama freeze's own rise. 1e-4, not
+        # exact: the literal was rounded to four decimals.
+        if LO_BAND in got and HI_BAND in got:
+            derived = BOUND_QUARTER * (got[HI_BAND]["p95"] - got[LO_BAND]["p95"])
+            check("'banked' derives the 09-08 literal from the 09-07 freeze",
+                  abs(derived - BOUND_THRESHOLD) < 1e-4)
     else:
         check(f"banked tau file present at {tau}", False)
 
@@ -343,6 +355,13 @@ def main() -> int:
                                "gate-reports" / "2026-09-07-m7-entry-probe-tau.json"))
     p.add_argument("--null-a")
     p.add_argument("--null-b")
+    p.add_argument("--bound-threshold", default=str(BOUND_THRESHOLD),
+                   help="the refusal threshold for 2 x max ref delta in the "
+                        "high band: a number, or 'banked' = a quarter of the "
+                        "rise in --banked-tau's own freeze report (the rule "
+                        "the 0.0125 literal was computed by, for the Llama "
+                        "pair). Default: the 09-08 literal, so that run "
+                        "reproduces.")
     p.add_argument("--out")
     p.add_argument("--markdown", help="write the report's result section, "
                                       "generated from the artifact")
@@ -425,6 +444,21 @@ def main() -> int:
     fired["R2_closed_arm_does_not_reproduce"] = bool(r2)
     report["R2"] = {"banked": banked_p95, "mismatches": r2}
 
+    # ---- the bound's threshold: the literal, or this pair's own quarter ---
+    if a.bound_threshold == "banked":
+        if LO_BAND not in banked_p95 or HI_BAND not in banked_p95:
+            raise AbError(f"--bound-threshold banked needs both {LO_BAND} and "
+                          f"{HI_BAND} in the banked freeze report")
+        bound_threshold = BOUND_QUARTER * (banked_p95[HI_BAND]["p95"]
+                                           - banked_p95[LO_BAND]["p95"])
+        if bound_threshold <= 0.0:
+            raise AbError("--bound-threshold banked: the banked freeze shows "
+                          "no rise, so a quarter of it is not a threshold")
+        bound_source = "banked"
+    else:
+        bound_threshold = float(a.bound_threshold)
+        bound_source = "literal"
+
     # ---- R4 / the bound --------------------------------------------------
     rows = ref_delta(ga, gb)
     dbb = delta_by_band(rows)
@@ -445,9 +479,10 @@ def main() -> int:
                        "positions": rows}
     bound_hi = 2.0 * dbb[HI_BAND]["max"] if HI_BAND in dbb else None
     report["bound"] = {"2x_delta_max_hi_band": bound_hi,
-                       "threshold": BOUND_THRESHOLD,
+                       "threshold": bound_threshold,
+                       "threshold_source": bound_source,
                        "cannot_explain_the_rise":
-                           bound_hi is not None and bound_hi < BOUND_THRESHOLD}
+                           bound_hi is not None and bound_hi < bound_threshold}
 
     # ---- R3: the null arm -------------------------------------------------
     if a.null_a and a.null_b:
@@ -491,8 +526,8 @@ def main() -> int:
               f"max={r['max']:.6e} p95={r['p95']:.6e}")
     if bound_hi is not None:
         print(f"    2 x max delta in {HI_BAND} = {bound_hi:.6e} vs the "
-              f"{BOUND_THRESHOLD} threshold -> "
-              f"{'CANNOT explain the rise' if bound_hi < BOUND_THRESHOLD else 'could contribute'}")
+              f"{bound_threshold:.6g} threshold ({bound_source}) -> "
+              f"{'CANNOT explain the rise' if bound_hi < bound_threshold else 'could contribute'}")
     print(f"    ref argmax flips between the arms: "
           f"{report['delta']['ref_argmax_flips']} of "
           f"{report['delta']['n_positions']} probed positions")
