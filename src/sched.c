@@ -251,6 +251,11 @@ Sched* sched_open(KvStore* store, u32 max_ctx, const SchedHost* host,
                       e, kv_block_tokens());
             }
             s->chunk = (u32)v;
+            /* Announced, so an A/B arm can be verified from the server's own
+             * log rather than from the argument that asked for it (the
+             * 2026-09-11 harness rule: every arm banks its own evidence). */
+            fprintf(stderr, "sched: STOKE_SCHED_CHUNK=%u (locked default %u)\n",
+                    s->chunk, (unsigned)SCHED_CHUNK_TOKENS);
         }
     }
     s->store = store;

@@ -1367,6 +1367,42 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
         }
 
         /* ---- score pass: K[j] fetched once, scored against all G q-heads */
+        u32 j0 = 0;
+#if STOKE_ATT_SSE && !defined(STOKE_MUT_NO_SCORE) && !defined(STOKE_MUT_ALIAS_KV)
+        /* ▶▶ FOUR KEYS PER CALL on an f32 store (2026-09-15): the one-key
+         * kernel is a single 128-long dependent chain with its K row behind
+         * it; four interleaved chains hide the add latency and stream four K
+         * rows at once. Bit-identical per key -- see att_score4x4_avx2. The
+         * f32 gate is because kv_read on a Q8 store dequantizes into ONE
+         * scratch pair, so four simultaneous key pointers exist only when the
+         * read is zero-copy. G%4 q-heads take the scalar remainder exactly as
+         * the one-key loop below gives them, key by key in ascending j. */
+        if (use_simd && kv_dtype(kvs) == KV_F32 && G >= 4u) {
+            for (; j0 + 4u <= n; j0 += 4u) {
+                const f32* k4[4];
+                for (u32 kk = 0; kk < 4u; kk++)
+                    k4[kk] = kv_read(kvs, L, kvh, j0 + kk, kvbuf).k;
+                u32 g = 0;
+                for (; g + 4u <= G; g += 4u) {
+                    f32 out16[16];
+                    att_score4x4_avx2(qt + g, G, k4[0], k4[1], k4[2], k4[3], hd,
+                                      scale, out16);
+                    for (u32 kk = 0; kk < 4u; kk++) {
+                        scores[(u64)(g + 0u) * row + j0 + kk] = out16[kk * 4u + 0u];
+                        scores[(u64)(g + 1u) * row + j0 + kk] = out16[kk * 4u + 1u];
+                        scores[(u64)(g + 2u) * row + j0 + kk] = out16[kk * 4u + 2u];
+                        scores[(u64)(g + 3u) * row + j0 + kk] = out16[kk * 4u + 3u];
+                    }
+                }
+                for (; g < G; g++) {
+                    for (u32 kk = 0; kk < 4u; kk++) {
+                        scores[(u64)g * row + j0 + kk] =
+                            vec_dot_f32(qbase + (u64)g * hd, k4[kk], hd) * scale;
+                    }
+                }
+            }
+        }
+#endif
 #ifdef STOKE_MUT_NO_SCORE
         /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG, and its twin
          * is -DSTOKE_MUT_NO_VALUE. Attention is 18% of prefill for 4.9% of its
@@ -1383,9 +1419,9 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
             for (u32 j = 0; j < n; j++) srow[j] = 0.0f;
         }
         const u32 n_score = 0u * n;   /* runtime zero: no -Wtype-limits */
-        for (u32 j = 0; j < n_score; j++) {
+        for (u32 j = j0; j < n_score; j++) {
 #else
-        for (u32 j = 0; j < n; j++) {
+        for (u32 j = j0; j < n; j++) {
 #endif
 #ifdef STOKE_MUT_ALIAS_KV
             /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. Every j
@@ -1459,6 +1495,44 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
             for (u32 d = 0; d < hd; d++) o[d] = 0.0f;
         }
 
+        u32 jv0 = 0;
+#if STOKE_ATT_SSE && !defined(STOKE_MUT_NO_VALUE) && !defined(STOKE_MUT_HOIST_KV) &&     !defined(STOKE_MUT_ALIAS_KV) && !defined(STOKE_MUT_NO_ACC)
+        /* ▶▶ EIGHT KEYS PER OUTPUT LOAD on an f32 store (2026-09-15): the
+         * outputs stay in registers across eight keys instead of being
+         * read-modify-written per key. Per output element the adds arrive in
+         * the same ascending-j order with the same mul-then-add, so the result
+         * is bit-identical to eight one-key calls -- see att_accum4x8_avx2.
+         * Same f32 gate as the score pass, same reason. */
+        if (use_simd && kv_dtype(kvs) == KV_F32 && G >= 4u) {
+            for (; jv0 + 8u <= n; jv0 += 8u) {
+                const f32* v8[8];
+                for (u32 kk = 0; kk < 8u; kk++)
+                    v8[kk] = kv_read(kvs, L, kvh, jv0 + kk, kvbuf).v;
+                u32 g = 0;
+                for (; g + 4u <= G; g += 4u) {
+                    f32 w32[32];
+                    for (u32 kk = 0; kk < 8u; kk++) {
+                        w32[kk * 4u + 0u] = scores[(u64)(g + 0u) * row + jv0 + kk];
+                        w32[kk * 4u + 1u] = scores[(u64)(g + 1u) * row + jv0 + kk];
+                        w32[kk * 4u + 2u] = scores[(u64)(g + 2u) * row + jv0 + kk];
+                        w32[kk * 4u + 3u] = scores[(u64)(g + 3u) * row + jv0 + kk];
+                    }
+                    att_accum4x8_avx2(obase + (u64)(g + 0u) * hd,
+                                      obase + (u64)(g + 1u) * hd,
+                                      obase + (u64)(g + 2u) * hd,
+                                      obase + (u64)(g + 3u) * hd, v8, w32, hd);
+                }
+                for (; g < G; g++) {
+                    f32* o = obase + (u64)g * hd;
+                    for (u32 kk = 0; kk < 8u; kk++) {
+                        const f32 wgt = scores[(u64)g * row + jv0 + kk];
+                        for (u32 d = 0; d < hd; d++) o[d] += wgt * v8[kk][d];
+                    }
+                }
+            }
+        }
+#endif
+
 #ifdef STOKE_MUT_HOIST_KV
         const f32* vhoist = kv_read(kvs, L, kvh, 0u, kvbuf).v;
 #endif
@@ -1469,9 +1543,9 @@ static void att_kvheads_run(void* vctx, u64 kh_begin, u64 kh_end) {
          * here to remove. */
 #ifdef STOKE_MUT_NO_VALUE
         const u32 n_score = 0u * n;   /* runtime zero: no -Wtype-limits */
-        for (u32 j = 0; j < n_score; j++) {
+        for (u32 j = jv0; j < n_score; j++) {
 #else
-        for (u32 j = 0; j < n; j++) {
+        for (u32 j = jv0; j < n; j++) {
 #endif
 #if defined(STOKE_MUT_HOIST_KV)
             /* MUTANT, SPEED PROBE ONLY -- OUTPUT DELIBERATELY WRONG. The

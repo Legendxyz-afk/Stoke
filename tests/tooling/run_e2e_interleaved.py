@@ -75,6 +75,7 @@ _TRACE_HDR = re.compile(
     r"pool trace: t=\+([\d.]+)s dispatches=(\d+) chunks=(\d+) cpu_user=([\d.]+)s "
     r"cpu_kernel=([\d.]+)s ecores=(\S+)")
 _TRACE_THR = re.compile(r"pool trace: thr (\d+) tid=(\d+) ideal=(-?\d+) P=(\d+) E=(\d+) \|")
+_SCHED_CHUNK = re.compile(r"sched: STOKE_SCHED_CHUNK=(\d+)")
 _TRACE_ON = re.compile(r"pool trace: on, every [\d.]+s, (\d+) threads, spin=(\d+)")
 
 
@@ -168,6 +169,14 @@ def unit(config_label, scenario, timeout_s):
     ttfts = sorted(p["ttft_ms"] / 1000.0 for p in pcs)
     log = cell.get("adapter_log") or []
     reports = parse_trace(log)
+    # The scheduler announces a STOKE_SCHED_CHUNK override at open (2026-09-15);
+    # banked so a `stoke-tuned@chunk=N` arm is verified from the server's own log,
+    # never from the label. None = nothing announced = the locked default.
+    sched_chunk = None
+    for ln in log:
+        m = _SCHED_CHUNK.search(ln)
+        if m:
+            sched_chunk = int(m.group(1))
     return {
         "config": config_label,
         "scenario": scenario.name,
@@ -178,6 +187,7 @@ def unit(config_label, scenario, timeout_s):
         "ttft_min_s": ttfts[0],
         "completed": r["completed"],
         "adapter_log_head": (cell.get("adapter_log_tail") or "").splitlines()[:2],
+        "sched_chunk": sched_chunk,
         "proc": cell.get("proc"),
         "trace": trace_summary(reports),
         "trace_reports": reports,

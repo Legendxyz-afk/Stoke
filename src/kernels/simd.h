@@ -371,6 +371,14 @@ void att_score4_avx2(const f32* qt, u64 qstride, const f32* kj, u32 hd,
                      f32 scale, f32* out4);
 void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
                      const f32* w4, u32 hd);
+/* The same two kernels over FOUR keys (scores) and EIGHT keys (values) at
+ * once, BIT-IDENTICAL per key/element to the one-key forms above -- the
+ * chains are interleaved, never reassociated (2026-09-15; simd.c). */
+void att_score4x4_avx2(const f32* qt, u64 qstride, const f32* k0,
+                       const f32* k1, const f32* k2, const f32* k3, u32 hd,
+                       f32 scale, f32* out16);
+void att_accum4x8_avx2(f32* o0, f32* o1, f32* o2, f32* o3,
+                       const f32* const* v8, const f32* w32, u32 hd);
 
 void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
                                        u32 n_rows, const void* const* arows,

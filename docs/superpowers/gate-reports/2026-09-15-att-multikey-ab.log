@@ -1,0 +1,9 @@
+14:55:08 === old1 37205e2a1e60fc46 ===
+14:56:33 rc=0   end-to-end 12.341 tok/s  = 1024 ids / 82974.4 ms wall (all prefill charged)
+14:56:53 === new1 50fe9a429e6950de ===
+14:58:11 rc=0   end-to-end 13.251 tok/s  = 1024 ids / 77277.8 ms wall (all prefill charged)
+14:58:31 === new2 50fe9a429e6950de ===
+14:59:50 rc=0   end-to-end 13.172 tok/s  = 1024 ids / 77739.8 ms wall (all prefill charged)
+15:00:10 === old2 37205e2a1e60fc46 ===
+15:01:34 rc=0   end-to-end 12.304 tok/s  = 1024 ids / 83226.7 ms wall (all prefill charged)
+15:01:55 ATT AB DONE

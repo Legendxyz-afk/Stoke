@@ -572,6 +572,80 @@ void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
     }
 }
 
+/* ▶▶ FOUR KEYS AT ONCE, SAME ARITHMETIC PER KEY (2026-09-15).
+ *
+ * att_score4_avx2 is ONE dependent chain: 128 mul+add pairs on a single xmm
+ * accumulator, ~512 cycles of add latency per key while the load ports sit
+ * idle, and at decode every key's K row also comes from DRAM behind that
+ * chain. The step trace priced it: an N=8 decode step reads 146 ms at a
+ * 20-token context and 231 ms at ~600, so attention over ~600 keys is ~85 ms
+ * of the step -- a third of it -- at ~3 GF/s per thread.
+ *
+ * This runs four keys' chains INTERLEAVED, one accumulator each. Each key's
+ * accumulator sees exactly the sequence att_score4_avx2 would give it -- the
+ * same q vector, the same broadcast of k[d], mul then add in ascending d --
+ * so every output is BIT-IDENTICAL to four calls of the one-key kernel; the
+ * only thing that changed is that the four chains' latencies overlap and the
+ * four K rows stream in parallel. -ffp-contract=off keeps the mul+add
+ * unfused here exactly as it does in the one-key kernel. Graded by
+ * tests/att_simd_twins.sh (AVX2 arm vs the scalar twin, bit-identical) and by
+ * the byte-exact goldens, never by tolerance. */
+void att_score4x4_avx2(const f32* qt, u64 qstride, const f32* k0,
+                       const f32* k1, const f32* k2, const f32* k3, u32 hd,
+                       f32 scale, f32* out16) {
+    __m128 a0 = _mm_setzero_ps(), a1 = _mm_setzero_ps();
+    __m128 a2 = _mm_setzero_ps(), a3 = _mm_setzero_ps();
+    for (u32 d = 0; d < hd; ++d) {
+        const __m128 q = _mm_loadu_ps(qt + (u64)d * qstride);
+        a0 = _mm_add_ps(a0, _mm_mul_ps(q, _mm_broadcast_ss(k0 + d)));
+        a1 = _mm_add_ps(a1, _mm_mul_ps(q, _mm_broadcast_ss(k1 + d)));
+        a2 = _mm_add_ps(a2, _mm_mul_ps(q, _mm_broadcast_ss(k2 + d)));
+        a3 = _mm_add_ps(a3, _mm_mul_ps(q, _mm_broadcast_ss(k3 + d)));
+    }
+    const __m128 s = _mm_set1_ps(scale);
+    _mm_storeu_ps(out16 + 0, _mm_mul_ps(a0, s));
+    _mm_storeu_ps(out16 + 4, _mm_mul_ps(a1, s));
+    _mm_storeu_ps(out16 + 8, _mm_mul_ps(a2, s));
+    _mm_storeu_ps(out16 + 12, _mm_mul_ps(a3, s));
+}
+
+/* ▶▶ EIGHT KEYS PER OUTPUT LOAD, SAME ARITHMETIC PER ELEMENT (2026-09-15).
+ *
+ * att_accum4_avx2 read-modify-writes the four 512-byte output rows once PER
+ * KEY: for 600 keys that is 600 loads and 600 stores of every output lane
+ * against 600 multiplies. Here the outputs stay in registers across eight
+ * keys and touch memory once per eight. Per output element the operation
+ * sequence is unchanged -- o = o + w_j * v_j[d] for j ascending, mul then
+ * add, keys in order within the group and groups in order -- so the result is
+ * BIT-IDENTICAL to eight calls of the one-key kernel. `v8` holds the eight V
+ * rows, `w32[k*4 + g]` the eight keys' weights for the four outputs. */
+void att_accum4x8_avx2(f32* o0, f32* o1, f32* o2, f32* o3,
+                       const f32* const* v8, const f32* w32, u32 hd) {
+    u32 d = 0;
+    for (; d + 8u <= hd; d += 8u) {
+        __m256 r0 = _mm256_loadu_ps(o0 + d), r1 = _mm256_loadu_ps(o1 + d);
+        __m256 r2 = _mm256_loadu_ps(o2 + d), r3 = _mm256_loadu_ps(o3 + d);
+        for (u32 k = 0; k < 8u; k++) {
+            const __m256 v = _mm256_loadu_ps(v8[k] + d);
+            r0 = _mm256_add_ps(r0, _mm256_mul_ps(_mm256_broadcast_ss(w32 + k * 4u + 0u), v));
+            r1 = _mm256_add_ps(r1, _mm256_mul_ps(_mm256_broadcast_ss(w32 + k * 4u + 1u), v));
+            r2 = _mm256_add_ps(r2, _mm256_mul_ps(_mm256_broadcast_ss(w32 + k * 4u + 2u), v));
+            r3 = _mm256_add_ps(r3, _mm256_mul_ps(_mm256_broadcast_ss(w32 + k * 4u + 3u), v));
+        }
+        _mm256_storeu_ps(o0 + d, r0); _mm256_storeu_ps(o1 + d, r1);
+        _mm256_storeu_ps(o2 + d, r2); _mm256_storeu_ps(o3 + d, r3);
+    }
+    /* Tail: the same per-element operation in the same key order. */
+    for (; d < hd; ++d) {
+        for (u32 k = 0; k < 8u; k++) {
+            o0[d] += w32[k * 4u + 0u] * v8[k][d];
+            o1[d] += w32[k * 4u + 1u] * v8[k][d];
+            o2[d] += w32[k * 4u + 2u] * v8[k][d];
+            o3[d] += w32[k * 4u + 3u] * v8[k][d];
+        }
+    }
+}
+
 /* An empty asm that CLAIMS the accumulator forces gcc to materialise it in a
  * register at this point, which stops it reassociating N accumulator chains
  * into trees. It emits nothing. Without it `objdump` counts 34 stack spills in
@@ -2007,6 +2081,22 @@ void att_accum4_avx2(f32* o0, f32* o1, f32* o2, f32* o3, const f32* vj,
     (void)w4;
     (void)hd;
     fatal("kernels: att_accum4_avx2 on a non-x86-64 build -- callers must "
+          "check kernels_cpu_has_avx_vnni() first");
+}
+
+void att_score4x4_avx2(const f32* qt, u64 qstride, const f32* k0,
+                       const f32* k1, const f32* k2, const f32* k3, u32 hd,
+                       f32 scale, f32* out16) {
+    (void)qt; (void)qstride; (void)k0; (void)k1; (void)k2; (void)k3;
+    (void)hd; (void)scale; (void)out16;
+    fatal("kernels: att_score4x4_avx2 on a non-x86-64 build -- callers must "
+          "check kernels_cpu_has_avx_vnni() first");
+}
+
+void att_accum4x8_avx2(f32* o0, f32* o1, f32* o2, f32* o3,
+                       const f32* const* v8, const f32* w32, u32 hd) {
+    (void)o0; (void)o1; (void)o2; (void)o3; (void)v8; (void)w32; (void)hd;
+    fatal("kernels: att_accum4x8_avx2 on a non-x86-64 build -- callers must "
           "check kernels_cpu_has_avx_vnni() first");
 }
 

@@ -1,0 +1,20 @@
+== build/c2/attab/old1.err
+  steps 167  wall 83.0 s = forward 80.9 + logits 1.9 + other 0.2
+  prefill phase: 40 steps to t=57.8 s; 4136 prefill rows + 140 riding decode rows; 57.2 s forward; pure chunk cost 12.04 ms/row (83.0 tok/s)
+  decode-only tail: 127 steps from t=57.8 s; 876 rows; 25.2 s; 28.7 ms/row
+  tail steps by N: N=1:80ms/79.8per-row(n=5)  N=2:124ms/62.1per-row(n=5)  N=3:146ms/48.6per-row(n=5)  N=4:153ms/38.3per-row(n=5)  N=5:189ms/37.8per-row(n=5)  N=6:201ms/33.6per-row(n=5)  N=7:216ms/30.9per-row(n=5)  N=8:212ms/26.5per-row(n=92)
+== build/c2/attab/new1.err
+  steps 167  wall 77.3 s = forward 75.2 + logits 2.0 + other 0.1
+  prefill phase: 40 steps to t=53.7 s; 4136 prefill rows + 140 riding decode rows; 53.2 s forward; pure chunk cost 11.09 ms/row (90.2 tok/s)
+  decode-only tail: 127 steps from t=53.7 s; 876 rows; 23.6 s; 26.9 ms/row
+  tail steps by N: N=1:79ms/78.6per-row(n=5)  N=2:117ms/58.4per-row(n=5)  N=3:124ms/41.3per-row(n=5)  N=4:150ms/37.6per-row(n=5)  N=5:178ms/35.5per-row(n=5)  N=6:182ms/30.2per-row(n=5)  N=7:224ms/32.0per-row(n=5)  N=8:199ms/24.9per-row(n=92)
+== build/c2/attab/new2.err
+  steps 167  wall 77.7 s = forward 75.6 + logits 2.0 + other 0.2
+  prefill phase: 40 steps to t=54.3 s; 4136 prefill rows + 140 riding decode rows; 53.8 s forward; pure chunk cost 11.42 ms/row (87.6 tok/s)
+  decode-only tail: 127 steps from t=54.3 s; 876 rows; 23.4 s; 26.7 ms/row
+  tail steps by N: N=1:85ms/84.8per-row(n=5)  N=2:126ms/63.2per-row(n=5)  N=3:138ms/46.0per-row(n=5)  N=4:136ms/34.1per-row(n=5)  N=5:159ms/31.8per-row(n=5)  N=6:190ms/31.8per-row(n=5)  N=7:236ms/33.8per-row(n=5)  N=8:194ms/24.3per-row(n=92)
+== build/c2/attab/old2.err
+  steps 167  wall 83.2 s = forward 81.1 + logits 2.0 + other 0.1
+  prefill phase: 40 steps to t=57.5 s; 4136 prefill rows + 140 riding decode rows; 56.9 s forward; pure chunk cost 12.31 ms/row (81.2 tok/s)
+  decode-only tail: 127 steps from t=57.5 s; 876 rows; 25.7 s; 29.4 ms/row
+  tail steps by N: N=1:86ms/85.7per-row(n=5)  N=2:125ms/62.6per-row(n=5)  N=3:151ms/50.4per-row(n=5)  N=4:154ms/38.5per-row(n=5)  N=5:189ms/37.8per-row(n=5)  N=6:197ms/32.9per-row(n=5)  N=7:230ms/32.9per-row(n=5)  N=8:218ms/27.3per-row(n=92)

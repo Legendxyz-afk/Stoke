@@ -138,6 +138,12 @@ def build_adapter(config_label, scenario):
                 affinity = int(val, 0)
             elif key == "threads" and val.isdigit():
                 threads = int(val)
+            elif key == "chunk" and val.isdigit():
+                # 2026-09-15: the prefill chunk width (STOKE_SCHED_CHUNK, locked at 128;
+                # 256 read -3.4% wall in the in-process phase screen). The server
+                # inherits the env; the scheduler REFUSES a value that is not a positive
+                # multiple of the KV block, so a typo cannot silently run the default.
+                env["STOKE_SCHED_CHUNK"] = val
             else:
                 raise ValueError(f"unknown stoke-tuned option {opt!r} in {config_label!r}")
         return adapters.StokeAdapter(seqs=p, ctx=(8192 if is_s4 else 704), threads=threads,
