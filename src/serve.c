@@ -52,13 +52,30 @@ static void ensure(ServeHost* h, u32 n) {
  * scheduler states both facts in SchedStep rather than leaving this file to
  * infer them from row counts, because inferring them is how a host ends up
  * sampling a token from the middle of somebody's prompt. */
+/* ▶ STOKE_STEP_TRACE=1 (2026-09-15): one stderr line per step -- wall-clock
+ * offset, rows, decode rows, prefill rows, forward ms, logits ms -- so a
+ * serving run's WALL can be decomposed into its phases (serialized prefill
+ * with riding decodes, the full-width decode tail, the drain) instead of
+ * argued about. Off by default: one branch per step. The line is written
+ * AFTER the step's work, so it cannot perturb what it times. */
+static int    g_step_trace = -1;
+static double g_step_t0 = 0.0;
+
 static void serve_step(void* ctx, const SchedStep* in, u32* out) {
     ServeHost* h = (ServeHost*)ctx;
     if (in->n_rows == 0) return;
     ensure(h, in->n_rows);
+    if (g_step_trace < 0) {
+        const char* e = getenv("STOKE_STEP_TRACE");
+        g_step_trace = (e != NULL && e[0] == '1') ? 1 : 0;
+        g_step_t0 = now_ms();
+    }
+    double t_fwd0 = g_step_trace ? now_ms() : 0.0;
 
     model_forward_batch(h->m, in->kv, in->token_ids, in->positions, in->n_rows,
                         h->xp);
+
+    double t_fwd1 = g_step_trace ? now_ms() : 0.0;
 
     u32 n_yield = in->n_decode;
     for (u32 i = 0; i < in->n_decode; i++) h->yp[i] = h->xp[i];
@@ -88,6 +105,14 @@ static void serve_step(void* ctx, const SchedStep* in, u32* out) {
 
     h->rows += in->n_rows;
     h->steps++;
+    if (g_step_trace) {
+        double t_end = now_ms();
+        fprintf(stderr, "step trace: k=%llu t=%.1f rows=%u decode=%u prefill=%u "
+                        "yield=%u fwd=%.1f logits=%.1f\n",
+                (unsigned long long)h->steps, t_fwd0 - g_step_t0, in->n_rows,
+                in->n_decode, in->n_rows - in->n_decode, n_yield,
+                t_fwd1 - t_fwd0, t_end - t_fwd1);
+    }
 }
 
 static double serve_now(void* ctx) {

@@ -1,0 +1,15 @@
+13:03:32 === base10 ===
+13:04:59 rc=0   end-to-end 11.850 tok/s  = 1024 ids / 86413.0 ms wall (all prefill charged)
+13:05:19 === t6 ===
+13:06:49 rc=0   end-to-end 11.516 tok/s  = 1024 ids / 88917.1 ms wall (all prefill charged)
+13:07:09 === t12 ===
+13:08:34 rc=0   end-to-end 12.341 tok/s  = 1024 ids / 82978.7 ms wall (all prefill charged)
+13:08:54 === kvq8 ===
+13:10:24 rc=0   end-to-end 11.435 tok/s  = 1024 ids / 89551.4 ms wall (all prefill charged)
+13:10:44 === spin20k ===
+13:12:13 rc=0   end-to-end 11.658 tok/s  = 1024 ids / 87833.5 ms wall (all prefill charged)
+13:12:33 === chunk256 ===
+13:13:58 rc=0   end-to-end 12.260 tok/s  = 1024 ids / 83520.9 ms wall (all prefill charged)
+13:14:18 === base10b ===
+13:15:46 rc=0   end-to-end 11.804 tok/s  = 1024 ids / 86747.4 ms wall (all prefill charged)
+13:16:06 SCREEN DONE

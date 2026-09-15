@@ -1,0 +1,35 @@
+== build/c2/screen/base10.err
+  steps 167  wall 86.4 s = forward 84.2 + logits 2.0 + other 0.2
+  prefill phase: 40 steps to t=59.9 s; 4136 prefill rows + 140 riding decode rows; 59.4 s forward; pure chunk cost 12.24 ms/row (81.7 tok/s)
+  decode-only tail: 127 steps from t=59.9 s; 876 rows; 26.5 s; 30.2 ms/row
+  tail steps by N: N=1:87ms/87.1per-row(n=5)  N=2:125ms/62.7per-row(n=5)  N=3:167ms/55.7per-row(n=5)  N=4:156ms/39.1per-row(n=5)  N=5:200ms/40.0per-row(n=5)  N=6:219ms/36.5per-row(n=5)  N=7:223ms/31.9per-row(n=5)  N=8:224ms/28.0per-row(n=92)
+== build/c2/screen/base10b.err
+  steps 167  wall 86.7 s = forward 84.5 + logits 2.0 + other 0.2
+  prefill phase: 40 steps to t=60.2 s; 4136 prefill rows + 140 riding decode rows; 59.6 s forward; pure chunk cost 12.25 ms/row (81.7 tok/s)
+  decode-only tail: 127 steps from t=60.2 s; 876 rows; 26.6 s; 30.4 ms/row
+  tail steps by N: N=1:86ms/85.9per-row(n=5)  N=2:120ms/59.9per-row(n=5)  N=3:170ms/56.8per-row(n=5)  N=4:178ms/44.4per-row(n=5)  N=5:206ms/41.2per-row(n=5)  N=6:192ms/32.0per-row(n=5)  N=7:230ms/32.8per-row(n=5)  N=8:224ms/28.0per-row(n=92)
+== build/c2/screen/t12.err
+  steps 167  wall 83.0 s = forward 80.9 + logits 2.0 + other 0.2
+  prefill phase: 40 steps to t=56.7 s; 4136 prefill rows + 140 riding decode rows; 56.1 s forward; pure chunk cost 11.64 ms/row (85.9 tok/s)
+  decode-only tail: 127 steps from t=56.7 s; 876 rows; 26.3 s; 30.0 ms/row
+  tail steps by N: N=1:83ms/83.3per-row(n=5)  N=2:137ms/68.5per-row(n=5)  N=3:142ms/47.4per-row(n=5)  N=4:163ms/40.8per-row(n=5)  N=5:194ms/38.8per-row(n=5)  N=6:208ms/34.6per-row(n=5)  N=7:239ms/34.1per-row(n=5)  N=8:221ms/27.6per-row(n=92)
+== build/c2/screen/chunk256.err
+  steps 151  wall 83.5 s = forward 81.3 + logits 2.0 + other 0.3
+  prefill phase: 24 steps to t=56.6 s; 4136 prefill rows + 84 riding decode rows; 56.0 s forward; pure chunk cost 12.01 ms/row (83.3 tok/s)
+  decode-only tail: 127 steps from t=56.6 s; 932 rows; 26.9 s; 28.9 ms/row
+  tail steps by N: N=1:90ms/89.7per-row(n=3)  N=2:127ms/63.5per-row(n=3)  N=3:150ms/49.9per-row(n=3)  N=4:163ms/40.7per-row(n=3)  N=5:206ms/41.2per-row(n=3)  N=6:212ms/35.4per-row(n=3)  N=7:251ms/35.8per-row(n=3)  N=8:219ms/27.4per-row(n=106)
+== build/c2/screen/kvq8.err
+  steps 167  wall 89.6 s = forward 87.4 + logits 2.0 + other 0.2
+  prefill phase: 40 steps to t=62.2 s; 4136 prefill rows + 140 riding decode rows; 61.6 s forward; pure chunk cost 12.80 ms/row (78.1 tok/s)
+  decode-only tail: 127 steps from t=62.2 s; 876 rows; 27.4 s; 31.2 ms/row
+  tail steps by N: N=1:98ms/98.0per-row(n=5)  N=2:133ms/66.5per-row(n=5)  N=3:174ms/58.1per-row(n=5)  N=4:168ms/41.9per-row(n=5)  N=5:179ms/35.8per-row(n=5)  N=6:202ms/33.7per-row(n=5)  N=7:231ms/33.0per-row(n=5)  N=8:230ms/28.7per-row(n=92)
+== build/c2/screen/t6.err
+  steps 167  wall 88.9 s = forward 86.6 + logits 2.1 + other 0.1
+  prefill phase: 40 steps to t=62.9 s; 4136 prefill rows + 140 riding decode rows; 62.3 s forward; pure chunk cost 13.20 ms/row (75.8 tok/s)
+  decode-only tail: 127 steps from t=62.9 s; 876 rows; 26.0 s; 29.7 ms/row
+  tail steps by N: N=1:84ms/83.7per-row(n=5)  N=2:127ms/63.4per-row(n=5)  N=3:159ms/53.0per-row(n=5)  N=4:168ms/41.9per-row(n=5)  N=5:188ms/37.6per-row(n=5)  N=6:196ms/32.7per-row(n=5)  N=7:223ms/31.8per-row(n=5)  N=8:215ms/26.8per-row(n=92)
+== build/c2/screen/spin20k.err
+  steps 167  wall 87.8 s = forward 85.6 + logits 2.1 + other 0.1
+  prefill phase: 40 steps to t=61.9 s; 4136 prefill rows + 140 riding decode rows; 61.3 s forward; pure chunk cost 12.64 ms/row (79.1 tok/s)
+  decode-only tail: 127 steps from t=61.9 s; 876 rows; 26.0 s; 29.6 ms/row
+  tail steps by N: N=1:86ms/86.1per-row(n=5)  N=2:124ms/61.9per-row(n=5)  N=3:149ms/49.7per-row(n=5)  N=4:153ms/38.2per-row(n=5)  N=5:171ms/34.2per-row(n=5)  N=6:220ms/36.6per-row(n=5)  N=7:239ms/34.1per-row(n=5)  N=8:222ms/27.7per-row(n=92)
