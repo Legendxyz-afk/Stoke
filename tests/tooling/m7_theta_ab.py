@@ -363,6 +363,9 @@ def main() -> int:
                         "pair). Default: the 09-08 literal, so that run "
                         "reproduces.")
     p.add_argument("--out")
+    p.add_argument("--set", choices=tuple(mp.MODEL_SETS), default="llama32",
+                   help="which model set the grids belong to (m7_probe refuses "
+                        "to read one set's grid as another's; 2026-09-15, B6)")
     p.add_argument("--markdown", help="write the report's result section, "
                                       "generated from the artifact")
     p.add_argument("--shakedown", action="store_true",
@@ -376,6 +379,7 @@ def main() -> int:
     if not a.closed or not a.accum:
         print("fatal: --closed and --accum are required", file=sys.stderr)
         return 1
+    mp.select_set(a.set)
 
     ga = mp.load_grids(pathlib.Path(a.closed))
     gb = mp.load_grids(pathlib.Path(a.accum))

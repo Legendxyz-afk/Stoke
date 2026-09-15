@@ -1,0 +1,483 @@
+{
+ "a": {
+  "file": "build/b6/P-00.serial.null40.json",
+  "mode": "teacher-force/serial",
+  "n_ids": 87,
+  "seconds": 16154.44,
+  "env": {
+   "OPENBLAS_NUM_THREADS": "6",
+   "OMP_NUM_THREADS": "6",
+   "MKL_NUM_THREADS": "6",
+   "affinity_mask": "0xfff",
+   "numpy": "2.4.0"
+  }
+ },
+ "b": {
+  "file": "build/b6/P-00.serial.all.json",
+  "mode": "teacher-force/serial",
+  "n_ids": 87,
+  "seconds": 3469.743,
+  "env": {
+   "OPENBLAS_NUM_THREADS": "6",
+   "OMP_NUM_THREADS": "6",
+   "MKL_NUM_THREADS": "6",
+   "affinity_mask": "0xfff",
+   "numpy": "2.4.0"
+  }
+ },
+ "ids_verified_identical_over_range": true,
+ "common_positions": 40,
+ "position_range": [
+  0,
+  39
+ ],
+ "argmax_disagreements": 0,
+ "bit_identical_positions": 40,
+ "unanchorable_positions": 0,
+ "anchored_max": 0.0,
+ "anchored_p95": 0.0,
+ "raw_max": 0.0,
+ "trend": [
+  {
+   "positions": [
+    0,
+    7
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    8,
+    15
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    16,
+    23
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    24,
+    31
+   ],
+   "anchored_max": 0.0
+  },
+  {
+   "positions": [
+    32,
+    39
+   ],
+   "anchored_max": 0.0
+  }
+ ],
+ "rows": [
+  {
+   "pos": 0,
+   "band": "[0,100)",
+   "argmax_a": 19991,
+   "argmax_b": 19991,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 1,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 2,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 3,
+   "band": "[0,100)",
+   "argmax_a": 73667,
+   "argmax_b": 73667,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 4,
+   "band": "[0,100)",
+   "argmax_a": 323,
+   "argmax_b": 323,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 5,
+   "band": "[0,100)",
+   "argmax_a": 304,
+   "argmax_b": 304,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 6,
+   "band": "[0,100)",
+   "argmax_a": 10779,
+   "argmax_b": 10779,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 7,
+   "band": "[0,100)",
+   "argmax_a": 382,
+   "argmax_b": 382,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 8,
+   "band": "[0,100)",
+   "argmax_a": 2670,
+   "argmax_b": 2670,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 9,
+   "band": "[0,100)",
+   "argmax_a": 504,
+   "argmax_b": 504,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 10,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 11,
+   "band": "[0,100)",
+   "argmax_a": 43125,
+   "argmax_b": 43125,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 12,
+   "band": "[0,100)",
+   "argmax_a": 315,
+   "argmax_b": 315,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 13,
+   "band": "[0,100)",
+   "argmax_a": 39020,
+   "argmax_b": 39020,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 14,
+   "band": "[0,100)",
+   "argmax_a": 323,
+   "argmax_b": 323,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 15,
+   "band": "[0,100)",
+   "argmax_a": 13391,
+   "argmax_b": 13391,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 16,
+   "band": "[0,100)",
+   "argmax_a": 448,
+   "argmax_b": 448,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 17,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 18,
+   "band": "[0,100)",
+   "argmax_a": 5670,
+   "argmax_b": 5670,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 19,
+   "band": "[0,100)",
+   "argmax_a": 315,
+   "argmax_b": 315,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 20,
+   "band": "[0,100)",
+   "argmax_a": 33223,
+   "argmax_b": 33223,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 21,
+   "band": "[0,100)",
+   "argmax_a": 323,
+   "argmax_b": 323,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 22,
+   "band": "[0,100)",
+   "argmax_a": 29734,
+   "argmax_b": 29734,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 23,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 24,
+   "band": "[0,100)",
+   "argmax_a": 3476,
+   "argmax_b": 3476,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 25,
+   "band": "[0,100)",
+   "argmax_a": 315,
+   "argmax_b": 315,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 26,
+   "band": "[0,100)",
+   "argmax_a": 36733,
+   "argmax_b": 36733,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 27,
+   "band": "[0,100)",
+   "argmax_a": 5127,
+   "argmax_b": 5127,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 28,
+   "band": "[0,100)",
+   "argmax_a": 24705,
+   "argmax_b": 24705,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 29,
+   "band": "[0,100)",
+   "argmax_a": 323,
+   "argmax_b": 323,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 30,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 31,
+   "band": "[0,100)",
+   "argmax_a": 1882,
+   "argmax_b": 1882,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 32,
+   "band": "[0,100)",
+   "argmax_a": 315,
+   "argmax_b": 315,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 33,
+   "band": "[0,100)",
+   "argmax_a": 12499,
+   "argmax_b": 12499,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 34,
+   "band": "[0,100)",
+   "argmax_a": 39489,
+   "argmax_b": 39489,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 35,
+   "band": "[0,100)",
+   "argmax_a": 323,
+   "argmax_b": 323,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 36,
+   "band": "[0,100)",
+   "argmax_a": 3015,
+   "argmax_b": 3015,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 37,
+   "band": "[0,100)",
+   "argmax_a": 304,
+   "argmax_b": 304,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 38,
+   "band": "[0,100)",
+   "argmax_a": 279,
+   "argmax_b": 279,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  },
+  {
+   "pos": 39,
+   "band": "[0,100)",
+   "argmax_a": 1882,
+   "argmax_b": 1882,
+   "bit_identical": true,
+   "anchored_max": 0.0,
+   "raw_max": 0.0,
+   "n_shared": 5
+  }
+ ],
+ "label": "T6",
+ "threshold": 0.001,
+ "require_exact": true,
+ "passed": true
+}
