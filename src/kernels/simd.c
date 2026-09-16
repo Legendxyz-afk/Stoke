@@ -142,12 +142,67 @@ static inline i32 hsum_i32_8(__m256i v) {
     return _mm_cvtsi128_si32(s);
 }
 
+/* ▶▶ THE PREAMBLE'S THREE CALLS, INLINED (2026-09-16). `objdump` on the
+ * shipping VNNI kernel showed every (row, super-block) paying three
+ * out-of-line calls -- `kernels_q4_k_unpack_scales` and `f16_to_f32` twice --
+ * each behind a `vzeroupper`, with the eight unpacked nibble vectors stored to
+ * the stack before the calls and reloaded after them. At N=8 (two groups per
+ * row) that preamble was of the same order as the dot product it prepares.
+ *
+ * `kq_f16c` is `vcvtph2ps`: ONE uop, and exact for every input, because every
+ * f16 value is representable in f32 -- normals, subnormals (the instruction
+ * does not honour DAZ for its f16 source and the results are f32 normals, so
+ * FTZ cannot touch them), zeros, infinities. A NaN keeps its payload; the one
+ * difference from the software converter is that an sNaN arrives already
+ * quiet, which the other spelling's first multiply does to it anyway, so the
+ * fold's bits are the same either way (test_simd walks all 65536 inputs and
+ * asserts exactly that relation). `kq_unpack_scales_inl` is kquant.c's
+ * `kq_unpack_q4_k_scales`, byte for byte in its arithmetic; the same file's
+ * pair-agreement test is extended to this copy. */
+static inline f32 kq_f16c(u16 h) {
+    return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int)h)));
+}
+
+static inline u32 kq_ld_u32(const u8* p) {
+    u32 v;
+    memcpy(&v, p, sizeof v);   /* x86-64 only: this file is, see line 17 */
+    return v;
+}
+
+static inline void kq_unpack_scales_inl(const u8* packed, u8* scales8,
+                                        u8* mins8) {
+    const u32 kmask1 = 0x3f3f3f3fu;
+    const u32 kmask2 = 0x0f0f0f0fu;
+    const u32 kmask3 = 0x03030303u;
+    u32 utmp0 = kq_ld_u32(packed + 0);
+    u32 utmp1 = kq_ld_u32(packed + 4);
+    u32 utmp2 = kq_ld_u32(packed + 8);
+    const u32 utmp3 = ((utmp2 >> 4) & kmask2) | (((utmp1 >> 6) & kmask3) << 4);
+    const u32 uaux  = utmp1 & kmask1;
+    utmp1 = (utmp2 & kmask2) | (((utmp0 >> 6) & kmask3) << 4);
+    utmp2 = uaux;
+    utmp0 &= kmask1;
+    for (u32 k = 0; k < 4u; k++) {
+        scales8[k]      = (u8)((utmp0 >> (8u * k)) & 0xFFu);
+        scales8[k + 4u] = (u8)((utmp1 >> (8u * k)) & 0xFFu);
+        mins8[k]        = (u8)((utmp2 >> (8u * k)) & 0xFFu);
+        mins8[k + 4u]   = (u8)((utmp3 >> (8u * k)) & 0xFFu);
+    }
+}
+
+/* The two helpers above, exposed out of line FOR THE TESTS ONLY (simd.h). */
+f32 kernels_f16_to_f32_f16c_probe(u16 h) { return kq_f16c(h); }
+void kernels_q4_k_unpack_scales_inl_probe(const void* packed12, u8* scales8,
+                                          u8* mins8) {
+    kq_unpack_scales_inl((const u8*)packed12, scales8, mins8);
+}
+
 /* Mirrors q8_0.c's block_scale_or_fatal, including the message, so a corrupt
  * tensor fails identically whichever path ran. */
 static f32 simd_block_scale_or_fatal(const u8* blk, u64 b, const char* who) {
     u16 raw;
     memcpy(&raw, blk, sizeof raw);
-    f32 d = f16_to_f32(raw);
+    f32 d = kq_f16c(raw);
     if (isinf(d) || isnan(d)) {
         fatal("kernels: %s -- block %llu scale decodes to inf/nan -- "
               "corrupt or hostile Q8_0 tensor (a sane GGUF cannot contain "
@@ -690,7 +745,7 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
         memcpy(&ad, ablk, sizeof ad);
 
         u8 scales8[8], mins8[8];
-        kernels_q4_k_unpack_scales(blk + 4, scales8, mins8);
+        kq_unpack_scales_inl(blk + 4, scales8, mins8);
 
         /* The min term: 16 i16 bsums against 8 mins, mins8[j/2]. Sixteen
          * integer terms per super-block -- left scalar because vectorising
@@ -771,8 +826,8 @@ f32 vec_dot_q4_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
         memcpy(&dmraw, blk + 2, sizeof dmraw);
         /* The two CONTRACT lines, verbatim from the scalar. */
         const i32 S_b = kq_hsum_i32(acc);
-        const f32 d = f16_to_f32(draw) * ad;
-        const f32 dmin = f16_to_f32(dmraw) * ad;
+        const f32 d = kq_f16c(draw) * ad;
+        const f32 dmin = kq_f16c(dmraw) * ad;
         sumf = sumf + d * (f32)S_b;
         sumf = sumf - dmin * (f32)sumi;
     }
@@ -852,7 +907,7 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
         /* ── WEIGHT-ONLY WORK, ONCE PER ROW instead of once per sequence.
          * This is the whole of rung B, now carrying rung C's byte layout. */
         u8 scales8[8], mins8[8];
-        kernels_q4_k_unpack_scales(blk + 4, scales8, mins8);
+        kq_unpack_scales_inl(blk + 4, scales8, mins8);
         for (u32 j = 0; j < 8u; ++j) {
             const u8* qsrc = q4 + (j / 2u) * 32u;
             __m256i qb =
@@ -864,8 +919,8 @@ void vec_dot_q4_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
         u16 draw, dmraw;
         memcpy(&draw, blk, sizeof draw);
         memcpy(&dmraw, blk + 2, sizeof dmraw);
-        const f32 dw = f16_to_f32(draw);
-        const f32 dm = f16_to_f32(dmraw);
+        const f32 dw = kq_f16c(draw);
+        const f32 dm = kq_f16c(dmraw);
 #if STOKE_MINS_SIMD
         /* ── HOISTED, because `mins8` IS WEIGHT-ONLY. The duplicated vector
          * depends on nothing per-sequence, so building it inside the sequence
@@ -1416,7 +1471,7 @@ void vec_dot_q4_k_q8_k_xn_vnni_avx2(const void* wrows, u64 row_bytes,
         f32* sumf_r = sumf + (size_t)rr * n_seq;
 
         u8 scales8[8], mins8[8];
-        kernels_q4_k_unpack_scales(blk + 4, scales8, mins8);
+        kq_unpack_scales_inl(blk + 4, scales8, mins8);
         for (u32 j = 0; j < 8u; ++j) {
             const u8* qsrc = q4 + (j / 2u) * 32u;
             __m256i qb =
@@ -1455,8 +1510,8 @@ void vec_dot_q4_k_q8_k_xn_vnni_avx2(const void* wrows, u64 row_bytes,
         u16 draw, dmraw;
         memcpy(&draw, blk, sizeof draw);
         memcpy(&dmraw, blk + 2, sizeof dmraw);
-        const f32 dw = f16_to_f32(draw);
-        const f32 dm = f16_to_f32(dmraw);
+        const f32 dw = kq_f16c(draw);
+        const f32 dm = kq_f16c(dmraw);
         static const i8 dup[16] = {0, 0, 1, 1, 2, 2, 3, 3,
                                    4, 4, 5, 5, 6, 6, 7, 7};
         const __m256i m16 = _mm256_cvtepu8_epi16(_mm_shuffle_epi8(
@@ -1667,7 +1722,7 @@ f32 vec_dot_q6_k_q8_k_avx2(const void* wrow, const void* arow, u64 n) {
         /* The CONTRACT line, verbatim from the scalar -- with the centring
          * folded back in as exact integer arithmetic before it. */
         const i32 S_b = kq_hsum_i32(acc) - 32 * corr;
-        sumf = sumf + (f16_to_f32(draw) * ad) * (f32)S_b;
+        sumf = sumf + (kq_f16c(draw) * ad) * (f32)S_b;
     }
     return sumf;
 }
@@ -1728,7 +1783,7 @@ void vec_dot_q6_k_q8_k_xn_avx2(const void* wrows, u64 row_bytes, u32 n_rows,
         }
         u16 draw;
         memcpy(&draw, blk + 208, sizeof draw);
-        const f32 dw = f16_to_f32(draw);
+        const f32 dw = kq_f16c(draw);
 
         /* ── PER-SEQUENCE WORK, the solo kernel's operations in its order. */
         for (u32 s = 0; s < n_seq; ++s) {
@@ -1858,7 +1913,7 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
 
         u16 draw;
         memcpy(&draw, blk + 208, sizeof draw);
-        const f32 dw = f16_to_f32(draw);
+        const f32 dw = kq_f16c(draw);
 
         u32 s = 0;
 #ifndef STOKE_MUT_NO_BOOKKEEP
@@ -2008,6 +2063,20 @@ void vec_dot_q6_k_q8_k_xn_maddubs_avx2(const void* wrows, u64 row_bytes,
 #else /* !x86-64 */
 
 bool kernels_cpu_has_avx_vnni(void) { return false; }
+
+f32 kernels_f16_to_f32_f16c_probe(u16 h) {
+    (void)h;
+    fatal("kernels: kernels_f16_to_f32_f16c_probe on a non-x86-64 build");
+}
+
+void kernels_q4_k_unpack_scales_inl_probe(const void* packed12, u8* scales8,
+                                          u8* mins8) {
+    (void)packed12;
+    (void)scales8;
+    (void)mins8;
+    fatal("kernels: kernels_q4_k_unpack_scales_inl_probe on a non-x86-64 "
+          "build");
+}
 
 void dequant_row_q8_0_avx2(const void* row, u64 n, f32* out) {
     (void)row;

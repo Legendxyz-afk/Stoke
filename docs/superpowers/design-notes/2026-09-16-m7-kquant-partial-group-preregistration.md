@@ -145,3 +145,45 @@ llama-bench pp512 @12T bracketing the block: 75.56 ± 4.30 before, 71.56 ± 1.59
 after — the box slowed ~5% across the block):** pad0/auto wall = 0.989 · 1.021 ·
 0.995, median 0.995, 1/3 pairs > 1 — a null. The pure chunk cost drifted
 10.85 → 12.21 ms/row across the six units, three times the effect looked for.
+
+## 7. RESULTS — K2 (the inlined preamble)
+
+**Kernel level** (`bench --matvec-batch`, one process per unit pinned to CPU 0,
+ABAB by binary in equal-length dirs `build/win-kA` (K1 baseline) / `build/win-kB`
+(K2), 32 cycles, 8 pairs on ffn_gate, 6 on ffn_down; baseline-over-K2 time):
+
+| tensor | N=4 | N=8 | N=16 |
+|---|---|---|---|
+| ffn_gate Q4_K | **1.43×** (8/8) | **1.26×** (8/8) | **1.20×** (8/8) |
+| ffn_down Q6_K | 1.15× (6/6) | 1.07× (6/6) | 1.06× (5/6) |
+
+Above the pre-registered band (+10–20% at N=8, +5–10% at N=16). Non-vacuity:
+`build/kpad/calls_in_kernel.sh` reads 4 calls in each xn kernel (3 to `fatal`
+in the argument checks, 1 `___chkstk_ms` at entry), down from 7; the row loop
+carries none. The two new exhaustive graders ran RED first (65,536 and 93,583
+failures against a flipped-bit and a masked-min mutant).
+
+**In situ** (S2 @8, 12T, chunk 256, dedup on, three ABAB pairs by binary,
+`build/kpad/k2-*-p*`): baseline/K2 wall = **1.008 · 1.049 · 1.011, median
+1.011, 3/3 pairs > 1**. The N=8 tail step 188→183, 190→182, 190→190 ms; the
+pure chunk cost moved with the order of the pair (10.86→11.37, 11.27→10.69,
+11.57→10.98), i.e. within drift. **The in-situ band (−5 to −10%) is NOT met:
+the gain is ~1–3%.**
+
+**Why, measured the same sitting (`build/kpad/run_smt_ab.ps1`): two copies of
+the kernel bench at once on sibling logical CPUs 0 and 1 — one P-core, its
+ports shared as they are in situ at 12 threads — read baseline/K2 = 1.098 at
+N=8 and 1.053 at N=16** (4 pairs), against 1.26 / 1.20 for one thread alone.
+Per core, the baseline gains 1.23× from the sibling and K2 only 1.08×: the
+preamble's instructions were mostly running in the other thread's bubbles
+already. ⇒ **In situ the matvec at 12T is bound by the core's shared
+resources (the multiplier ports carry 32 dpbusd + ~24 other uops per 1024
+MACs), not by one thread's instruction count. A single-thread kernel bench
+over-predicts an instruction-count optimisation's in-situ value by 5–10× on
+this box; every kernel A/B from here runs SMT-paired first** (the new driver),
+and the levers that transfer are port-0/1 uop cuts — of which, inside the
+bit-exact contract, only the 8-wide float fold (~5% of p01) remains cheap.
+
+K2 stays in: bit-exact by two exhaustive graders plus the twins, and a
+consistent 1–3% in situ (3/3 pairs) for free. The chunk cost's lower bound on
+this box is now the shared-port ceiling of the group loop, not the preamble.

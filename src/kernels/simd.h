@@ -44,6 +44,15 @@
  * Returns false on non-x86-64 builds, where the twins are not compiled. */
 bool kernels_cpu_has_avx_vnni(void);
 
+/* TEST HOOKS ONLY (2026-09-16): the two inline preamble helpers of simd.c,
+ * exposed out of line so test_simd.c can walk every f16 input against
+ * f16_to_f32 and every random 12-byte scale block against
+ * kernels_q4_k_unpack_scales. Not for callers: the kernels use the inline
+ * spellings, which is the whole point of them. */
+f32  kernels_f16_to_f32_f16c_probe(u16 h);
+void kernels_q4_k_unpack_scales_inl_probe(const void* packed12, u8* scales8,
+                                          u8* mins8);
+
 /* AVX2+VNNI twin of vec_dot_q8_0_q8_0. BIT-IDENTICAL to the scalar kernel
  * for every input, which is asserted over 1e4 random tensors in
  * tests/test_simd.c. Fatal on the same conditions as the scalar version (n

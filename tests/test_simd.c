@@ -591,6 +591,78 @@ TEST(simd_k_quant_twins_match_scalar_on_a_zero_activation_block) {
  * project has banked a green fixture that could not see its own defect before
  * ([[fixture-can-be-blind-to-the-defect]]), and the check below is what makes
  * this one unable to. */
+/* ▶ THE F16C CONVERTER AGAINST THE SOFTWARE ONE, ALL 65536 INPUTS (2026-09-16).
+ * The kernels' per-super-block scales now come through `vcvtph2ps`. Every f16
+ * value is exactly representable in f32, so the two spellings must agree bit
+ * for bit on every non-NaN input -- subnormals and infinities included, which
+ * is why this is exhaustive rather than sampled. On a NaN they may differ in
+ * ONE bit: the instruction quiets an sNaN (sets mantissa bit 22) where the
+ * software converter preserves it; every other bit, the payload and the sign
+ * included, must still match. The kernels multiply the scale before anything
+ * reads it, and that multiply quiets an sNaN the same way, so the fold's bits
+ * are identical either way -- which is checked here too, on the product. */
+TEST(simd_f16c_scale_converter_matches_f16_to_f32_on_every_input) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        fprintf(stderr, "FAIL %s:%d: no AVX-VNNI on this box\n", __FILE__,
+                __LINE__);
+        g_test_case_failed = 1;
+        return;
+    }
+    u32 exact = 0, quieted = 0, bad = 0;
+    for (u32 v = 0; v < 65536u; v++) {
+        const u16 h    = (u16)v;
+        const f32 sw   = f16_to_f32(h);
+        const f32 hw   = kernels_f16_to_f32_f16c_probe(h);
+        const u32 bsw  = f32_bits(sw);
+        const u32 bhw  = f32_bits(hw);
+        const int nan  = ((v >> 10) & 0x1Fu) == 0x1Fu && (v & 0x3FFu) != 0u;
+        if (bsw == bhw) {
+            exact++;
+        } else if (nan && (bsw | 0x00400000u) == bhw) {
+            quieted++;
+            /* The product route: both spellings times a finite scale must
+             * land on the same bits. */
+            const f32 psw = sw * 0.75f;
+            const f32 phw = hw * 0.75f;
+            if (f32_bits(psw) != f32_bits(phw)) bad++;
+        } else {
+            if (bad == 0) {
+                fprintf(stderr, "  h=0x%04X: software 0x%08X vs f16c 0x%08X\n",
+                        v, bsw, bhw);
+            }
+            bad++;
+        }
+    }
+    ASSERT_EQ_U32(bad, 0u);
+    ASSERT_TRUE(exact >= 65536u - 2048u); /* every non-NaN input, at least */
+    ASSERT_TRUE(quieted > 0u);            /* the sNaN class was exercised */
+}
+
+/* ▶ THE INLINE SCALE UNPACK AGAINST kquant.c's, 1e5 RANDOM BLOCKS. Same
+ * arithmetic, second copy; test_kquant already holds the first copy to the
+ * dequant path's one-pair-at-a-time transcription, so this closes the chain. */
+TEST(simd_inline_q4_k_scale_unpack_matches_kquant_on_1e5_random_blocks) {
+    if (!kernels_cpu_has_avx_vnni()) {
+        fprintf(stderr, "FAIL %s:%d: no AVX-VNNI on this box\n", __FILE__,
+                __LINE__);
+        g_test_case_failed = 1;
+        return;
+    }
+    rng_reset();
+    u32 bad = 0;
+    for (u32 it = 0; it < 100000u; it++) {
+        u8 packed[12];
+        for (u32 i = 0; i < 12u; i++) packed[i] = (u8)(rng_next() & 0xFFu);
+        u8 s_ref[8], m_ref[8], s_inl[8], m_inl[8];
+        kernels_q4_k_unpack_scales(packed, s_ref, m_ref);
+        kernels_q4_k_unpack_scales_inl_probe(packed, s_inl, m_inl);
+        if (memcmp(s_ref, s_inl, 8) != 0 || memcmp(m_ref, m_inl, 8) != 0) {
+            bad++;
+        }
+    }
+    ASSERT_EQ_U32(bad, 0u);
+}
+
 TEST(simd_q6_k_xn_maddubs_is_bit_exact_vs_reference_and_solo) {
     if (!kernels_cpu_has_avx_vnni()) {
         fprintf(stderr, "FAIL %s:%d: no AVX-VNNI -- the K4 exact-diff gate "
