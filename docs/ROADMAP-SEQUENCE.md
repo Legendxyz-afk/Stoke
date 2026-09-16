@@ -568,6 +568,7 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Blocked on:** nothing. **Owner:** the session.
 - **Done when:** swept, with a null arm, ranges disjoint, and either changed or
   explicitly confirmed at 16.
+- **STATUS 2026-09-16 (K3 of `docs/superpowers/design-notes/2026-09-16-m7-kquant-partial-group-preregistration.md`):** tiles 32 and 64 built and graded exact (`test_matvec_batch` 2280/0, `test_simd` 15/15, knob proved live by three `simd.o` hashes + `-dM`); measured in situ only (the kernel bench is capped at the tile), S2 @8 12T, two ABAB pairs each: **t16/t32 1.017 · 0.945 (inconclusive), t16/t64 0.953 · 0.929 (64 slower in both orders)** — ⚠ INDICATIVE, NOT A RESULT: Chrome came on mid-block (Kabir, 11:0x), walls jumped 70 → 80 s. **16 stays; 32 owes one quiet re-run of 3 pairs; 64 is out.** And the finding that reframes this item: **the single-thread kernel bench over-predicts an instruction-count change's in-situ value by 5–10× on this box** (K2: 1.26× at N=8 alone, 1.10× SMT-paired on one core, 1.01–1.05× in situ at 12T) — every kernel A/B now runs SMT-paired first (`build/kpad/run_smt_ab.ps1`), and the transferable levers are port-0/1 uop cuts, of which the bit-exact contract leaves ~5% (the 8-wide float fold).
 - ⚠ **Hazard, learned the hard way on ROW_TILE:** *a constant validated on the
   axes you SWEPT is not validated on the axis you are GRADED by.* ROW_TILE was
   swept on `run` and `batch` and shipped while `bench --serve` — the gate

@@ -187,3 +187,25 @@ bit-exact contract, only the 8-wide float fold (~5% of p01) remains cheap.
 K2 stays in: bit-exact by two exhaustive graders plus the twins, and a
 consistent 1–3% in situ (3/3 pairs) for free. The chunk cost's lower bound on
 this box is now the shared-port ceiling of the group loop, not the preamble.
+
+## 8. RESULTS — K3 (the tile sweep), INDICATIVE ONLY
+
+Tiles 32 and 64 built (`build/win-t{16,32,64}`, knob live by three `simd.o`
+hashes + `-dM`), graded exact (`test_matvec_batch` 2280/0, `test_simd` 15/15
+each). The kernel bench cannot reach n_seq above the tile, so in situ only:
+S2 @8 12T, two ABAB pairs each — **t16/t32 1.017 · 0.945; t16/t64 0.953 ·
+0.929.** ⚠ Chrome came on mid-block (Kabir's message, ~11:0x) and the walls
+jumped 70 → 80 s across it, so this block is VOID as a measurement: 16 stays,
+64 reads slower in both orders (plausible: 16 KiB of permuted activations per
+super-block plus 16 KiB each of `sumf`/`out` against a 48 KiB L1), 32 owes one
+quiet re-run of three pairs before it is called either way.
+
+## 9. What this sitting changed about how the next one measures
+
+The single-thread pinned kernel bench — the project's standing kernel
+instrument — over-predicted K2's in-situ value 5–10×. The reason is
+measured, not argued (§7): at 12 threads two threads share each P-core and the
+sibling already runs in the bubbles an instruction-count cut removes. From
+here a kernel change is priced SMT-paired FIRST (`build/kpad/run_smt_ab.ps1`:
+two copies of the bench on logical CPUs 0 and 1), then in situ; a
+single-thread number is a ceiling, not a prediction.
