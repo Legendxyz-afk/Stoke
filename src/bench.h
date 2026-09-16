@@ -52,7 +52,8 @@ void bench_ops(const char* model_path, u32 reps_override, int jsonl);
  * The full contract, the three power checks and the reason the alias lives in
  * the CALLER are in bench.c beside the code. */
 void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs,
-                        const char* only);
+                        const char* only, const char* seqs_list,
+                        int pad_ab);
 
 /* ---- pure helpers, EXPOSED FOR TESTS ----
  *

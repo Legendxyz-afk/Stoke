@@ -1052,9 +1052,29 @@ typedef struct {
     u32               n_seq;
 } BatchCtx;
 
+/* ▶ --pad-ab (2026-09-16): the three arms of a cell stop being (real, alias,
+ * null) and become (padded, UNPADDED, padded-again): the same distinct
+ * buffers in every arm, and each arm sets vec.c's partial-group padding
+ * threshold before it runs -- the default policy, 0 (never pad), the default
+ * policy again.
+ * The arms are bit-identical by design, which the power check below
+ * ASSERTS instead of the alias mode's "B must differ". This exists because
+ * the env-switched form of the same A/B (one process per arm) read up to 8%
+ * apart on cells where the arms run IDENTICAL code: the per-process spread
+ * of a 1.4 s process is the size of the effect being priced, and only an
+ * interleave inside one process removes it. */
+static int g_pad_ab = 0;
+
 static void run_matvec_batch(void* p) {
     BatchCtx* c = (BatchCtx*)p;
     matvec_batch(c->w, c->x, c->n_in, c->y, c->n_out, c->aq, c->n_seq);
+}
+
+static void run_arm(BatchCtx* c, u32 arm) {
+    if (g_pad_ab) {
+        kernels_set_pad_tail(arm == 1u ? 0u : KERNELS_PAD_TAIL_AUTO);
+    }
+    run_matvec_batch(c);
 }
 
 /* Deterministic, and DIFFERENT PER SEQUENCE -- see the fixture note above.
@@ -1123,20 +1143,32 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
     BatchCtx cA = { w, (const f32* const*)x, n_in, (f32* const*)yA, n_out,
                     (void* const*)aqA, n_seq };
     BatchCtx cB = { w, (const f32* const*)x, n_in, (f32* const*)yB, n_out,
-                    (void* const*)aqB, n_seq };
+                    (void* const*)(g_pad_ab ? aqA : aqB), n_seq };
     BatchCtx cC = { w, (const f32* const*)x, n_in, (f32* const*)yC, n_out,
                     (void* const*)aqC, n_seq };
 
     /* ---- the power checks, BEFORE anything is timed ---- */
-    run_matvec_batch(&cA);
-    run_matvec_batch(&cB);
-    run_matvec_batch(&cC);
+    run_arm(&cA, 0u);
+    run_arm(&cB, 1u);
+    run_arm(&cC, 2u);
     if (rows_differ(yA[0], yC[0], n_out)) {
         fatal("bench --matvec-batch: the NULL arm disagreed with arm A -- the "
               "same computation at different addresses returned different "
               "numbers, so nothing in this table can be trusted");
     }
-    if (n_seq > 1u) {
+    if (g_pad_ab) {
+        /* The padded and unpadded arms must agree on EVERY sequence -- a
+         * padded copy that leaked into a real slot would show here, on the
+         * real weights, before a single timing is taken. */
+        for (u32 s = 0; s < n_seq; s++) {
+            if (rows_differ(yA[s], yB[s], n_out)) {
+                fatal("bench --matvec-batch --pad-ab: the UNPADDED arm "
+                      "disagreed with the padded one on sequence %u -- the "
+                      "padding changed an answer", s);
+            }
+        }
+    }
+    if (n_seq > 1u && !g_pad_ab) {
         if (!rows_differ(yA[0], yA[n_seq - 1u], n_out)) {
             fatal("bench --matvec-batch: the fixture is DEGENERATE -- sequence "
                   "0 and sequence %u produced identical output, so an aliasing "
@@ -1164,7 +1196,7 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
         for (u32 k = 0; k < 3u; k++) {
             BatchCtx* ctx = (ord[k] == 0u) ? &cA : (ord[k] == 1u) ? &cB : &cC;
             t0 = now_ms();
-            run_matvec_batch(ctx);
+            run_arm(ctx, ord[k]);
             ms[ord[k]] = now_ms() - t0;
         }
         sa[c] = ms[0];
@@ -1198,10 +1230,42 @@ static void batch_cell(const GgufTensor* w, const char* label, u32 n_seq,
 }
 
 void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs,
-                        const char* only) {
+                        const char* only, const char* seqs_list, int pad_ab) {
+    g_pad_ab = pad_ab;
     if (cycles == 0u) cycles = 8u;
     if (max_seqs == 0u || max_seqs > KERNELS_BATCH_TILE) {
         max_seqs = KERNELS_BATCH_TILE;
+    }
+    /* ▶ --seqs-list: EXACT widths, in the order given (2026-09-16). The
+     * doubling sweep below only ever visits 1, 2, 4, 8, 16, and the partial
+     * group vec.c pads -- n_seq % 4 in {2, 3} past the first group -- lives at
+     * 6, 7, 10, 11, 14, 15. An instrument that cannot reach the cells a change
+     * lives in would price it at 1.00x and call that a null result. Parsed
+     * strictly: every entry 1..KERNELS_BATCH_TILE, refused otherwise. */
+    u32 list[KERNELS_BATCH_TILE];
+    u32 n_list = 0;
+    if (seqs_list != NULL) {
+        const char* q = seqs_list;
+        while (*q != 0) {
+            char* end = NULL;
+            long  v   = strtol(q, &end, 10);
+            if (end == q || v <= 0 || v > (long)KERNELS_BATCH_TILE ||
+                n_list >= KERNELS_BATCH_TILE) {
+                fatal("stoke bench --matvec-batch: --seqs-list '%s' -- want "
+                      "up to %u comma-separated widths in 1..%u",
+                      seqs_list, KERNELS_BATCH_TILE, KERNELS_BATCH_TILE);
+            }
+            list[n_list++] = (u32)v;
+            q = end;
+            if (*q == ',') q++;
+            else if (*q != 0) {
+                fatal("stoke bench --matvec-batch: --seqs-list '%s' -- "
+                      "unexpected '%c'", seqs_list, *q);
+            }
+        }
+        if (n_list == 0u) {
+            fatal("stoke bench --matvec-batch: --seqs-list is empty");
+        }
     }
 
     GgufFile* f = gguf_open(model_path);
@@ -1275,6 +1339,12 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs,
     printf("  threads : 1 -- this file never starts the pool, so the ratio is "
            "the kernel's own\n");
     printf("\n");
+    if (g_pad_ab) {
+        printf("  ** --pad-ab: A = partial groups PADDED (the default policy), "
+               "B = never padded, C = padded again (null).\n");
+        printf("     Same buffers in every arm; A and B must agree byte for "
+               "byte. A/B is padded-over-unpadded time: BELOW 1 means padding is faster.\n\n");
+    }
     printf("  A = %u distinct activation buffers (the real case).\n", max_seqs);
     printf("  B = the same call with every activation pointer ALIASED to one "
            "buffer:\n");
@@ -1318,9 +1388,16 @@ void bench_matvec_batch(const char* model_path, u32 cycles, u32 max_seqs,
                (unsigned long long)w->dims[0], (unsigned long long)w->dims[1],
                (unsigned long long)(w->dims[0] / KERNELS_Q8_K_BLOCK_ELEMS),
                (double)w->nbytes / 1e6);
-        for (u32 n_seq = 1u; n_seq <= max_seqs; n_seq <<= 1) {
-            batch_cell(w, labels[i], n_seq, cycles, x, yA, yB, yC, aqA, aqB,
-                       aqC);
+        if (n_list > 0u) {
+            for (u32 k = 0; k < n_list; k++) {
+                batch_cell(w, labels[i], list[k], cycles, x, yA, yB, yC, aqA,
+                           aqB, aqC);
+            }
+        } else {
+            for (u32 n_seq = 1u; n_seq <= max_seqs; n_seq <<= 1) {
+                batch_cell(w, labels[i], n_seq, cycles, x, yA, yB, yC, aqA,
+                           aqB, aqC);
+            }
         }
         printf("\n");
     }

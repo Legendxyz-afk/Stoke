@@ -8,8 +8,9 @@
 #include "pool.h"
 #include "simd.h"
 
-#include <stdlib.h> /* getenv -- STOKE_Q6K_KERNEL, STOKE_Q4K_KERNEL */
-#include <string.h> /* strcmp -- ditto */
+#include <stdatomic.h> /* the once-only pad trace flag, cleared by whichever worker pads first */
+#include <stdlib.h>    /* getenv -- STOKE_Q6K_KERNEL, STOKE_Q4K_KERNEL */
+#include <string.h>    /* strcmp -- ditto */
 
 f32 vec_dot_f32(const f32* a, const f32* b, u64 n) {
     f32 sum = 0.0f;
@@ -155,10 +156,100 @@ static void rows_q8_0_avx2(void* vctx, u64 begin, u64 end) {
  * type that has not been converted yet. A type with no batched worker is not
  * broken, only unfused -- which is exactly the state every type was in
  * before this commit. */
+/* ▶ THE PARTIAL GROUP IS PADDED TO A WHOLE ONE (2026-09-16). Every grouped
+ * kernel below takes its sequences FOUR at a time and hands the remainder --
+ * `n_seq % 4` of them -- to a per-sequence tail that runs the same integer dot
+ * through the shared block dot and reduces ONE sequence where the group
+ * reduces four. The tail is where the serving path spends more time than it
+ * looks: the step trace of 2026-09-15 read the N=4 -> N=5 decode step at
+ * +44 ms for ONE row against +17 ms per row inside a group, and a prefill
+ * chunk's riding decodes (128 + 3, 256 + 3) are ALWAYS a partial group. So a
+ * tile whose remainder qualifies is padded to the next multiple of the group
+ * with copies of its LAST pointer, the kernel computes the padded sequences,
+ * and their results are dropped.
+ *
+ * ⚠ BIT-EXACT BY THE PROPERTY test_matvec_batch ALREADY GRADES: a sequence's
+ * result depends on its own bytes and the row's, never on which sequences
+ * share the group (separate accumulators, separate lanes of the reduction,
+ * its own scale in the fold). A padded copy is just another sequence whose
+ * output nobody reads; the copies are written into a padded `out` and only
+ * the real `cnt` are stored. `bench --matvec-batch --pad-ab` asserts the
+ * padded and unpadded arms agree on every sequence before it times them.
+ *
+ * ▶ WHICH REMAINDERS, MEASURED NOT MODELLED (`bench --matvec-batch --pad-ab`,
+ * one process, three interleaved arms, 32 cycles x 3 processes, pinned; the
+ * null arm read 1.00 +- 0.02 in every cell; padded-over-unpadded time):
+ *
+ *   remainder  Q4_K attn_q / ffn_gate            Q6_K ffn_down (maddubs)
+ *   3 alone    0.90-0.92 (N=3)                   0.92-0.95
+ *   3 + group  0.76-0.81 (N=7)                   0.91-0.95
+ *   2 alone    1.04-1.07 (N=2) -- SLOWER         1.09-1.11 -- SLOWER
+ *   2 + group  0.90-0.93 (N=6)                   1.02-1.05 -- SLOWER
+ *   1          not padded; forced on, 1.20 (N=5) -- SLOWER, as the uop model said
+ *
+ * So the default policy is per kernel: Q4_K pads a remainder of three always
+ * and a remainder of two only when the tile also holds a full group (N=2 is
+ * the one shape where four grouped sequences cost more than two on the tail --
+ * left as a measured fact, not explained); Q6_K pads three only. A remainder
+ * of one is never padded by default: one grouped call is four sequences' work
+ * against one tail sequence's. The runtime knob is for the A/B --
+ * STOKE_KQ_PAD_TAIL=0 never pads, =1/2/3 force that threshold on BOTH kernels
+ * with no qualifier, unset = the policy above; read once, an unrecognised
+ * value REFUSED like the kernel selectors'. The ungrouped Q6_K reference xn
+ * kernel passes group=1 and is never padded: there is nothing to pad INTO. */
+#define KQ_PAD_AUTO       0xFFFFFFFEu   /* the measured per-kernel policy */
+#define KQ_PAD_UNRESOLVED 0xFFFFFFFFu
+static u32 g_pad_tail_min = KQ_PAD_UNRESOLVED;
+/* STOKE_KQ_PAD_TRACE=1: announce the FIRST padded group on stderr. The padded
+ * and unpadded arms are bit-identical by design, so a measurement's log needs
+ * this line to prove the arm it names was the arm that ran -- the same
+ * non-vacuity rule the speed mutants follow. Off: one predictable branch per
+ * padded tile. */
+static atomic_int g_pad_trace = 0;
+
+static void pad_select(void) {
+    if (g_pad_tail_min != KQ_PAD_UNRESOLVED) return;
+    const char* t = getenv("STOKE_KQ_PAD_TRACE");
+    atomic_store_explicit(&g_pad_trace, (t != NULL && t[0] == '1') ? 1 : 0,
+                          memory_order_relaxed);
+    const char* e = getenv("STOKE_KQ_PAD_TAIL");
+    if (e == NULL || e[0] == '\0') {
+        g_pad_tail_min = KQ_PAD_AUTO;
+    } else if (e[1] == '\0' && e[0] >= '0' && e[0] <= '3') {
+        g_pad_tail_min = (u32)(e[0] - '0');
+    } else {
+        fatal("kernels: STOKE_KQ_PAD_TAIL=%s -- want 0 (never pad a partial "
+              "group), 1, 2 or 3 (pad a remainder of at least that many); an "
+              "unrecognised value is refused rather than ignored, because a "
+              "typo that silently selected the default would make an A/B "
+              "measure one arm twice",
+              e);
+    }
+}
+
+/* BENCH/TEST HOOK: overrides the threshold for the rest of the process and
+ * marks it resolved, so pad_select will not read the env over it. `bench
+ * --matvec-batch --pad-ab` flips it between arms inside one process. Call it
+ * from the dispatching thread only, never inside a parallel region. */
+void kernels_set_pad_tail(u32 min_remainder) {
+    if (min_remainder > 3u && min_remainder != KERNELS_PAD_TAIL_AUTO) {
+        fatal("kernels: kernels_set_pad_tail(%u) -- want 0..3 or "
+              "KERNELS_PAD_TAIL_AUTO", min_remainder);
+    }
+    g_pad_tail_min = (min_remainder == KERNELS_PAD_TAIL_AUTO) ? KQ_PAD_AUTO
+                                                             : min_remainder;
+}
+
+/* `group` is the kernel's grouping (4, or 1 for an ungrouped kernel);
+ * `auto_min` is the kernel's measured threshold under the default policy (2
+ * for Q4_K, 3 for Q6_K) -- see the table above. */
 static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
                                    void (*dot_xn)(const void*, u64, u32,
                                                   const void* const*,
-                                                  u32, u64, f32*)) {
+                                                  u32, u64, f32*),
+                                   u32 group, u32 auto_min) {
+    const int auto_policy = (g_pad_tail_min == KQ_PAD_AUTO);
+    const u32 thr = auto_policy ? auto_min : g_pad_tail_min;
     for (u64 r0 = begin; r0 < end; r0 += KQUANT_ROW_CHUNK) {
         u64 r1 = r0 + KQUANT_ROW_CHUNK;
         if (r1 > end) r1 = end;
@@ -194,6 +285,36 @@ static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
         for (u32 s0 = 0; s0 < j->n_seq; s0 += KERNELS_BATCH_TILE) {
             u32 cnt = j->n_seq - s0;
             if (cnt > KERNELS_BATCH_TILE) cnt = KERNELS_BATCH_TILE;
+            /* The padded call: `cntp` sequences through `aqs`, of which only
+             * the first `cnt` are real. KERNELS_BATCH_TILE is a multiple of
+             * every group, so cntp never exceeds the tile. */
+            const void* const* aqs  = (const void* const*)&j->aq[s0];
+            u32                cntp = cnt;
+            const void*        aqpad[KERNELS_BATCH_TILE];
+            u32                rem  = (group > 1u) ? cnt % group : 0u;
+            int pad = (rem != 0u && thr != 0u && rem >= thr);
+            /* The measured exception (table above): a remainder of two with
+             * no full group beside it (the tile IS the remainder) is slower
+             * padded. */
+            if (pad && auto_policy && rem == 2u && cnt == rem) pad = 0;
+            if (pad) {
+                cntp = cnt + (group - rem);
+                if (atomic_load_explicit(&g_pad_trace, memory_order_relaxed) &&
+                    atomic_exchange_explicit(&g_pad_trace, 0,
+                                             memory_order_relaxed)) {
+                    /* Once per process, from whichever worker pads first;
+                     * the exchange makes it exactly once without a lock. */
+                    fprintf(stderr, "kernels: pad trace -- a partial group of "
+                                    "%u padded to %u (n_seq %u, tile at %u, "
+                                    "threshold %u%s)\n",
+                            rem, cntp, j->n_seq, s0, thr,
+                            auto_policy ? " auto" : " forced");
+                }
+                for (u32 k = 0; k < cntp; k++) {
+                    aqpad[k] = j->aq[s0 + (k < cnt ? k : cnt - 1u)];
+                }
+                aqs = aqpad;
+            }
             /* ▶ AND THE ROWS GO IN TILES TOO, because the swap above only got
              * the reuse distance down to a tile's whole-row activation (46.7
              * KiB at n_in=2560, still the size of L1). The kernel takes
@@ -207,10 +328,10 @@ static void rows_kquant_batch_avx2(const BatchRowJob* j, u64 begin, u64 end,
                  * stack array and each (row, sequence) is exact on its own. */
                 f32 out[KERNELS_ROW_TILE * KERNELS_BATCH_TILE];
                 dot_xn(j->base + r * j->row_bytes, j->row_bytes, nr,
-                       (const void* const*)&j->aq[s0], cnt, j->n_in, out);
+                       aqs, cntp, j->n_in, out);
                 for (u32 rr = 0; rr < nr; rr++) {
                     for (u32 k = 0; k < cnt; k++) {
-                        j->y[s0 + k][r + rr] = out[rr * cnt + k];
+                        j->y[s0 + k][r + rr] = out[rr * cntp + k];
                     }
                 }
             }
@@ -227,7 +348,9 @@ static void rows_q4_k_batch_avx2(void* vctx, u64 begin, u64 end) {
                             * q4k_select would otherwise silently pick the
                             * kernel that is NOT the compiled-in default. */
                            g_q4k_vnni == 1 ? vec_dot_q4_k_q8_k_xn_vnni_avx2
-                                           : vec_dot_q4_k_q8_k_xn_avx2);
+                                           : vec_dot_q4_k_q8_k_xn_avx2,
+                           4u /* both Q4_K kernels group by four */,
+                           2u /* pad a remainder of 3, and of 2 beside a group */);
 }
 
 /* ▶ WHICH Q6_K BATCHED KERNEL, AND WHY THE CHOICE IS A FUNCTION POINTER TAKEN
@@ -374,7 +497,12 @@ static void q4k_select(void) {
 static void rows_q6_k_batch_avx2(void* vctx, u64 begin, u64 end) {
     rows_kquant_batch_avx2((const BatchRowJob*)vctx, begin, end,
                            g_q6k_maddubs ? vec_dot_q6_k_q8_k_xn_maddubs_avx2
-                                         : vec_dot_q6_k_q8_k_xn_avx2);
+                                         : vec_dot_q6_k_q8_k_xn_avx2,
+                           /* only the maddubs twin groups; the reference xn
+                            * kernel is per-sequence and has nothing to pad
+                            * into */
+                           g_q6k_maddubs ? 4u : 1u,
+                           3u /* Q6_K: a remainder of 3 only, measured */);
 }
 
 static void rows_q4_k_scalar(void* vctx, u64 begin, u64 end) {
@@ -555,6 +683,7 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
             /* Resolved HERE, on the dispatching thread, before any worker
              * exists -- see q6k_select. */
             if (is_q4) q4k_select(); else q6k_select();
+            pad_select();
             pool_for_rows(n_out, is_q4 ? rows_q4_k_batch_avx2
                                        : rows_q6_k_batch_avx2, &j);
         } else {

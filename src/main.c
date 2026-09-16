@@ -1639,6 +1639,8 @@ int main(int argc, char** argv) {
              * feeding `bench/history.jsonl`. */
             u32         cycles = 0, max_seqs = 0;
             const char* only = NULL;
+            const char* seqs_list = NULL;
+            int         pad_ab = 0;
             for (int i = 4; i < argc; i++) {
                 if ((strcmp(argv[i], "--cycles") == 0 ||
                      strcmp(argv[i], "--seqs") == 0) && i + 1 < argc) {
@@ -1652,18 +1654,25 @@ int main(int argc, char** argv) {
                     else                               max_seqs = (u32)v;
                 } else if (strcmp(argv[i], "--tensor") == 0 && i + 1 < argc) {
                     only = argv[++i];
+                } else if (strcmp(argv[i], "--seqs-list") == 0 &&
+                           i + 1 < argc) {
+                    seqs_list = argv[++i];
+                } else if (strcmp(argv[i], "--pad-ab") == 0) {
+                    pad_ab = 1;
                 } else {
                     fatal("stoke bench --matvec-batch: unexpected argument "
                           "'%s'", argv[i]);
                 }
             }
-            bench_matvec_batch(argv[3], cycles, max_seqs, only);
+            bench_matvec_batch(argv[3], cycles, max_seqs, only, seqs_list,
+                               pad_ab);
             finish_stdout_or_fatal();
             return 0;
         }
         if (argc < 4 || strcmp(argv[2], "--ops") != 0) {
             fatal("usage: stoke bench (--ops <path.gguf> [--reps N] [--jsonl] "
-                  "| --matvec-batch <path.gguf> [--cycles N] [--seqs N])");
+                  "| --matvec-batch <path.gguf> [--cycles N] [--seqs N] "
+                  "[--seqs-list a,b,c] [--tensor NAME] [--pad-ab])");
         }
         u32 reps  = 0;   /* 0 = adaptive, see bench.c Decision 3 */
         int jsonl = 0;

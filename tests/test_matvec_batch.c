@@ -39,7 +39,19 @@
  * tile is exercised rather than assumed. */
 #define N_IN  1024u
 #define N_OUT  100u
-#define MAX_SEQ  5u
+/* ▶ 19 = ONE FULL TILE (KERNELS_BATCH_TILE 16) PLUS A REMAINDER OF THREE
+ * (2026-09-16). The fused K-quant path tiles sequences at 16 and its grouped
+ * kernels take four at a time, so a batch size has three things to get right
+ * at once: the tile boundary, the group boundary and the partial group after
+ * it -- which vec.c now PADS to a whole group with copies of the last pointer
+ * and discards. Up to 5 only ever saw one tile and a lone remainder (2, 3 --
+ * padded or not by the kernel's policy) or one beside a group (5 = 4 + 1,
+ * never padded); 19 walks every remainder mod 4 on both sides
+ * of the tile boundary (17 = 16 + 1, 18 = 16 + 2, 19 = 16 + 3) as well as
+ * 6 = 4 + 2 and 7 = 4 + 3, the padded tails a serving step actually produces.
+ * Rotation is kept so every sequence takes every position, including the
+ * ones a padded copy would be written over if the padded stride were wrong. */
+#define MAX_SEQ  19u
 
 static int checks = 0, failures = 0;
 

@@ -261,6 +261,14 @@ void matvec_batch(const GgufTensor* w, const f32* const* x, u64 n_in,
                   f32* const* y, u64 n_out, void* const* aq_scratch,
                   u32 n_seq);
 
+/* BENCH/TEST HOOK (2026-09-16): the partial-group padding threshold
+ * (vec.c, STOKE_KQ_PAD_TAIL) set programmatically -- 0 never pads, k pads a
+ * remainder of at least k sequences up to a whole group on both K-quant
+ * kernels, KERNELS_PAD_TAIL_AUTO restores the measured per-kernel policy.
+ * Overrides the env for the rest of the process. Dispatching thread only. */
+#define KERNELS_PAD_TAIL_AUTO 0xFFFFFFFEu
+void kernels_set_pad_tail(u32 min_remainder);
+
 /* ---- normalization / positional / activation ---- */
 
 /* y[i] = (x[i] / sqrt(mean(x^2) + eps)) * w[i], f32 mean, for i in
