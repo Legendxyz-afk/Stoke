@@ -39,7 +39,11 @@ single-stream ≥50% of llama.cpp; no >250ms decode stall from a
 co-running prefill (**status 2026-09-15: MISSED, structural, at every
 S-ALIGN-legal width; stall p50 ~3.3 s @8 at the SHIPPED chunk 256, ~1.8 s
 at 128, 738 ms at 64 — the retiring item is the scheduler overlap redesign,
-SEQUENCE §IV.6 row 1**); one static binary; OpenAI endpoints pass
+SEQUENCE §IV.6 row 1. DISPOSITIONED 2026-09-16 BY KABIR: A DOCUMENTED MISS —
+`superpowers/memos/2026-09-16-clause4-itl-stall-DISPOSITION-KABIR.md` holds
+the proofs (three gradings, five widths 16–256, all above the bound) and the
+reasons the redesign is deferred to Phase 1.5; the referent's own stall is
+recorded in the @16/@32 sitting as the re-anchor**); one static binary; OpenAI endpoints pass
 openai-python; ASan/TSan green throughout; README with a reproducible
 benchmark report.
 
