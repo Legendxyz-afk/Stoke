@@ -77,14 +77,29 @@ _TRACE_HDR = re.compile(
 _TRACE_THR = re.compile(r"pool trace: thr (\d+) tid=(\d+) ideal=(-?\d+) P=(\d+) E=(\d+) \|")
 _SCHED_CHUNK = re.compile(r"sched: STOKE_SCHED_CHUNK=(\d+)")
 _TRACE_ON = re.compile(r"pool trace: on, every [\d.]+s, (\d+) threads, spin=(\d+)")
+# llama-server's own announcement of its slot count and per-slot context, so a
+# `llamacpp-tuned@ctx=N` arm is verified from the server, not the label (the same
+# rule `sched_chunk` follows for stoke). Both spellings are llama.cpp's server
+# init lines and appear identically in ollama's embedded runner logs.
+_LLAMA_SLOTS = re.compile(r"n_slots = (\d+)")
+_LLAMA_CTX_SLOT = re.compile(r"n_ctx_slot = (\d+)")
 
 
-def parse_trace(lines):
+def parse_trace(lines, startup=()):
     """The pool's periodic placement tables, compacted: one record per report,
     per-thread (ideal, P-chunks, E-chunks). Empty for engines that print none.
     The 'on' line's spin budget is attached to every report, so an A/B arm
-    that asked for a spin can be checked against what the pool read."""
+    that asked for a spin can be checked against what the pool read.
+    `startup` is the pre-healthy snapshot (adapters.Adapter.startup_lines): the
+    'on' line lives there, and a long unit rotates it out of the 500-line ring
+    `lines` comes from -- it is scanned for the header ONLY, never for reports,
+    so a report that sits in both is not counted twice."""
     reports, cur, spin, nthr = [], None, None, None
+    for ln in startup:
+        m = _TRACE_ON.search(ln)
+        if m:
+            spin = int(m.group(2))
+            nthr = int(m.group(1))
     for ln in lines:
         m = _TRACE_ON.search(ln)
         if m:
@@ -167,19 +182,44 @@ def unit(config_label, scenario, timeout_s):
                 "error": f"token counts {sorted({p['n_tokens'] for p in pcs})} "
                          f"!= {scenario.max_tokens}"}
     ttfts = sorted(p["ttft_ms"] / 1000.0 for p in pcs)
+    # Client-observed inter-token latency, pooled over every client of the run
+    # (2026-09-16). Clause 4 was graded on exactly this quantity and ruled a
+    # documented miss (memos/2026-09-16-clause4-itl-stall-DISPOSITION-KABIR.md);
+    # the ruling asks for the REFERENT's own stall at @16/@32 as the re-anchor,
+    # and a bank that drops the ITLs cannot supply it for either arm.
+    itls = sorted(x for p in pcs for x in p["itl_ms"])
+    itl = None
+    if itls:
+        itl = {"n": len(itls), "p50_ms": itls[len(itls) // 2],
+               "p95_ms": itls[min(len(itls) - 1, int(0.95 * len(itls)))],
+               "max_ms": itls[-1],
+               # per-client maxima, so one stalled stream reads apart from all of them
+               "client_max_ms": sorted(max(p["itl_ms"]) for p in pcs if p["itl_ms"])}
     log = cell.get("adapter_log") or []
-    reports = parse_trace(log)
+    startup = cell.get("adapter_startup_log") or []
+    reports = parse_trace(log, startup=startup)
     # The scheduler announces a STOKE_SCHED_CHUNK override at open (2026-09-15);
     # banked so a `stoke-tuned@chunk=N` arm is verified from the server's own log,
     # never from the label. None = nothing announced = the locked default -- which
     # is 128 in every bank up to `73b9246` (2026-09-15 afternoon) and 256 from the
     # commit that shipped the graded width the same evening; a bank does not yet
     # carry the binary's identity, so read None against the bank's date.
+    # Read from the startup snapshot first (2026-09-16): every announcement below
+    # is printed before the engine turns healthy, and a unit longer than the
+    # ring's 500 lines would otherwise bank None for a value the server did say.
     sched_chunk = None
-    for ln in log:
+    server_slots = None
+    server_ctx_slot = None
+    for ln in list(startup) + list(log):
         m = _SCHED_CHUNK.search(ln)
         if m:
             sched_chunk = int(m.group(1))
+        m = _LLAMA_SLOTS.search(ln)
+        if m:
+            server_slots = int(m.group(1))
+        m = _LLAMA_CTX_SLOT.search(ln)
+        if m:
+            server_ctx_slot = int(m.group(1))
     return {
         "config": config_label,
         "scenario": scenario.name,
@@ -188,9 +228,14 @@ def unit(config_label, scenario, timeout_s):
         "warmup_aggregate_decode_tps": (cell.get("warmup") or {}).get("aggregate_decode_tps"),
         "ttft50_s": ttfts[len(ttfts) // 2],
         "ttft_min_s": ttfts[0],
+        "itl": itl,
         "completed": r["completed"],
         "adapter_log_head": (cell.get("adapter_log_tail") or "").splitlines()[:2],
         "sched_chunk": sched_chunk,
+        # llama-server's announced slot count and per-slot ctx (None for stoke), so a
+        # `llamacpp-tuned@ctx=N` unit carries the server's word beside the label.
+        "server_slots": server_slots,
+        "server_ctx_slot": server_ctx_slot,
         "proc": cell.get("proc"),
         "trace": trace_summary(reports),
         "trace_reports": reports,
@@ -286,6 +331,14 @@ def main() -> int:
                 if tr.get("e_share_total") is not None:
                     extra += (f" E-share={tr['e_share_total']:.3f} d/h={tr.get('dispatcher_over_helper')}"
                               f" spin={tr.get('spin')} thr={tr.get('threads')} aff={proc.get('affinity_mask')}")
+                if rec.get("sched_chunk") is not None:
+                    extra += f" chunk={rec['sched_chunk']}"
+                if rec.get("server_slots") is not None:
+                    extra += f" slots={rec['server_slots']} ctx/slot={rec.get('server_ctx_slot')}"
+                if "peak_ws_mb" in proc:
+                    extra += f" peakws={proc['peak_ws_mb']:.0f}MB"
+                if rec.get("itl"):
+                    extra += f" itl50/95/max={rec['itl']['p50_ms']:.0f}/{rec['itl']['p95_ms']:.0f}/{rec['itl']['max_ms']:.0f}ms"
                 print(f"  [{rec['t_min']:5.1f}m] {label:16s} wall={rec['wall_s']:7.1f}s "
                       f"agg={rec['aggregate_decode_tps']:6.3f} "
                       f"warm={rec['warmup_aggregate_decode_tps'] or 0:6.3f} "

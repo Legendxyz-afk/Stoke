@@ -341,6 +341,16 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Blocked on:** 0.3. **Owner:** the session, on Kabir's approval.
 - **Done when:** an @16 llama-server figure exists from a named block on a
   quiesced box, with @8 taken in the same block.
+- ⭐ **PRE-REGISTERED 2026-09-16, awaiting Kabir's go:**
+  `superpowers/design-notes/2026-09-16-clause2-n16-n32-ollama-preregistration.md`
+  — four blocks (llama @16 · llama @32 · ollama-default @8 · @16, each vs the
+  @8-graded stoke arm), bands frozen, ~2 h 15 min, launcher with the banks.
+  The pre-flight corrected the plan: no prompt files or `--pool-blocks` on
+  the HTTP path (the pool derives, 1,408 blocks @32); llama @32 needs
+  `llamacpp-tuned@ctx=22528` because the policy's `-c 65536` predicts ~14 GB;
+  and ⚠⚠ **`src/server.c` `MAX_CONNS 24` makes @32 a 24-wide server plus a
+  queue — raising it (48 proposed) is a source change and Kabir's call**
+  before block 2. Blocks 1, 3, 4 can run on `d56e496`.
 - **Hazards:**
   - **Bracket it.** Run the referent BEFORE and AFTER the stoke arms; if the two
     readings are not within ~1% the block is not quiet and nothing in it is

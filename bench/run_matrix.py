@@ -60,9 +60,12 @@ CONFIG_LABELS = ["ollama-default", "ollama-tuned", "llamacpp-default", "llamacpp
 EXTRA_CONFIG_LABELS = ["stoke-default", "stoke-tuned"]
 ALL_CONFIG_LABELS = CONFIG_LABELS + EXTRA_CONFIG_LABELS
 
-SCENARIOS = [scenarios.S1] + scenarios.S2 + [scenarios.S3, scenarios.S4]
-SCENARIO_NAMES = [s.name for s in SCENARIOS]
-SCENARIOS_BY_NAME = {s.name: s for s in SCENARIOS}
+SCENARIOS = [scenarios.S1] + scenarios.S2 + [scenarios.S3, scenarios.S4]   # the default eight
+# Selectable by name, never in the default set (2026-09-16): s2-closed-32, the
+# same relationship to SCENARIOS that EXTRA_CONFIG_LABELS has to CONFIG_LABELS.
+EXTRA_SCENARIOS = list(scenarios.S2_WIDE)
+SCENARIO_NAMES = [s.name for s in SCENARIOS + EXTRA_SCENARIOS]
+SCENARIOS_BY_NAME = {s.name: s for s in SCENARIOS + EXTRA_SCENARIOS}
 
 HIGH_PERF_GUID = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"  # stock Windows High-performance scheme
 GUID_RE = re.compile(
@@ -121,6 +124,26 @@ def build_adapter(config_label, scenario):
         return adapters.LlamaCppAdapter()
     if config_label == "llamacpp-tuned":
         return adapters.LlamaCppAdapter(parallel=p, ctx=(8192 if is_s4 else p * 2048))
+    if config_label.startswith("llamacpp-tuned@"):
+        # ▶ `llamacpp-tuned@ctx=N` (2026-09-16): the tuned cell with its TOTAL context
+        # set explicitly instead of the policy's `P * 2048`. This is NOT a tuning of
+        # the referent -- it exists because the policy does not FIT at N=32: the @8
+        # unit's peak working set was 7.28 GB at `-c 16384`, of which the f16 KV is
+        # 2.36 GB (144 KB/token for Qwen3-4B), so `-c 65536` predicts ~14 GB on a
+        # 15.6 GB box. `ctx=22528` is 704 per slot, stoke's own per-sequence ctx (S2
+        # needs 653), which also retires the asymmetry the stoke-tuned comment below
+        # records. VERIFIED from the bank, never from the label: the harness reads
+        # `n_slots` and `n_ctx_slot` from llama-server's own startup lines.
+        ctx = None
+        for opt in config_label.split("@", 1)[1].split(","):
+            key, _, val = opt.partition("=")
+            if key == "ctx" and val.isdigit():
+                ctx = int(val)
+            else:
+                raise ValueError(f"unknown llamacpp-tuned option {opt!r} in {config_label!r}")
+        if ctx is None:
+            raise ValueError(f"{config_label!r}: ctx= is the only option and it is required")
+        return adapters.LlamaCppAdapter(parallel=p, ctx=ctx, label=config_label)
     if config_label == "stoke-default":
         return adapters.StokeAdapter()
     if config_label.startswith("stoke-tuned@"):
@@ -432,6 +455,9 @@ def run_cell(config_label, scenario, runs, timeout_s, keep_log=False):
             cell["adapter_log_tail"] = adapter._log_tail(40)
             if keep_log:
                 cell["adapter_log"] = list(adapter._log_lines)
+                # The lines the engine printed BEFORE it turned healthy -- the ring above
+                # is 500 lines and a long unit rotates the startup announcements out of it.
+                cell["adapter_startup_log"] = list(adapter.startup_lines)
             # The process is still alive here, so its CPU-seconds and faults describe the
             # runs above; after stop() there is nothing left to ask.
             if adapter.proc is not None:
@@ -456,7 +482,7 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--only-scenario", action="append", choices=SCENARIO_NAMES, default=None,
-        help="restrict to this scenario name; repeatable (default: all eight)",
+        help="restrict to this scenario name; repeatable (default: the eight M0 scenarios; s2-closed-32 is selectable but never in the default set)",
     )
     parser.add_argument("--fresh", action="store_true", help="re-run cells even if their raw file exists")
     parser.add_argument(
@@ -494,7 +520,7 @@ def main(argv=None):
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     only_configs = args.only_config or list(CONFIG_LABELS)
-    only_scenarios = args.only_scenario or list(SCENARIO_NAMES)
+    only_scenarios = args.only_scenario or [s.name for s in SCENARIOS]
     ordered_configs = [c for c in ALL_CONFIG_LABELS if c in only_configs]
     ordered_scenarios = [s for s in SCENARIO_NAMES if s in only_scenarios]
 

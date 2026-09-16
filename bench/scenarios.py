@@ -110,6 +110,22 @@ S2 = [
     for n in (1, 2, 4, 8, 16)
 ]
 
+# 2026-09-16: one more S2 width for the "N > 16" question (neither engine is
+# measured past 16). Same shape, NOT a member of the locked family the M0 bars
+# were drawn on, and NOT in run_matrix's default set -- selectable by name only,
+# the way stoke-* configs are, so a default full-matrix run does not silently
+# grow a 32-client cell against every baseline.
+S2_WIDE = [
+    Scenario(
+        name="s2-closed-32",
+        n_clients=32,
+        prompt_tokens=512,
+        max_tokens=128,
+        shared_prefix_tokens=0,
+        mode="closed_loop",
+    )
+]
+
 S3 = Scenario(
     name="s3-agent-fanout",
     n_clients=8,

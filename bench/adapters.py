@@ -254,6 +254,14 @@ class Adapter:
         self.port = port
         self.proc = None
         self._log_lines = collections.deque(maxlen=500)
+        # ▶ The startup announcements, snapshotted the moment the engine turns healthy
+        # (2026-09-16). The ring above holds 500 lines and a unit's log is not bounded:
+        # stoke's pool trace alone is ~13 lines per report, so a ten-minute N=32 unit
+        # evicts the lines a bank is VERIFIED from -- `sched: STOKE_SCHED_CHUNK=`, the
+        # pool's `threads/spin` header, llama-server's `n_slots` / `n_ctx_slot`. The
+        # bank reads the configuration from what the server SAID, never from the
+        # label, so the saying has to survive the run.
+        self.startup_lines = []
 
     # -- subclass contract --
     def _spawn(self):
@@ -282,6 +290,7 @@ class Adapter:
             )
 
         self._log_lines.clear()
+        self.startup_lines = []
         try:
             self.proc = self._spawn()
         except FileNotFoundError as exc:
@@ -299,6 +308,7 @@ class Adapter:
                 )
             try:
                 if self._healthy():
+                    self.startup_lines = list(self._log_lines)
                     return self.base_url
             except Exception:
                 pass  # not up yet -- keep polling
@@ -404,11 +414,11 @@ class LlamaCppAdapter(Adapter):
     HOST = "127.0.0.1"
     PORT = 8089
 
-    def __init__(self, parallel=None, ctx=None):
-        label = "llamacpp-tuned" if parallel else "llamacpp-default"
+    def __init__(self, parallel=None, ctx=None, label=None):
+        base = "llamacpp-tuned" if parallel else "llamacpp-default"
         self.root_url = f"http://{self.HOST}:{self.PORT}"
         # base_url is the server ROOT: bench.timed_stream() appends /v1/chat/completions itself.
-        super().__init__(label, base_url=self.root_url, host=self.HOST, port=self.PORT)
+        super().__init__(label or base, base_url=self.root_url, host=self.HOST, port=self.PORT)
         self.parallel = parallel
         self.ctx = ctx
         self.model_name = LLAMACPP_MODEL_NAME
