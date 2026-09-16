@@ -116,12 +116,15 @@ typedef struct {
  * cannot overrun -- but the expression stays single-sourced anyway. */
 #define ATT_KV_FLOATS(head_dim) ((size_t)(head_dim) * 2u)
 
-/* M5 E3: positions per prefill chunk. 128 = 8 KV blocks, so every chunk
- * boundary is block-aligned and S-ALIGN holds by construction; it also matches
- * the LOCKED scheduler chunk, so M5's co-running prefill inherits this width.
- * 1 turns E3 off. Declared up here with the other run-time knobs because
- * att_env_init validates it; the mechanism and its correctness argument live
- * at prefill_range. */
+/* M5 E3: positions per prefill chunk on the run/batch path (prefill_range).
+ * 128 = 8 KV blocks, so every chunk boundary is block-aligned and S-ALIGN holds
+ * by construction. It matched the scheduler's chunk until 2026-09-15; the
+ * scheduler's SCHED_CHUNK_TOKENS is 256 since (graded on the serving wall, see
+ * sched.h) and never passes through here -- it hands the host n_decode + chunk
+ * rows per step -- so this width governs the solo path only and was not
+ * re-measured when the other moved. 1 turns E3 off. Declared up here with the
+ * other run-time knobs because att_env_init validates it; the mechanism and
+ * its correctness argument live at prefill_range. */
 /* ---- the per-op prefill profile (M7, -DSTOKE_PROFILE_OPS) ---------------
  *
  * ▶▶▶ WHY THIS EXISTS. The 0.51x gap to the M5 bar is a PREFILL gap, and 95% of

@@ -210,7 +210,7 @@ $lines += "|---|---|---|---|---|---|---|---|---|"
 foreach ($c in $cells) {
     $lines += ("| {0} | {1} | {2} | {3:n1} | {4:n0} | {5:n0} | {6:n1}% | {7:n1} | {8:n0} |" -f
         $c.id, $(if ($c.dedup) { "on" } else { "OFF" }),
-        $(if ($c.chunk -gt 0) { $c.chunk } else { 128 }),
+        $(if ($c.chunk -gt 0) { $c.chunk } else { 256 }),  # the locked default: 256 since 2026-09-15 (128 before)
         (V $c.id $reStallP50 1), (V $c.id $reStallMax 1), (V $c.id $reStallN 1),
         (V $c.id $reStallPct 1), (V $c.id $reCadP50 1), (V $c.id $reChunks 1))
 }
@@ -343,7 +343,7 @@ $lines += ""
 foreach ($c in $cells) {
     $lines += "``````"
     $lines += ("--- {0} (dedup {1}, chunk {2})" -f $c.id, $(if ($c.dedup) { "on" } else { "OFF" }),
-               $(if ($c.chunk -gt 0) { $c.chunk } else { 128 }))
+               $(if ($c.chunk -gt 0) { $c.chunk } else { 256 }))
     $lines += (($res[$c.id] -split "`r?`n" | Where-Object { $_ -match '^(serve:|  )' }) -join "`n")
     $lines += "``````"
     $lines += ""

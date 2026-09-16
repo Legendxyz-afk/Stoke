@@ -682,7 +682,25 @@ static void test_preempt_replay_is_lossless(void) {
  * job (tests/tooling/run_m5_dedup_verify.ps1), and the same mutant is the proof
  * of power there. */
 #define FANOUT_N      8u
-#define FANOUT_SHARED 128u  /* 8 whole blocks at BP_BLOCK_TOKENS = 16 */
+/* The shared prefix is ONE WHOLE SCHEDULER CHUNK (16 blocks at BP_BLOCK_TOKENS
+ * = 16 since SCHED_CHUNK_TOKENS became 256), tied to the constant DELIBERATELY:
+ * the "strictly fewer chunks" claim below has power only if adopting the prefix
+ * removes at least one chunk from each adopter's prefill. It used to be a
+ * literal 128 with a 152-token prompt, and when the chunk moved 128 -> 256 on
+ * 2026-09-15 that prompt became ONE chunk on both arms and the claim failed --
+ * the mechanism was fine; the fixture had lost its power, and the test said so
+ * exactly as [[fixture-can-be-blind-to-the-defect]] wants. */
+#define FANOUT_SHARED SCHED_CHUNK_TOKENS
+#define FANOUT_TAIL   24u /* each client's unshared prompt tail */
+_Static_assert(FANOUT_SHARED % BP_BLOCK_TOKENS == 0u,
+               "the adopted prefix must be whole blocks");
+_Static_assert(FANOUT_SHARED + FANOUT_TAIL <= MAXPROMPT,
+               "the fan-out prompt must fit the sim's prompt buffer");
+
+/* Prefill steps a prompt of n positions takes at the shipping chunk. */
+static u32 chunks_of(u32 n) {
+    return (n + SCHED_CHUNK_TOKENS - 1u) / SCHED_CHUNK_TOKENS;
+}
 
 static void gen_fanout_trace(Trace* t, u32 n, u32 capacity_blocks,
                              u32 max_tokens) {
@@ -694,7 +712,7 @@ static void gen_fanout_trace(Trace* t, u32 n, u32 capacity_blocks,
     t->shared_prefix = FANOUT_SHARED;
     for (u32 i = 0; i < t->n; i++) {
         t->spec[i].id = 8000 + i;
-        t->spec[i].n_prompt = FANOUT_SHARED + 24u;
+        t->spec[i].n_prompt = FANOUT_SHARED + FANOUT_TAIL;
         t->spec[i].max_tokens = max_tokens;
         t->spec[i].arrive_step = 0; /* all at once: S3 is a fanout, not a queue */
     }
@@ -733,15 +751,27 @@ static void test_prefix_adoption_on_the_serve_path(void) {
      * client k is admitted client k-1's whole prefix is written and hashed --
      * every client but the first adopts all 8 blocks. A bound here would stay
      * true if adoption silently degraded to one block. */
-    ok("adopt: 7 of 8 clients adopted the whole 128-token prefix",
+    ok("adopt: 7 of 8 clients adopted the whole one-chunk shared prefix",
        son.adopted_positions == (u64)(FANOUT_N - 1u) * FANOUT_SHARED);
     printf("  adopt: %llu of %llu admitted prompt positions were resident\n",
            (unsigned long long)son.adopted_positions,
            (unsigned long long)son.admitted_prompt_positions);
 
-    /* The point of the exercise: work not done. */
-    ok("adopt: adoption cost strictly fewer prefill chunks",
-       son.prefill_chunks < soff.prefill_chunks);
+    /* The point of the exercise: work not done. EXACT on both arms, so the
+     * fixture's power is checked, not assumed: OFF prefills every prompt whole
+     * (prefix + tail, two chunks each); ON prefills client 0 whole and every
+     * other client's tail alone (one chunk each). */
+    const u64 chunks_off = (u64)FANOUT_N * chunks_of(FANOUT_SHARED + FANOUT_TAIL);
+    const u64 chunks_on  = chunks_of(FANOUT_SHARED + FANOUT_TAIL) +
+                           (u64)(FANOUT_N - 1u) * chunks_of(FANOUT_TAIL);
+    ok("adopt: dedup OFF prefilled every prompt whole (exact chunk count)",
+       soff.prefill_chunks == chunks_off);
+    ok("adopt: adoption cost strictly fewer prefill chunks (exact count)",
+       son.prefill_chunks == chunks_on && chunks_on < chunks_off);
+    printf("  adopt: prefill chunks %llu with dedup OFF, %llu ON (chunk %u)\n",
+           (unsigned long long)soff.prefill_chunks,
+           (unsigned long long)son.prefill_chunks,
+           (unsigned)SCHED_CHUNK_TOKENS);
 
     /* THE CLAIM, HALF ONE: dedup does not move the stream. Kept, but see the
      * header -- this half cannot see a prefill-side skip. */

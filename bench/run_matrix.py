@@ -139,8 +139,9 @@ def build_adapter(config_label, scenario):
             elif key == "threads" and val.isdigit():
                 threads = int(val)
             elif key == "chunk" and val.isdigit():
-                # 2026-09-15: the prefill chunk width (STOKE_SCHED_CHUNK, locked at 128;
-                # 256 read -3.4% wall in the in-process phase screen). The server
+                # 2026-09-15: the prefill chunk width (STOKE_SCHED_CHUNK; the locked
+                # default was 128 until the 09-15 evening, 256 since -- the graded width,
+                # -3.4% wall in the in-process phase screen). The server
                 # inherits the env; the scheduler REFUSES a value that is not a positive
                 # multiple of the KV block, so a typo cannot silently run the default.
                 env["STOKE_SCHED_CHUNK"] = val

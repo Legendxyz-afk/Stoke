@@ -171,7 +171,10 @@ def unit(config_label, scenario, timeout_s):
     reports = parse_trace(log)
     # The scheduler announces a STOKE_SCHED_CHUNK override at open (2026-09-15);
     # banked so a `stoke-tuned@chunk=N` arm is verified from the server's own log,
-    # never from the label. None = nothing announced = the locked default.
+    # never from the label. None = nothing announced = the locked default -- which
+    # is 128 in every bank up to `73b9246` (2026-09-15 afternoon) and 256 from the
+    # commit that shipped the graded width the same evening; a bank does not yet
+    # carry the binary's identity, so read None against the bank's date.
     sched_chunk = None
     for ln in log:
         m = _SCHED_CHUNK.search(ln)

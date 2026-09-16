@@ -313,11 +313,25 @@ bool sched_known(const Sched* s, u64 id);
  * bench may tune them -- but changing their FORM (not their value) is a design
  * change and goes to Kabir as a memo, per the forward note. */
 
-/* Prefill chunk, in positions. 128 = 8 KV blocks, so a chunk boundary is block
- * aligned and S-ALIGN holds by construction (a chunk ending mid-block leaves
- * that block unregistrable by the prefix cache). It is the same 128 the engine
- * prefills at; a change to either must re-check the other. */
-#define SCHED_CHUNK_TOKENS 128u
+/* Prefill chunk, in positions. 256 = 16 KV blocks, so a chunk boundary is
+ * block aligned and S-ALIGN holds by construction (a chunk ending mid-block
+ * leaves that block unregistrable by the prefix cache).
+ *
+ * 128 from M5 to 2026-09-15; 256 since, on Kabir's ruling over
+ * docs/superpowers/memos/2026-09-15-prefill-chunk-width-DECISION-OPUS.md:
+ * same sitting @8, 128 -> 256 read wall -3.4%, TTFT p50/p95 -4/-6%, aggregate
+ * +3.5%, and 256 is the configuration clause 2's llama half was graded at
+ * (1.181x, five of five pairs). THE PRICE, recorded not hidden: the stall a
+ * decode suffers while a chunk co-runs went 1.84 -> 3.34 s p50 (fewer, longer;
+ * total stalled time about flat), so gate [3]'s 250 ms bound is missed ~13x
+ * instead of ~7x. That stall is a scheduler item (decode rows held behind a
+ * chunk's whole step), not a width question; 512 is not monotone (09-08).
+ *
+ * ⚠ This is NOT the engine's solo prefill chunk any more: model.c's
+ * PREFILL_CHUNK (128) governs prefill_range on the run/batch path and was not
+ * re-measured; the scheduler hands the host n_decode + chunk rows per step and
+ * never goes through it. STOKE_SCHED_CHUNK stays the measuring override. */
+#define SCHED_CHUNK_TOKENS 256u
 
 /* Admission reserve: admit a prefill only when
  * free_blocks >= blocks(prompt) + W, with W = max(8, 2 * |RUNNING|).

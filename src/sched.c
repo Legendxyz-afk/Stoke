@@ -734,7 +734,7 @@ u32 sched_step(Sched* s) {
         /* S7 (S-ALIGN): a chunk must end on a block boundary, or the block it
          * stopped inside cannot be registered by the prefix cache until
          * something else fills it. Ending the prompt is the one allowed
-         * exception. Chunk 128 over block 16 satisfies this by construction --
+         * exception. Chunk 256 over block 16 satisfies this by construction --
          * this is what notices if either constant moves without the other. */
         if (pf->n_done % kv_block_tokens() != 0u && pf->n_done != pf->target)
             s->st.chunk_misaligned++;
