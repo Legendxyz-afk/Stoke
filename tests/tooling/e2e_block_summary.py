@@ -170,8 +170,13 @@ def main():
         cpu_a, cpu_b = med(la, lambda r: (r.get("proc") or {}).get("cpu_user_s")), med(lb, lambda r: (r.get("proc") or {}).get("cpu_user_s"))
         ttft_a, ttft_b = med(la, lambda r: r.get("ttft50_s")), med(lb, lambda r: r.get("ttft50_s"))
         itl_a, itl_b = med(la, lambda r: (r.get("itl") or {}).get("max_ms")), med(lb, lambda r: (r.get("itl") or {}).get("max_ms"))
-        if cpu_a and cpu_b:
+        # `ollama serve` forks its runner; proc.* is the PARENT (a few CPU-seconds,
+        # ~220 MB), so CPU-seconds are not readable for that arm.
+        cpu_readable = not (la.startswith("ollama") or lb.startswith("ollama"))
+        if cpu_a and cpu_b and cpu_readable:
             print(f"  CPU-s {lb} / {la} = {cpu_b / cpu_a:.3f}x   TTFT p50 {la} / {lb} = {ttft_a / ttft_b:.2f}x")
+        elif ttft_a and ttft_b:
+            print(f"  CPU-s: not readable (ollama's proc fields are its parent process)   TTFT p50 {la} / {lb} = {ttft_a / ttft_b:.2f}x")
         if itl_a is not None or itl_b is not None:
             print(f"  ITL max (median over units): {la} {itl_a} ms, {lb} {itl_b} ms")
         summary = {"arm_a": la, "arm_b": lb, "walls_a": walls[la], "walls_b": walls[lb],
@@ -179,7 +184,7 @@ def main():
                    "pairs": [{"pair": k, "ratio": v} for k, v in pair_ratios], "every_pair_gt1": every_gt1,
                    "spread_a_pct": 100 * (max(walls[la]) - min(walls[la])) / ma,
                    "spread_b_pct": 100 * (max(walls[lb]) - min(walls[lb])) / mb,
-                   "cpu_b_over_a": (cpu_b / cpu_a) if cpu_a and cpu_b else None,
+                   "cpu_b_over_a": (cpu_b / cpu_a) if cpu_a and cpu_b and cpu_readable else None,
                    "ttft50_a_over_b": (ttft_a / ttft_b) if ttft_a and ttft_b else None,
                    "itl_max_ms_a": itl_a, "itl_max_ms_b": itl_b,
                    "band": a.band, "tripwires": {f"p{k[0]}/{k[1]}": v for k, v in all_trips.items()}}
@@ -189,7 +194,7 @@ def main():
         if "BEFORE" in ref and "AFTER" in ref:
             b, af = ref["BEFORE"][0], ref["AFTER"][0]
             move = 100 * (af - b) / b
-            print(f"\n  pp512 referent: before {b:.2f} ± {ref['BEFORE'][1]:.2f}, after {af:.2f} ± {ref['AFTER'][1]:.2f} t/s -> moved {move:+.1f}%"
+            print(f"\n  pp512 referent: before {b:.2f} +/- {ref['BEFORE'][1]:.2f}, after {af:.2f} +/- {ref['AFTER'][1]:.2f} t/s -> moved {move:+.1f}%"
                   + ("  ⚠ TRIPWIRE: > 8%" if abs(move) > 8 else ""))
             summary["referent_pp512"] = {"before": b, "after": af, "move_pct": move}
         else:
