@@ -1,6 +1,6 @@
 # stoke — Phase 1.5 planning document
 
-**Status:** M7 deliverable (roadmap 4.3). Written 2026-09-06.
+**Status:** M7 deliverable (roadmap 4.3). Written 2026-09-06; **§6 added at the M7 code freeze, 2026-09-18** (the scheduler thesis measured, the one-slot ollama, prefix-reuse evidence, server hardening, the memory budget).
 **Scope ruled by Kabir 2026-09-01:** *"arm first, we'll make it embed on most of
 the hardware."* ⇒ **ARM NEON before CUDA**, and Phase 1.5 is therefore an
 **embeddability** phase, not a GPU phase.
@@ -191,3 +191,78 @@ From §7.5, with the planning detail it asks for:
 4. **Which ARM64 machine is the reference?** There is none on this box. Tier 1
    correctness needs real hardware, and the choice (Apple Silicon vs Pi 5 vs a
    Graviton instance) decides the toolchain work in 1.5.4.
+
+---
+
+## 6. 2026-09-18 addendum — what the M7 close-out measured, and what it changes above
+
+Written at the M7 code freeze (`memos/2026-09-18-m7-code-freeze.md`), from
+the 09-16 kernel pricing and the 09-18 clause-2 sitting
+(`gate-reports/2026-09-18-clause2-e2e-16-32-ollama.md`). Nothing above is
+withdrawn; five things are now measured that were argued.
+
+1. **§2's "1.5.0 proves the thesis" is no longer a bet — the thesis is
+   measured.** Stoke's end-to-end margin over llama-server *grows* with
+   concurrency: **1.18× @8 → 1.20× @16 → 1.28× @32**, in 0.75 → 0.73 → 0.71×
+   the CPU-seconds, first client answered 4.5–5.1× sooner — with every
+   pre-registered band met. In the same week the kernel levers priced
+   **null in situ** (K1/K2: 1.26× on a single-thread bench, ~1.01–1.05× at
+   12T, because the matmul is bound by the P-cores' shared ports). ⇒ The
+   asset the port carries to ARM is the scheduler, and stage 1.5.0 (scalar
+   kernels, the scheduler intact) is the demonstration that matters
+   commercially. Tier-2/3 NEON work is where the *absolute* numbers come
+   from, not where the *relative* claim lives. **Ship 1.5.0 first** stands,
+   now with numbers behind it.
+
+2. **The ollama comparison is a positioning fact, not a benchmark loss.**
+   `ollama-default` on a CPU-only box serves **one request at a time**
+   (`OLLAMA_NUM_PARALLEL` resolves to 1 without a GPU; measured: wall =
+   N × 16.2 s, ITL 68 ms = a single-sequence decode). Stoke reads 1.74× @8
+   and 1.84× @16 against it — the clause's ≥2× is a documented miss — but
+   the sentence for `COMPANY.md` §3.2 and the README is sharper than "2×":
+   **on CPU, the incumbent does not do concurrency out of the box at all.**
+   That is the cell stoke owns, on exactly the hardware Phase 1.5 targets.
+
+3. **§3.2 (prefix reuse) gets a caveat about its own evidence.** The
+   clause-2 scenario (S2) salts each client's prompt at the FRONT of the
+   user message, so M4's dedup adopts only the chat-template header there
+   (measured 09-16: the @32 arm needs the full 6.5 GB f32 KV). The case for
+   cross-request reuse is unchanged — agent traffic shares a *system prompt*,
+   which S2 does not model — but the number that supports it is S3's
+   (dedup worth 2.284× on fan-out), not anything in the clause-2 banks.
+   When 1.5 builds it, the grader must be a scenario with a shared prefix
+   and a per-client tail, and the reconstruction check must hold.
+
+4. **Server hardening is an embeddability item, and it now has two scars.**
+   `MAX_CONNS 24` and a listen backlog of 16 were both "a local server does
+   not need more" until a 32-client burst arrived: the backlog refused 13
+   clients because the server accepts **one connection per turn** and a turn
+   is a whole prefill chunk (~2.8 s) once anything is running, while Windows
+   drops a SYN that finds the queue full and the client gives up after ~2 s.
+   Both constants are fixed (`9eca59e`, `b1ee6b3`), the loop is not. For an
+   embedded server the right shape is: drain the whole accept queue per
+   turn, size the backlog to the table, and keep `tests/tooling/burst_smoke.py`
+   (which had to be made red twice before it could see the defect) as the
+   gate. Add to **1.5.4** beside the size budget; a day, with its own A/B.
+
+5. **Memory arithmetic for constrained targets, from the sitting's peak
+   working sets.** Stoke's footprint is exactly `model (mmap) + N × ctx ×
+   288 KB` at f32 KV: 4.2 / 5.8 / 9.0 GB at 8 / 16 / 32 clients × 704 ctx
+   on a 2.5 GB Q4_K_M model. On a 4–8 GB ARM board the KV term is the whole
+   budget. Two consequences for §4's "fixed memory budget" question:
+   - the embeddable interface is a **memory budget that derives `seqs ×
+     ctx`** (the pool already derives from those two; only the inversion is
+     missing), not two knobs a host must size by hand;
+   - **a KV quantization decision belongs to 1.5**, re-measured on ARM: on
+     x86 `--kv q8` cost +3.6% because the dequantize outweighed the traffic
+     it saved, but the balance is different where memory, not the port
+     count, is the wall — and it halves the term that dominates.
+   And from B7's rig: an engine that is *never* the OOM killer's pick
+   (`oom_score_adj -1000`) is a deployment trick, not a property. The
+   property an embedded host wants is admission that refuses a request the
+   budget cannot hold, which is the same derivation as the first bullet.
+
+Open for Kabir, added to §5: **(5)** does 1.5 carry a `--memory-budget` (or
+`stoke.h` field) that derives the pool, and a KV-quant re-measurement on the
+ARM reference, as stage-1.5.4 items? Recommendation: yes to both; they are
+the two lines a board vendor will read first.
