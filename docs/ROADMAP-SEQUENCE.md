@@ -231,9 +231,9 @@ deliverable. Everything remaining is packaging, porting and paperwork.
 |---|---|---|---|---|
 | [1] | Llama-3.2-3B parity, incl. long context | forward note | ~~a file that is not on this box~~ | ✅ **MET 2026-09-08** — rung B5 closed, `gate-reports/2026-09-08-m7-b5-closeout.md` |
 | [2] | unsloth-file parity run on Q4_K_M | forward note | ~~a file that is not on this box~~ | ✅ **MET 2026-09-15, PASS on the pass rule, signed off by Kabir** — 960 probes, zero BUG, T1 + T4 fired and dispositioned: `gate-reports/2026-09-15-m7-b6-unsloth-probe.md`, memo `memos/2026-09-15-m7-b6-tripwire-anomaly-memo.md` |
-| [3] | 24 h soak | ROADMAP | a box that can be left alone for a day | ⬜ rung B7 |
-| [4] | fuzz | forward note | corpora exist (A2's 51 files, `serve_fuzz`) | ⬜ never run/stamped |
-| [5] | README + a REPRODUCIBLE benchmark report | forward note | a box that passes the quiesce bar | ⬜ rung B8 |
+| [3] | 24 h soak | ROADMAP | a box that can be left alone for a day | ⬜ rung B7 — **rig shaken down and a 1 h BASELINE banked 2026-09-18 (`gate-reports/2026-09-18-0844-m7-soak.*`: OK, 719 generations, LSan clean, non-arena anon flat); the 24 h itself waits for the window** |
+| [4] | fuzz | forward note | corpora exist (A2's 51 files, `serve_fuzz`) | ✅ **MET 2026-09-18 on the frozen source** — `gate-reports/2026-09-18-m7-fuzz-gate.txt`: `serve_asan` 600 s / 4 clients / 51 files / seed 20260918 on the frozen ASan pair, OK (no sanitizer reports, clean exit, the ≥10-generations floor cleared); the `-DSTOKE_MUT_FUZZ_BAD_BODY` arm built from the same source FAILED the floor at 0 generations ⇒ the grader can fail. (First closed 2026-09-05 with seed 20260829, never banked in the repo.) |
+| [5] | README + a REPRODUCIBLE benchmark report | forward note | a box that passes the quiesce bar | 🟡 rung B8 **first pass 2026-09-18 (`5e56039`): README rewritten on the measured position, `docs/BENCHMARKS.md` reproducible from its commands; the soak row is the one line still owed** |
 | [6] | Kabir sign-offs | ROADMAP | Kabir | ⬜ last |
 
 | rung | what | state |
@@ -244,8 +244,8 @@ deliverable. Everything remaining is packaging, porting and paperwork.
 | B4 | the small debts | ⚠ **HALF DONE** — `stoke run` sampling flags ✅ (and the header's claim that the CLI reproduces the SERVER for a given seed was FALSE when tested — a one-position shift, invisible from either side alone). **The Linux C++ TU box is still OPEN — needs `apt install g++`, Kabir's** |
 | B5 | Llama-3.2-3B incl. long context | ✅ **DONE 2026-09-08** — all six ruled elements discharged and cited; the grid 16/16 streams, 1024 probes, zero BUG; the fourth targeted delta (the Llama-3 header template) did not exist until `c3b4691` and was found by reading a different source than the parity items |
 | B6 | the unsloth Q4_K_M parity run | ✅ **RUN 2026-09-14/15** — 15/15 streams, 960 probes to position 2933, 23 divergent, **all ARITHMETIC-class, zero BUG**; C1-Q re-earned the batched licence on the Qwen3 graph (5.2e-05), T6 bit-identical. **T1 fired at 2.40%** (the carried expectation: bartowski 3.10%, Llama 1.37%; threshold kept, memo) and **T4 fired at 1.97×** into `[1200,∞)` — part a localized tail at the first generated positions of the ≥1893-token streams (an 11.88 anchored Δ at an *agreeing* position, stoke bit-identical across its prefill paths there, the reference stable across batch shapes to 7e-5), part a real widening past ~1500. Survey ordered by Kabir at sign-off and RUN (report §8): llama.cpp is as far from the f32 reference as stoke is; the boundary shrink is the engine class (llama.cpp sides with stoke); the 11.88 position is a knife-edge (stoke's `--kv q8` arm, llama.cpp and the reference in one basin, the graded arm in the other; smooth 1000× amplification through layers 13–25, gone under a one-token substitution 1500 tokens earlier) — not a defect |
-| B7 | the 24 h soak | ⬜ after the freeze |
-| B8 | README + reproducible benchmark report | ⬜ last |
+| B7 | the 24 h soak | 🟡 freeze done (`dbe16db`), rig shaken down (`fd7d26f`), 1 h baseline OK (`968cc45`); the 24 h needs a window Kabir names |
+| B8 | README + reproducible benchmark report | 🟡 first pass `5e56039`; finishes after B7 |
 
 ---
 
@@ -368,6 +368,14 @@ Every item states: **what · why it is here · blocked on · done when · hazard
   - **The serving aggregate is MORE box-sensitive than `pp512`** — a block
     before quiescing read 0.898× where the same binaries read 0.955× after,
     while the *ratio* held at 1.904×. That is why both must be published.
+
+> **1.2 and 1.3 are SUPERSEDED (recorded 2026-09-18).** Clause 2 was re-specified on
+> 2026-09-08 (Kabir-approved) to a same-sitting ratio on END-TO-END WALL and has been
+> graded that way at @8, @16 and @32; the M5 aggregate bars stay what the M5 row says
+> they are — a documented miss on a metric that bills stoke's early first tokens — and
+> are not re-anchored or re-graded. B8 quotes the wall ratios and states the aggregate
+> miss beside them (`docs/BENCHMARKS.md` §1). The hazards below still apply to any
+> future bars run.
 
 ### 1.2 — Re-anchor both bars, in the hard direction, with the block named
 
@@ -567,6 +575,7 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Why here:** the corpora already exist — A2's 51 files and `serve_fuzz` —
   so this is a run-and-bank, not a build. It has simply never been done.
 - **Blocked on:** nothing. **Owner:** the session. **Can fill any blocked window.**
+- ✅ **DONE 2026-09-18** — `gate-reports/2026-09-18-m7-fuzz-gate.txt`, both arms, on the frozen source.
 - **Done when:** a gate record exists with the corpus named and the build
   identified by binary.
 - **Hazard:** ⚠ **`build/{win,linux}-mut-fuzz-badbody`** (`-DSTOKE_MUT_FUZZ_BAD_BODY`)

@@ -1,0 +1,28 @@
+# M7 gate item [4] -- fuzz, on the frozen source b1ee6b3 (SEQUENCE 3.3). Run 2026-09-18 09:43:11 UTC.
+# binaries: build/linux-asan/stoke 337bbc1b501e111f  serve_fuzz ab4299ca0dbd2303
+# mutant:   build/linux-mut-fuzz-badbody/stoke b49a864857fdfeb5  serve_fuzz 19aad1a37eb4220b
+=== [clean arm] serve_asan build/linux-asan 600 s / 4 clients / seed 20260918, start 09:43:11 ===
+curl: (7) Failed to connect to 127.0.0.1 port 18177 after 0 ms: Couldn't connect to server
+serve_asan: server up on 18177; 600s of randomized traffic, 4 clients
+serve_fuzz: 127.0.0.1:18177 for 600s, 4 clients, 51 corpus files, seed 20260918, read 20000ms, max_tok<=3
+serve_fuzz: 356 actions, 232 answered exchanges, 0 refused
+serve_fuzz: 88 requests asked for a sampler (40 of those for a repeat penalty)
+serve_fuzz: OK
+serve_asan: OK (600s, 4 clients, 51 corpus files, seed 20260918, no sanitizer reports, clean exit)
+=== [clean arm] rc=0 09:53:20 ===
+=== [mutant arm] serve_asan build/linux-mut-fuzz-badbody 90 s / 4 clients / seed 20260918 -- MUST FAIL the >= 10 generations floor, start 09:53:20 ===
+curl: (7) Failed to connect to 127.0.0.1 port 18167 after 0 ms: Couldn't connect to server
+serve_asan: server up on 18167; 90s of randomized traffic, 4 clients
+serve_fuzz: 127.0.0.1:18167 for 90s, 4 clients, 51 corpus files, seed 20260918, read 20000ms, max_tok<=3
+serve_fuzz: MUTANT BUILD -- STOKE_MUT_FUZZ_BAD_BODY (every generating body is invalid JSON). NEVER use this binary for anything but proving the gate's generation check can fail.
+serve_fuzz: 124 actions, 89 answered exchanges, 0 refused
+serve_fuzz: 31 requests asked for a sampler (13 of those for a repeat penalty)
+serve_fuzz: OK
+serve_asan: FAILED -- the server logged only 0 completed generations. Traffic that is all refusals looks like a clean soak to every other check here; the sanitizer saw the parser and nothing downstream of it.
+  stoke serve: listening on 127.0.0.1:18167  ctx=1024
+  stoke serve: GET /health
+  stoke serve: POST /v1/chat/completions
+  stoke serve: POST /v1/chat/completions
+  stoke serve: POST /v1/chat/completions
+=== [mutant arm] rc=1 09:55:38 (non-zero is the PASS for this arm) ===
+=== END 09:55:38 ===
