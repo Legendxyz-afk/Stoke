@@ -204,3 +204,33 @@ binary it was.
 
 Bands, tripwires and order are unchanged: §5 and §6 as frozen on 09-16;
 blocks 1 → 3 → 4 → 2.
+
+## 9. 2026-09-18 — the sitting ran; two of §8's premises did not survive it
+
+Report: `gate-reports/2026-09-18-clause2-e2e-16-32-ollama.md`. Verdicts
+against §5: H1 1.195× ✅ (point 1.20), H2 1.281× ✅ and above H1, H3 1.735× ✅
+(≥2× MISS as predicted), H4 1.836× ✅ (≥2× MISS as predicted), H5 29 s ✅,
+H6 max ✅ at both widths but the "cadence p50 inside 250 ms" sub-claim ⛔
+(311 / 556 ms), H7 0.733× / 0.709× ✅, H8 1.48× ✅ @16 and ⛔ 1.36× @32 (below
+[1.4, 3.5]). Misses recorded, not re-fitted.
+
+What this note had wrong, for the next one:
+
+1. **§3 "`n_slots 4` in the 09-05 bank"** — false. ollama-default serves ONE
+   request at a time on this CPU box (the 09-05 tail shows slot `id 0` only;
+   today's TTFTs and walls are exactly serial). H4's rationale ("four
+   rounds") was wrong and its band was right by luck.
+2. **§8 "one binary for the whole sitting"** — did not survive block 2. The
+   first stoke @32 unit lost 13 of 32 clients at connect: the listen backlog
+   was 16 and the server accepts one connection per turn, and Windows gives
+   up "actively refused" after ~2 s of a full queue (report §4.1,
+   `tests/tooling/backlog_probe.py`). `MAX_CONNS` (§1) was necessary and not
+   sufficient — the pre-flight read the connection table and never the
+   listen queue. Fixed in `b1ee6b3` (backlog → `MAX_CONNS`), verified red
+   then green by `tests/tooling/burst_smoke.py` (which itself had to be
+   made red twice: it burst during decode, then sent a prompt longer than
+   `--ctx`). Block 2 re-ran on that binary; blocks 1/3/4 stand on
+   `9eca59e`, since nothing below 17 simultaneous connections is touched.
+3. **§6 "`server_ctx_slot != 704` on an `@ctx=` unit voids"** — llama-server
+   pads the per-slot context to a multiple of 256 (704 → 768). A
+   mis-derived constant; the summariser now reads the padding as a note.

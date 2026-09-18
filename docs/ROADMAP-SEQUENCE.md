@@ -218,7 +218,7 @@ deliverable. Everything remaining is packaging, porting and paperwork.
 |---|---|---|
 | [1] scheduler invariants in sim | ✅ MET | 7 traces × 3 seeds × 2 cost models = 42 green, plus a 1,000,130-step soak over 11,870 traces with 5,142 preemptions, every invariant after EVERY step |
 | [2] the bars | ❌ **MISSED at 0.51× when M5 closed; now 0.955× @8 / 1.023× @16 against stale bars, 0.687× against a live referent** | **measured, NOT gate-stamped** — see Stage 1.3 |
-| clause 2 (Phase 1), llama half @8, on the pre-registered END-TO-END WALL | ✅ **PASS WITH MARGIN 1.181×, 5/5 pairs (2026-09-15 afternoon)** after the multi-key attention kernels (bit-identical, −6.9%), 12 threads and chunk 256; the morning's default-config sitting read 0.970× (parity) | `gate-reports/2026-09-15-clause2-e2e-8-graded.md`; 12T IS the shipping default (`b389674`) and chunk 256 SHIPS (Kabir's ruling, 09-15 evening, `memos/2026-09-15-prefill-chunk-width-DECISION-OPUS.md`) — the graded configuration is the shipped one; ollama half unmeasured (predicted miss); @16 unmeasured |
+| clause 2 (Phase 1), llama half @8, on the pre-registered END-TO-END WALL | ✅ **PASS WITH MARGIN 1.181×, 5/5 pairs (2026-09-15 afternoon)** after the multi-key attention kernels (bit-identical, −6.9%), 12 threads and chunk 256; the morning's default-config sitting read 0.970× (parity) | `gate-reports/2026-09-15-clause2-e2e-8-graded.md`; 12T IS the shipping default (`b389674`) and chunk 256 SHIPS (Kabir's ruling, 09-15 evening, `memos/2026-09-15-prefill-chunk-width-DECISION-OPUS.md`) — the graded configuration is the shipped one. **2026-09-18 (`gate-reports/2026-09-18-clause2-e2e-16-32-ollama.md`): llama half @16 ✅ PASS 1.195× (3/3 pairs; H1's point was 1.20×), @32 1.281× (3/3, above @16 — the mechanism bet holds); ollama half ⛔ MISS ≥2× at both widths, 1.735× @8 and 1.836× @16 (2/2 pairs each, spreads 0.2%), as pre-registered — ollama-default serves ONE request at a time on a CPU box, so the bar is against a serial server and stoke's prefill cost misses it: a DOCUMENTED MISS. Found on the way: the listen backlog (16) refused 13 of 32 clients — `b1ee6b3`** |
 | [3] ITL <250 ms under co-running prefill | ❌ MISSED, structural — **documented miss by Kabir's ruling 2026-09-16** (`memos/2026-09-16-clause4-itl-stall-DISPOSITION-KABIR.md`) | 738 ms at the smallest legal chunk; 4.4× at M5 close; **stall p50 3.34 s @8 at the SHIPPED chunk 256 (1.84 s at 128, same sitting, 09-15) — ~13× the bound, priced and accepted with the width; retired by §IV.6 row 1, not by a width** |
 | [4] S3 fanout ≥13.3 | ✅ MET | median 13.535 (1.018×), all three counterbalanced blocks clear on their own. Dedup is worth **2.284×** here and is the difference between missing by 2.2× and clearing |
 | [5] 1 h soak | ✅ MET | — |
@@ -351,6 +351,13 @@ Every item states: **what · why it is here · blocked on · done when · hazard
   and ⚠⚠ **`src/server.c` `MAX_CONNS 24` makes @32 a 24-wide server plus a
   queue — raising it (48 proposed) is a source change and Kabir's call**
   before block 2. Blocks 1, 3, 4 can run on `d56e496`.
+- ✅ **DONE 2026-09-18** — Kabir: yes to 48, go. Four blocks, 09:46–13:21,
+  `gate-reports/2026-09-18-clause2-e2e-16-32-ollama.md`. llama @16 1.195×
+  PASS, @32 1.281× (above @16), ollama @8 / @16 1.735× / 1.836× (≥2× MISS,
+  documented; ollama-default is a one-slot server here). ⚠ And @32 found
+  what the MAX_CONNS pre-flight had not: the listen backlog of 16 refused 13
+  of 32 clients (`b1ee6b3`; the pre-flight read the connection table and not
+  the listen queue). Referent bracketed every block within 2.5%.
 - **Hazards:**
   - **Bracket it.** Run the referent BEFORE and AFTER the stoke arms; if the two
     readings are not within ~1% the block is not quiet and nothing in it is

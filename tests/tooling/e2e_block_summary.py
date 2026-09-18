@@ -63,8 +63,12 @@ def unit_line(r, n):
     if "@ctx=" in label:
         if r.get("server_slots") != n:
             trips.append(f"server_slots {r.get('server_slots')} != {n}")
-        if r.get("server_ctx_slot") != 704:
-            trips.append(f"ctx/slot {r.get('server_ctx_slot')} != 704")
+        # llama-server pads the per-slot context up to a multiple of 256, so
+        # 22528 / 32 = 704 is announced as 768 (seen 2026-09-18): capacity in
+        # llama's favour, not a mislabelled unit -- a note, not a tripwire.
+        cs = r.get("server_ctx_slot")
+        if cs != 704 and cs != -(-704 // 256) * 256:
+            trips.append(f"ctx/slot {cs} != 704")
     if label.startswith("llamacpp") and "@ctx=" not in label and faults is not None and ws:
         # paging on the policy-ctx llama arm: first-touch faults are ~WS/4 KB
         if faults > 2 * ws * 256:
@@ -80,6 +84,8 @@ def unit_line(r, n):
         cfg = f" chunk={r.get('sched_chunk')} thr={tr.get('threads')}"
     elif r.get("server_slots") is not None:
         cfg = f" slots={r.get('server_slots')} ctx/slot={r.get('server_ctx_slot')}"
+        if "@ctx=" in label and r.get("server_ctx_slot") == 768:
+            cfg += "(=704 padded to 256)"
     line = (f"  p{r.get('pair')} {label:28s} wall={wall:7.1f}s agg={r['aggregate_decode_tps']:6.3f} "
             f"ttft50={r['ttft50_s']:5.1f}s cpu={cpu if cpu is None else round(cpu, 1)} "
             f"faults={faults} peakws={ws}MB{cfg}{itl_s} quiesce={q.get('reads', [])[-2:]}")
@@ -103,6 +109,11 @@ def referent_lines(log_path):
 
 
 def main():
+    # the Windows console is cp1252 by default and this prints a few glyphs
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser()
     ap.add_argument("bank")
     ap.add_argument("--log", help="the block's log, for the pp512 referent bracket")

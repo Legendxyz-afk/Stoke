@@ -83,8 +83,16 @@ the stall equals the chunk's compute, and:
   the stall priced and recorded at 3.34 s p50 / 3.90 s p95 @8. Streams are
   never starved — `cadence` is inside the bound — they pause for one chunk
   when a new request arrives.
-- **Owed, in the @16/@32 sitting:** `llama-server`'s ITL max during a
-  co-running prefill, same harness, same sitting — the re-anchor.
+- ~~**Owed, in the @16/@32 sitting:** `llama-server`'s ITL max during a
+  co-running prefill, same harness, same sitting — the re-anchor.~~
+  ✅ **PAID 2026-09-18** (`gate-reports/2026-09-18-clause2-e2e-16-32-ollama.md`,
+  banked ITLs for both arms): `llama-server`'s client-observed ITL max is
+  **28.8 / 29.9 / 29.2 s @16 and 29.7 / 29.8 / 30.0 s @32** — one whole
+  2,048-token prompt batch at ~70 t/s, at every width — against stoke's
+  3.40–3.48 s @16 and 3.49–3.75 s @32. Its median ITL is also above the
+  bound, 393 ms @16 / 813 ms @32 (stoke 311 / 556 ms). §3's "llama-server's
+  streams stall the same way" stands, by 8×; the pre-registered falsifier
+  (under 5 s) did not fire.
 - **Next:** the overlap redesign is Phase 1.5's first scheduler item
   (SEQUENCE §IV.6 row 1, still UNDESIGNED), after the ARM-port decision —
   it is the moat's work and gets a full design cycle, not a pre-freeze rush.
