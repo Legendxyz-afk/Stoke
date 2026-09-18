@@ -52,9 +52,13 @@
 #include <time.h>
 
 /* Well inside net.h's NET_WAIT_MAX, which is itself inside the Windows
- * FD_SETSIZE of 64. A local inference server does not need more, and a number
- * that cannot overflow select() is worth more than a number that looks big. */
-#define MAX_CONNS 24
+ * FD_SETSIZE of 64. A number that cannot overflow select() is worth more than
+ * a number that looks big. 24 until 2026-09-18: the listener is not polled
+ * while no slot is free, so a 32-client sitting against a 32-slot llama-server
+ * would have measured a 24-wide server plus an eight-deep accept queue. 48
+ * covers that width with room, and the ceiling is now asserted, not quoted. */
+#define MAX_CONNS 48
+_Static_assert(MAX_CONNS + 1 <= NET_WAIT_MAX, "conns + the listener must fit one net_wait");
 
 #define IN_CAP_INITIAL 4096
 #define IN_CAP_MAX     (HTTP_MAX_HEAD_BYTES + HTTP_MAX_BODY_BYTES)
