@@ -512,11 +512,14 @@ kill "$wit_pid" 2>/dev/null; wait "$wit_pid" 2>/dev/null
 fail=0
 # What the kernel said while the server lived. An OOM kill of anything, or a
 # balloon event, is a fact about the run whatever the other checks say.
+# hv_balloon's boot-time "Max. dynamic memory size" line is information, not
+# an event (it landed 45 s into the shakedown because the VM had just booted);
+# the balloon's real requests ("Balloon request", "Unballoon") still count.
 oom_pat='Out of memory|Killed process|oom-kill|oom_reaper|hv_balloon'
-oomlines=$(grep -E -c "$oom_pat" "$WIT" 2>/dev/null)
+oomlines=$(grep -E "$oom_pat" "$WIT" 2>/dev/null | grep -v -c 'Max. dynamic memory size')
 if [ "${oomlines:-0}" -gt 0 ]; then
     say "⚠ the dmesg witness recorded ${oomlines} OOM/balloon line(s) ($(wc -l < "$WIT" | tr -d ' ') kernel lines in all):"
-    grep -E "$oom_pat" "$WIT" | tail -20 | sed 's/^/  /' | tee -a "$LOG"
+    grep -E "$oom_pat" "$WIT" | grep -v 'Max. dynamic memory size' | tail -20 | sed 's/^/  /' | tee -a "$LOG"
 else
     say "dmesg witness: no OOM or balloon lines over the run ($(wc -l < "$WIT" | tr -d ' ') kernel lines in all)"
 fi
