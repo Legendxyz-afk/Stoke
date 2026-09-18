@@ -180,3 +180,27 @@ worth more.
    writing; plain leg rc=0), and the Windows suite green on the binary the
    sitting runs.
 4. Kabir's go. ASK-before-servers stands; he starts it.
+
+## 8. 2026-09-18 — the two answers, and one deviation from §4, recorded BEFORE the first unit
+
+Kabir, 09-18 09:0x: **MAX_CONNS 24 → 48: yes** (§1 item 1), and **go** for the
+sitting (§7 item 4). The change is commit `9eca59e` (`src/server.c`: the
+constant, its comment, and `MAX_CONNS + 1 <= NET_WAIT_MAX` as a
+`_Static_assert` — proved red at 60 before the commit). Windows suite on the
+new binary: `run_tests` 19/19 binaries (57/57), four goldens OK,
+`serve_golden` 25/25 OK. WSL matrix (plain / asan / tsan) launched detached
+on `9eca59e` at 09:16 (`build/wslmatrix/wsl_matrix_9eca59e.{sh,log}`); its
+verdict lines are in the log, and no block starts until it has ended (the
+matrix loads the box).
+
+**Deviation from §4, decided by Opus:** all four blocks run on the `9eca59e`
+binary, not blocks 1/3/4 on `bee09e6` and block 2 on the new sha. Reason:
+one binary for the whole sitting is the better record — it is the binary
+that ships to B7 and B8 — and the change cannot move an N ≤ 24 unit
+(`Conn` is ~350 bytes plus per-connection heap; the listener's poll set
+grows from 25 to 49 entries of one `select()` call per turn). The launcher
+prints the binary's sha256 into every block log, so the bank says which
+binary it was.
+
+Bands, tripwires and order are unchanged: §5 and §6 as frozen on 09-16;
+blocks 1 → 3 → 4 → 2.
