@@ -1779,7 +1779,15 @@ int server_run(const char* gguf_path, const stoke_open_opts* engine_opts,
                         "template; /v1/chat/completions will answer 501\n");
     }
 
-    NetSock lis = net_listen(so.bind_addr, so.port, 16);
+    /* The backlog is sized to the connection table, not to a round number:
+     * the loop below accepts ONE connection per turn, and a turn is a whole
+     * forward step once anything is generating, so a burst of N clients
+     * waits in this queue for up to N steps. At 16 a 32-client burst had 13
+     * refused at connect (2026-09-18, the @32 sitting): Windows answers a
+     * full backlog with a reset, which the client sees as "actively refused"
+     * and no retry. MAX_CONNS deep, every connection the table could hold
+     * can wait its turn. */
+    NetSock lis = net_listen(so.bind_addr, so.port, MAX_CONNS);
     if (lis == NET_INVALID_SOCK) {
         fprintf(stderr, "stoke serve: %s\n", net_error());
         stoke_close(sv.e);
