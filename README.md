@@ -27,10 +27,10 @@ than discovered later.
 
 | | |
 |---|---|
-| Models | **Qwen3 only.** `general.architecture` must be `qwen3`; anything else is refused at load. |
+| Models | **Qwen3 and Llama** (`general.architecture` = `qwen3` or `llama`; anything else is refused at load). Parity against llama.cpp is gated on Qwen3-4B and Llama-3.2-3B, including a 2,900-token context and an unsloth-quantized file. |
 | Weights | F32, Q8_0, Q4_K, Q6_K (Q4_K_M files work, including their Q6_K `ffn_down`) |
-| Platforms | Linux and Windows, x86-64 with AVX2 (AVX-VNNI is detected at runtime and used when present). **macOS is untested** — the server's `MSG_NOSIGNAL` needs a `SO_NOSIGPIPE` equivalent there. |
-| Throughput | **~0.5× llama.cpp's server** on the 8-client concurrent benchmark. The cause is known and named below. |
+| Platforms | Linux and Windows, x86-64 with AVX2 (AVX-VNNI is detected at runtime and used when present). **macOS and ARM are untested** — the port surface is small (`simd.c` and two `__x86_64__` guards; threading is pthreads; every SIMD kernel has a tested scalar twin) and is Phase 1.5's first item. |
+| Throughput | **Finishes the 8/16/32-client benchmark in 0.85 / 0.83 / 0.78× the wall of llama.cpp's server** (same GGUF, same harness, same hour), first token 4.5–5× sooner, 0.71–0.75× the CPU time; **1.74× / 1.84× ollama-default** @8/@16 (the target was 2×; missed, and said so below). `docs/BENCHMARKS.md` has the method and the raw numbers. |
 | C ABI | `src/stoke.h`, **frozen at v0.** Error codes are never renumbered, struct fields are only appended, nothing is removed. |
 
 ## Build
@@ -94,54 +94,87 @@ pool is rationing.
 
 ## Benchmarks — and how to read one
 
-**Do not trust a bare tok/s from this or any other engine, including the numbers
-below.** On the development box the same binary, the same workload and the same
-harness produced these three sittings:
+**Do not trust a bare tok/s from this or any other engine, including anything
+here.** On the development box the same binary, workload and harness read
+**1.8× apart on different days with no code change** (4.7–6.4 tok/s on
+2026-08-20, 8.6–9.0 on 08-28, 7.3 on 08-30) and ~4% apart between two sittings
+an hour apart. Inside one quiet sitting the spread is under 1%. So every
+number published here is a **ratio against a referent measured in the same
+hour, with the absolutes and the block beside it** — that is the reproducible
+quantity. The full method, the raw records and the commands that reproduce
+each row are in **`docs/BENCHMARKS.md`**.
 
-| date | 8-client aggregate |
-|---|---|
-| 2026-08-20 | 4.66 – 6.38 tok/s |
-| 2026-08-28 | 8.55 – 9.03 tok/s |
-| 2026-08-30 | 7.25 – 7.28 tok/s |
+Workload: N closed-loop clients, each one chat request of ~525 prompt tokens
+and 128 streamed answer tokens, no shared prefix, clock from first request to
+last token, same GGUF (Qwen3-4B Q4_K_M) on every arm, CPU only, all over
+HTTP+SSE through one client harness.
 
-**A 1.8× spread with no code change.** Within the quiet sitting the three blocks
-span 0.4%; the variance is *between* days, not inside them. A published absolute
-is a property of one afternoon.
+| clients | referent, configured for the workload | wall **referent / stoke** | pairs > 1 | first token, stoke sooner by (min / median) | CPU-s stoke / referent |
+|---|---|---|---|---|---|
+| 8 | llama-server b10037 `--parallel 8 -c 16384` | **1.18×** | 5/5 | 4.7× / 1.9× | 0.75× |
+| 16 | llama-server `--parallel 16 -c 32768` | **1.20×** | 3/3 | 4.5× / 1.5× | 0.73× |
+| 32 | llama-server `--parallel 32 -c 22528` | **1.28×** | 3/3 | 5.1× / 1.4× | 0.71× |
+| 8 | ollama 0.30.11, defaults, CPU | **1.74×** | 2/2 | 1.3× / 2.3× | — |
+| 16 | ollama, defaults, CPU | **1.84×** | 2/2 | 1.3× / 2.4× | — |
 
-So every measurement here carries a referent measured in the **same sitting** —
-`llama-bench` on the same file and thread count — and the reproducible quantity
-is the ratio. Between 08-28 and 08-30 the absolute fell 18.2% and the referent
-fell 18.0%; normalised, the engine moved 0.3%.
+The margin over llama-server **grows with concurrency**, which is the design's
+whole claim: a new prompt is prefilled in 256-token chunks while every request
+already admitted keeps decoding in the same step, so the more requests are in
+flight, the more of the prefill phase is shared. The kernels are within a few
+percent of llama.cpp's on the same instruction mix — measured, not assumed —
+so the ratio is the scheduler's.
 
-**Where stoke actually stands:** its own M5 gate set a bar of **≥ 17.7 tok/s**
-aggregate on the S2 workload (8 concurrent clients, 512-token prompts, 128
-generated), derived from a reference engine measured with the same harness.
-stoke closed that milestone at **0.51× the bar** — a documented miss, recorded
-as one rather than quietly restated.
+**What it does not win, in the same table's terms.** The Phase-1 target
+against ollama was 2× and it reads 1.74× / 1.84×: on a CPU-only box ollama
+serves one request at a time, so "2× ollama" is "2× a serial server", and what
+stops stoke at 1.8× is its own prefill cost. And a request arriving while
+others are decoding stalls their streams for one prefill chunk — ~3.3 s
+median, up to 3.8 s at 32 clients — against a design bound of 250 ms: missed
+by an order of magnitude at every chunk width, fixable only by a scheduler
+change that is deferred to Phase 1.5. For scale, llama-server's streams stop
+for 29–30 s under the same traffic (one whole prompt batch), and ollama's
+serial server has no co-running to stall.
 
-It is not a mystery, either: llama.cpp batches concurrent decode into a
-matrix-**matrix** product while stoke still issues one matrix-**vector** product
-per sequence, measured at **3.22× at every thread count**. Continuous batching,
-paged KV and prefix sharing are all in and working — the arithmetic underneath
-them is the gap, and closing it is a redesign, not a tuning pass.
+Single-stream decode is ~0.9× llama.cpp's (M4.5). The engine is built for
+many concurrent requests on hardware without a GPU, not for one stream.
 
-Method, if you want to reproduce it: `tests/tooling/run_m5_bars.ps1` runs the
-arms interleaved, counterbalanced, with a per-unit quiesce check, and banks each
-unit keyed by the binary's sha256.
+Method, in one line: `tests/tooling/run_e2e_interleaved.py` runs the two arms
+alternating with the order flipping every pair, one server lifetime per unit,
+a CPU-quiesce gate before each unit, every unit banked as it lands and refused
+if its own aggregate cannot be reconstructed from its raw records; a
+`llama-bench pp512` referent brackets each block and names the box state.
 
 ## Testing
 
 `make test` runs 19 unit binaries plus the gate scripts: byte-exact tokenizer
-and GGUF goldens, a 25-request byte-exact HTTP transcript reproduced across
+and GGUF goldens (Qwen3 and Llama-3, an unsloth file, a 22,848-line unicode
+sweep), a 25-request byte-exact HTTP transcript reproduced across
 Windows/gcc-15 and Linux/gcc-13 (and again under ASan), the `openai` Python
-client suite, a randomized 10-minute sanitized serve soak, an ABI checklist with
-its own mutation leg, and a scheduler race test that drives the real scheduler
-over a fake model from two threads.
+client suite, a randomized 10-minute sanitized serve fuzz with a mutant arm
+that proves the fuzz can fail, an ABI checklist with its own mutation leg and
+a C++ translation-unit leg, and a scheduler race test that drives the real
+scheduler over a fake model from two threads (TSan found six races where
+reading the code had found one). Greedy-parity probes against llama.cpp's own
+logits run to 2,900 tokens on both models with every divergence classified.
+
+**Determinism is per build:** the same binary, weights, seed and parameters
+give the same tokens, and that is gated (`serve_golden`, `run_sampling`).
+Two builds of the same source with different compilers can differ in a
+greedy token after a few hundred positions — a sub-ulp difference in a
+transcendental, propagated through 36 layers — and so can any engine's; the
+tokenizer and everything discrete is byte-exact everywhere.
 
 Several of those gates exist because they caught something: a server that died
 on the first client disconnect on Linux, an idle reaper that discarded finished
 responses, a `stoke_poll` that answered an unknown id with silence, and a
-sampler whose first token was greedy for requests submitted mid-step.
+sampler whose first token was greedy for requests submitted mid-step. The
+newest one: a 32-client burst found a listen backlog of 16 behind a server
+that accepts one connection per turn — 13 clients refused — and the smoke
+written to prove the fix had to be made to fail twice before it could see it.
+
+**Not yet run:** the 24 h sanitized serving soak (one server, a day of
+randomized traffic under ASan+LSan, memory watched per chunk). Its rig is
+shaken down; the day of box time is the last gate before this is tagged.
 
 ## What this is not
 
