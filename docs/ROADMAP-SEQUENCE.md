@@ -641,6 +641,17 @@ Every item states: **what · why it is here · blocked on · done when · hazard
     Empty reply` while the server logs `finish=stop`).
   - **This is 24 h of box time in which nothing else is measurable.** Plan 4.3
     into it.
+  - ⚠⚠ **The VM can end before the soak does, and it ends the leak check with
+    it** (2026-09-14: the 1 h probe's server died FIRST at 2.7 GB RSS, the
+    sidecar outlived it, the VM shut itself down two minutes later — host
+    pressure → hv_balloon → guest OOM kill of the largest process → empty
+    distro → idle timer; Hyper-V event 18508 "by the guest OS"). The rig now
+    (`28761aa`) puts the server and a `dmesg -W` witness at `oom_score_adj
+    -1000` (root: `wsl.exe -u root`), banks the witness to `/mnt/m`, refuses
+    the soak without an explicit `.wslconfig` (written 2026-09-18: `memory=8GB
+    swap=4GB`), and reports a killed chunk instead of hiding it. **Still
+    Kabir's: a quiet host for the day** — the protections make a kill land on
+    a chunk, they do not make the box free.
 
 ### 4.3 — The M7 planning doc *(write it DURING the soak)*
 
