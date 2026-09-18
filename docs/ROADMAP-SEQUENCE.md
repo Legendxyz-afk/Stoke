@@ -625,6 +625,12 @@ Every item states: **what · why it is here · blocked on · done when · hazard
   binary is archived and hashed (`stoke sha256`), the way M6's soak binary was.
 - **Precedent:** `stoke.exe` was frozen the same way from M3 until tag `m3`,
   with a single stated exception (a BUG fix-cycle). Use the same wording.
+- ✅ **DONE 2026-09-18 — `memos/2026-09-18-m7-code-freeze.md`: `src/` frozen
+  at `b1ee6b3` until tag `m7`, sole exception a BUG fix-cycle (which restarts
+  B7). Archived by hash: `build/stoke-m7-gate-fbc64f8c.exe` (Windows),
+  `stoke-m7-gate-linux-c922098f`, and the soak pair
+  `stoke-m7-soak-linux-asan-337bbc1b` / `…-serve_fuzz-ab4299ca`; WSL matrix
+  on `b1ee6b3` green on all three legs the same afternoon.**
 
 ### 4.2 — B7: the 24 h soak
 

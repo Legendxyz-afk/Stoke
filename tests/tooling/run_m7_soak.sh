@@ -227,6 +227,9 @@ say "=== M7 soak pre-flight (stamp $STAMP, mode $MODE) ==="
 for f in "$model" "$bin" "$fuzz"; do
     [ -e "$f" ] || { say "ABORT -- missing $f"; exit 1; }
 done
+# The soak is graded on the FROZEN binary (SEQUENCE 4.1); the hash is the
+# only thing that ties this log to the archive under build/stoke-m7-*.
+say "binaries: $bin $(sha256sum "$bin" | cut -c1-16)  $fuzz $(sha256sum "$fuzz" | cut -c1-16)  (git $(git rev-parse --short HEAD 2>/dev/null || echo '?'))"
 case "$BUILDDIR" in
     *asan*) : ;;
     *) say "⚠ NOTE -- $BUILDDIR is not a sanitizer build. The soak will still" \
