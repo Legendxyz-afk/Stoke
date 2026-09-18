@@ -55,6 +55,28 @@
 #
 # Linux/WSL only: the Windows toolchain here has no ASan.
 #
+# ▶▶ THE VM-LIFETIME HAZARD (2026-09-14; resolved from the record 09-16). The
+# 1 h probe's server died FIRST, at 2.7 GB RSS, the sidecar outlived it by ten
+# seconds, and two minutes later the VM shut itself down cleanly (Hyper-V
+# event 18508: "by the guest operating system" -- an empty distro, then the
+# idle timer). Best fit: host memory pressure (a game) inflates hv_balloon,
+# the guest OOM killer picks the LARGEST process, and the largest process is
+# the server whose lifetime IS the measurement. Three protections, each
+# CHECKED below rather than assumed:
+#   1. the server (and the witness) at oom_score_adj -1000, which the killer
+#      never picks, so a CHUNK dies instead of the lifetime. Needs root --
+#      run as `wsl.exe -u root -- sh tests/tooling/run_m7_soak.sh ...`. The
+#      driver loop continues past a killed chunk (its fuzz rc is banked, the
+#      chunk is reported as lost) and the fuzz, canary and sidecar keep the
+#      default score, so the killer still has something to take.
+#   2. a `dmesg -W` witness, line-flushed to /mnt/m for the whole run, so an
+#      OOM kill or a balloon event is in the record even if the VM is gone by
+#      morning. Grepped for the verdict.
+#   3. an explicit .wslconfig (memory=, swap=), so the cap is a chosen number
+#      and not the 50%-of-host default the 09-14 run had.
+# And after ANY run, on the Windows side: Hyper-V-Worker-Admin event 18508
+# says HOW the VM ended.
+#
 # Usage, from the repo root inside WSL:
 #   sh tests/tooling/run_m7_soak.sh [hours] [chunk_min] [builddir] [seed]
 #   sh tests/tooling/run_m7_soak.sh --shakedown              # 6 min, proves the rig
@@ -157,6 +179,7 @@ STAMP=$(date +%Y-%m-%d-%H%M)-m7-soak
 BANK="$GR/$STAMP.jsonl"
 LOG="$GR/$STAMP.txt"
 CSV="$GR/$STAMP.rss.csv"
+WIT="$GR/$STAMP.dmesg"
 SRVLOG="$BUILDDIR/m7_soak.srv"
 SANLOG="$BUILDDIR/m7_soak.sanlog"
 
@@ -197,7 +220,7 @@ read_series() {
 
 # A previous run under the same stamp is stale, not history: it is the thing
 # the numbers below would otherwise be appended to.
-rm -f "$SRVLOG" "$SANLOG".* "$BANK" "$LOG" "$CSV" 2>/dev/null
+rm -f "$SRVLOG" "$SANLOG".* "$BANK" "$LOG" "$CSV" "$WIT" 2>/dev/null
 
 # ---- PRE-FLIGHT. Every one of these has cost this project a run. ----
 say "=== M7 soak pre-flight (stamp $STAMP, mode $MODE) ==="
@@ -223,6 +246,32 @@ if [ -n "${free_mb:-}" ] && [ "$free_mb" -lt 6000 ] && [ "$MODE" = soak ]; then
     exit 1
 fi
 if command -v curl > /dev/null 2>&1; then : ; else say "ABORT -- curl missing"; exit 1; fi
+
+# The VM-lifetime protections (header). Printed for every mode so a probe's
+# log says what the VM looked like; ENFORCED only for the real soak, because
+# a 6 min shakedown that dies teaches the same lesson for free.
+uid=$(id -u)
+balloon=$(dmesg 2>/dev/null | grep -o 'hv_balloon: Max. dynamic memory size: [0-9]* MB' | tail -1)
+swap_mb=$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
+total_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
+wslconf=""
+for f in /mnt/c/Users/*/.wslconfig; do [ -f "$f" ] && wslconf="$f"; done
+say "VM: MemTotal ${total_mb:-?} MB, swap ${swap_mb:-?} MB, ${balloon:-no hv_balloon line in dmesg}; .wslconfig: ${wslconf:-NONE}; uid $uid"
+[ -n "$wslconf" ] && sed 's/^/  .wslconfig: /' "$wslconf" | tee -a "$LOG"
+if [ "$MODE" = soak ]; then
+    if [ "$uid" -ne 0 ]; then
+        say "ABORT -- not root: oom_score_adj -1000 cannot be set on the server, so the"
+        say "         OOM killer's first pick would be the server (the 2026-09-14 shape)."
+        say "         Run as: wsl.exe -u root -- sh tests/tooling/run_m7_soak.sh ..."
+        exit 1
+    fi
+    if [ -z "$wslconf" ] && [ -z "${STOKE_M7_SOAK_ALLOW_NO_WSLCONFIG:-}" ]; then
+        say "ABORT -- no .wslconfig: the VM's cap is the 50%-of-host default and hv_balloon"
+        say "         takes it back under host pressure. Write one ([wsl2] memory=, swap=),"
+        say "         wsl --shutdown, re-run. STOKE_M7_SOAK_ALLOW_NO_WSLCONFIG=1 is the override."
+        exit 1
+    fi
+fi
 
 # ---- THE ARENA'S SIZE, FROM THE MODEL HEADER, BEFORE THE RUN. This is the
 # formula in kv.c's kv_store_open (whole blocks of BP_BLOCK_TOKENS=16 tokens,
@@ -258,20 +307,40 @@ say "arena: $SEQS seqs x $blocks_per_seq blocks = $n_blocks blocks x $block_byte
 # exchange only: --max-seconds starts when it begins LISTENING, so the model
 # load sits outside it, which is what "serve for N seconds" should mean.
 srv_secs=$((TOTAL_SECS + 120))
+
+# The witness first: new kernel messages only (-W; the boot lines are in the
+# pre-flight above), line-flushed so a record reaches /mnt/m before whatever
+# comes next, -1000 so the killer skips it. Ended by us, at the end.
+stdbuf -oL dmesg -W -T > "$WIT" 2>&1 &
+wit_pid=$!
+[ "$uid" -eq 0 ] && echo -1000 > "/proc/$wit_pid/oom_score_adj" 2>/dev/null
+say "dmesg witness pid $wit_pid -> $(basename "$WIT") (oom_score_adj $(cat "/proc/$wit_pid/oom_score_adj" 2>/dev/null || echo '?'))"
+
 say "starting server: ${srv_secs}s budget, port $port, build $BUILDDIR, --ctx $CTX --seqs $SEQS --threads $THREADS"
 ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=0:log_path=$SANLOG" \
 UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
 "$bin" serve "$model" --port "$port" --ctx "$CTX" --seqs "$SEQS" --threads "$THREADS" \
     --max-seconds "$srv_secs" -v > "$SRVLOG" 2>&1 &
 srv_pid=$!
+# Before the model load, which is when RSS grows fastest: the server is the
+# one process the killer must never pick.
+[ "$uid" -eq 0 ] && echo -1000 > "/proc/$srv_pid/oom_score_adj" 2>/dev/null
 
 if ! curl -sS --retry 600 --retry-delay 1 --retry-connrefused \
         "http://127.0.0.1:$port/health" > /dev/null; then
     say "ABORT -- the server never answered /health"
-    kill "$srv_pid" 2>/dev/null
+    kill "$srv_pid" 2>/dev/null; kill "$wit_pid" 2>/dev/null
     exit 1
 fi
-say "server up (pid $srv_pid)"
+srv_oom=$(cat "/proc/$srv_pid/oom_score_adj" 2>/dev/null)
+say "server up (pid $srv_pid, oom_score_adj ${srv_oom:-?})"
+if [ "$MODE" = soak ] && [ "${srv_oom:-0}" != "-1000" ]; then
+    say "ABORT -- the server's oom_score_adj is ${srv_oom:-?}, not -1000: it would be the"
+    say "         OOM killer's first pick, and a killed server is a server whose leaks"
+    say "         were never checked."
+    kill "$srv_pid" 2>/dev/null; kill "$wit_pid" 2>/dev/null
+    exit 1
+fi
 
 # /proc/<pid>/status, five fields, MiB. RssAnon + RssFile + RssShmem == VmRSS.
 mem_fields() {
@@ -346,7 +415,7 @@ if [ "${arena_msz:-0}" -lt $((2 * arena_half_kib - 128)) ] || [ "${arena_msz:-0}
     say "         arena's $((2 * arena_half_kib)) KiB (ranges: ${ARENA_RANGES:-none}); the arena instrument"
     say "         is not reading the arena. (kv.c's layout or glibc's mmap threshold changed?"
     say "         A run whose instrument cannot see the arena would grade its own guess.)"
-    kill "$srv_pid" 2>/dev/null
+    kill "$srv_pid" 2>/dev/null; kill "$wit_pid" 2>/dev/null
     exit 1
 fi
 set -- $(arena_rss "$srv_pid")
@@ -387,6 +456,13 @@ while [ "$i" -le "$n_chunks" ]; do
     cseed=$((SEED + i))
     out=$("$fuzz" 127.0.0.1 "$port" "$CHUNK_SECS" "$manifest" 4 "$cseed" 20000 3 2>&1)
     frc=$?
+    # A killed fuzz is a lost CHUNK, not a lost run: the server (-1000) is
+    # still there and the loop goes on. Said out loud, because a chunk line
+    # with rc=137 and no exchange count would otherwise read like a quiet one.
+    if [ "$frc" -ge 128 ]; then
+        say "⚠ chunk $i: the fuzz was KILLED (rc $frc = signal $((frc - 128))) -- its traffic is lost, the server's lifetime is not; see the dmesg witness"
+        killed=$((${killed:-0} + 1))
+    fi
     # ⚠ THE STALL HALF OF THE GATE ("no crash, no leak slope, no stall") had no
     # instrument: serve_fuzz DISCARDS replies and counts any bytes read as an
     # exchange, so a server that answers headers and never finishes a
@@ -427,9 +503,23 @@ say "waiting for the server to end ITSELF (never signalled -- this IS the leak c
 wait "$srv_pid"; srv_rc=$?
 say "server exited $srv_rc"
 kill "$sidecar_pid" 2>/dev/null; wait "$sidecar_pid" 2>/dev/null
+kill "$wit_pid" 2>/dev/null; wait "$wit_pid" 2>/dev/null
 
 # ---- verdict ----
 fail=0
+# What the kernel said while the server lived. An OOM kill of anything, or a
+# balloon event, is a fact about the run whatever the other checks say.
+oom_pat='Out of memory|Killed process|oom-kill|oom_reaper|hv_balloon'
+oomlines=$(grep -E -c "$oom_pat" "$WIT" 2>/dev/null)
+if [ "${oomlines:-0}" -gt 0 ]; then
+    say "⚠ the dmesg witness recorded ${oomlines} OOM/balloon line(s) ($(wc -l < "$WIT" | tr -d ' ') kernel lines in all):"
+    grep -E "$oom_pat" "$WIT" | tail -20 | sed 's/^/  /' | tee -a "$LOG"
+else
+    say "dmesg witness: no OOM or balloon lines over the run ($(wc -l < "$WIT" | tr -d ' ') kernel lines in all)"
+fi
+[ "${killed:-0}" -ne 0 ] && say "⚠ ${killed} chunk(s) lost to a killed fuzz (banked as fuzz_rc >= 128)"
+say "host side, afterwards: Hyper-V-Worker-Admin event 18508 says how the VM ended --"
+say "  powershell: Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Hyper-V-Worker-Admin';Id=18508} -MaxEvents 3 | Format-List TimeCreated,Message"
 if [ "$srv_rc" -ne 0 ]; then
     say "FAIL -- server exited $srv_rc (a sanitizer abort exits non-zero; so does a crash)"
     tail -40 "$SRVLOG" | sed 's/^/  /' | tee -a "$LOG"
@@ -532,5 +622,5 @@ if [ "$fail" -ne 0 ]; then
     say "=== M7 soak: FAILED ==="
     exit 1
 fi
-say "=== M7 soak: OK ($n_chunks chunks, ${TOTAL_SECS}s, $n_gen generations, no sanitizer reports) ==="
+say "=== M7 soak: OK ($n_chunks chunks, ${killed:-0} lost, ${TOTAL_SECS}s, $n_gen generations, no sanitizer reports, ${oomlines:-0} OOM/balloon lines) ==="
 exit 0
