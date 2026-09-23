@@ -1120,6 +1120,6 @@ Related paths (from this folder):
 - Beginner primer — every concept from scratch: `docs/beginners-primer.md`
 - Background — what vLLM is, in depth: `docs/vllm-and-the-serving-landscape.md`
 - AySen: `../loom/` (handbook: `../loom/docs/HANDBOOK.md`)
-- Router: `../../bot/TokenOptimizer/universal-omni-router/`
+- Router: private GitHub repo `Legendxyz-afk/tokenoptimizer`, dir `universal-omni-router/` (the local `../../bot/TokenOptimizer/` copy is gone, checked 2026-09-23); its provider translation is the port source for the universal server, `docs/superpowers/specs/2026-09-23-stoke-universal-server-design.md`
 - Earlier freelance/jobs plan (superseded as *company direction*, still valid as
   runway funding): `../../bot/GET-WORK-AND-MONEY.md`
