@@ -697,6 +697,17 @@ verify endings from WSL with `od -c`, Git-Bash reads can hide `\r`).
 
 ## Beyond Phase 1 (context, not tasks)
 
+**▶ 2026-09-23 (Kabir): after tag `m7`, the UNIVERSAL SERVER comes first and
+the ARM port after it — reversing the 2026-09-01 "ARM NEON first" order.**
+One `stoke` app, one OpenAI-compatible API, in front of local open models (on
+stoke's own engine, families added through updates, most-downloaded first) and
+Claude/GPT (with the user's keys). Every request goes through stoke's scheduler.
+Routing is manual or automatic (difficulty rules, local first). The app receives
+signed updates Kabir publishes. It absorbs Phase 2's bridge layer (pull,
+catalog, per-family chat formats) and Phase 3's router fold-in. The first
+release is v0.1, a tester preview with manual routing. Spec:
+`superpowers/specs/2026-09-23-stoke-universal-server-design.md`.
+
 Phase 1.5: CUDA (`.cu` behind `extern "C"`, onto the proven scheduler) +
 ARM NEON — planning doc is an M7 deliverable. **ORDER DECIDED 2026-09-01
 (Kabir): ARM NEON FIRST, CUDA SECOND, and the stated goal is "embed on

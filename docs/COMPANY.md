@@ -37,6 +37,7 @@ hosts the business record.
 | **Phase 2 = the bridge layer**, NPU moves behind it | 2026-08-02 | Fable review, Kabir-approved |
 | **Phase 1.5 = ARM NEON FIRST, then CUDA.** "we'll make it embed on most of the hardware" | **2026-09-01** | **Kabir, this session — see §7** |
 | ⭐ **stoke is PRIMARY, AySen is SECONDARY.** "aysen is gonna be secondary, stoke is gonna be first" | **2026-09-01** | **Kabir, this session — see §0.1** |
+| **After tag `m7`: the UNIVERSAL SERVER first, the ARM port after** — one stoke app serving local open models + Claude/GPT through one API, updated by Kabir; **reverses the 2026-09-01 order above.** ⚠ It is a consumer/developer app, so §3.3's "adoption is not revenue" caution applies, and Ollama itself now lists cloud-hosted models in its library (seen 2026-09-23) | **2026-09-23** | **Kabir — `superpowers/specs/2026-09-23-stoke-universal-server-design.md`** |
 
 ### 0.1 stoke primary, AySen secondary — what it settles and what it costs
 
@@ -443,6 +444,12 @@ possible, not an argument that it should be pursued now.
 ---
 
 ## 7. Phase 1.5 — ARM FIRST *(Kabir, 2026-09-01)*
+
+*⚠ 2026-09-23: Kabir moved the ARM port behind the universal server (§0,
+`superpowers/specs/2026-09-23-stoke-universal-server-design.md`). The reasoning
+below still holds for when it comes. Every model family added first will need
+ARM kernels then; each already has a scalar reference twin, so ARM is correct
+on day one and gets fast incrementally.*
 
 > **"arm first, we'll make it embed on most of the hardware."**
 
