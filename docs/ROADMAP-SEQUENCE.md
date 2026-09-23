@@ -101,16 +101,20 @@ throughout; README with a reproducible benchmark report."*
 | # | clause | verdict | evidence |
 |---|---|---|---|
 | 1 | tokenizer + greedy parity vs llama.cpp | ✅ **MET** | M1 byte-exact tokenizer (fuzz corpus, specials both modes, 22,848-line unicode sweep); M2 24/24 token-exact over 1,536 greedy decisions, 0 diverged, plus the 36-layer L2 ladder at ≤1e-3 worst 6.104e-04; M3 zero BUG-class on the Q4_K_M grid (9/9 ARITHMETIC-CLASS, worst margin 54% of a τ frozen before grading) |
-| 2 | S2 aggregate ≥2× ollama-default **AND** ≥1.0× llama-server-tuned @ N=8/16 | ❌ **OPEN — and the denominator is now in dispute.** See §I.4 | 0.955× / 1.023× against the frozen M0 bars; **0.687× against llama-server measured today** |
+| 2 | S2 aggregate ≥2× ollama-default **AND** ≥1.0× llama-server-tuned @ N=8/16 | **2026-09-23: HALF MET.** llama-server half ✅ **PASSED**; ollama half ⛔ **a DOCUMENTED MISS, pre-registered — Kabir's call: accept it, or re-specify the referent** (ollama-default serves ONE request at a time on a CPU box). *09-01 read: ❌ OPEN, denominator in dispute — settled by the 09-08 re-spec (§2.1)* | graded as a same-sitting END-TO-END WALL ratio (re-spec 2026-09-08, `design-notes/2026-09-08-clause2-end-to-end-preregistration.md`): **1.181× @8** (5/5 pairs, 09-15), **1.195× @16** (3/3), **1.281× @32** beyond the clause (3/3); ollama **1.735× @8, 1.836× @16** — `gate-reports/2026-09-18-clause2-e2e-16-32-ollama.md`, `docs/BENCHMARKS.md`. *(09-01: 0.955× / 1.023× against the frozen M0 bars; 0.687× against llama-server that day)* |
 | 3 | single-stream ≥50% of llama.cpp | ✅ **MET, and far past it** | n=1 prefill **1.051×** of `llama-bench` (was 0.483× at m6); n=1 decode **0.961×**; M4.5's P-BAR (≥0.85× decode) met at 0.912× / 0.892× |
 | 4 | no >250 ms decode stall from a co-running prefill | ❌ **MISSED, STRUCTURAL — DISPOSITIONED 2026-09-16 (Kabir): a DOCUMENTED MISS, `memos/2026-09-16-clause4-itl-stall-DISPOSITION-KABIR.md`; the overlap redesign is Phase 1.5's first scheduler item** | stall p50 **738 ms at chunk 64** — the smallest S-ALIGN-legal width — 1287 ms at 128, 2450 ms at 256 (09-08 sweep); **09-15 same-sitting screen: 1.84 s at 128, 3.34 s at 256, and 256 is the SHIPPED width since the 09-15 evening (Kabir's ruling; wall −3.4%, TTFT −4/−6%)**. `cadence` p50 ~171 ms is comfortably inside 250 at every width, so this is the *stall* population only, exactly as the 08-26 ruling scoped it |
 | 5 | one static binary | ✅ **MET** | single 1.38 MB `stoke.exe`, `LDFLAGS` empty, no runtime deps beyond platform sockets |
 | 6 | OpenAI endpoints pass openai-python | ✅ **MET** | M6 gate; `tests/serve_openai.py` is the sole grader for four of the five sampling parameters, backed by a 5/5 mutation leg proving each parameter's DELIVERY can fail and does |
 | 7 | ASan/TSan green throughout | ✅ **MET** | M6 matrix: Windows plain · Linux plain · Linux ASan · Linux TSan all GREEN. **B1 then closed the coverage hole that made the TSan result narrower than it read** — every test was single-threaded, so "zero races" covered none of the cross-thread surface; a sim-driven test found SIX and reports zero after the fix |
-| 8 | README + reproducible benchmark report | ⬜ **NOT STARTED** | rung B8, last by design because it quotes everything above |
+| 8 | README + reproducible benchmark report | 🟡 **FIRST PASS 2026-09-18** (`5e56039`) — the 24 h soak's row is the one line owed | README rewritten on the measured position; `docs/BENCHMARKS.md` reproducible from its printed commands, absolutes + ratios + the block named, both misses stated. *(09-01: not started)* |
 
-**Five met, one not started but cheap, two open. Neither open clause is an
-engineering unknown any more — both are decisions (§ Stage 2).**
+**2026-09-23: five met (1 3 5 6 7); clause 2 half met — the llama-server
+half passed, the ollama half is a documented miss awaiting Kabir's call;
+clause 4 a documented miss (Kabir, 09-16); clause 8 first pass, the soak row
+owed.** *(09-01 read: "five met, one not started but cheap, two open —
+neither an engineering unknown any more, both decisions (§ Stage 2)" — and
+both were decided: 2.1 on 09-08, 2.2 on 09-16.)*
 
 ## I.4 The performance position, with all four denominators
 
@@ -231,7 +235,7 @@ deliverable. Everything remaining is packaging, porting and paperwork.
 |---|---|---|---|---|
 | [1] | Llama-3.2-3B parity, incl. long context | forward note | ~~a file that is not on this box~~ | ✅ **MET 2026-09-08** — rung B5 closed, `gate-reports/2026-09-08-m7-b5-closeout.md` |
 | [2] | unsloth-file parity run on Q4_K_M | forward note | ~~a file that is not on this box~~ | ✅ **MET 2026-09-15, PASS on the pass rule, signed off by Kabir** — 960 probes, zero BUG, T1 + T4 fired and dispositioned: `gate-reports/2026-09-15-m7-b6-unsloth-probe.md`, memo `memos/2026-09-15-m7-b6-tripwire-anomaly-memo.md` |
-| [3] | 24 h soak | ROADMAP | a box that can be left alone for a day | ⬜ rung B7 — **rig shaken down and a 1 h BASELINE banked 2026-09-18 (`gate-reports/2026-09-18-0844-m7-soak.*`: OK, 719 generations, LSan clean, non-arena anon flat); the 24 h itself waits for the window** |
+| [3] | 24 h soak | ROADMAP | a box that can be left alone for a day | ⬜ rung B7 — **rig shaken down and a 1 h BASELINE banked 2026-09-18 (`gate-reports/2026-09-18-0844-m7-soak.*`: OK, 719 generations, LSan clean); the 24 h itself waits for the window.** ⚠ **Corrected 2026-09-23: the baseline's non-arena anon is NOT flat** (as banked) — re-read at 240 s it climbs a steady ~18–20 MiB/h with VmData on the ASan build after a 5-min warm-up (+ one +21 MiB step), and soak mode graded no RSS at all. ⇒ **the 24 h's RSS rule is PRE-REGISTERED** (`design-notes/2026-09-23-m7-soak-rss-rule.md`): over the final 6 h, VmData and non-arena anon each grow ≤ one KV block (4.5 MiB) by least squares, else the soak FAILS; `tests/tooling/soak_rss_rule.sh`, its 17-case test (8/8 mutants caught) run in the soak's pre-flight; ASan quarantine set to 64 MiB; launcher `build/wslmatrix/launch_soak24h.sh` (shakedown first) |
 | [4] | fuzz | forward note | corpora exist (A2's 51 files, `serve_fuzz`) | ✅ **MET 2026-09-18 on the frozen source** — `gate-reports/2026-09-18-m7-fuzz-gate.txt`: `serve_asan` 600 s / 4 clients / 51 files / seed 20260918 on the frozen ASan pair, OK (no sanitizer reports, clean exit, the ≥10-generations floor cleared); the `-DSTOKE_MUT_FUZZ_BAD_BODY` arm built from the same source FAILED the floor at 0 generations ⇒ the grader can fail. (First closed 2026-09-05 with seed 20260829, never banked in the repo.) |
 | [5] | README + a REPRODUCIBLE benchmark report | forward note | a box that passes the quiesce bar | 🟡 rung B8 **first pass 2026-09-18 (`5e56039`): README rewritten on the measured position, `docs/BENCHMARKS.md` reproducible from its commands; the soak row is the one line still owed** |
 | [6] | Kabir sign-offs | ROADMAP | Kabir | ⬜ last |
@@ -241,10 +245,10 @@ deliverable. Everything remaining is packaging, porting and paperwork.
 | B1 | the cross-thread surface | ✅ DONE — TSan found **six** races where reading the code found one; zero after the fix. Cost against `m6` with a null arm: 8f32 0.09% against a 0.25% floor, 16f32 0.03% against 3.0% |
 | B2 | the bars' absolutes on a quiet box | ✅ DONE — **and it found the quiesce instrument was reading noise**: a one-shot `Get-CimInstance` on a FORMATTED WMI counter returned 7–38% where three other instruments read ~3%. Wrong in BOTH directions ⇒ **any `quiesced: true` banked before 2026-08-30 is weak evidence** |
 | B3 | the first-token ordering | ✅ DONE — 7 of 8 pairs differed unfixed, and every raced stream began with token 264 whatever its seed (the argmax, seen from outside). Fixed by draining the pending queue on a callback MISS; 8 pairs, 0 differing with the window still widened |
-| B4 | the small debts | ⚠ **HALF DONE** — `stoke run` sampling flags ✅ (and the header's claim that the CLI reproduces the SERVER for a given seed was FALSE when tested — a one-position shift, invisible from either side alone). **The Linux C++ TU box is still OPEN — needs `apt install g++`, Kabir's** |
+| B4 | the small debts | ✅ **DONE** — `stoke run` sampling flags ✅ (and the header's claim that the CLI reproduces the SERVER for a given seed was FALSE when tested — a one-position shift, invisible from either side alone). **The Linux C++ TU ✅ — g++ 13.3.0 is installed in WSL and the matrices print `abi_tu_cxx: stoke.h C++ compile+link OK` (`build/wslmatrix/wsl_matrix_b1ee6b3.log`, also on `9eca59e` / `d56e496`).** *(Recorded 2026-09-23: this row said OPEN for weeks after it was not.)* |
 | B5 | Llama-3.2-3B incl. long context | ✅ **DONE 2026-09-08** — all six ruled elements discharged and cited; the grid 16/16 streams, 1024 probes, zero BUG; the fourth targeted delta (the Llama-3 header template) did not exist until `c3b4691` and was found by reading a different source than the parity items |
 | B6 | the unsloth Q4_K_M parity run | ✅ **RUN 2026-09-14/15** — 15/15 streams, 960 probes to position 2933, 23 divergent, **all ARITHMETIC-class, zero BUG**; C1-Q re-earned the batched licence on the Qwen3 graph (5.2e-05), T6 bit-identical. **T1 fired at 2.40%** (the carried expectation: bartowski 3.10%, Llama 1.37%; threshold kept, memo) and **T4 fired at 1.97×** into `[1200,∞)` — part a localized tail at the first generated positions of the ≥1893-token streams (an 11.88 anchored Δ at an *agreeing* position, stoke bit-identical across its prefill paths there, the reference stable across batch shapes to 7e-5), part a real widening past ~1500. Survey ordered by Kabir at sign-off and RUN (report §8): llama.cpp is as far from the f32 reference as stoke is; the boundary shrink is the engine class (llama.cpp sides with stoke); the 11.88 position is a knife-edge (stoke's `--kv q8` arm, llama.cpp and the reference in one basin, the graded arm in the other; smooth 1000× amplification through layers 13–25, gone under a one-token substitution 1500 tokens earlier) — not a defect |
-| B7 | the 24 h soak | 🟡 freeze done (`dbe16db`), rig shaken down (`fd7d26f`), 1 h baseline OK (`968cc45`); the 24 h needs a window Kabir names |
+| B7 | the 24 h soak | 🟡 freeze done (`dbe16db`), rig shaken down (`fd7d26f`), 1 h baseline OK (`968cc45`); **2026-09-23: the RSS rule pre-registered, ASan quarantine 64 MiB, the launcher written — READY; the 24 h needs a window Kabir names** |
 | B8 | README + reproducible benchmark report | 🟡 first pass `5e56039`; finishes after B7 |
 
 ---
@@ -284,6 +288,8 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 
 ### 0.2 — `apt install g++` on the WSL side
 
+- ✅ **DONE** (recorded 2026-09-23): g++ 13.3.0 is in WSL and every WSL
+  matrix since `9eca59e` prints `abi_tu_cxx: stoke.h C++ compile+link OK`.
 - **What:** install a C++ compiler in WSL.
 - **Why here:** it closes the open half of B4 and **the last of the five items
   M6 handed to M7**. It blocks nothing, which is exactly why it should be
@@ -520,6 +526,28 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Small, and the smallest of the three — but it is a standing rule currently
   being broken silently, which is the category this project treats most
   seriously.**
+- ✅ **SETTLED 2026-09-23 (Opus decides and records; Kabir overrules) —
+  NARROWED, not a second `kind`.** The rule now reads: *a green commit that
+  changes code on the path `bench --ops` measures — the single-thread Q8_0
+  matvecs, `vec_dot_q8_0_f32`, `dequant_row_q8_0`, and `rmsnorm`, `rope_neox`,
+  `softmax`, `swiglu`, `argmax` — appends an `ops` row.* The batched K-quant
+  kernels, attention, the scheduler and the server are not ledgered there;
+  their record is the same-sitting gate reports and `docs/BENCHMARKS.md`.
+  - **Why not a second `kind`:** its rows would be serving absolutes from
+    different sittings, and on this box those moved 1.8× with no code change
+    (standing rule 5; BENCHMARKS.md's own header) — a ledger of them invites
+    exactly the cross-sitting diff this project forbids. A ratio from ONE
+    sitting is the serving number that travels, and it already has a home.
+  - **Why not honour the old wording:** `bench --ops` is single-thread Q8_0
+    with the pool inert, so rows for ADDENDA 39–44 would have measured a path
+    those changes do not reach — numbers that look like evidence and are not.
+  - ⚠ **ONE ROW IS OWED under the narrowed rule.** Since the last row
+    (`ec9e8cb`, 2026-08-28) one commit touched the measured path: `0c2da0c`
+    changed `rope_neox` (the Llama-3 rope work; `ops.c` has no other change
+    in that range, and no commit touched the Q8_0 matvec or dot). One row on
+    the M7 freeze binary (`b1ee6b3`), taken on a quiesced box and NOT during
+    the soak, closes it; it is a precondition of the M7 stamp (4.5).
+  - Written into `ROADMAP.md`'s cross-cutting line in place, dated.
 
 ---
 
@@ -649,7 +677,13 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Blocked on:** 4.1, and **a box that can be left alone for a day.**
 - **Done when:** 24 h clean, with the driver reporting **what its traffic
   actually contained** and the server's own log showing the completed
-  generations.
+  generations — **and, pre-registered 2026-09-23 before the run, the RSS rule
+  reading FLAT**: over the final 6 h, VmData and non-arena anon each grow ≤ one
+  KV block (4.5 MiB) by least squares; CLIMBING or VOID fails the soak
+  (`design-notes/2026-09-23-m7-soak-rss-rule.md`, `tests/tooling/soak_rss_rule.sh`).
+  Launch: `build/wslmatrix/launch_soak24h.sh` as root (the 6-min shakedown
+  first, the 24 h only on its OK; ~24 h 15 min wall). Verdict: the
+  `=== M7 soak:` line, which now carries `RSS FLAT` / `RSS NOT FLAT`.
 - **Hazards — every one of these is a scar, not a precaution:**
   - ⚠⚠ **A soak that never enters the sampler passes every check it has.** M6's
     did: its builder hardcoded `"temperature":0`, and a 400 counted as an
@@ -744,6 +778,8 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Hazard:** tag `m7` **annotated**, and record **both** the tag object sha and
   the commit sha — see the §I.1 correction. Also archive the gate binary as part
   of the stamp (the M3 ruling added that step for a reason).
+- **Precondition added 2026-09-23 (2.3):** the one `history.jsonl` `ops` row
+  owed on the freeze binary, taken on a quiesced box, not during the soak.
 
 ---
 
@@ -932,12 +968,16 @@ Everything in this file that is **not** a session's call, in one list:
 
 | # | question | stage | cost of deferring |
 |---|---|---|---|
-| 1 | the two downloads | 0.1 | **blocks the critical path** |
-| 2 | `apt install g++` | 0.2 | leaves the last M6-inherited item open at freeze |
-| 3 | approve the llama-server @16 sitting | 0.3 | **blocks all of Stage 1, therefore Stage 2, therefore the README** |
-| 4 | the prefill policy — chase the aggregate or document the miss | 2.1 | the README cannot state clause 2's disposition |
-| 5 | gate [3]'s 250 ms — redesign / re-anchor / documented miss | 2.2 | same |
-| 6 | the `history.jsonl` rule — narrow it or add a second `kind` | 2.3 | the ledger ships with a six-addendum hole |
+| 1 | the two downloads | 0.1 | ✅ done — B5 and B6 ran on them |
+| 2 | `apt install g++` | 0.2 | ✅ done — the Linux C++ TU is green (recorded 2026-09-23) |
+| 3 | approve the llama-server @16 sitting | 0.3 | ✅ done — the 09-18 @16/@32/ollama sitting |
+| 4 | the prefill policy — chase the aggregate or document the miss | 2.1 | ✅ decided 09-08 — clause 2 re-specified as end-to-end wall |
+| 5 | gate [3]'s 250 ms — redesign / re-anchor / documented miss | 2.2 | ✅ decided 09-16 — a documented miss, the redesign is Phase 1.5's |
+| 6 | the `history.jsonl` rule — narrow it or add a second `kind` | 2.3 | ✅ settled 09-23 (Opus; Kabir overrules) — narrowed; one row owed at the freeze |
+| 6a | **the ollama half of clause 2 — accept the documented miss, or re-specify the referent** | I.3 | the README states it as a miss until he rules; the stamp needs a disposition |
+| 6b | **the LICENCE** | 5.0 | ⏳ the only irreversible one — closes the first time an outside PR is merged without a CLA |
+| 6c | **the 24 h window** | 4.2 | the critical path: nothing after B7 can start |
+| 6d | **push `m5-entry`** (61 commits 09-06 → 09-18, plus 09-23's, exist only on this box) | — | a disk failure loses the whole clause-2 sitting, the freeze and gate [4] |
 | 7 | the rename | 5.1 | cost is ~0 now and **rises steeply after launch** |
 | 8 | fast-forward `main` (177 commits) and whether to keep `m45-aprime` | 5.2 | cannot launch from a default branch at M1 |
 | 9 | restore `gh auth` to `liora4u`? | 5.3 | global state left changed |
