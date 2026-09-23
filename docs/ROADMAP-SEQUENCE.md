@@ -974,7 +974,7 @@ Everything in this file that is **not** a session's call, in one list:
 | 4 | the prefill policy — chase the aggregate or document the miss | 2.1 | ✅ decided 09-08 — clause 2 re-specified as end-to-end wall |
 | 5 | gate [3]'s 250 ms — redesign / re-anchor / documented miss | 2.2 | ✅ decided 09-16 — a documented miss, the redesign is Phase 1.5's |
 | 6 | the `history.jsonl` rule — narrow it or add a second `kind` | 2.3 | ✅ settled 09-23 (Opus; Kabir overrules) — narrowed; one row owed at the freeze |
-| 6a | **the ollama half of clause 2 — accept the documented miss, or re-specify the referent** | I.3 | the README states it as a miss until he rules; the stamp needs a disposition |
+| 6a | **the ollama half of clause 2 — accept the documented miss, or re-specify the referent** | I.3 | the README states it as a miss until he rules; the stamp needs a disposition. ⚠ IV.9: on S2 the reachable ceiling against a one-slot server is ≈1.93× (derived), just under the bar |
 | 6b | **the LICENCE** | 5.0 | ⏳ the only irreversible one — closes the first time an outside PR is merged without a CLA |
 | 6c | **the 24 h window** | 4.2 | the critical path: nothing after B7 can start |
 | 6d | **push `m5-entry`** (61 commits 09-06 → 09-18, plus 09-23's, exist only on this box) | — | a disk failure loses the whole clause-2 sitting, the freeze and gate [4] |
@@ -1184,6 +1184,49 @@ graded on.**
 thesis at high concurrency; it does not make the engine faster, and the one
 piece of work that would — the scheduler overlap redesign — is not in it, is
 undesigned, and is the same work gate [3] needs.**
+
+## IV.9 2026-09-23 — why the margin is ~1.3× and not 2×, and what N=128 would show
+
+*Kabir: "only 1.28? what about n = 128? why isnt it double". DERIVED from the
+09-18 sitting's banked walls (`docs/BENCHMARKS.md` §1), not a new measurement —
+[[derived-quantity-is-a-claim]] applies. The @8 row is left out on purpose: it
+is a different sitting in the slow box state, and absolutes do not cross
+sittings (standing rule 5).*
+
+- **The job is mostly prompt.** S2 is ~525 prompt tokens + 128 generated per
+  client, so ~80% of the forward work is prefill — which batching cannot make
+  cheaper: every engine processes every prompt token.
+- **By N=32 stoke runs the whole job at its prefill ceiling.** Work rate =
+  N × 653 tokens ÷ wall: **stoke 74.3 → 78.1 t/s** at N = 16 → 32;
+  **llama-server 62.2 → 60.9**; the same-block `llama-bench pp512` referent
+  **~70–72**. stoke's 78.1 ≈ **1.09×** the referent — its own prefill-kernel
+  lead (09-01: 1.089×). The decode rows ride inside the prefill chunk's step
+  (IV.4), so at N=32 they are processed at prefill efficiency: that is the
+  mechanism behind "the margin grows with N", and it is also where it ends.
+  llama-server runs at ~85% of llama.cpp's own kernels: its batched decode
+  stops scaling past ~8 (IV.2: 1.02–1.05× per doubling against stoke's 1.31×)
+  and its 2,048-token prompt batches stop every stream for 29–30 s.
+- ⇒ **1.28× ≈ 1.09 (kernels) × ~1.17 (what llama-server loses).** More clients
+  cannot lift stoke past its ceiling; **2× over llama-server would need
+  llama-server to waste half the CPU.** The kernel levers priced ~null on
+  09-16, so the ceiling does not move cheaply either.
+- **N=128 cannot be measured on this box as built.** 128 × ~650-token contexts
+  need ~26 GB of stoke's f32 KV (the @32 arm used 6.5 GB) and ~13 GB of
+  llama's f16 KV next to a 2.5 GB model on a 15.6 GB box, and the frozen
+  server accepts 48 connections (`MAX_CONNS`). It needs q8 KV on both arms and
+  a `MAX_CONNS` change — a `src/` change, so after tag `m7`. Expected from the
+  above: **~1.3×**, higher only if llama-server degrades further.
+- **The ollama bar sits just above what this workload allows.** ollama is
+  serial at 16.2 s per request; stoke at its ceiling needs 653/78.1 ≈ 8.4 s ⇒
+  **≈1.93× is the most S2 permits** against a one-slot server on this box (1.84×
+  measured @16). Clearing ≥2× needs ~3% more prefill speed (80.6 t/s), or a workload with a
+  smaller prompt share. Input to III.4 6a.
+- **Where more than 2× is real: work stoke does not do.** Shared prompts —
+  agents with a common system prompt — are what prefix reuse removes: measured
+  2.3–4.2× within stoke on S3 fan-out (M5 gate 4; PHASE-1.5-PLAN §6), never yet
+  against llama-server, and S2 salts every prompt so none is shared.
+  Decode-heavy work (short prompts, long answers) widens the gap against a
+  serial server the same way.
 
 ---
 
