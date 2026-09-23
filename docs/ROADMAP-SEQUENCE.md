@@ -790,6 +790,11 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 
 ### 5.0 — The LICENCE ← more consequential than everything else in Stage 5, and it has a clock
 
+- ✅ **DECIDED 2026-09-23 (Kabir): AGPL-3.0 + a CLA on outside contributions.**
+  Consequences and reasoning: `COMPANY.md` §5. Before the repo goes public:
+  the CLA (lawyer-reviewed) and a CLA bot live, a clean public snapshot with
+  the internal documents left out, and 5.1's name settled.
+
 - **What:** choose stoke's licence before the repo goes public.
 - **Why it is numbered 5.0:** it is **the only irreversible decision in this
   file**, and it is not recorded anywhere in `MEMORY.md`'s business appendix,

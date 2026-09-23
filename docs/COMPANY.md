@@ -37,6 +37,7 @@ hosts the business record.
 | **Phase 2 = the bridge layer**, NPU moves behind it | 2026-08-02 | Fable review, Kabir-approved |
 | **Phase 1.5 = ARM NEON FIRST, then CUDA.** "we'll make it embed on most of the hardware" | **2026-09-01** | **Kabir, this session — see §7** |
 | ⭐ **stoke is PRIMARY, AySen is SECONDARY.** "aysen is gonna be secondary, stoke is gonna be first" | **2026-09-01** | **Kabir, this session — see §0.1** |
+| **LICENCE: AGPL-3.0 + a CLA on outside contributions** — the only irreversible decision; supersedes §5.4's recommendation (see §5) | **2026-09-23** | **Kabir** |
 | **After tag `m7`: the UNIVERSAL SERVER first, the ARM port after** — one stoke app serving local open models + Claude/GPT through one API, updated by Kabir; **reverses the 2026-09-01 order above.** ⚠ It is a consumer/developer app, so §3.3's "adoption is not revenue" caution applies, and Ollama itself now lists cloud-hosted models in its library (seen 2026-09-23) | **2026-09-23** | **Kabir — `superpowers/specs/2026-09-23-stoke-universal-server-design.md`** |
 
 ### 0.1 stoke primary, AySen secondary — what it settles and what it costs
@@ -336,6 +337,32 @@ determines whether that is recoverable.
 ---
 
 ## 5. The licence — the only irreversible decision, and it has a clock
+
+**▶ DECIDED 2026-09-23 (Kabir): AGPL-3.0, plus a CLA on every outside
+contribution** ("i want this under the cla and agpl license"). This supersedes
+§5.4's recommendation (the LGPL-style split, or permissive + CLA).
+
+- **The CLA keeps the dual-licence door open (§5.1).** A company that cannot
+  accept AGPL — §5.2's ISV embedding stoke in a closed app — buys a commercial
+  licence.
+- **§5.3's caution stands, and is now a known cost.** AGPL narrows open-source
+  and embedder adoption, and some companies ban AGPL outright.
+- **What moved the balance: the universal server (§0, 2026-09-23) is a network
+  server.** AGPL's network clause is what stops a competitor from hosting a
+  modified stoke without publishing their changes.
+
+**Consequences:**
+- **Source goes public at v0.1.** Everyone who receives AGPL binaries is
+  entitled to the source, so v0.1 ships as open source rather than binaries
+  only.
+- **The CLA and a CLA bot must be live before the repo is public.**
+- **The CLA text needs a lawyer's review.** Its grantee should be the company's
+  legal entity, or Kabir with a right to assign to it.
+- **Internal documents must not go public.** This file, the memos and
+  `MEMORY.md` are strategy, so the public repo starts from a clean snapshot and
+  the private history stays private.
+- **The name must be settled first** (`ROADMAP-SEQUENCE.md` 5.1: PyPI `stoke`
+  is taken, and there is StanfordPL/stoke and Stoke Space).
 
 **`MEMORY.md`'s Appendix B enumerates thirteen business models and never names a
 licence.** That is the largest gap in the strategic record.

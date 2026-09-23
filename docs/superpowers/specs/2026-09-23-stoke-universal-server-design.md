@@ -44,6 +44,8 @@ The typical workload is agents, tool chains and fan-outs.
 | Updates | The app receives updates Kabir publishes: **app releases and a model catalog, both signed.** |
 | Order | After tag `m7`, **this comes before the ARM port.** That reverses the 2026-09-01 "ARM NEON first" order (`COMPANY.md` §0, §7). |
 | First release | **v0.1, a tester preview with manual routing only** (§8). |
+| Licence | **AGPL-3.0 + a CLA on outside contributions** (`COMPANY.md` §5). This means **v0.1 ships with public source**, not binaries only. |
+| Downloads | The company website is the front door. The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on the company's own domain (§11). |
 
 ## 3. Components
 
@@ -224,7 +226,7 @@ passed (rung B5):
 
 | release | contents | rough timing (after tag `m7`) |
 |---|---|---|
-| **v0.1 — tester preview** | Manual routing. Local Llama 3.x + Qwen3, one model resident. Cloud OpenAI + Anthropic with the user's keys. Rate-limit pacing and warm connections. `stoke pull`. A signed "update available" notice. Windows and Linux x86-64, **binaries only.** | ~3–4 weeks |
+| **v0.1 — tester preview** | Manual routing. Local Llama 3.x + Qwen3, one model resident. Cloud OpenAI + Anthropic with the user's keys. Rate-limit pacing and warm connections. `stoke pull`. A signed "update available" notice. Windows and Linux x86-64, **open source under AGPL-3.0 + CLA** (§11). | ~3–4 weeks |
 | **v0.2** | Automatic routing (difficulty rules, local first) and the decision log. | ~+2 weeks |
 | **v1** | Qwen2.5 and DeepSeek-R1 local sizes. Prompt-cache shaping and the response cache. Cloud-when-busy (off by default). Several models resident. Self-installing signed updates. | ~2–2.5 months |
 | **updates 1–5** | The model families of §7, in that order. | ~3–4 more months |
@@ -276,15 +278,38 @@ start.
 
 ## 11. Blocked on Kabir
 
-- **Before v0.1:**
-  - a public place for downloads and the version file (binaries only; the
-    source stays private);
-  - generating the offline update-signing key and storing it safely.
-- **Before the source goes public:** the licence (`COMPANY.md` §5). v0.1 does
-  not force it, because the source stays private, and outside contributions
-  (what closes the choice) cannot happen until the source is public.
-- **Optional:** a Windows code-signing certificate. Without one, testers see
-  SmartScreen warnings.
+The licence is decided: AGPL-3.0 + a CLA (Kabir, 2026-09-23). Everyone who
+receives AGPL binaries is entitled to the source, so **v0.1 ships as open
+source.** That puts all of the following before v0.1:
+
+1. **The name** (`ROADMAP-SEQUENCE.md` 5.1). The website, the domain and the
+   public repo all lock it in, and "stoke" collides with PyPI `stoke`,
+   StanfordPL/stoke and Stoke Space.
+2. **The CLA**, lawyer-reviewed, granting to the company's legal entity (or to
+   Kabir, with a right to assign to it). A CLA bot on the public repo blocks
+   every outside PR until it is signed.
+3. **A clean public repo.** It starts from a snapshot of code, tests, README,
+   BENCHMARKS, LICENSE, CLA and CONTRIBUTING. The internal documents
+   (`COMPANY.md`, the memos, `MEMORY.md`) and the private history stay in the
+   private repo.
+4. **Downloads.**
+   - **The company website** is the front door: download page and docs. A
+     static site is enough.
+   - **GitHub Releases on the public repo** hold the files: free bandwidth,
+     plus checksums.
+   - **The signed update manifest** lives at a stable URL on the company's own
+     domain, so file hosting can move later without breaking installed apps.
+5. **The offline update-signing key**, generated and stored safely.
+
+Optional: a Windows code-signing certificate. Without one, testers see
+SmartScreen warnings.
+
+**Licence compatibility of the planned parts:**
+- OpenSSL 3 and mbedTLS are Apache-2.0, which AGPL-3.0 can include.
+- WinHTTP is a system library.
+- Any code ported from llama.cpp is MIT and keeps its notice.
+- Model weights keep their own licences. The app downloads them from their
+  original hosts and shows each model's licence at `stoke pull`.
 
 ## 12. Out of scope for now
 
