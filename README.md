@@ -173,8 +173,10 @@ that accepts one connection per turn — 13 clients refused — and the smoke
 written to prove the fix had to be made to fail twice before it could see it.
 
 **Not yet run:** the 24 h sanitized serving soak (one server, a day of
-randomized traffic under ASan+LSan, memory watched per chunk). Its rig is
-shaken down; the day of box time is the last gate before this is tagged.
+randomized traffic under ASan+LSan, and a memory rule fixed before the run:
+over the last 6 h, mapped and resident memory outside the KV cache must each
+grow by at most one KV block). Its rig is shaken down; the day of box time is
+the last gate before this is tagged.
 
 ## What this is not
 

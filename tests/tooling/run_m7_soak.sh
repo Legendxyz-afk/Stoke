@@ -1,5 +1,6 @@
 #!/bin/sh
-# M7 GATE ITEM [3] / rung B7 -- the 24 h serving soak. PREPARED, NOT RUN.
+# M7 GATE ITEM [3] / rung B7 -- the 24 h serving soak. The 1 h baseline ran
+# 2026-09-18 (OK); the 24 h has not run.
 #
 # A full day of randomized hostile traffic against ONE long-lived `stoke serve`,
 # with a sanitizer watching from inside. What it hunts does not present as a
@@ -52,6 +53,23 @@
 # whole server lifetime, and the bank keeps them per chunk. Saturation is a
 # number this script computes from the model header before the run, and the
 # probe mode below grades against it rather than against the result.
+#
+# ▶▶ THE 24 h RSS RULE (pre-registered 2026-09-23, before the run;
+# docs/superpowers/design-notes/2026-09-23-m7-soak-rss-rule.md). Until then
+# this script REPORTED RSS and graded nothing -- "the first full run
+# establishes the baseline; the SECOND can gate it" -- and nobody wrote the
+# rule after the first. Re-read, the 1 h baseline was not the flat reading it
+# was banked as: VmData and the non-arena resident set BOTH climbed a steady
+# ~18-20 MiB/h for the whole hour after a 5-min warm-up (plus one +21 MiB
+# step), on the ASan build, where the 09-14 probe on the PLAIN build read
+# flat. So the gate run (soak mode, >= 24 h) is now graded by
+# tests/tooling/soak_rss_rule.sh: over the FINAL 6 h, VmData and RssAnon minus
+# the arena must each grow by at most one KV block, fitted by least squares;
+# anything but FLAT fails the soak. Its own test (17 cases, and a mutation
+# check that every guard in it is load-bearing) runs in the pre-flight below,
+# and ASan's quarantine is set to a stated size rather than left at its
+# default, because the default is the likeliest cause of the climb (see the
+# server launch).
 #
 # Linux/WSL only: the Windows toolchain here has no ASan.
 #
@@ -250,6 +268,18 @@ if [ -n "${free_mb:-}" ] && [ "$free_mb" -lt 6000 ] && [ "$MODE" = soak ]; then
 fi
 if command -v curl > /dev/null 2>&1; then : ; else say "ABORT -- curl missing"; exit 1; fi
 
+# The grader is graded before it grades anything. Gate [3]'s memory verdict
+# comes from soak_rss_rule.sh, read at the END of a day: a grader that breaks
+# under this VM's shell and awk would be found 24 h too late. Its test prints
+# "test_soak_rss_rule: N/N OK"; the verdict is read from that line.
+selftest=$(sh tests/tooling/test_soak_rss_rule.sh 2>&1 | tail -1)
+case "$selftest" in
+    "test_soak_rss_rule: "*" OK") say "RSS rule self-test: $selftest" ;;
+    *) say "ABORT -- the RSS rule's own test did not pass: ${selftest:-no output}"
+       say "         (sh tests/tooling/test_soak_rss_rule.sh prints every case)"
+       exit 1 ;;
+esac
+
 # The VM-lifetime protections (header). Printed for every mode so a probe's
 # log says what the VM looked like; ENFORCED only for the real soak, because
 # a 6 min shakedown that dies teaches the same lesson for free.
@@ -319,8 +349,20 @@ wit_pid=$!
 [ "$uid" -eq 0 ] && echo -1000 > "/proc/$wit_pid/oom_score_adj" 2>/dev/null
 say "dmesg witness pid $wit_pid -> $(basename "$WIT") (oom_score_adj $(cat "/proc/$wit_pid/oom_score_adj" 2>/dev/null || echo '?'))"
 
-say "starting server: ${srv_secs}s budget, port $port, build $BUILDDIR, --ctx $CTX --seqs $SEQS --threads $THREADS"
-ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=0:log_path=$SANLOG" \
+# ASan's QUARANTINE IS SET, NOT DEFAULTED (2026-09-23, with the 24 h RSS
+# rule). ASan holds freed chunks back from reuse until the quarantine --
+# default 256 MiB -- is full, so an ASan server's VmData and RssAnon climb
+# until it fills: the likeliest cause of the 1 h baseline's steady
+# ~18-20 MiB/h, which the plain build did not show. At that rate 256 MiB
+# fills at ~14 h, close to the rule's window at 18 h, and a slower day of
+# traffic would push the fill INTO the window and fail a bounded fill as a
+# leak. 64 MiB fills in ~3.5 h at that rate and before 18 h down to ~20% of
+# it, and still holds hours of this server's frees -- a use-after-free has to
+# reach back further than that to slip past it. If the 24 h still climbs in
+# its last 6 h, the quarantine was not the cause, and the rule says so.
+ASAN_QUARANTINE_MB=64
+say "starting server: ${srv_secs}s budget, port $port, build $BUILDDIR, --ctx $CTX --seqs $SEQS --threads $THREADS, ASan quarantine ${ASAN_QUARANTINE_MB} MiB"
+ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=0:quarantine_size_mb=$ASAN_QUARANTINE_MB:log_path=$SANLOG" \
 UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
 "$bin" serve "$model" --port "$port" --ctx "$CTX" --seqs "$SEQS" --threads "$THREADS" \
     --max-seconds "$srv_secs" -v > "$SRVLOG" 2>&1 &
@@ -614,10 +656,22 @@ if [ "$MODE" = probe ]; then
     esac
 fi
 
-if [ -n "${r_first:-}" ] && [ -n "${r_last:-}" ]; then
-    say "⚠ RSS is REPORTED, not gated: a threshold picked now would be picked"
-    say "  without a baseline, and this project does not fit bands to results."
-    say "  The first full run establishes the baseline; the SECOND can gate it."
+# THE 24 h RSS RULE (header; pre-registered 2026-09-23). It grades the gate
+# run -- soak mode, 24 h or more -- and a shorter run prints the same reading
+# ungraded: the rule asks whether growth has STOPPED by hour 18, which a 1 h
+# run cannot answer. The verdict is read from the grader's PRINTED line.
+rss_rule=$(sh tests/tooling/soak_rss_rule.sh "$CSV" "$TOTAL_SECS" "$block_bytes" 2>&1)
+if [ "$MODE" = soak ] && [ "$HOURS" -ge 24 ]; then
+    say "RSS rule (gate [3], final 6 h): $rss_rule"
+    case "$rss_rule" in
+        "FLAT ("*) rss_word="RSS FLAT" ;;
+        *) say "FAIL -- the RSS rule did not read FLAT: CLIMBING is growth still under way"
+           say "        in the last 6 h; VOID is a reading that does not exist. Neither is a pass."
+           rss_word="RSS NOT FLAT"; fail=1 ;;
+    esac
+else
+    say "RSS rule, REPORTED not graded (a ${HOURS} h $MODE run is not the 24 h gate): $rss_rule"
+    rss_word="RSS not graded"
 fi
 
 say "traffic mix per chunk is banked in $(basename "$BANK") -- the roadmap"
@@ -628,5 +682,5 @@ if [ "$fail" -ne 0 ]; then
     say "=== M7 soak: FAILED ==="
     exit 1
 fi
-say "=== M7 soak: OK ($n_chunks chunks, ${killed:-0} lost, ${TOTAL_SECS}s, $n_gen generations, no sanitizer reports, ${oomlines:-0} OOM/balloon lines) ==="
+say "=== M7 soak: OK ($n_chunks chunks, ${killed:-0} lost, ${TOTAL_SECS}s, $n_gen generations, no sanitizer reports, ${oomlines:-0} OOM/balloon lines, $rss_word) ==="
 exit 0
