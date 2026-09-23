@@ -151,8 +151,10 @@ verdict is a real finding rather than an argument.
 ## 6. How it was verified
 
 - **Test.** `tests/tooling/test_soak_rss_rule.sh` passes 17/17. It passes under
-  Git Bash (bash + gawk) and under WSL (dash + gawk), including the real 1 h
-  baseline, which reads VOID ("the series spans 3473 s").
+  Git Bash (bash + gawk), under WSL (dash + gawk), and under WSL dash with `awk`
+  resolved to mawk 1.3.4 (stock Ubuntu's default awk, so a plain cloud VM runs
+  the same grader). The real 1 h baseline reads VOID ("the series spans
+  3473 s").
 - **RED first.** Before the grader existed, all 16 cases then in the test
   failed (`No such file`).
 - **Mutation check.** Eight single-guard mutants of the grader were run, and
