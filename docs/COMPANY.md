@@ -39,6 +39,7 @@ hosts the business record.
 | ⭐ **stoke is PRIMARY, AySen is SECONDARY.** "aysen is gonna be secondary, stoke is gonna be first" | **2026-09-01** | **Kabir, this session — see §0.1** |
 | **LICENCE: AGPL-3.0 + a CLA on outside contributions** — the only irreversible decision; supersedes §5.4's recommendation (see §5) | **2026-09-23** | **Kabir** |
 | **After tag `m7`: the UNIVERSAL SERVER first, the ARM port after** — one stoke app serving local open models + Claude/GPT through one API, updated by Kabir; **reverses the 2026-09-01 order above.** ⚠ It is a consumer/developer app, so §3.3's "adoption is not revenue" caution applies, and Ollama itself now lists cloud-hosted models in its library (seen 2026-09-23) | **2026-09-23** | **Kabir — `superpowers/specs/2026-09-23-stoke-universal-server-design.md`** |
+| **NAME: the product is LORREN** (app, engine, repo, command and API, renamed from stoke after tag `m7`); **the company is castagents** ("lorren for my app and my company name is castagents"). lorren.ai/.dev are unregistered; no US mark covers software; EU/India are unchecked | **2026-09-24** | **Kabir — `ROADMAP-SEQUENCE.md` 5.1** |
 
 ### 0.1 stoke primary, AySen secondary — what it settles and what it costs
 
@@ -357,12 +358,14 @@ contribution** ("i want this under the cla and agpl license"). This supersedes
   only.
 - **The CLA and a CLA bot must be live before the repo is public.**
 - **The CLA text needs a lawyer's review.** Its grantee should be the company's
-  legal entity, or Kabir with a right to assign to it.
+  legal entity (**castagents**, decided 2026-09-24; confirm the registered
+  entity name with the lawyer), or Kabir with a right to assign to it.
 - **Internal documents must not go public.** This file, the memos and
   `MEMORY.md` are strategy, so the public repo starts from a clean snapshot and
   the private history stays private.
-- **The name must be settled first** (`ROADMAP-SEQUENCE.md` 5.1: PyPI `stoke`
-  is taken, and there is StanfordPL/stoke and Stoke Space).
+- ✅ **The name is settled (2026-09-24): Lorren**, and the company is
+  castagents (`ROADMAP-SEQUENCE.md` 5.1). "stoke" collided with PyPI `stoke`,
+  StanfordPL/stoke and Stoke Space.
 
 **`MEMORY.md`'s Appendix B enumerates thirteen business models and never names a
 licence.** That is the largest gap in the strategic record.
@@ -568,7 +571,7 @@ Kabir's phrasing sets a broader goal than a NEON backend, and the planning doc
 | 4b | ⭐ **NEW, and it is Risk 4's replacement: with AySen secondary, stoke has NO ANCHOR TENANT.** The "there is a first demanding user by construction" argument (§4.1, and Part V.5 of `ROADMAP-SEQUENCE.md`) is deferred with it | ⭐⭐⭐ | **Unmitigated, and it PROMOTES §9.3 to the primary commercial risk.** stoke now needs real external users to validate the thesis, on a schedule nobody controls. Mitigations available: publish earlier, make §9.3 measurable *before* launch, and treat Path 1 inbound as the success metric rather than stars |
 | 5 | **The headline claim is unmeasured** (§1.2 update 3) | ⭐⭐ | Task 1.1, scheduled |
 | 6 | **The licence door closes silently** | ⭐⭐ | §5, filed as item 5.0. **Cheap to fix now, impossible later** |
-| 7 | **The name is unsearchable** | ⭐⭐ | Item 5.1, undecided |
+| 7 | **The name is unsearchable** | ⭐⭐ | ✅ **Dispositioned 2026-09-24: renamed to Lorren** (item 5.1). lorren.ai/.dev are unregistered and no US mark covers software |
 | 8 | **The CPU substrate is a shrinking share** | ⭐ | §3.4 — bet on the workload; NPUs are the next backend, not a threat |
 | 9 | **OS vendors ship their own on-device runtimes** | ⭐ | They own the integrated slot; they do not offer openness, model choice, or cross-platform embedding |
 
@@ -605,7 +608,7 @@ with *before* publishing, or the result will be interpreted after the fact.
 | 1 | **The licence** (§5) — or at minimum, a CLA | **irreversible, and the clock starts at first public PR** |
 | 2 | Is the **founding constraint still "not money right now"** (§6.1)? | Everything in §6 is conditional on the answer |
 | 3 | ✅ ~~AySen Stage 2's timing~~ — **ANSWERED 2026-09-01: stoke primary, AySen secondary (§0.1).** ⏭ Residual: does "secondary" mean paused, maintenance-only, or worked in stoke's blocked windows? | One line. The blocked windows are already partly allocated (item 4.3) |
-| 4 | **The name** (item 5.1) | Cheap now, steep after launch, and trademark matters if there is ever a company |
+| 4 | ✅ ~~**The name** (item 5.1)~~ **ANSWERED 2026-09-24: Lorren; the company is castagents** | The code rename happens after tag `m7`, before the public snapshot. Still open: registering the domains and the EU/India trademark check |
 | 5 | Should the **acquisition path (Path 2) be planned for deliberately** rather than left as an accident? | It changes what gets optimized and what gets signed |
 | 6 | What instrument measures **"did anyone install it"** (§9.3)? | Decide before publishing, not after |
 

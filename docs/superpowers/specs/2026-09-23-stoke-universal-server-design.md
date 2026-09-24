@@ -5,6 +5,10 @@ in conversation; this is the written spec for his review before an
 implementation plan is written. **Nothing here starts before tag `m7`:**
 `src/` is frozen until then (`superpowers/memos/2026-09-18-m7-code-freeze.md`).*
 
+> **Name decided 2026-09-24 (Kabir): the product is Lorren, and the company is
+> castagents** (`ROADMAP-SEQUENCE.md` 5.1). Read "stoke" below as Lorren. This
+> text is renamed together with the code, after tag `m7`.
+
 ## 1. What it is
 
 One app, `stoke`, with one OpenAI-compatible API in front of:
@@ -45,7 +49,7 @@ The typical workload is agents, tool chains and fan-outs.
 | Order | After tag `m7`, **this comes before the ARM port.** That reverses the 2026-09-01 "ARM NEON first" order (`COMPANY.md` §0, §7). |
 | First release | **v0.1, a tester preview with manual routing only** (§8). |
 | Licence | **AGPL-3.0 + a CLA on outside contributions** (`COMPANY.md` §5). This means **v0.1 ships with public source**, not binaries only. |
-| Downloads | The company website is the front door. The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on the company's own domain (§11). |
+| Downloads | A website is the front door; whether it is lorren.ai or castagents' site is open (§11). The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on a domain the company keeps long-term (§11). |
 
 ## 3. Components
 
@@ -282,23 +286,25 @@ The licence is decided: AGPL-3.0 + a CLA (Kabir, 2026-09-23). Everyone who
 receives AGPL binaries is entitled to the source, so **v0.1 ships as open
 source.** That puts all of the following before v0.1:
 
-1. **The name** (`ROADMAP-SEQUENCE.md` 5.1). The website, the domain and the
-   public repo all lock it in, and "stoke" collides with PyPI `stoke`,
-   StanfordPL/stoke and Stoke Space.
-2. **The CLA**, lawyer-reviewed, granting to the company's legal entity (or to
-   Kabir, with a right to assign to it). A CLA bot on the public repo blocks
-   every outside PR until it is signed.
+1. ✅ **The name is DECIDED (2026-09-24): Lorren. The company is castagents**
+   (`ROADMAP-SEQUENCE.md` 5.1 has the availability evidence). Still owed:
+   register lorren.ai + lorren.dev, and the lawyer's EU/India trademark check.
+2. **The CLA**, lawyer-reviewed, granting to the company's legal entity
+   (castagents), or to Kabir with a right to assign to it. A CLA bot on the
+   public repo blocks every outside PR until it is signed.
 3. **A clean public repo.** It starts from a snapshot of code, tests, README,
    BENCHMARKS, LICENSE, CLA and CONTRIBUTING. The internal documents
    (`COMPANY.md`, the memos, `MEMORY.md`) and the private history stay in the
    private repo.
 4. **Downloads.**
-   - **The company website** is the front door: download page and docs. A
-     static site is enough.
+   - **A website** is the front door: download page and docs. A static site
+     is enough. ⏳ Whether it lives on lorren.ai (the product) or on
+     castagents' domain (the company) is Kabir's call.
    - **GitHub Releases on the public repo** hold the files: free bandwidth,
      plus checksums.
-   - **The signed update manifest** lives at a stable URL on the company's own
-     domain, so file hosting can move later without breaking installed apps.
+   - **The signed update manifest** lives at a stable URL on a domain the
+     company keeps long-term, so file hosting can move later without breaking
+     installed apps.
 5. **The offline update-signing key**, generated and stored safely.
 
 Optional: a Windows code-signing certificate. Without one, testers see

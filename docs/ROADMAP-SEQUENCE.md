@@ -818,14 +818,46 @@ Every item states: **what · why it is here · blocked on · done when · hazard
 - **Blocked on:** nothing. **Owner:** Kabir. **Decide before 5.1 and before any
   public push.**
 
-### 5.1 — The rename decision
+### 5.1 — The rename decision ✅ DECIDED 2026-09-24: **Lorren**
 
-- **The problem:** **PyPI `stoke` is taken** (Fidelity's ML training library),
-  **StanfordPL/stoke** is a well-known x86 superoptimizer, and **Stoke Space**
-  dominates search. **GitHub and crates.io are clean.**
+- **The problem (as it stood):** **PyPI `stoke` is taken** (Fidelity's ML
+  training library), **StanfordPL/stoke** is a well-known x86 superoptimizer,
+  and **Stoke Space** dominates search. ⚠ Re-checked 2026-09-24: **crates.io
+  `stoke` is taken now too**, so "GitHub and crates.io are clean" no longer
+  holds.
 - **The economics:** rename cost is **~0 until public launch and rises steeply
   after.** This is the last cheap moment.
-- **Blocked on:** nothing. **Owner:** Kabir. **Decide before 5.2.**
+- **▶ DECIDED (Kabir, 2026-09-24): the product is LORREN, and the company is
+  castagents** ("lorren for my app and my company name is castagents").
+  "Rename everything" was chosen explicitly, and that option named the app, the
+  repo, the command **and the API**. Lorren was Kabir's own pick after ~200
+  checked candidates. He turned down fire words ("more related to what we do",
+  then "clean and brief"), descriptive llm/mux compounds ("sounds ai") and
+  real-word metaphors, and settled on a short, clean invented name ("dont make
+  it mean too much about the project").
+- **Availability, checked 2026-09-24** (RDAP from the IANA bootstrap, the
+  registry APIs, `gh api`, and USPTO tmsearch; every sweep carried a
+  known-taken and a known-free control):
+  - **Unregistered: lorren.ai, lorren.dev, lorren.run.** ⇒ Kabir registers
+    lorren.ai + lorren.dev; the lookups were public.
+  - **Taken:** lorren.com (since 2000, Dynadot, a parked "this domain may be
+    for sale" page, so buyable at an unknown price); lorren.app (registered
+    2026-06).
+  - **Packages:** PyPI and crates `lorren` are free. npm `lorren` is an
+    abandoned 2016 style-analyzer with one version ⇒ `lorren-ai` or
+    `@lorren/…`.
+  - **GitHub:** `lorren` is a person's account; `lorren-ai` and `lorrenhq` are
+    free for the organisation.
+  - **Trademark, US only:** 4 live LORREN marks (jewelry, real estate,
+    dishware, spices); none of the 40 live LOREN marks covers software.
+    **EU, India and WIPO are not checked; the CLA lawyer runs the clearance.**
+- **Execution:** after tag `m7` (`src/` is frozen) and before the clean public
+  snapshot (5.0): `stoke_` → `lorren_` in `stoke.h` and every symbol, the
+  binary and library names, the docs, README and BENCHMARKS. It is one
+  mechanical commit plus the full suite. The v0 freeze breaks no one, because
+  the header has never had an outside user.
+- **Owner:** Kabir (decided). **Unblocks:** the website, the domains, the
+  public repo, the CLA text.
 
 ### 5.2 — Land `main`
 
@@ -983,7 +1015,7 @@ Everything in this file that is **not** a session's call, in one list:
 | 6b | **the LICENCE** | 5.0 | ⏳ the only irreversible one — closes the first time an outside PR is merged without a CLA |
 | 6c | **the 24 h window** | 4.2 | the critical path: nothing after B7 can start |
 | 6d | **push `m5-entry`** (61 commits 09-06 → 09-18, plus 09-23's, exist only on this box) | — | a disk failure loses the whole clause-2 sitting, the freeze and gate [4] |
-| 7 | the rename | 5.1 | cost is ~0 now and **rises steeply after launch** |
+| 7 | the rename | 5.1 | ✅ **decided 2026-09-24: Lorren** (company: castagents); executes after tag `m7` |
 | 8 | fast-forward `main` (177 commits) and whether to keep `m45-aprime` | 5.2 | cannot launch from a default branch at M1 |
 | 9 | restore `gh auth` to `liora4u`? | 5.3 | global state left changed |
 
@@ -1351,7 +1383,7 @@ background worry to THE primary commercial risk.** Full disposition:
 | 1 | **More than one model architecture** | **B5, blocked on a download** | Below roughly three or four families, adoption is ~zero *regardless of speed*. This is the single largest blocker and it is a rung, not a research problem |
 | 2 | **Proof the concurrency lead is real against a live server** | **task 1.1, unmeasured** | The whole pitch rests on it |
 | 3 | **Phase 2, the bridge layer** | planned, post-Phase-1 | `stoke pull`, alias registry, idle load/unload, per-model templates, `/metrics`. **The Fable 08-02 review re-ordered this AHEAD of NPU work precisely because the engine alone is not adoptable** — this is the Ollama half of the gap and it is what makes stoke usable by someone who is not Kabir |
-| 4 | **A name people can find** | **5.1, undecided** | PyPI taken, StanfordPL/stoke is a known superoptimizer, Stoke Space dominates search |
+| 4 | **A name people can find** | **5.1 ✅ Lorren (2026-09-24)** | was: PyPI taken, StanfordPL/stoke is a known superoptimizer, Stoke Space dominates search |
 | 5 | **A README that concedes V.2 and claims only V.3** | **4.4** | Overclaiming is how a good engine gets dismissed in one thread |
 | 6 | closing the 5.5% | Part IV lever 1, undesigned | removes the one number that kills the pitch on sight |
 
