@@ -835,6 +835,17 @@ Every item states: **what · why it is here · blocked on · done when · hazard
   then "clean and brief"), descriptive llm/mux compounds ("sounds ai") and
   real-word metaphors, and settled on a short, clean invented name ("dont make
   it mean too much about the project").
+- **Reconsidered and confirmed the same day.** Kabir asked whether to keep
+  "stoke" and launch it from the company site. The USPTO register answered
+  it: 93 live STOKE marks, several of them for software and held by other
+  companies. They are STOKE, SPC (SaaS, class 42), Stoke LLC
+  (business-intelligence services, 35/42), Stoke Games, Stoke Social and THE
+  STOKE (downloadable software, class 9), and Stoke Space (class 42). A STOKE
+  mark for our software would likely be refused, and a holder could object.
+  ⇒ **Lorren confirmed, launched from castagents.com**, which is the front
+  door and also hosts the update manifest. ⚠ **castagents.com and
+  castagent.com expire 2026-11-25 and 2026-11-07. Renew them for several
+  years, because the updater depends on the domain.**
 - **Availability, checked 2026-09-24** (RDAP from the IANA bootstrap, the
   registry APIs, `gh api`, and USPTO tmsearch; every sweep carried a
   known-taken and a known-free control):

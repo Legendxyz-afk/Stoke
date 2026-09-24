@@ -49,7 +49,7 @@ The typical workload is agents, tool chains and fan-outs.
 | Order | After tag `m7`, **this comes before the ARM port.** That reverses the 2026-09-01 "ARM NEON first" order (`COMPANY.md` §0, §7). |
 | First release | **v0.1, a tester preview with manual routing only** (§8). |
 | Licence | **AGPL-3.0 + a CLA on outside contributions** (`COMPANY.md` §5). This means **v0.1 ships with public source**, not binaries only. |
-| Downloads | A website is the front door; whether it is lorren.ai or castagents' site is open (§11). The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on a domain the company keeps long-term (§11). |
+| Downloads | **castagents.com, the company site, is the front door** (Kabir, 2026-09-24). The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on castagents.com, e.g. `updates.castagents.com` (§11). |
 
 ## 3. Components
 
@@ -297,14 +297,16 @@ source.** That puts all of the following before v0.1:
    (`COMPANY.md`, the memos, `MEMORY.md`) and the private history stay in the
    private repo.
 4. **Downloads.**
-   - **A website** is the front door: download page and docs. A static site
-     is enough. ⏳ Whether it lives on lorren.ai (the product) or on
-     castagents' domain (the company) is Kabir's call.
+   - **castagents.com, the company site, is the front door** (Kabir,
+     2026-09-24): download page and docs, e.g. `castagents.com/lorren`. A
+     static site is enough. ⚠ castagents.com and castagent.com expire in
+     November 2026 (Nov 25 and Nov 7). Renew them for several years first,
+     because the updater depends on the domain.
    - **GitHub Releases on the public repo** hold the files: free bandwidth,
      plus checksums.
-   - **The signed update manifest** lives at a stable URL on a domain the
-     company keeps long-term, so file hosting can move later without breaking
-     installed apps.
+   - **The signed update manifest** lives at a stable URL on castagents.com
+     (e.g. `updates.castagents.com`), so file hosting can move later without
+     breaking installed apps.
 5. **The offline update-signing key**, generated and stored safely.
 
 Optional: a Windows code-signing certificate. Without one, testers see
