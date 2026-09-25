@@ -384,7 +384,7 @@ function logsTab() {
     ['14:22:19.170', 'engine', 'finish=stop  412 tokens  38.2 tok/s'],
     ['14:21:40.018', 'app', 'chat "BTC breakout check" saved (2 messages)'],
     ['14:19:04.221', 'engine', 'loaded ai_models/nexus.gguf in 1.9 s (1.88 GB)'],
-    ['14:18:12.006', 'engine', 'stoke serve: listening on 127.0.0.1:8080  ctx=8192']
+    ['14:18:12.006', 'engine', 'stoke serve: listening on 127.0.0.1:8080  ctx=4096']
   ].map(l => `
       <div style="display:grid;grid-template-columns:92px 62px minmax(0,1fr);gap:14px;padding:5px 22px;align-items:baseline;">
         <span class="mono" style="font-size:11px;color:var(--d50);">${l[0]}</span>
@@ -538,9 +538,9 @@ function chatTab() {
       <div style="padding:16px 20px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--l22);">
         <div style="display:flex;align-items:baseline;justify-content:space-between;">
           <span class="cap">CONTEXT</span>
-          <span><span class="mono num" style="font-size:20px;font-weight:500;">1,204</span><span class="mono" style="font-size:11px;color:var(--d60);"> / 8,192 tok</span></span>
+          <span><span class="mono num" style="font-size:20px;font-weight:500;">1,204</span><span class="mono" style="font-size:11px;color:var(--d60);"> / 4,096 tok</span></span>
         </div>
-        <div style="height:4px;background:var(--l24);display:flex;"><div style="width:14.7%;background:${C.accent};"></div></div>
+        <div style="height:4px;background:var(--l24);display:flex;"><div style="width:29.4%;background:${C.accent};"></div></div>
         <div class="mono" style="font-size:10px;color:var(--d55);line-height:1.55;">the whole chat is re-read each turn until the engine keeps its cache</div>
       </div>
       <div style="padding:16px 20px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--l22);">

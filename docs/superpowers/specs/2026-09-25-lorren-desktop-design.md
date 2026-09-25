@@ -106,17 +106,21 @@ engine; depends on the sidecar binary and the settings.
   --ctx <C> --seqs <S> --threads <T> --kv q8`. It waits for the banner
   `stoke serve: listening on 127.0.0.1:<port>  ctx=<N>`, which the engine
   prints and flushes before serving. The load timeout is 120 s.
-- **Always explicit sizes.** Without `--ctx`, the engine takes the model's own
-  maximum (131,072 for Llama-3.2). It then reserves `--seqs` (default 8)
-  copies of that context in the KV pool (`stoke.c` ~198–226), which is far more
-  memory than the machine has. Defaults: context 8,192; parallel replies 2;
-  KV `q8`; threads "auto", meaning the engine's default of 12 when `--seqs`
-  is above 1.
+- **The context is capped at 4,096 tokens.** The engine clamps every model to
+  4,096, whatever its header says (`STOKE_M2_MAX_CTX`, `model.c:43`, a
+  milestone-2 decision). A larger `--ctx` is refused at startup: on 09-25
+  `--ctx 8192` failed with "max_ctx 8192 exceeds the model's 4096". *(Corrected
+  09-25: the first version of this spec read the 131,072 in the header as the
+  engine's limit.)*
+- **Always explicit sizes.** Without `--seqs`, the engine reserves KV for 8
+  full-length sequences (`stoke.c` ~198–226). Defaults: context 4,096;
+  parallel replies 2; KV `q8`; threads "auto", meaning the engine's default of
+  12 when `--seqs` is above 1.
 - **Memory estimate before loading:** the file size (it is memory-mapped)
   plus seqs × ctx × KV bytes per token. The KV cost comes from the GGUF's
   layers × KV heads × head dimension × 2 × 34/32 bytes at `q8`. That is
   59.5 KiB per token for Llama-3.2-3B and 76.5 KiB for Qwen3-4B, so the
-  defaults cost about 0.93 GiB and 1.2 GiB. A load that would leave less than
+  defaults cost about 0.47 GiB and 0.6 GiB. A load that would leave less than
   1 GB of RAM free is not started; the app offers smaller settings instead.
 - **Health:** `GET /health` every 5 s. Three misses in a row means the engine
   is hung.
@@ -451,18 +455,41 @@ These are measured, not assumed, and a miss is recorded.
   milestone 1.
 - **UI CPU while streaming:** under 5% of one core, because redraws are
   throttled.
-- **Model switch:** the engine restart is timed in milestone 1. The GGUF is
-  memory-mapped (`gguf.c` ~262), so a few seconds is expected.
+- **Model switch:** the GGUF is memory-mapped (`gguf.c` ~262), so the restart
+  takes seconds. It is timed again in milestone 1.
+
+**First measurements, 2026-09-25.** The frozen `build/win/stoke.exe` on this
+PC, run by hand with `--ctx 4096 --seqs 2 --kv q8` and the default threads:
+
+| what | Nexus (Llama-3.2-3B, Q4_K_M) | Qwen3-4B-Instruct-2507 (Q4_K_M) |
+|---|---|---|
+| load, banner printed | 0.61 s (file already cached) | 2.2 s |
+| model switch (stop Nexus, Qwen3 serving) | 2.36 s in total | — |
+| first token, short prompt | 0.48–0.68 s | 0.53 s cold, 0.21 s warm |
+| decode, one reply | 20.0–21.1 tok/s | 16.6–16.7 tok/s |
+| engine memory after use | 2.06 GB working set, 647 MB private | 2.44 GB working set, 676 MB private |
+| Stop mid-reply | generation ended at once: 0.00 CPU-s in the next 3 s | — |
 
 ## 8. Known limits (the frozen engine)
 
+- **A chat holds at most 4,096 tokens,** prompt and reply together (§3.1).
+  Raising the cap is engine work after `m7`.
 - **No KV reuse across requests.** A freed block loses its hash
   (`blockpool.c` ~184–197), and prefix lookup skips free blocks (~363). So
-  every new message re-reads the whole chat.
-  - At roughly 70–100 prompt tokens per second on this PC, a chat with
-    ~2,000 tokens of history takes ~20–30 s to start replying. Ollama keeps its
-    cache and starts in about a second.
-  - The fix is an engine prefix cache after `m7`. The CONTEXT panel says so.
+  every new message re-reads the whole chat, and the re-read slows down as the
+  chat grows. Measured on 09-25 with Qwen3-4B, as the time before the first
+  token:
+
+  | chat so far | first token after |
+  |---|---|
+  | 1,107 tokens | 13.3 s (83 tokens/s) |
+  | 2,196 tokens | 36.5 s (60 tokens/s) |
+  | 3,318 tokens | 72.9 s (45 tokens/s) |
+
+  Ollama keeps its cache and starts in about a second. The fix is an engine
+  prefix cache after `m7`, and for this app it is the most valuable engine
+  change there is. Until it lands, the CONTEXT panel says why a long chat is
+  slow to start, and §14 asks for a default history budget.
 - **One model at a time.** Switching restarts the engine.
 - **Architectures:** `llama` and `qwen3` only; tensor types F32, Q8_0, Q4_K and
   Q6_K; no vision.
@@ -593,6 +620,11 @@ gets its own plan, written after you have used the one before it.
 - The exact layout of Discover inside the Models tab.
 - Where Settings' sections sit, if Kabir wants them somewhere other than a
   sixth tab.
+- **A default history budget (Kabir to decide).** Sending only the most recent
+  ~1,500 tokens of a chat would keep the wait under ~20 s (§8), but the model
+  would forget more of the chat. The alternative is to send everything up to
+  the 4,096 cap and accept waits of a minute or more. My recommendation is
+  1,500 tokens, adjustable in Settings, until the prefix cache lands.
 
 ## 15. Where this came from
 
