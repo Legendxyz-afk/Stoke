@@ -48,6 +48,8 @@ and updates itself from releases you publish and sign.
 | engine | today's `stoke serve`, unmodified, in a child process |
 | updates | "through me": two ed25519-signed (minisign) channels you publish, app releases and a model catalog, hosted on Cloudflare R2 behind `updates.castagents.com` |
 | models | local only. Claude and GPT arrive with the universal server (`2026-09-23-stoke-universal-server-design.md`) |
+| default model | Qwen3-4B-Instruct-2507, a general assistant. Nexus stays in the library with its trader prompt but is not the default (09-25) |
+| history budget | each turn sends the last ~1,500 tokens of the chat, adjustable in Settings, until the engine keeps its cache between turns (09-25, §3.2) |
 | platform | Windows first |
 | first milestone | a working demo you verify before the rest is built (§11) |
 
@@ -148,6 +150,11 @@ store. Depends on the supervisor, the store and the request monitor.
   `repeat_penalty` (multiplicative), `seed`, `stop` (up to 4) and
   `max_tokens` (1 to the context). It refuses a non-zero `frequency_penalty` or
   `presence_penalty`, so the UI does not offer them.
+- **History budget:** each turn sends the system prompt, the new message, and
+  as many of the most recent earlier turns as fit in ~1,500 tokens (a setting).
+  That keeps the wait for a reply under about 20 s (§8). The chat marks where
+  the history stops being sent. The setting goes away once the engine keeps
+  its cache between turns.
 - **Context budget:** `max_tokens` is the smaller of the chat's reply length
   and the context minus the prompt.
   - The app has no tokenizer. It learns prompt sizes from each reply's `usage`,
@@ -488,8 +495,8 @@ PC, run by hand with `--ctx 4096 --seqs 2 --kv q8` and the default threads:
 
   Ollama keeps its cache and starts in about a second. The fix is an engine
   prefix cache after `m7`, and for this app it is the most valuable engine
-  change there is. Until it lands, the CONTEXT panel says why a long chat is
-  slow to start, and §14 asks for a default history budget.
+  change there is. Until it lands, the history budget (§3.2) keeps the wait
+  short, and the CONTEXT panel says why a long chat forgets its start.
 - **One model at a time.** Switching restarts the engine.
 - **Architectures:** `llama` and `qwen3` only; tensor types F32, Q8_0, Q4_K and
   Q6_K; no vision.
@@ -620,11 +627,8 @@ gets its own plan, written after you have used the one before it.
 - The exact layout of Discover inside the Models tab.
 - Where Settings' sections sit, if Kabir wants them somewhere other than a
   sixth tab.
-- **A default history budget (Kabir to decide).** Sending only the most recent
-  ~1,500 tokens of a chat would keep the wait under ~20 s (§8), but the model
-  would forget more of the chat. The alternative is to send everything up to
-  the 4,096 cap and accept waits of a minute or more. My recommendation is
-  1,500 tokens, adjustable in Settings, until the prefix cache lands.
+- *(Decided 09-25: the history budget is ~1,500 tokens, adjustable; see §2
+  and §3.2.)*
 
 ## 15. Where this came from
 
