@@ -1,0 +1,587 @@
+<!doctype html>
+<!--
+  Lorren console, design reference (2026-09-25). The Control Room design
+  (design/ControlRoom.dc.html, chosen 2026-08-18) ported to a live page, plus the
+  Chat tab approved on 2026-09-25. This is the web half of the Tauri-versus-native
+  demo that decided the shell; see
+  docs/superpowers/specs/2026-09-25-lorren-desktop-design.md, section 4.
+  Demo data only: nothing here talks to the engine.
+  Open in a browser. Open with "#chat" to start on the Chat tab, or "#chat-final"
+  to show the reply already finished.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="theme-color" content="#090b0e">
+<title>Lorren console — design reference</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: oklch(0.15 0.006 255); --text: oklch(0.95 0.004 255);
+    --l27: oklch(0.27 0.008 255); --l22: oklch(0.22 0.008 255); --l20: oklch(0.20 0.008 255);
+    --l24: oklch(0.24 0.008 255); --l28: oklch(0.28 0.008 255); --l30: oklch(0.30 0.008 255);
+    --l32: oklch(0.32 0.008 255); --t21: oklch(0.21 0.008 255); --sel: oklch(0.19 0.008 255);
+    --field: oklch(0.185 0.006 255); --code: oklch(0.175 0.006 255);
+    --d50: oklch(0.50 0.008 255); --d52: oklch(0.52 0.008 255); --d55: oklch(0.55 0.008 255);
+    --d58: oklch(0.58 0.008 255); --d60: oklch(0.60 0.008 255); --d62: oklch(0.62 0.008 255);
+    --d66: oklch(0.66 0.008 255); --d68: oklch(0.68 0.008 255); --d70: oklch(0.70 0.008 255);
+    --d72: oklch(0.72 0.008 255); --d74: oklch(0.74 0.008 255); --d80: oklch(0.80 0.008 255);
+    --d86: oklch(0.86 0.008 255);
+    --accent: oklch(0.76 0.09 70); --shared: oklch(0.70 0.07 250); --flame: oklch(0.66 0.09 30);
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); }
+  body { font-family: "Archivo", ui-sans-serif, system-ui, sans-serif; color: var(--text); font-size: 13px; overflow: hidden; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .num { font-variant-numeric: tabular-nums; }
+  .cap { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: var(--d60); }
+  .ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #app { width: 100vw; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  .tab { display: flex; align-items: center; padding: 0 18px; font-size: 12.5px; cursor: pointer; border-bottom: 2px solid transparent; color: var(--d55); user-select: none; }
+  .tab:hover { color: var(--d80); }
+  .tab.on { color: var(--text); border-bottom-color: var(--accent); }
+  .btn { font-family: 'JetBrains Mono', monospace; letter-spacing: 0.08em; cursor: pointer; user-select: none; }
+  .btn.accent { border: 1px solid var(--accent); color: var(--accent); }
+  .btn.accent:hover { background: oklch(0.76 0.09 70 / 0.12); }
+  .act { cursor: pointer; }
+  .act:hover { color: var(--text); }
+  ::selection { background: oklch(0.70 0.07 250 / 0.35); }
+  .scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--l30) transparent; }
+
+  /* chat prose, the output of a markdown renderer */
+  .prose { font-size: 14px; line-height: 1.6; color: var(--d86); }
+  .prose h3 { font-size: 15px; font-weight: 600; color: var(--text); margin: 2px 0 8px 0; }
+  .prose ul { list-style: none; margin: 0 0 12px 0; padding: 0; }
+  .prose li { position: relative; padding-left: 16px; margin: 2px 0; }
+  .prose li::before { content: ""; position: absolute; left: 1px; top: 0.68em; width: 5px; height: 5px; background: var(--d55); }
+  .prose b { color: var(--text); font-weight: 600; }
+  .prose p { margin: 0 0 8px 0; }
+  .prose table { border-collapse: collapse; margin: 4px 0 14px 0; width: 100%; max-width: 560px; table-layout: fixed; }
+  .prose th { text-align: left; font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.1em; color: var(--d55); font-weight: 400; padding: 0 0 8px 0; border-bottom: 1px solid var(--l27); }
+  .prose td { padding: 7px 0; border-bottom: 1px solid var(--l20); font-size: 13px; }
+  .prose td.n { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); }
+  .prose .codewrap { border: 1px solid var(--l24); background: var(--code); margin: 4px 0 14px 0; max-width: 620px; }
+  .prose .codehead { display: flex; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--l24); font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--d55); letter-spacing: 0.08em; }
+  .prose pre { margin: 0; padding: 10px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: var(--d86); white-space: pre; }
+  .prose .k-num { color: var(--shared); } .prose .k-op { color: var(--d66); } .prose .k-cm { color: var(--d55); }
+  .prose math { font-size: 17px; color: var(--text); margin: 2px 0 10px 0; }
+  .cursor { display: inline-block; width: 7px; height: 15px; background: var(--accent); vertical-align: -2px; margin-left: 2px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  input.composer { flex-grow: 1; border: 1px solid var(--l30); background: var(--field); padding: 9px 12px; font-family: "Archivo", sans-serif; font-size: 13px; color: var(--text); outline: none; }
+  input.composer:focus { border-color: var(--d50); }
+  input.composer::placeholder { color: var(--d55); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+'use strict';
+const C = {
+  accent: 'oklch(0.76 0.09 70)', shared: 'oklch(0.70 0.07 250)', flame: 'oklch(0.66 0.09 30)',
+  dim: 'oklch(0.55 0.008 255)', bright: 'oklch(0.95 0.004 255)', free: 'oklch(0.24 0.008 255)'
+};
+const TABS = ['Chat', 'Swarm', 'Models', 'Requests', 'Logs'];
+let tab = location.hash.startsWith('#chat') ? 'Chat' : 'Swarm';
+
+/* ---------------- demo data: the ControlRoom artboard's own values ---------------- */
+const WORDS = ('the plan should weigh bandwidth before compute so each block stays resident while the ' +
+  'scheduler admits the next sequence and the prefill co-runs with six decoders at a steady cadence ' +
+  'attention reads the pool by block table so a shared prefix is held once and never copied').split(' ');
+const lanes = [
+  { id: 's0', name: 'planner', tool: 'chat.completions', state: 'DECODE', ctx: 1842, base: 5.4, ttft: '0.38 s', text: 'the third constraint is bandwidth, not compute — so the plan should' },
+  { id: 's1', name: 'reader.a', tool: 'tools/read_file', state: 'DECODE', ctx: 964, base: 5.9, ttft: '0.31 s', text: 'src/model.c lines 480–560 implement the per-head attention loop' },
+  { id: 's2', name: 'reader.b', tool: 'tools/read_file', state: 'DECODE', ctx: 1103, base: 5.7, ttft: '0.34 s', text: 'the block table maps logical positions to physical blocks by' },
+  { id: 's3', name: 'critic', tool: 'chat.completions', state: 'PREFILL', ctx: 2410, base: 0, ttft: '—', text: '1,536 of 2,410 tokens adopted from the shared prefix' },
+  { id: 's4', name: 'grep.rs', tool: 'tools/search', state: 'DECODE', ctx: 512, base: 6.1, ttft: '0.22 s', text: 'no match for pool_for_rows outside src/kernels/vec.c, which is' },
+  { id: 's5', name: 'summarizer', tool: 'chat.completions', state: 'DECODE', ctx: 1287, base: 5.6, ttft: '0.36 s', text: 'in short: attention was the last single-threaded stage in the' },
+  { id: 's6', name: 'test.gen', tool: 'chat.completions', state: 'DECODE', ctx: 733, base: 6.0, ttft: '0.27 s', text: 'static void test_shared_scratch_is_per_worker(void) { /* mutation' },
+  { id: 's7', name: 'judge', tool: 'chat.completions', state: 'QUEUED', ctx: 0, base: 0, ttft: '—', text: 'waiting on admission — reserve held for the prefill in flight' }
+];
+lanes.forEach(l => { l.rate = l.base; });
+let spark = []; for (let i = 0; i < 24; i++) spark.push(17 + ((i * 11) % 9) - (i > 17 ? 4 : 0));
+let steps = []; for (let i = 0; i < 60; i++) { const p = (i > 14 && i < 19) || (i > 43 && i < 49); steps.push({ p, h: p ? 54 : 16 + ((i * 7) % 7) }); }
+let stall = 86;
+const blockColor = []; for (let i = 0; i < 384; i++) {
+  let bg = C.free;
+  if (i < 48) bg = C.shared; else if (i >= 52 && i < 100) bg = C.accent;
+  else if (i >= 100 && i < 148) bg = 'oklch(0.68 0.08 70)'; else if (i >= 148 && i < 188) bg = 'oklch(0.58 0.06 70)';
+  else if (i >= 356 && i < 362) bg = C.flame;
+  blockColor.push(bg);
+}
+const fmt = n => n.toLocaleString('en-US');
+let seed = 7; const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+function simulate() {
+  for (const l of lanes) {
+    if (l.state !== 'DECODE') continue;
+    l.rate = Math.max(4.6, Math.min(6.6, l.base + (rnd() - 0.5) * 0.6));
+    l.ctx += Math.round(l.rate / 2);
+    l.text = (l.text + ' ' + WORDS[Math.floor(rnd() * WORDS.length)]).slice(-120);
+  }
+  const agg = lanes.reduce((s, l) => s + (l.state === 'DECODE' ? l.rate : 0), 0);
+  spark.shift(); spark.push(Math.max(8, Math.min(30, 17 + (agg - 34.7) * 3 + (rnd() - 0.5) * 3)));
+  steps.shift(); const p = rnd() < 0.08; steps.push({ p, h: p ? 54 : 16 + Math.floor(rnd() * 7) });
+  stall = Math.round(70 + rnd() * 40);
+}
+
+/* ---------------- shared chrome ---------------- */
+function topbar() {
+  const tabs = TABS.map(t => `<div class="tab${t === tab ? ' on' : ''}" data-tab="${t}">${t}</div>`).join('');
+  return `
+  <div style="height:54px;flex-shrink:0;border-bottom:1px solid var(--l27);display:flex;align-items:stretch;">
+    <div style="display:flex;align-items:center;gap:10px;padding:0 22px;border-right:1px solid var(--l22);">
+      <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em;">lorren</span>
+      <span class="mono" style="font-size:10px;color:var(--d60);border:1px solid var(--l30);padding:2px 5px;">0.1.0</span>
+    </div>
+    <div style="display:flex;align-items:stretch;">${tabs}</div>
+    <div style="flex-grow:1;"></div>
+    <div class="mono" style="display:flex;align-items:center;gap:22px;padding:0 22px;font-size:11px;color:var(--d68);">
+      <span style="display:flex;align-items:center;gap:7px;"><span style="width:6px;height:6px;border-radius:50%;background:var(--accent);"></span>serving</span>
+      <span>127.0.0.1:8080</span>
+      <span style="color:var(--d55);">t=8</span>
+      <span style="color:var(--d55);">kv q8</span>
+      <span style="color:var(--d55);">9.4/15.6 GB</span>
+    </div>
+  </div>`;
+}
+function statusbar() {
+  return `
+  <div class="mono" style="height:30px;flex-shrink:0;border-top:1px solid var(--l27);display:flex;align-items:center;gap:20px;padding:0 22px;font-size:10px;color:var(--d52);">
+    <span>session 4h 12m</span><span>1,284 requests</span><span>0 refused</span><span>0 evictions</span>
+    <div style="flex-grow:1;"></div>
+    <span>design reference · 2026-09-25</span>
+  </div>`;
+}
+
+/* ---------------- Swarm (ControlRoom artboard) ---------------- */
+function swarm() {
+  const agg = lanes.reduce((s, l) => s + (l.state === 'DECODE' ? l.rate : 0), 0).toFixed(1);
+  const sp = spark.map((v, i) => (i * 5.1).toFixed(1) + ',' + v.toFixed(1)).join(' ');
+  const kpis = [
+    { label: 'ACTIVE', value: '7', unit: 'of 8 admitted', foot: '2 queued, 0 refused' },
+    { label: 'TTFT p50 / p99', value: '0.41', unit: 's / 1.9 s', foot: 'shared prefix skips 1,536 tok' },
+    { label: 'POOL', value: '77', unit: '% of 8.00 GB', foot: 'give-back armed at 1.5 GB free' }
+  ].map(k => `
+      <div style="flex-grow:1;padding:18px 22px;display:flex;flex-direction:column;justify-content:space-between;border-right:1px solid var(--l22);">
+        <div class="cap">${k.label}</div>
+        <div style="display:flex;align-items:baseline;gap:7px;">
+          <span class="mono num" style="font-size:28px;font-weight:500;line-height:1;">${k.value}</span>
+          <span class="mono" style="font-size:11px;color:var(--d60);">${k.unit}</span>
+        </div>
+        <div class="mono" style="font-size:10px;color:var(--d55);">${k.foot}</div>
+      </div>`).join('');
+  const rows = lanes.map(l => {
+    const hue = l.state === 'PREFILL' ? C.flame : (l.state === 'QUEUED' ? C.dim : C.accent);
+    const rate = l.state === 'DECODE' ? l.rate.toFixed(1) : '—';
+    return `
+      <div style="display:grid;grid-template-columns:34px 168px 76px minmax(0,1fr) 84px 72px 66px;gap:14px;align-items:center;padding:0 22px;height:46px;border-bottom:1px solid var(--l20);">
+        <span class="mono" style="font-size:11px;color:var(--d58);">${l.id}</span>
+        <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+          <span class="ell" style="font-size:13px;font-weight:500;">${l.name}</span>
+          <span class="mono ell" style="font-size:10px;color:var(--d55);">${l.tool}</span>
+        </div>
+        <span class="mono" style="font-size:9.5px;letter-spacing:0.08em;border:1px solid ${hue};color:${hue};padding:3px 0;text-align:center;">${l.state}</span>
+        <span class="mono" style="font-size:11px;color:var(--d70);white-space:nowrap;overflow:hidden;direction:rtl;text-align:left;"><bdi>${l.text}</bdi></span>
+        <span class="mono num" style="font-size:12px;text-align:right;">${l.ctx ? fmt(l.ctx) : '—'}</span>
+        <span class="mono num" style="font-size:12px;text-align:right;color:${rate === '—' ? C.dim : C.bright};">${rate}</span>
+        <span class="mono num" style="font-size:12px;text-align:right;color:var(--d68);">${l.ttft}</span>
+      </div>`;
+  }).join('');
+  const bars = steps.map(s => `<div style="flex-grow:1;height:${s.h}px;background:${s.p ? C.flame : C.accent};"></div>`).join('');
+  const blocks = blockColor.map(b => `<div style="height:9px;background:${b};"></div>`).join('');
+  const models = [
+    { name: 'nexus.gguf (Llama-3.2-3B)', size: '1.88 GB', state: 'serving', dot: C.accent },
+    { name: 'Qwen3-4B-Instruct-2507-Q4_K_M', size: '2.33 GB', state: 'on disk', dot: 'oklch(0.50 0.02 255)' },
+    { name: 'Llama-3.2-3B-Instruct-Q4_K_M', size: '1.88 GB', state: 'on disk', dot: 'oklch(0.38 0.01 255)' }
+  ].map(m => `
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="width:6px;height:6px;background:${m.dot};flex-shrink:0;"></span>
+        <span class="mono ell" style="font-size:11px;flex-grow:1;min-width:0;">${m.name}</span>
+        <span class="mono num" style="font-size:11px;color:var(--d58);">${m.size}</span>
+        <span class="mono" style="font-size:10px;color:var(--d52);width:54px;text-align:right;">${m.state}</span>
+      </div>`).join('');
+  return `
+  <div style="flex-grow:1;display:flex;flex-direction:column;min-height:0;">
+    <div style="height:112px;flex-shrink:0;display:flex;border-bottom:1px solid var(--l27);">
+      <div style="width:330px;flex-shrink:0;padding:18px 22px;display:flex;flex-direction:column;justify-content:space-between;border-right:1px solid var(--l22);">
+        <div class="cap">AGGREGATE THROUGHPUT</div>
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;">
+          <div style="display:flex;align-items:baseline;gap:8px;">
+            <span class="mono num" style="font-size:44px;font-weight:500;line-height:1;letter-spacing:-0.02em;">${agg}</span>
+            <span class="mono" style="font-size:12px;color:var(--d60);">tok/s</span>
+          </div>
+          <svg width="118" height="34" viewBox="0 0 118 34" fill="none" style="margin-bottom:2px;">
+            <polyline points="${sp}" stroke="${C.accent}" stroke-width="1.4" stroke-linejoin="round"></polyline>
+          </svg>
+        </div>
+        <div class="mono" style="font-size:10px;color:var(--d55);">60 s window &middot; bar 17.7 at N=8</div>
+      </div>
+      ${kpis}
+      <div style="width:268px;flex-shrink:0;padding:18px 22px;display:flex;flex-direction:column;justify-content:space-between;">
+        <div class="cap">WORST DECODE STALL</div>
+        <div style="display:flex;align-items:baseline;gap:7px;">
+          <span class="mono num" style="font-size:28px;font-weight:500;line-height:1;">${stall}</span>
+          <span class="mono" style="font-size:11px;color:var(--d60);">ms of 250 budget</span>
+        </div>
+        <div style="height:4px;background:var(--l24);position:relative;">
+          <div style="position:absolute;left:0;top:0;bottom:0;width:${(stall / 250 * 100).toFixed(1)}%;background:${C.accent};"></div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;flex-grow:1;min-height:0;">
+      <div style="flex-grow:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--l27);">
+        <div style="display:flex;align-items:center;gap:12px;padding:13px 22px 11px 22px;">
+          <span style="font-size:13px;font-weight:600;">Agents</span>
+          <span class="mono" style="font-size:11px;color:var(--d55);">8 admitted &middot; 2 queued &middot; step 41,208</span>
+        </div>
+        <div class="mono" style="display:grid;grid-template-columns:34px 168px 76px minmax(0,1fr) 84px 72px 66px;gap:14px;padding:0 22px 8px 22px;font-size:10px;letter-spacing:0.1em;color:var(--d55);border-bottom:1px solid var(--l27);">
+          <div>ID</div><div>AGENT</div><div>STATE</div><div>OUTPUT</div>
+          <div style="text-align:right;">CONTEXT</div><div style="text-align:right;">RATE</div><div style="text-align:right;">TTFT</div>
+        </div>
+        ${rows}
+        <div style="flex-grow:1;"></div>
+        <div style="border-top:1px solid var(--l27);padding:14px 22px 16px 22px;display:flex;flex-direction:column;gap:10px;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="font-size:12px;font-weight:600;">Decode interval</span>
+            <span class="mono" style="font-size:10px;color:var(--d55);">last 240 steps &middot; prefill co-runs marked</span>
+            <div style="flex-grow:1;"></div>
+            <div class="mono" style="display:flex;gap:16px;font-size:10px;color:var(--d55);">
+              <span style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;background:${C.accent};"></span>decode</span>
+              <span style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;background:${C.flame};"></span>prefill</span>
+            </div>
+          </div>
+          <div style="position:relative;height:60px;border-bottom:1px solid var(--l27);">
+            <div style="position:absolute;left:0;right:0;top:0;border-top:1px dashed oklch(0.45 0.06 30);"></div>
+            <span class="mono" style="position:absolute;right:0;top:-15px;font-size:9.5px;color:oklch(0.58 0.06 30);">250 ms</span>
+            <div style="display:flex;gap:2px;align-items:flex-end;height:100%;">${bars}</div>
+          </div>
+        </div>
+      </div>
+      <div style="width:396px;flex-shrink:0;display:flex;flex-direction:column;">
+        <div style="padding:13px 20px 11px 20px;display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--l27);">
+          <span style="font-size:13px;font-weight:600;">KV pool</span>
+          <span class="mono" style="font-size:11px;color:var(--d55);">384 blocks &times; 16 tok</span>
+          <div style="flex-grow:1;"></div>
+          <span class="mono num" style="font-size:11px;color:var(--d68);">6.14 / 8.00 GB</span>
+        </div>
+        <div style="padding:16px 20px;display:flex;flex-direction:column;gap:14px;border-bottom:1px solid var(--l22);">
+          <div style="display:grid;grid-template-columns:repeat(24,minmax(0,1fr));gap:2px;">${blocks}</div>
+          <div class="mono" style="display:flex;flex-direction:column;gap:7px;font-size:10px;color:var(--d58);">
+            <div style="display:flex;align-items:center;gap:8px;"><span style="width:9px;height:9px;background:${C.shared};"></span><span style="color:var(--d72);">48 blocks, refcount 8</span><span>system prompt, held once</span></div>
+            <div style="display:flex;align-items:center;gap:8px;"><span style="width:9px;height:9px;background:${C.accent};"></span><span style="color:var(--d72);">136 blocks, refcount 1</span><span>per-agent context</span></div>
+            <div style="display:flex;align-items:center;gap:8px;"><span style="width:9px;height:9px;background:${C.free};"></span><span style="color:var(--d72);">200 blocks free</span><span>returnable under pressure</span></div>
+          </div>
+        </div>
+        <div style="padding:16px 20px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--l22);">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;">
+            <span class="cap">PREFIX REUSE</span>
+            <span class="mono num" style="font-size:20px;font-weight:500;color:${C.shared};">71%</span>
+          </div>
+          <div style="height:4px;background:var(--l24);display:flex;"><div style="width:71%;background:${C.shared};"></div></div>
+          <div class="mono" style="font-size:10px;color:var(--d55);line-height:1.55;">1,536 shared tokens &times; 7 agents &times; 147 KB/token = <span style="color:var(--d72);">1.83 GB</span> not copied</div>
+        </div>
+        <div style="padding:16px 20px;display:flex;flex-direction:column;gap:11px;">
+          <div class="cap">RESIDENT MODELS</div>
+          ${models}
+        </div>
+        <div style="flex-grow:1;"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------------- Models / Requests / Logs (ControlRoom artboard, ported as-is) ---------------- */
+function modelsTab() {
+  const rows = [
+    { name: 'nexus.gguf', arch: 'llama · 28L · GQA 24/8 · Q4_K_M · your fine-tune', size: '1.88 GB', ctx: '131,072', rate: '18.1 tok/s', used: 'now', state: 'SERVING', hue: C.accent, dot: C.accent },
+    { name: 'Qwen3-4B-Instruct-2507', arch: 'qwen3 · 36L · GQA 32/8 · Q4_K_M', size: '2.33 GB', ctx: '262,144', rate: '15.5 tok/s', used: '12m ago', state: 'ON DISK', hue: 'oklch(0.68 0.008 255)', dot: 'oklch(0.50 0.02 255)' },
+    { name: 'Qwen3-4B-Instruct-2507', arch: 'qwen3 · 36L · GQA 32/8 · Q8_0', size: '3.99 GB', ctx: '262,144', rate: '9.8 tok/s', used: '2h ago', state: 'ON DISK', hue: C.dim, dot: 'oklch(0.34 0.01 255)' },
+    { name: 'Llama-3.2-3B-Instruct', arch: 'llama · 28L · GQA 24/8 · Q4_K_M', size: '1.88 GB', ctx: '131,072', rate: '18.1 tok/s', used: 'yesterday', state: 'ON DISK', hue: C.dim, dot: 'oklch(0.34 0.01 255)' },
+    { name: 'qwen2.5vl:3b (Ollama)', arch: 'qwen2vl · vision — not supported by the engine', size: '3.20 GB', ctx: '—', rate: '—', used: 'never', state: 'CAN\'T RUN', hue: C.flame, dot: C.flame }
+  ].map(m => `
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 84px 80px 92px 96px 84px;gap:14px;align-items:center;padding:0 22px;height:52px;border-bottom:1px solid var(--l20);">
+        <div style="display:flex;align-items:center;gap:11px;min-width:0;">
+          <span style="width:6px;height:6px;background:${m.dot};flex-shrink:0;"></span>
+          <div style="display:flex;flex-direction:column;gap:2px;min-width:0;">
+            <span class="ell" style="font-size:13px;font-weight:500;">${m.name}</span>
+            <span class="mono ell" style="font-size:10px;color:var(--d55);">${m.arch}</span>
+          </div>
+        </div>
+        <span class="mono num" style="font-size:12px;text-align:right;">${m.size}</span>
+        <span class="mono num" style="font-size:12px;text-align:right;color:var(--d68);">${m.ctx}</span>
+        <span class="mono num" style="font-size:12px;text-align:right;color:var(--d68);">${m.rate}</span>
+        <span class="mono num" style="font-size:12px;text-align:right;color:var(--d58);">${m.used}</span>
+        <span class="mono" style="font-size:9.5px;letter-spacing:0.08em;border:1px solid ${m.hue};color:${m.hue};padding:3px 0;text-align:center;">${m.state}</span>
+      </div>`).join('');
+  const facts = [['layers', '28'], ['heads (q / kv)', '24 / 8'], ['head dim', '128'], ['vocab', '128,256'], ['file', 'ai_models/nexus.gguf'], ['system prompt', 'from Modelfile'], ['sha256', '9c41e0d2…']]
+    .map(f => `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;"><span class="mono" style="font-size:11px;color:var(--d58);">${f[0]}</span><span class="mono num" style="font-size:11px;text-align:right;">${f[1]}</span></div>`).join('');
+  return `
+  <div style="flex-grow:1;display:flex;min-height:0;">
+    <div style="flex-grow:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--l27);">
+      <div style="padding:16px 22px;display:flex;align-items:center;gap:18px;border-bottom:1px solid var(--l22);">
+        <div style="display:flex;flex-direction:column;gap:6px;flex-grow:1;">
+          <div style="display:flex;align-items:baseline;gap:12px;">
+            <span style="font-size:13px;font-weight:600;">Library</span>
+            <span class="mono" style="font-size:11px;color:var(--d55);">ai_models/ · stoke/models/ · Ollama</span>
+            <div style="flex-grow:1;"></div>
+            <span class="mono num" style="font-size:11px;color:var(--d72);">1.88 / 8.00 GB resident</span>
+          </div>
+          <div style="height:8px;background:var(--l24);display:flex;gap:1px;"><div style="width:23%;background:${C.accent};"></div></div>
+        </div>
+      </div>
+      <div class="mono" style="display:grid;grid-template-columns:minmax(0,1fr) 84px 80px 92px 96px 84px;gap:14px;padding:14px 22px 8px 22px;font-size:10px;letter-spacing:0.1em;color:var(--d55);border-bottom:1px solid var(--l27);">
+        <div>MODEL</div><div style="text-align:right;">SIZE</div><div style="text-align:right;">CTX MAX</div><div style="text-align:right;">SINGLE-STREAM</div><div style="text-align:right;">LAST USED</div><div style="text-align:right;">STATE</div>
+      </div>
+      ${rows}
+      <div style="flex-grow:1;"></div>
+    </div>
+    <div style="width:396px;flex-shrink:0;display:flex;flex-direction:column;">
+      <div style="padding:13px 20px 11px 20px;border-bottom:1px solid var(--l27);display:flex;align-items:baseline;gap:10px;">
+        <span style="font-size:13px;font-weight:600;">nexus.gguf</span><span class="mono" style="font-size:11px;color:var(--d55);">Q4_K_M</span>
+      </div>
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--l22);">${facts}</div>
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:11px;">
+        <div class="cap">SYSTEM PROMPT</div>
+        <div class="mono" style="border:1px solid var(--l24);background:var(--code);padding:11px 12px;font-size:10.5px;color:var(--d66);line-height:1.7;">You are Nexus AI, a professional quantitative trader. You give concise, decisive trading verdicts.</div>
+        <div class="mono" style="font-size:10px;color:var(--d55);">read from the Modelfile next to the GGUF</div>
+      </div>
+    </div>
+  </div>`;
+}
+function requestsTab() {
+  const src = [
+    ['14:22:07', 'req_8f21c4', '/v1/chat/completions', '1,204', '412', '0.91 s', '11.8 s', '200'],
+    ['14:21:40', 'req_8f21b9', '/v1/chat/completions', '96', '24', '0.33 s', '0.9 s', '200'],
+    ['14:20:12', 'req_8f21a2', '/v1/chat/completions', '742', '318', '0.62 s', '8.9 s', '200'],
+    ['14:18:03', 'req_8f2196', '/v1/chat/completions', '1,980', '96', '1.48 s', '4.1 s', 'cancel'],
+    ['14:15:31', 'req_8f2188', '/v1/completions', '512', '128', '0.41 s', '3.7 s', '200']
+  ].map((r, i) => `
+      <div style="display:grid;grid-template-columns:74px 88px minmax(0,1fr) 76px 72px 66px 74px 62px;gap:12px;align-items:center;padding:0 22px;height:42px;border-bottom:1px solid var(--l20);background:${i === 0 ? 'var(--sel)' : 'transparent'};">
+        <span class="mono" style="font-size:11px;color:var(--d58);">${r[0]}</span>
+        <span class="mono" style="font-size:11px;color:var(--d68);">${r[1]}</span>
+        <span class="mono ell" style="font-size:11.5px;">${r[2]}</span>
+        <span class="mono num" style="font-size:11.5px;text-align:right;color:var(--d68);">${r[3]}</span>
+        <span class="mono num" style="font-size:11.5px;text-align:right;color:var(--d68);">${r[4]}</span>
+        <span class="mono num" style="font-size:11.5px;text-align:right;">${r[5]}</span>
+        <span class="mono num" style="font-size:11.5px;text-align:right;">${r[6]}</span>
+        <span class="mono" style="font-size:11px;text-align:right;color:${r[7] === '200' ? 'var(--d72)' : C.flame};">${r[7]}</span>
+      </div>`).join('');
+  return `
+  <div style="flex-grow:1;display:flex;min-height:0;">
+    <div style="flex-grow:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--l27);">
+      <div class="mono" style="display:grid;grid-template-columns:74px 88px minmax(0,1fr) 76px 72px 66px 74px 62px;gap:12px;padding:14px 22px 8px 22px;font-size:10px;letter-spacing:0.1em;color:var(--d55);border-bottom:1px solid var(--l27);">
+        <div>TIME</div><div>ID</div><div>ENDPOINT</div><div style="text-align:right;">PROMPT</div><div style="text-align:right;">GEN</div><div style="text-align:right;">TTFT</div><div style="text-align:right;">TOTAL</div><div style="text-align:right;">STATUS</div>
+      </div>
+      ${rows}
+      <div style="flex-grow:1;"></div>
+    </div>
+    <div style="width:396px;flex-shrink:0;"></div>
+  </div>`;
+}
+function logsTab() {
+  const lines = [
+    ['14:22:07.412', 'http', 'POST /v1/chat/completions  prompt 1,204 tokens, max_tokens 1,024'],
+    ['14:22:08.330', 'engine', 'first token after 0.91 s (prefill 1,204 tok)'],
+    ['14:22:19.170', 'engine', 'finish=stop  412 tokens  38.2 tok/s'],
+    ['14:21:40.018', 'app', 'chat "BTC breakout check" saved (2 messages)'],
+    ['14:19:04.221', 'engine', 'loaded ai_models/nexus.gguf in 1.9 s (1.88 GB)'],
+    ['14:18:12.006', 'engine', 'stoke serve: listening on 127.0.0.1:8080  ctx=8192']
+  ].map(l => `
+      <div style="display:grid;grid-template-columns:92px 62px minmax(0,1fr);gap:14px;padding:5px 22px;align-items:baseline;">
+        <span class="mono" style="font-size:11px;color:var(--d50);">${l[0]}</span>
+        <span class="mono" style="font-size:10px;letter-spacing:0.06em;color:${C.shared};">${l[1]}</span>
+        <span class="mono ell" style="font-size:11.5px;color:var(--d74);">${l[2]}</span>
+      </div>`).join('');
+  return `<div style="flex-grow:1;display:flex;flex-direction:column;padding:10px 0;">${lines}</div>`;
+}
+
+/* ---------------- Chat (new tab, same visual language) ---------------- */
+const chats = [
+  ['BTC breakout check', 'nexus · 14:22'], ['NIFTY weekly levels', 'nexus · yesterday'],
+  ['Position sizing rules', 'nexus · Mon'], ['Summarise engine notes', 'qwen3-4b · Sep 21'],
+  ['Regex for log lines', 'llama-3.2-3b · Sep 19']
+];
+const REPLY = [
+  { t: 'h', s: 'Verdict: long on a retest' },
+  { t: 'li', b: 'Entry', s: ' 68,450–68,600 on a retest of the breakout' },
+  { t: 'li', b: 'Stop', s: ' 67,850, just below the breakout candle' },
+  { t: 'li', b: 'Targets', s: ' 70,200, then 71,500' },
+  { t: 'tr', head: true, cells: ['LEVEL', 'PRICE', 'WHY'] },
+  { t: 'tr', cells: ['Support', '67,850', 'breakout candle low'] },
+  { t: 'tr', cells: ['Resistance', '70,200', 'prior swing high'] },
+  { t: 'tr', cells: ['Extension', '71,500', 'measured move'] },
+  { t: 'p', s: 'Size it so a stop-out costs 1% of equity:' },
+  { t: 'code', lines: [
+    [['id', 'risk'], ['op', ' = '], ['num', '0.01'], ['op', ' * '], ['id', 'equity'], ['cm', '          # 1% of the account']],
+    [['id', 'size'], ['op', ' = '], ['id', 'risk'], ['op', ' / ('], ['id', 'entry'], ['op', ' - '], ['id', 'stop'], ['op', ')'], ['cm', '  # units of BTC']]
+  ] },
+  { t: 'p', s: 'Check volatility before you enter:' },
+  { t: 'math' }
+];
+const REPLY2 = [{ t: 'p', s: 'Wait for the 4-hour close. A breakout that fails on the close is a trap: enter only if 68,400 holds as support, with the stop at 67,850.' }];
+const ATOM = 24;
+const blockLen = b => (b.t === 'h' || b.t === 'p') ? b.s.length : b.t === 'li' ? b.b.length + b.s.length : ATOM;
+const msgs = [
+  { who: 'YOU', time: '14:22:03', text: 'BTC just broke 68,400 on rising volume. Long or wait?' },
+  { who: 'NEXUS', time: '14:22:07', blocks: REPLY, shown: 0, done: false }
+];
+let streamTimer = null;
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+const mathML = `<math display="block"><mi>σ</mi><mo>=</mo><msqrt><mfrac><mrow><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><msup><mrow><mo>(</mo><msub><mi>x</mi><mi>i</mi></msub><mo>−</mo><mi>μ</mi><mo>)</mo></mrow><mn>2</mn></msup></mrow><mi>N</mi></mfrac></msqrt></math>`;
+
+function renderBlocks(m) {
+  let budget = m.done ? 1e9 : m.shown, html = '', table = null, list = null, cursorPlaced = false;
+  const flushTable = () => { if (table) { html += `<table><colgroup><col style="width:30%"><col style="width:20%"><col style="width:50%"></colgroup>${table}</table>`; table = null; } };
+  const flushList = () => { if (list) { html += `<ul>${list}</ul>`; list = null; } };
+  for (const b of m.blocks) {
+    const len = blockLen(b);
+    if (budget <= 0) break;
+    const full = budget >= len;
+    if (b.t !== 'tr') flushTable();
+    if (b.t !== 'li') flushList();
+    if (b.t === 'h') html += `<h3>${esc(full ? b.s : b.s.slice(0, budget))}${full ? '' : '<span class="cursor"></span>'}</h3>`;
+    else if (b.t === 'p') html += `<p>${esc(full ? b.s : b.s.slice(0, budget))}${full ? '' : '<span class="cursor"></span>'}</p>`;
+    else if (b.t === 'li') {
+      const all = b.b + b.s, cut = full ? all : all.slice(0, budget);
+      const bold = cut.slice(0, b.b.length), rest = cut.slice(b.b.length);
+      list = (list || '') + `<li><b>${esc(bold)}</b>${esc(rest)}${full ? '' : '<span class="cursor"></span>'}</li>`;
+    } else if (b.t === 'tr' && full) {
+      table = (table || '') + (b.head ? `<tr>${b.cells.map(c => `<th>${c}</th>`).join('')}</tr>`
+        : `<tr><td>${b.cells[0]}</td><td class="n">${b.cells[1]}</td><td>${b.cells[2]}</td></tr>`);
+    } else if (b.t === 'code' && full) {
+      const pre = b.lines.map(ln => ln.map(([k, s]) => k === 'id' ? esc(s) : `<span class="k-${k}">${esc(s)}</span>`).join('')).join('\n');
+      html += `<div class="codewrap"><div class="codehead"><span>python</span><span class="act">COPY</span></div><pre>${pre}</pre></div>`;
+    } else if (b.t === 'math' && full) html += mathML;
+    if (!full) { cursorPlaced = true; break; }
+    budget -= len;
+  }
+  flushList();
+  flushTable();
+  if (!m.done && !cursorPlaced) html += '<span class="cursor"></span>';
+  return html;
+}
+function msgHtml(m, i) {
+  if (m.who === 'YOU') return `
+    <div style="margin-bottom:22px;">
+      <div class="mono" style="font-size:10px;letter-spacing:0.14em;color:var(--d55);margin-bottom:6px;">YOU <span style="letter-spacing:0;color:var(--d50);margin-left:8px;">${m.time}</span></div>
+      <div style="font-size:14px;line-height:1.55;">${esc(m.text)}</div>
+    </div>`;
+  const foot = m.done
+    ? `<div class="mono" style="display:flex;gap:18px;font-size:10px;color:var(--d55);margin-top:6px;">
+         <span>412 tok &middot; 38.2 tok/s &middot; first token 0.91 s</span><div style="flex-grow:1;"></div>
+         <span class="act" style="letter-spacing:0.08em;">REGENERATE</span><span class="act" style="letter-spacing:0.08em;">EDIT</span>
+         <span class="act" style="letter-spacing:0.08em;">COPY</span><span class="act">&lsaquo; 1/2 &rsaquo;</span></div>`
+    : `<div class="mono" style="font-size:10px;color:var(--accent);margin-top:6px;">streaming &middot; 38 tok/s</div>`;
+  return `
+    <div style="margin-bottom:22px;">
+      <div class="mono" style="font-size:10px;letter-spacing:0.14em;color:var(--accent);margin-bottom:6px;">NEXUS <span style="letter-spacing:0;color:var(--d50);margin-left:8px;">${m.time}</span></div>
+      <div class="prose" id="msg${i}">${renderBlocks(m)}</div>
+      ${foot}
+    </div>`;
+}
+function renderMessages() {
+  const el = document.getElementById('msgs');
+  if (!el) return;
+  el.innerHTML = msgs.map(msgHtml).join('');
+  el.scrollTop = el.scrollHeight;
+}
+function startStream(m) {
+  if (streamTimer) clearInterval(streamTimer);
+  const total = m.blocks.reduce((s, b) => s + blockLen(b), 0);
+  streamTimer = setInterval(() => {
+    m.shown += 7;
+    if (m.shown >= total) { m.done = true; clearInterval(streamTimer); streamTimer = null; }
+    renderMessages();
+  }, 45);
+}
+function chatTab() {
+  const list = chats.map((c, i) => `
+      <div style="height:50px;padding:0 18px;display:flex;flex-direction:column;justify-content:center;gap:3px;border-bottom:1px solid var(--l20);cursor:pointer;
+                  ${i === 0 ? 'background:var(--sel);box-shadow:inset 2px 0 0 var(--accent);' : ''}">
+        <span class="ell" style="font-size:13px;font-weight:500;">${c[0]}</span>
+        <span class="mono" style="font-size:10px;color:var(--d55);">${c[1]}</span>
+      </div>`).join('');
+  const facts = (rows) => rows.map(f => `<div style="display:flex;align-items:baseline;justify-content:space-between;gap:14px;">
+        <span class="mono" style="font-size:11px;color:var(--d58);flex-shrink:0;">${f[0]}</span><span class="mono num ell" style="font-size:11px;text-align:right;">${f[1]}</span></div>`).join('');
+  const phases = [['queue', '12 ms', 0, 2, 'oklch(0.45 0.01 255)'], ['prefill', '0.91 s', 2, 8, C.flame], ['decode', '10.8 s', 10, 90, C.accent]]
+    .map(p => `<div style="display:flex;align-items:center;gap:12px;"><span class="mono" style="font-size:10.5px;color:var(--d60);width:58px;">${p[0]}</span>
+        <div style="flex-grow:1;height:12px;background:var(--t21);position:relative;"><div style="position:absolute;left:${p[2]}%;top:0;bottom:0;width:${p[3]}%;background:${p[4]};"></div></div>
+        <span class="mono num" style="font-size:10.5px;width:56px;text-align:right;">${p[1]}</span></div>`).join('');
+  return `
+  <div style="flex-grow:1;display:flex;min-height:0;">
+    <div style="width:260px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--l22);">
+      <div style="padding:13px 18px 11px 18px;display:flex;align-items:center;">
+        <span style="font-size:13px;font-weight:600;">Chats</span><div style="flex-grow:1;"></div>
+        <span class="btn accent" style="font-size:10px;padding:4px 9px;">+ NEW</span>
+      </div>
+      <div class="mono" style="margin:0 18px 10px 18px;border:1px solid var(--l30);background:var(--field);padding:8px 10px;font-size:11px;color:var(--d55);">search chats</div>
+      <div style="border-top:1px solid var(--l27);">${list}</div>
+    </div>
+    <div style="flex-grow:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--l27);">
+      <div style="padding:13px 28px 11px 28px;display:flex;align-items:baseline;gap:12px;border-bottom:1px solid var(--l27);">
+        <span style="font-size:13px;font-weight:600;">BTC breakout check</span>
+        <span class="mono ell" style="font-size:11px;color:var(--d55);">nexus.gguf &middot; llama 3.2 3B &middot; Q4_K_M &middot; system prompt from Modelfile</span>
+      </div>
+      <div id="msgs" class="scroll" style="flex-grow:1;min-height:0;padding:20px 28px 8px 28px;"></div>
+      <div style="border-top:1px solid var(--l27);padding:14px 22px 16px 22px;display:flex;align-items:center;gap:10px;">
+        <span class="mono" style="font-size:11px;border:1px solid var(--l30);padding:9px 12px;color:var(--d72);">nexus &#9662;</span>
+        <input id="composer" class="composer" placeholder="Message nexus…" autocomplete="off">
+        <span id="send" class="btn accent" style="font-size:11px;padding:9px 18px;">SEND</span>
+      </div>
+    </div>
+    <div style="width:396px;flex-shrink:0;display:flex;flex-direction:column;">
+      <div style="padding:13px 20px 11px 20px;border-bottom:1px solid var(--l27);display:flex;align-items:baseline;gap:10px;">
+        <span style="font-size:13px;font-weight:600;">This reply</span><span class="mono" style="font-size:11px;color:var(--d55);">req_8f21c4</span>
+      </div>
+      <div style="padding:18px 20px;display:flex;flex-direction:column;gap:12px;border-bottom:1px solid var(--l22);">
+        <div class="cap">LIFECYCLE</div>${phases}
+      </div>
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--l22);">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;">
+          <span class="cap">CONTEXT</span>
+          <span><span class="mono num" style="font-size:20px;font-weight:500;">1,204</span><span class="mono" style="font-size:11px;color:var(--d60);"> / 8,192 tok</span></span>
+        </div>
+        <div style="height:4px;background:var(--l24);display:flex;"><div style="width:14.7%;background:${C.accent};"></div></div>
+        <div class="mono" style="font-size:10px;color:var(--d55);line-height:1.55;">the whole chat is re-read each turn until the engine keeps its cache</div>
+      </div>
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--l22);">
+        <div class="cap">MODEL</div>
+        ${facts([['file', 'nexus.gguf'], ['arch', 'llama · 28L · GQA 24/8'], ['quant', 'Q4_K_M · 1.88 GB'], ['template', 'llama-3 header'], ['system', 'You are Nexus AI, a professional quantitative trader…']])}
+      </div>
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:10px;">
+        <div class="cap">SAMPLING</div>
+        ${facts([['temperature', '0.7'], ['top_p', '0.90'], ['top_k', '40'], ['repeat_penalty', '1.10'], ['seed', 'random'], ['max_tokens', '1,024']])}
+      </div>
+      <div style="flex-grow:1;"></div>
+    </div>
+  </div>`;
+}
+function send() {
+  const inp = document.getElementById('composer');
+  const text = (inp.value || '').trim() || 'Or should I wait for the close?';
+  inp.value = '';
+  msgs.push({ who: 'YOU', time: '14:23:10', text });
+  const m = { who: 'NEXUS', time: '14:23:11', blocks: REPLY2, shown: 0, done: false };
+  msgs.push(m);
+  renderMessages();
+  startStream(m);
+}
+
+/* ---------------- frame ---------------- */
+let chatStarted = location.hash === '#chat-final';
+if (chatStarted) { msgs[1].done = true; }
+function render() {
+  const body = tab === 'Swarm' ? swarm() : tab === 'Chat' ? chatTab() : tab === 'Models' ? modelsTab() : tab === 'Requests' ? requestsTab() : logsTab();
+  document.getElementById('app').innerHTML = topbar() + body + statusbar();
+  document.querySelectorAll('.tab').forEach(el => el.addEventListener('click', () => { tab = el.dataset.tab; render(); }));
+  if (tab === 'Chat') {
+    renderMessages();
+    document.getElementById('send').addEventListener('click', send);
+    document.getElementById('composer').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+    if (!chatStarted) { chatStarted = true; startStream(msgs[1]); }
+  }
+}
+render();
+setInterval(() => { simulate(); if (tab === 'Swarm') render(); }, 500);
+</script>
+</body>
+</html>
