@@ -35,6 +35,22 @@
 #   badheader            a renamed column                             -> VOID
 #   baseline_1h          the real 2026-09-18 1 h series               -> VOID
 #
+# THE 4 x 6 h SCHEME (Kabir 2026-10-12; design note
+# docs/superpowers/design-notes/2026-10-12-m7-soak-4x6h-rule.md): each 6 h run
+# is graded over its FINAL 3 h, and the threshold is a RATE -- one block per
+# 6 h of window -- so a 3 h window allows half a block and the 24 h cases
+# above are unchanged. The *6 cases pass the grader a 10800 s window:
+#   flat6, noise6        no growth                                    -> FLAT
+#   nonarena_leak6       +1 MiB/h = +3 MiB over 3 h, over half a block
+#   mapped_leak6         the same on VmData                           -> CLIMBING
+#                        (a one-block threshold left unscaled passes both)
+#   slow6                +0.5 MiB/h = +1.5 MiB over 3 h               -> FLAT
+#                        (a threshold scaled down past the rate fails it)
+#   fill1 / fill4        +18 MiB/h that stops at 1 h (the 16 MiB quarantine
+#                        at the baseline's rate) / at 4 h, inside the window
+#   step2 / step5        the +21 MiB step at 2 h / at 5 h
+#   died6                the series stops at 2.5 h of 6               -> VOID
+#
 # VOID is not a pass: the soak treats anything but FLAT as a failed gate.
 #
 # Usage: sh tests/tooling/test_soak_rss_rule.sh
@@ -68,8 +84,12 @@ gen() {
             else if (prof == "slow") { gn = 0.5 * h; gd = gn }
             else if (prof == "fill14") { gn = 18 * (h < 14 ? h : 14); gd = gn }
             else if (prof == "fill20") { gn = 18 * (h < 20 ? h : 20); gd = gn }
+            else if (prof == "fill1") { gn = 18 * (h < 1 ? h : 1); gd = gn }
+            else if (prof == "fill4") { gn = 18 * (h < 4 ? h : 4); gd = gn }
             else if (prof == "step_early") { gn = (h >= 10) ? 21 : 0; gd = gn }
             else if (prof == "step_late") { gn = (h >= 21) ? 21 : 0; gd = gn }
+            else if (prof == "step2") { gn = (h >= 2) ? 21 : 0; gd = gn }
+            else if (prof == "step5") { gn = (h >= 5) ? 21 : 0; gd = gn }
             else if (prof == "noise") gn = 6 * rand() - 3
             ar = 1147 * h / 2; if (ar > 1147) ar = 1147; ar = int(ar)
             anon = ar + int(160 + gn)
@@ -86,10 +106,14 @@ gen() {
 }
 
 pass=0; total=0
-# check <case> <csv> <run_secs> <expected prefix> <expected rc>
+# check <case> <csv> <run_secs> <expected prefix> <expected rc> [window_secs]
 check() {
     total=$((total + 1))
-    out=$(sh "$rule" "$2" "$3" "$BLOCK" 2>&1)
+    if [ -n "${6:-}" ]; then
+        out=$(sh "$rule" "$2" "$3" "$BLOCK" "$6" 2>&1)
+    else
+        out=$(sh "$rule" "$2" "$3" "$BLOCK" 2>&1)
+    fi
     rc=$?
     case "$out" in
         "$4"*) if [ "$rc" -eq "$5" ]; then
@@ -105,6 +129,12 @@ for p in flat noise nonarena_leak mapped_leak slow fill14 fill20 step_early \
 done
 gen flat 36000 > "$tmp/died10.csv"
 gen flat 3600 > "$tmp/short.csv"
+SIX=21600
+W6=10800
+for p in flat noise nonarena_leak mapped_leak slow fill1 fill4 step2 step5; do
+    gen "$p" "$SIX" > "$tmp/${p}_6h.csv"
+done
+gen flat 9000 > "$tmp/died6.csv"
 
 echo "test_soak_rss_rule: grader $rule"
 check flat             "$tmp/flat.csv"             "$DAY" "FLAT ("                        0
@@ -125,6 +155,16 @@ check sparse           "$tmp/sparse.csv"           "$DAY" "VOID (too sparse"    
 check badheader        "$tmp/badheader.csv"        "$DAY" "VOID (the series header"       2
 check baseline_1h      "$root/docs/superpowers/gate-reports/2026-09-18-0844-m7-soak.rss.csv" \
                                                    3600   "VOID (the series spans"        2
+check flat6            "$tmp/flat_6h.csv"          "$SIX" "FLAT ("                        0 "$W6"
+check noise6           "$tmp/noise_6h.csv"         "$SIX" "FLAT ("                        0 "$W6"
+check nonarena_leak6   "$tmp/nonarena_leak_6h.csv" "$SIX" "CLIMBING (non-arena"           1 "$W6"
+check mapped_leak6     "$tmp/mapped_leak_6h.csv"   "$SIX" "CLIMBING (VmData"              1 "$W6"
+check slow6            "$tmp/slow_6h.csv"          "$SIX" "FLAT ("                        0 "$W6"
+check fill1            "$tmp/fill1_6h.csv"         "$SIX" "FLAT ("                        0 "$W6"
+check fill4            "$tmp/fill4_6h.csv"         "$SIX" "CLIMBING ("                    1 "$W6"
+check step2            "$tmp/step2_6h.csv"         "$SIX" "FLAT ("                        0 "$W6"
+check step5            "$tmp/step5_6h.csv"         "$SIX" "CLIMBING ("                    1 "$W6"
+check died6            "$tmp/died6.csv"            "$SIX" "VOID (the series ends at"      2 "$W6"
 
 if [ "$pass" -eq "$total" ]; then
     echo "test_soak_rss_rule: $pass/$total OK"

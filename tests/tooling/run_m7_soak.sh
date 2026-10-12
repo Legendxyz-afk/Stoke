@@ -360,7 +360,14 @@ say "dmesg witness pid $wit_pid -> $(basename "$WIT") (oom_score_adj $(cat "/pro
 # it, and still holds hours of this server's frees -- a use-after-free has to
 # reach back further than that to slip past it. If the 24 h still climbs in
 # its last 6 h, the quarantine was not the cause, and the rule says so.
+# THE 4 x 6 h SCHEME (Kabir 2026-10-12; design note
+# docs/superpowers/design-notes/2026-10-12-m7-soak-4x6h-rule.md): a 6 h run
+# is graded over its final 3 h, so its fill must end by hour 3. 16 MiB fills
+# in ~50 min at the baseline's rate, and before hour 3 down to ~27% of it; a
+# freed chunk still sits in quarantine for most of an hour of this server's
+# frees.
 ASAN_QUARANTINE_MB=64
+[ "$MODE" = soak ] && [ "$HOURS" -eq 6 ] && ASAN_QUARANTINE_MB=16
 say "starting server: ${srv_secs}s budget, port $port, build $BUILDDIR, --ctx $CTX --seqs $SEQS --threads $THREADS, ASan quarantine ${ASAN_QUARANTINE_MB} MiB"
 ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=0:quarantine_size_mb=$ASAN_QUARANTINE_MB:log_path=$SANLOG" \
 UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
@@ -660,17 +667,24 @@ fi
 # run -- soak mode, 24 h or more -- and a shorter run prints the same reading
 # ungraded: the rule asks whether growth has STOPPED by hour 18, which a 1 h
 # run cannot answer. The verdict is read from the grader's PRINTED line.
-rss_rule=$(sh tests/tooling/soak_rss_rule.sh "$CSV" "$TOTAL_SECS" "$block_bytes" 2>&1)
-if [ "$MODE" = soak ] && [ "$HOURS" -ge 24 ]; then
-    say "RSS rule (gate [3], final 6 h): $rss_rule"
+# Since 2026-10-12 a 6 h soak-mode run is ALSO graded: one run of the 4 x 6 h
+# scheme, over its final 3 h, at the same rate (one block per 6 h of window;
+# design note 2026-10-12-m7-soak-4x6h-rule.md). Gate [3] needs four of them.
+rss_win=21600; rss_label="gate [3], final 6 h"
+if [ "$MODE" = soak ] && [ "$HOURS" -eq 6 ]; then
+    rss_win=10800; rss_label="gate [3] 4 x 6 h scheme, seed $SEED, final 3 h"
+fi
+rss_rule=$(sh tests/tooling/soak_rss_rule.sh "$CSV" "$TOTAL_SECS" "$block_bytes" "$rss_win" 2>&1)
+if [ "$MODE" = soak ] && { [ "$HOURS" -ge 24 ] || [ "$HOURS" -eq 6 ]; }; then
+    say "RSS rule ($rss_label): $rss_rule"
     case "$rss_rule" in
         "FLAT ("*) rss_word="RSS FLAT" ;;
         *) say "FAIL -- the RSS rule did not read FLAT: CLIMBING is growth still under way"
-           say "        in the last 6 h; VOID is a reading that does not exist. Neither is a pass."
+           say "        in the graded window; VOID is a reading that does not exist. Neither is a pass."
            rss_word="RSS NOT FLAT"; fail=1 ;;
     esac
 else
-    say "RSS rule, REPORTED not graded (a ${HOURS} h $MODE run is not the 24 h gate): $rss_rule"
+    say "RSS rule, REPORTED not graded (a ${HOURS} h $MODE run is not a gate run): $rss_rule"
     rss_word="RSS not graded"
 fi
 

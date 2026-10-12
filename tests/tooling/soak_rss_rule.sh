@@ -9,16 +9,23 @@
 #   <run_secs>    the soak's traffic length (TOTAL_SECS: 86400 for the gate)
 #   <block_bytes> one KV block of the served model (run_m7_soak.sh derives it
 #                 from the model header; 4718592 for the soak's Qwen3-4B)
+#   [window_secs] the graded window, default 21600 (the 24 h run's final 6 h);
+#                 10800 for each run of the 4 x 6 h scheme (Kabir 2026-10-12,
+#                 docs/superpowers/design-notes/2026-10-12-m7-soak-4x6h-rule.md)
 # Prints ONE line and exits 0 FLAT, 1 CLIMBING, 2 VOID. VOID is not a pass.
 #
-# THE RULE. Over the FINAL 6 h of the series, the least-squares growth of
+# THE RULE. Over the FINAL window of the series (6 h by default), the
+# least-squares growth of
 #   (a) VmData                 -- mapped memory: the half RssAnon cannot see (a
 #                                 leak that allocates without touching, or
 #                                 pages the kernel swapped out), and
 #   (b) RssAnon - arena        -- resident anonymous memory outside the KV
 #                                 arena, whose own residency the sidecar reads
 #                                 from pagemap,
-# must each be AT MOST ONE KV BLOCK. Growth = fitted slope x the window.
+# must each be AT MOST ONE KV BLOCK PER 6 h OF WINDOW. Growth = fitted slope x
+# the window. The threshold is a RATE so that every window grades the same
+# leak: one block over the 24 h run's 6 h window, half a block over a 6 h
+# run's 3 h window -- ~0.75 MiB/h either way.
 #
 # WHY THE FINAL WINDOW AND NOT THE WHOLE RUN. The 2026-09-18 1 h baseline
 # (ASan build) grew ~18-20 MiB/h in BOTH quantities for the whole hour after a
@@ -73,6 +80,7 @@ hdr_bad { next }
 END {
     if (hdr_bad) { print "VOID (the series header is not the sidecar nine columns -- a reader that guesses columns grades something else)"; exit 2 }
     blk = bb / 1048576
+    thr = blk * W / 21600
     if (n < 6) { printf "VOID (%d usable rows -- the sidecar did not run)\n", n; exit 2 }
     tl = t[n]
     if (tl < run - 600) { printf "VOID (the series ends at t=%d s, more than 10 min before the run ends at %d s -- the sidecar or the server died early, so its final window is not the run final window)\n", tl, run; exit 2 }
@@ -92,10 +100,10 @@ END {
         dt = wt[i] - mt; ctt += dt * dt; ctd += dt * (wd[i] - md); ctx += dt * (wx[i] - mx)
     }
     gd = ctd / ctt * W; gx = ctx / ctt * W
-    detail = sprintf("final %d s: VmData %+.1f MiB, non-arena anon %+.1f MiB, least squares over %d rows t=%d..%d s, %d malformed rows and %d arena-0 rows dropped; one block = %.2f MiB", W, gd, gx, m, wt[1], wt[m], bad, failed, blk)
-    if (gd > blk && gx > blk) { printf "CLIMBING (VmData and non-arena anon both grew more than one block -- %s)\n", detail; exit 1 }
-    if (gd > blk)             { printf "CLIMBING (VmData grew more than one block: mapped growth -- %s)\n", detail; exit 1 }
-    if (gx > blk)             { printf "CLIMBING (non-arena anon grew more than one block: touched growth -- %s)\n", detail; exit 1 }
+    detail = sprintf("final %d s: VmData %+.1f MiB, non-arena anon %+.1f MiB, least squares over %d rows t=%d..%d s, %d malformed rows and %d arena-0 rows dropped; threshold %.2f MiB = one block (%.2f MiB) per 6 h of window", W, gd, gx, m, wt[1], wt[m], bad, failed, thr, blk)
+    if (gd > thr && gx > thr) { printf "CLIMBING (VmData and non-arena anon both grew more than the threshold -- %s)\n", detail; exit 1 }
+    if (gd > thr)             { printf "CLIMBING (VmData grew more than the threshold: mapped growth -- %s)\n", detail; exit 1 }
+    if (gx > thr)             { printf "CLIMBING (non-arena anon grew more than the threshold: touched growth -- %s)\n", detail; exit 1 }
     printf "FLAT (%s)\n", detail
     exit 0
 }' "$csv"
