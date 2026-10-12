@@ -52,6 +52,7 @@ and updates itself from releases you publish and sign.
 | history budget | each turn sends the last ~1,500 tokens of the chat, adjustable in Settings, until the engine keeps its cache between turns (09-25, §3.2) |
 | platform | Windows first |
 | first milestone | a working demo you verify before the rest is built (§11) |
+| release | **Lorren v0.1 is this app** (2026-10-12). It owns updates, the model catalog and its downloads, and settings. The engine stays headless underneath and later gains cloud routing for Claude and GPT (the universal-server spec, trimmed to match) |
 
 **The shell demo (09-25).** The Control Room design and the new Chat tab were
 built twice: as a web page in WebView2, which is what a Tauri app shows on

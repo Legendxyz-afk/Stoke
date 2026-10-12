@@ -9,6 +9,16 @@ implementation plan is written. **Nothing here starts before tag `m7`:**
 > castagents** (`ROADMAP-SEQUENCE.md` 5.1). Read "stoke" below as Lorren. This
 > text is renamed together with the code, after tag `m7`.
 
+> **v0.1 is the Lorren desktop app (Kabir, 2026-10-12;
+> `2026-09-25-lorren-desktop-design.md`).** The two specs had each defined an
+> updater, a model catalog, a config, an OpenAI endpoint, file hosting and a
+> v0.1. From now on the desktop app owns updates, the model catalog and its
+> downloads, and settings, cloud keys included. This spec keeps the engine side
+> that the app sits on: the router, the scheduler front door, the cloud lanes
+> and adapters, and the model families (§3 items 1 and 3–5, §4–§7). Where §2,
+> §3 items 2, 6 and 7, §8 and §11 say otherwise, this note wins. The full
+> rewrite waits for this spec's review, paused at part 1 of 4.
+
 ## 1. What it is
 
 One app, `stoke`, with one OpenAI-compatible API in front of:
@@ -38,18 +48,18 @@ The typical workload is agents, tool chains and fan-outs.
 
 | topic | decision |
 |---|---|
-| Shape | Built into stoke's own app: one binary, not a separate router process. |
+| Shape | Built into stoke's own app: one binary, not a separate router process. *(2026-10-12: the app is the Lorren desktop app, and this router lives in the engine underneath it; see the note at the top.)* |
 | Build approach | A router in C inside stoke. The Python router in the private `tokenoptimizer` repo (`universal-omni-router`) is **a source to port from, not a component.** Its semantic cache and prompt compression stay out, and its provider translation is ported. |
 | Routing | **The user chooses per request, or by a configured default.** Manual: the model name decides. Automatic: difficulty rules, local first. |
 | Cloud-when-busy | Kept, **off by default**. |
 | Local models | stoke's own engine only; no bundled llama.cpp. Model families are added one at a time through updates, most-downloaded first (§7). |
 | Client API | The OpenAI API now; Anthropic's Messages API (for Claude Code) later. |
 | Cloud speed-ups | Prompt-cache shaping, rate-limit pacing, a response cache and warm connections. Hedging and prompt compression come later. |
-| Updates | The app receives updates Kabir publishes: **app releases and a model catalog, both signed.** |
+| Updates | The app receives updates Kabir publishes: **app releases and a model catalog, both signed.** *(2026-10-12: delivered by the desktop app's updater and catalog, §3.7 of its spec.)* |
 | Order | After tag `m7`, **this comes before the ARM port.** That reverses the 2026-09-01 "ARM NEON first" order (`COMPANY.md` §0, §7). |
-| First release | **v0.1, a tester preview with manual routing only** (§8). |
+| First release | ~~**v0.1, a tester preview with manual routing only** (§8).~~ **2026-10-12: v0.1 is the Lorren desktop app.** This spec's first release becomes the app's cloud-routing release (Claude and GPT, manual routing), after `m7`. |
 | Licence | **AGPL-3.0 + a CLA on outside contributions** (`COMPANY.md` §5). This means **v0.1 ships with public source**, not binaries only. |
-| Downloads | **castagents.com, the company site, is the front door** (Kabir, 2026-09-24). The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on castagents.com, e.g. `updates.castagents.com` (§11). |
+| Downloads | **castagents.com, the company site, is the front door** (Kabir, 2026-09-24). The files are on GitHub Releases of the public repo. The signed update manifest lives at a stable URL on castagents.com, e.g. `updates.castagents.com` (§11). *(2026-10-12: where the files themselves are hosted, GitHub Releases or the desktop spec's R2 bucket, is settled in this spec's review; the front door and the manifest URL stand.)* |
 
 ## 3. Components
 
@@ -230,7 +240,7 @@ passed (rung B5):
 
 | release | contents | rough timing (after tag `m7`) |
 |---|---|---|
-| **v0.1 — tester preview** | Manual routing. Local Llama 3.x + Qwen3, one model resident. Cloud OpenAI + Anthropic with the user's keys. Rate-limit pacing and warm connections. `stoke pull`. A signed "update available" notice. Windows and Linux x86-64, **open source under AGPL-3.0 + CLA** (§11). | ~3–4 weeks |
+| **v0.1 — tester preview** *(2026-10-12: superseded. v0.1 is the Lorren desktop app, and this row becomes the app's cloud-routing release)* | Manual routing. Local Llama 3.x + Qwen3, one model resident. Cloud OpenAI + Anthropic with the user's keys. Rate-limit pacing and warm connections. `stoke pull`. A signed "update available" notice. Windows and Linux x86-64, **open source under AGPL-3.0 + CLA** (§11). | ~3–4 weeks |
 | **v0.2** | Automatic routing (difficulty rules, local first) and the decision log. | ~+2 weeks |
 | **v1** | Qwen2.5 and DeepSeek-R1 local sizes. Prompt-cache shaping and the response cache. Cloud-when-busy (off by default). Several models resident. Self-installing signed updates. | ~2–2.5 months |
 | **updates 1–5** | The model families of §7, in that order. | ~3–4 more months |
