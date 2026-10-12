@@ -53,6 +53,12 @@ impl Header {
             _ => None,
         }
     }
+    pub fn num(&self, k: &str) -> Option<f64> {
+        match self.meta.get(k) {
+            Some(Value::F64(v)) => Some(*v),
+            _ => None,
+        }
+    }
     pub fn tokens(&self) -> Option<&[String]> {
         match self.meta.get("tokenizer.ggml.tokens") {
             Some(Value::StrArray(v)) => Some(v),
@@ -99,7 +105,12 @@ impl Facts {
     }
     /// KV bytes per token at `--kv q8`: layers x (K+V) x KV heads x head dim x 34/32 (Q8_0 blocks).
     pub fn kv_bytes_per_token_q8(&self) -> u64 {
-        self.n_layer as u64 * 2 * self.n_head_kv as u64 * self.head_dim as u64 * 34 / 32
+        let elems = (self.n_layer as u64)
+            .saturating_mul(2)
+            .saturating_mul(self.n_head_kv as u64)
+            .saturating_mul(self.head_dim as u64);
+        // u64::MAX = "needs more memory than exists" (fail closed).
+        elems.checked_mul(34).map_or(u64::MAX, |v| v / 32)
     }
 }
 
@@ -107,7 +118,9 @@ impl Facts {
 /// sequences of `ctx` tokens, and the runtime's own overhead. The supervisor refuses a load when free
 /// memory is below this plus its spare; the Models tab shows the same number.
 pub fn run_bytes(file_bytes: u64, kv_bytes_per_token: u64, ctx: u32, seqs: u32) -> u64 {
-    file_bytes + kv_bytes_per_token * ctx as u64 * seqs as u64 + RUN_OVERHEAD_BYTES
+    file_bytes
+        .saturating_add(kv_bytes_per_token.saturating_mul(ctx as u64).saturating_mul(seqs as u64))
+        .saturating_add(RUN_OVERHEAD_BYTES)
 }
 
 fn bad(msg: &str) -> io::Error {
@@ -181,8 +194,8 @@ pub fn read_header(path: &Path) -> io::Result<Header> {
         return Err(bad("not a GGUF file"));
     }
     let version = r.u32()?;
-    if version < 2 {
-        return Err(bad("GGUF v1 is not supported"));
+    if version != 3 {
+        return Err(bad(&format!("GGUF v{version} is not supported (the engine reads v3 only)")));
     }
     let n_tensors = r.u64()?;
     let n_kv = r.u64()?;
@@ -212,7 +225,7 @@ pub fn read_header(path: &Path) -> io::Result<Header> {
                 }
             } else {
                 let size = scalar_size(et).ok_or_else(|| bad("nested or unknown array type"))?;
-                r.skip(size * n)?;
+                r.skip(size.checked_mul(n).ok_or_else(|| bad("array byte count overflows"))?)?;
                 Value::Array(n)
             }
         } else {
@@ -220,7 +233,7 @@ pub fn read_header(path: &Path) -> io::Result<Header> {
         };
         meta.insert(key, value);
     }
-    let mut tensor_types = Vec::with_capacity(n_tensors as usize);
+    let mut tensor_types = Vec::with_capacity((n_tensors as usize).min(4096));
     for _ in 0..n_tensors {
         let _name = r.string()?;
         let n_dims = r.u32()?;
@@ -239,25 +252,67 @@ pub fn read_header(path: &Path) -> io::Result<Header> {
 pub fn facts(h: &Header) -> Result<Facts, String> {
     let arch = h.str("general.architecture").ok_or("no general.architecture")?.to_string();
     let key = |k: &str| format!("{arch}.{k}");
-    let need = |k: &str| h.uint(&key(k)).map(|v| v as u32).ok_or_else(|| format!("missing {}", key(k)));
+    // Mirrors model.c req_u32: the key must be present; a value past u32 is out of range.
+    let need = |k: &str| -> Result<u32, String> {
+        let v = h.uint(&key(k)).ok_or_else(|| format!("missing {}", key(k)))?;
+        u32::try_from(v).map_err(|_| format!("{} out of range", key(k)))
+    };
+    let need_f = |k: &str| -> Result<f64, String> {
+        h.num(&key(k)).ok_or_else(|| format!("missing {}", key(k)))
+    };
     let n_layer = need("block_count")?;
-    let n_head = need("attention.head_count")?;
-    let n_head_kv = h.uint(&key("attention.head_count_kv")).map(|v| v as u32).unwrap_or(n_head);
-    let emb = need("embedding_length")?;
-    let head_dim = h
-        .uint(&key("attention.key_length"))
-        .map(|v| v as u32)
-        .unwrap_or(if n_head > 0 { emb / n_head } else { 0 });
     let ctx_file = need("context_length")?;
+    let emb = need("embedding_length")?;
+    let n_ff = need("feed_forward_length")?;
+    let n_head = need("attention.head_count")?;
+    let n_head_kv = need("attention.head_count_kv")?;
+    let head_dim = need("attention.key_length")?;
+    let value_len = need("attention.value_length")?;
+    let freq_base = need_f("rope.freq_base")?;
+    let eps = need_f("attention.layer_norm_rms_epsilon")?;
+    if n_layer == 0 || emb == 0 || n_ff == 0 || n_head == 0 || n_head_kv == 0 || head_dim == 0 {
+        return Err(format!(
+            "{arch}: block_count, embedding_length, feed_forward_length, head_count, head_count_kv or key_length is 0"
+        ));
+    }
+    if ctx_file == 0 {
+        return Err(format!("{} must be positive", key("context_length")));
+    }
+    if value_len != head_dim {
+        return Err(format!(
+            "{} ({value_len}) differs from {} ({head_dim})",
+            key("attention.value_length"),
+            key("attention.key_length")
+        ));
+    }
+    if n_head % n_head_kv != 0 {
+        return Err(format!("head_count {n_head} is not divisible by head_count_kv {n_head_kv}"));
+    }
+    if head_dim % 2 != 0 {
+        return Err(format!("{} ({head_dim}) must be even", key("attention.key_length")));
+    }
+    if !(freq_base.is_finite() && freq_base > 0.0) {
+        return Err(format!("{} must be finite and positive", key("rope.freq_base")));
+    }
+    if !(eps.is_finite() && eps >= 0.0) {
+        return Err(format!(
+            "{} must be finite and non-negative",
+            key("attention.layer_norm_rms_epsilon")
+        ));
+    }
     let tokens = h.tokens();
     let vocab = tokens
         .map(|t| t.len() as u32)
-        .or_else(|| h.uint(&key("vocab_size")).map(|v| v as u32))
+        .or_else(|| h.uint(&key("vocab_size")).and_then(|v| u32::try_from(v).ok()))
         .unwrap_or(0);
     let has = |s: &str| tokens.map_or(false, |t| t.iter().any(|x| x == s));
     let template = if has("<|im_start|>") && has("<|im_end|>") {
         Template::ChatMl
-    } else if has("<|start_header_id|>") && has("<|end_header_id|>") && has("<|eot_id|>") {
+    } else if has("<|begin_of_text|>")
+        && has("<|start_header_id|>")
+        && has("<|end_header_id|>")
+        && has("<|eot_id|>")
+    {
         Template::Llama3
     } else {
         Template::None
@@ -265,7 +320,7 @@ pub fn facts(h: &Header) -> Result<Facts, String> {
     Ok(Facts {
         name: h.str("general.name").map(String::from),
         size_label: h.str("general.size_label").map(String::from),
-        file_type: h.uint("general.file_type").map(|v| v as u32),
+        file_type: h.uint("general.file_type").and_then(|v| u32::try_from(v).ok()),
         n_layer,
         n_head,
         n_head_kv,
@@ -288,6 +343,12 @@ pub fn check_runnable(h: &Header, f: &Facts) -> Result<(), String> {
         return Err(format!(
             "tensor type {} is not supported (F32, Q8_0, Q4_K and Q6_K only)",
             ggml_type_name(*t)
+        ));
+    }
+    if f.head_dim % 32 != 0 {
+        return Err(format!(
+            "head dimension {} is not a multiple of 32 (the q8 KV cache needs whole 32-element blocks)",
+            f.head_dim
         ));
     }
     if f.ctx_file < ENGINE_MAX_CTX {
@@ -352,6 +413,7 @@ pub mod fixture {
 
     enum Kv {
         U32(u32),
+        F32(f32),
         Str(String),
         Strs(Vec<String>),
     }
@@ -362,6 +424,17 @@ pub mod fixture {
     }
 
     pub fn write(path: &Path, s: &Spec) -> io::Result<()> {
+        write_with(path, s, 3, &[], &[])
+    }
+
+    /// `write` with a GGUF version, keys to omit, and u32 keys to override (full key names).
+    pub fn write_with(
+        path: &Path,
+        s: &Spec,
+        version: u32,
+        omit: &[&str],
+        set_u32: &[(&str, u32)],
+    ) -> io::Result<()> {
         let a = s.arch;
         let kv = vec![
             ("general.architecture".to_string(), Kv::Str(a.to_string())),
@@ -371,19 +444,33 @@ pub mod fixture {
             (format!("{a}.attention.head_count"), Kv::U32(s.n_head)),
             (format!("{a}.attention.head_count_kv"), Kv::U32(s.n_head_kv)),
             (format!("{a}.embedding_length"), Kv::U32(s.emb)),
+            (format!("{a}.feed_forward_length"), Kv::U32(if a == "qwen3" { 9728 } else { 8192 })),
             (format!("{a}.attention.key_length"), Kv::U32(128)),
+            (format!("{a}.attention.value_length"), Kv::U32(128)),
+            (format!("{a}.rope.freq_base"), Kv::F32(500_000.0)),
+            (format!("{a}.attention.layer_norm_rms_epsilon"), Kv::F32(1e-5)),
             (format!("{a}.context_length"), Kv::U32(s.ctx)),
             ("tokenizer.ggml.tokens".to_string(), Kv::Strs(s.tokens.iter().map(|t| t.to_string()).collect())),
             ("tokenizer.ggml.merges".to_string(), Kv::Strs(vec!["h e".into(), "l l".into()])),
         ];
+        let mut kv: Vec<(String, Kv)> = kv.into_iter().filter(|(k, _)| !omit.contains(&k.as_str())).collect();
+        for (k, v) in set_u32 {
+            if let Some(e) = kv.iter_mut().find(|(kk, _)| kk == k) {
+                e.1 = Kv::U32(*v);
+            }
+        }
         let mut w = BufWriter::new(File::create(path)?);
         w.write_all(b"GGUF")?;
-        w.write_all(&3u32.to_le_bytes())?;
+        w.write_all(&version.to_le_bytes())?;
         w.write_all(&(s.tensor_types.len() as u64).to_le_bytes())?;
         w.write_all(&(kv.len() as u64).to_le_bytes())?;
         for (k, v) in &kv {
             wstr(&mut w, k)?;
             match v {
+                Kv::F32(x) => {
+                    w.write_all(&6u32.to_le_bytes())?;
+                    w.write_all(&x.to_le_bytes())?;
+                }
                 Kv::U32(x) => {
                     w.write_all(&4u32.to_le_bytes())?;
                     w.write_all(&x.to_le_bytes())?;
@@ -510,6 +597,97 @@ mod tests {
         let p = tmp("junk.gguf");
         std::fs::write(&p, b"GGML this is not a gguf file").unwrap();
         assert!(read_header(&p).is_err());
+    }
+
+    #[test]
+    fn an_int_array_whose_byte_count_overflows_is_an_error_not_a_panic() {
+        let p = tmp("overflow.gguf");
+        let mut b = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes()); // tensors
+        b.extend_from_slice(&1u64.to_le_bytes()); // kvs
+        b.extend_from_slice(&1u64.to_le_bytes());
+        b.push(b'x');
+        b.extend_from_slice(&9u32.to_le_bytes()); // array
+        b.extend_from_slice(&4u32.to_le_bytes()); // of u32
+        b.extend_from_slice(&(1u64 << 62).to_le_bytes()); // 4 * 2^62 overflows u64
+        std::fs::write(&p, b).unwrap();
+        assert!(read_header(&p).is_err());
+    }
+
+    #[test]
+    fn gguf_v2_is_refused_because_the_engine_takes_only_v3() {
+        let p = tmp("v2.gguf");
+        fixture::write_with(&p, &Spec::llama("x"), 2, &[], &[]).unwrap();
+        let err = read_header(&p).unwrap_err().to_string();
+        assert!(err.contains("v3"), "{err}");
+    }
+
+    #[test]
+    fn a_llama3_template_without_begin_of_text_is_not_runnable() {
+        let p = tmp("nobot.gguf");
+        let spec = Spec {
+            tokens: &["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"],
+            ..Spec::llama("x")
+        };
+        fixture::write(&p, &spec).unwrap();
+        let h = read_header(&p).unwrap();
+        let f = facts(&h).unwrap();
+        assert_eq!(f.template, Template::None);
+        assert!(check_runnable(&h, &f).is_err());
+    }
+
+    #[test]
+    fn each_key_the_engine_requires_is_named_when_missing() {
+        for k in [
+            "feed_forward_length",
+            "attention.head_count_kv",
+            "attention.key_length",
+            "attention.value_length",
+            "rope.freq_base",
+            "attention.layer_norm_rms_epsilon",
+        ] {
+            let p = tmp("missing.gguf");
+            let full = format!("llama.{k}");
+            fixture::write_with(&p, &Spec::llama("x"), 3, &[full.as_str()], &[]).unwrap();
+            let h = read_header(&p).unwrap();
+            let err = facts(&h).unwrap_err();
+            assert_eq!(err, format!("missing {full}"));
+        }
+    }
+
+    #[test]
+    fn a_head_dim_that_is_not_a_multiple_of_32_is_refused() {
+        let p = tmp("hd48.gguf");
+        let set = [("llama.attention.key_length", 48), ("llama.attention.value_length", 48)];
+        fixture::write_with(&p, &Spec::llama("x"), 3, &[], &set).unwrap();
+        let h = read_header(&p).unwrap();
+        let err = facts(&h).and_then(|f| check_runnable(&h, &f)).unwrap_err();
+        assert!(err.contains("32"), "{err}");
+    }
+
+    #[test]
+    fn value_length_must_equal_key_length_and_heads_must_divide() {
+        let p = tmp("vlkl.gguf");
+        fixture::write_with(&p, &Spec::llama("x"), 3, &[], &[("llama.attention.value_length", 64)]).unwrap();
+        assert!(facts(&read_header(&p).unwrap()).is_err());
+        fixture::write_with(&p, &Spec::llama("x"), 3, &[], &[("llama.attention.head_count_kv", 7)]).unwrap();
+        assert!(facts(&read_header(&p).unwrap()).is_err());
+        fixture::write_with(&p, &Spec::llama("x"), 3, &[], &[("llama.block_count", 0)]).unwrap();
+        assert!(facts(&read_header(&p).unwrap()).is_err());
+    }
+
+    #[test]
+    fn the_memory_arithmetic_saturates_instead_of_panicking() {
+        assert_eq!(run_bytes(u64::MAX, u64::MAX, u32::MAX, u32::MAX), u64::MAX);
+        let p = tmp("sat.gguf");
+        let set = [("llama.block_count", u32::MAX), ("llama.attention.key_length", 1 << 31), ("llama.attention.value_length", 1 << 31)];
+        fixture::write_with(&p, &Spec::llama("x"), 3, &[], &set).unwrap();
+        let f = facts(&read_header(&p).unwrap());
+        if let Ok(f) = f {
+            assert_eq!(f.kv_bytes_per_token_q8(), u64::MAX);
+        }
     }
 
     /// Kabir's real files. Run with: cargo test real_models -- --ignored
