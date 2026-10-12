@@ -1,4 +1,5 @@
 pub mod gguf;
+pub mod library;
 
 #[tauri::command]
 fn ping() -> String {
