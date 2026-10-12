@@ -167,6 +167,13 @@ fn short_title(text: &str) -> String {
     }
 }
 
+fn refuse(msg: &str) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+        Some(msg.to_string()),
+    )
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -239,6 +246,12 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let now = now_ms();
         let tx = self.conn.unchecked_transaction()?;
+        if let Some(p) = parent_id {
+            let parent_chat: String = tx.query_row("SELECT chat_id FROM messages WHERE id = ?1", [p], |r| r.get(0))?;
+            if parent_chat != chat_id {
+                return Err(refuse("parent message belongs to another chat"));
+            }
+        }
         tx.execute(
             "INSERT INTO messages (id, chat_id, parent_id, role, content, status, model_id, created_ms) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -248,10 +261,11 @@ impl Store {
             "UPDATE chats SET active_leaf_id = ?2, updated_ms = ?3 WHERE id = ?1",
             params![chat_id, id, now],
         )?;
-        if role == Role::User {
+        let title = short_title(content);
+        if role == Role::User && !title.is_empty() {
             tx.execute(
                 "UPDATE chats SET title = ?2 WHERE id = ?1 AND title = 'New chat'",
-                params![chat_id, short_title(content)],
+                params![chat_id, title],
             )?;
         }
         tx.commit()?;
@@ -263,12 +277,15 @@ impl Store {
     }
 
     pub fn update_content(&self, id: &str, content: &str) -> rusqlite::Result<()> {
-        self.conn.execute("UPDATE messages SET content = ?2 WHERE id = ?1", params![id, content])?;
+        let n = self.conn.execute("UPDATE messages SET content = ?2 WHERE id = ?1", params![id, content])?;
+        if n == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
         Ok(())
     }
 
     pub fn finish_message(&self, id: &str, status: MsgStatus, s: &MsgStats) -> rusqlite::Result<()> {
-        self.conn.execute(
+        let n = self.conn.execute(
             "UPDATE messages SET status = ?2, prompt_tokens = ?3, completion_tokens = ?4, \
              ttft_ms = ?5, total_ms = ?6, error = ?7 WHERE id = ?1",
             params![
@@ -281,13 +298,20 @@ impl Store {
                 s.error
             ],
         )?;
+        if n == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
         Ok(())
     }
 
     pub fn active_path(&self, chat_id: &str) -> rusqlite::Result<Vec<Message>> {
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let mut cur = self.get_chat(chat_id)?.active_leaf_id;
         while let Some(id) = cur {
+            if !seen.insert(id.clone()) {
+                return Err(refuse("message parent cycle"));
+            }
             let m = self.get_message(&id)?;
             cur = m.parent_id.clone();
             out.push(m);
@@ -308,10 +332,19 @@ impl Store {
 
     /// Shows `message_id`'s branch: follows its newest children down to a leaf.
     pub fn set_active_leaf(&self, chat_id: &str, message_id: &str) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let msg_chat: String = tx.query_row("SELECT chat_id FROM messages WHERE id = ?1", [message_id], |r| r.get(0))?;
+        if msg_chat != chat_id {
+            return Err(refuse("message belongs to another chat"));
+        }
         let mut leaf = message_id.to_string();
+        let mut hops = 0u32;
         loop {
-            let next: Option<String> = self
-                .conn
+            hops += 1;
+            if hops > 1_000_000 {
+                return Err(refuse("message parent cycle"));
+            }
+            let next: Option<String> = tx
                 .query_row(
                     "SELECT id FROM messages WHERE parent_id = ?1 ORDER BY created_ms DESC, rowid DESC LIMIT 1",
                     [&leaf],
@@ -323,10 +356,14 @@ impl Store {
                 None => break,
             }
         }
-        self.conn.execute(
+        let n = tx.execute(
             "UPDATE chats SET active_leaf_id = ?2, updated_ms = ?3 WHERE id = ?1",
             params![chat_id, leaf, now_ms()],
         )?;
+        if n == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        tx.commit()?;
         Ok(())
     }
 }
@@ -416,5 +453,80 @@ mod tests {
         let b = s.create_chat("m", None).unwrap();
         let ids: Vec<_> = s.list_chats().unwrap().into_iter().map(|c| c.id).collect();
         assert_eq!(ids, vec![b.id, a.id]);
+    }
+
+    fn two_chats(s: &Store) -> (Chat, Message, Chat, Message) {
+        let a = s.create_chat("m", None).unwrap();
+        let am = s.append_message(&a.id, None, Role::User, "alpha", MsgStatus::Done, None).unwrap();
+        let b = s.create_chat("m", None).unwrap();
+        let bm = s.append_message(&b.id, None, Role::User, "beta", MsgStatus::Done, None).unwrap();
+        (s.get_chat(&a.id).unwrap(), am, s.get_chat(&b.id).unwrap(), bm)
+    }
+
+    #[test]
+    fn set_active_leaf_refuses_a_message_from_another_chat() {
+        let s = Store::open_in_memory().unwrap();
+        let (a, am, _b, bm) = two_chats(&s);
+        assert!(s.set_active_leaf(&a.id, &bm.id).is_err());
+        let path = s.active_path(&a.id).unwrap();
+        assert_eq!(path.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), vec![am.id]);
+    }
+
+    #[test]
+    fn set_active_leaf_refuses_unknown_ids_and_the_chat_still_opens() {
+        let s = Store::open_in_memory().unwrap();
+        let (a, am, _b, _bm) = two_chats(&s);
+        assert!(s.set_active_leaf(&a.id, "no-such-message").is_err());
+        assert!(s.set_active_leaf("no-such-chat", &am.id).is_err());
+        assert_eq!(s.active_path(&a.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn append_message_refuses_a_parent_from_another_chat() {
+        let s = Store::open_in_memory().unwrap();
+        let (a, _am, _b, bm) = two_chats(&s);
+        assert!(s.append_message(&a.id, Some(&bm.id), Role::Assistant, "x", MsgStatus::Done, None).is_err());
+        assert_eq!(s.active_path(&a.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updates_on_an_unknown_message_are_errors() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(s.update_content("nope", "x").is_err());
+        assert!(s.finish_message("nope", MsgStatus::Done, &MsgStats::default()).is_err());
+    }
+
+    #[test]
+    fn a_blank_first_message_keeps_new_chat_and_a_later_one_titles_it() {
+        let s = Store::open_in_memory().unwrap();
+        for blank in ["", "   
+	 "] {
+            let c = s.create_chat("m", None).unwrap();
+            let u = s.append_message(&c.id, None, Role::User, blank, MsgStatus::Done, None).unwrap();
+            assert_eq!(s.get_chat(&c.id).unwrap().title, "New chat");
+            s.append_message(&c.id, Some(&u.id), Role::User, "real question", MsgStatus::Done, None).unwrap();
+            assert_eq!(s.get_chat(&c.id).unwrap().title, "real question");
+        }
+    }
+
+    #[test]
+    fn a_first_line_that_is_blank_titles_from_the_next_line() {
+        let s = Store::open_in_memory().unwrap();
+        let c = s.create_chat("m", None).unwrap();
+        s.append_message(&c.id, None, Role::User, "
+
+  hello there
+more", MsgStatus::Done, None).unwrap();
+        assert_eq!(s.get_chat(&c.id).unwrap().title, "hello there");
+    }
+
+    #[test]
+    fn a_parent_cycle_is_an_error_not_a_hang() {
+        let s = Store::open_in_memory().unwrap();
+        let c = s.create_chat("m", None).unwrap();
+        let u = s.append_message(&c.id, None, Role::User, "q", MsgStatus::Done, None).unwrap();
+        let r = s.append_message(&c.id, Some(&u.id), Role::Assistant, "a", MsgStatus::Done, None).unwrap();
+        s.conn.execute("UPDATE messages SET parent_id = ?1 WHERE id = ?2", params![r.id, u.id]).unwrap();
+        assert!(s.active_path(&c.id).is_err());
     }
 }
