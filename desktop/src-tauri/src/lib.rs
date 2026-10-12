@@ -1,5 +1,6 @@
 pub mod gguf;
 pub mod library;
+pub mod monitor;
 pub mod store;
 
 #[tauri::command]
