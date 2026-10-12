@@ -6,25 +6,30 @@
 
 **Architecture:** A Rust host (Tauri 2) owns every service: an engine supervisor that runs `lorren-engine.exe` (the frozen engine, statically linked) as a child process inside a Windows job object; a chat service that streams replies over SSE and saves them to SQLite; a model library that reads GGUF headers, Modelfiles and Ollama manifests; a monitor that keeps request records and logs; and the updater plugin. The UI is React + TypeScript in WebView2 and talks to the host only through typed Tauri commands and channels. Nothing in the engine's `src/` changes.
 
-**Tech Stack:** Tauri 2 (Rust, WebView2), tokio, reqwest (streaming), rusqlite (bundled SQLite), ts-rs (TypeScript bindings), the `windows` crate (job objects, memory), React 19 + TypeScript + Vite, react-markdown + remark-gfm + remark-math + rehype-katex + rehype-highlight, Vitest + Testing Library, playwright-core over WebView2's CDP, `tauri-plugin-updater` (minisign/ed25519), `tauri-plugin-single-instance`, `tauri-plugin-process`.
+**Tech Stack:** Tauri 2 (Rust, WebView2), tokio, reqwest (streaming), rusqlite (bundled SQLite), ts-rs (TypeScript bindings), the `windows` crate (job objects, memory), React 19 + TypeScript + Vite, react-markdown + remark-gfm + remark-math + rehype-katex + rehype-highlight, Vitest + Testing Library, playwright-core over WebView2's CDP, `tauri-plugin-updater` (minisign/ed25519), `tauri-plugin-single-instance`.
 
 **Spec:** `docs/superpowers/specs/2026-09-25-lorren-desktop-design.md` (approved 2026-09-25; commits `12d754a`, `203d75d`, `f543c7f`; the 2026-10-12 row "Lorren v0.1 is this app", `3e633d4`). This plan implements its §11 milestone 1 only. UI reference: `design/lorren-console-demo.html`.
 
 **Written:** Tasks 1–12 on 2026-09-25 (that session ended before it finished; the text was recovered from its transcript on 2026-10-12 with both of its later edits applied). Tasks 13–17 and this header's updates on 2026-10-12. The updater facts in Task 15 were read from `tauri-plugin-updater`'s source that day.
 
+**Pre-flight rulings (2026-10-12):** a read-only scan of all 17 tasks against each other and the engine's source found 4 conflicts and 14 risks; the 25 rulings are applied in this text (commit message lists them).
+
 ## Global Constraints
 
 - `src/` is frozen until tag `m7` (`docs/superpowers/memos/2026-09-18-m7-code-freeze.md`). No task edits `src/`, `tests/` or the engine `Makefile`. The sidecar is built from `src/` exactly as committed at `b1ee6b3`.
+- `tauri-build` refuses to build while a `bundle.externalBin` file is missing, and the sidecar is git-ignored: in any fresh checkout, run `sh desktop/scripts/build-engine.sh` (Task 2) before the first `cargo` command.
 - All work happens on branch `lorren-desktop` in its own worktree (`M:\New Drive\Desktop\Programming\stoke-lorren`), cut from `m5-entry`. The app lives in `desktop/` (standard Tauri layout: web UI at `desktop/`, Rust at `desktop/src-tauri/`).
 - Product name `Lorren`, identifier `com.castagents.lorren`, wordmark `lorren`, version `0.0.1` (the update test publishes `0.0.2`).
-- Windows 11 x64 only. Rust through rustup with the MSVC toolchain (MSVC 14.44 Build Tools + Windows SDK 10.0.26100 are already installed). Node 24. The engine builds with MinGW g++ 15.2 from `C:/msys64/ucrt64/bin`, via `mingw32-make` run from Git Bash, never PowerShell.
+- Windows 11 x64 only. Rust through rustup with the MSVC toolchain (MSVC 14.44 Build Tools + Windows SDK 10.0.26100 are already installed). Node 24. The engine builds with MinGW g++ 15.2 from `C:/msys64/ucrt64/bin`, via `mingw32-make` run from Git Bash, never PowerShell. Python 3 with Pillow (Task 1's icon); Git Bash's `file` and MinGW's `objdump` (Task 2's checks).
+- Crates and npm packages are added at their current versions and the committed lock files pin them. Where a crate's current API differs from this plan's code, adapt the call so the behaviour is the same, and say so (crate version and change) in the task's report.
 - Engine launch: `lorren-engine.exe serve <model.gguf> --host 127.0.0.1 --port 0 --ctx 4096 --seqs 2 --kv q8` (+ `--threads N` only when set). Context is capped at 4,096 by the engine (`STOKE_M2_MAX_CTX`); never pass more.
 - Every chat request sends `stream: true`, `stream_options.include_usage: true` and an explicit `max_tokens` (the engine's default is 128).
+- Known limit of the frozen engine: chat message content is templated as the raw JSON string, escapes and all (src/server.c:776-785), so a newline in a message reaches the model as the two characters `\n`. JSON cannot carry a raw newline (src/json.c:103-106). The app still sends standard JSON; the engine fix (decode the content before templating, as `/v1/completions` already does) is queued for after tag m7.
 - Sampling parameters the engine accepts: `temperature` (0–100), `top_p` (0–1), `top_k`, `repeat_penalty`, `seed`, `stop` (≤4), `max_tokens`. Never send a non-zero `frequency_penalty` or `presence_penalty`.
 - Defaults: default model = the first runnable file whose name starts with `Qwen3-4B-Instruct-2507-Q4_K_M`; history budget = 1,500 tokens; reply cap = 1,024 tokens; temperature 0.7, top_p 0.9, top_k 40, repeat_penalty 1.1.
 - Engine and all app sockets bind `127.0.0.1` only. No telemetry. No remote content in the UI. Model output is rendered as Markdown with raw HTML disabled.
 - Dark only: colours, fonts and layout follow `design/ControlRoom.dc.html` / `design/lorren-console-demo.html` (Archivo + JetBrains Mono, bundled under the OFL).
-- Standing rule: no model server or other long-lived server is started without Kabir's OK. He gave it for this milestone's real-model steps (2026-09-25), and he names the time.
+- Standing rule: no model server or other long-lived server is started without Kabir's OK. He gave it for this milestone's real-model steps (2026-09-25), and he names the time. Test fixtures (the fake engine, Vite's dev server, the local update feed) bind 127.0.0.1 and are started and stopped by the step that needs them; they are not long-lived servers under this rule. The real engine serving a real model is.
 - **The M7 soak (four separate 6 h runs, Kabir 2026-10-12) owns the PC while a run is in progress:** no real-engine run, no `cargo build`/`tauri build` and no e2e run during one. Check first: `MSYS_NO_PATHCONV=1 wsl.exe -- pgrep -fa run_m7_soak.sh` must print nothing. (The soak runs inside WSL, so `tasklist` cannot see it.) Unit tests and plan or doc work are fine.
 - The updater's public key in `tauri.conf.json` is a TEST key (Task 15) until milestone 4 swaps in Kabir's offline production key. `tauri.updater-test.conf.json` (an `http://127.0.0.1` feed, `dangerousInsecureTransportProtocol`) is for test builds only and must never reach a release.
 - The version the app shows and the updater compares is `app.package_info().version` (from `tauri.conf.json`, which a 0.0.2 build overrides), never `env!("CARGO_PKG_VERSION")`.
@@ -48,7 +53,7 @@ desktop/                                 (web UI root = Tauri project root)
   package.json, tsconfig.json, vite.config.ts, index.html
   scripts/
     build-engine.sh        static sidecar from the frozen src/ (Task 2)
-    make-icon.py           source icon for `tauri icon` (Task 1)
+    make-icon.py           writes icon-1024.png, the source icon for `tauri icon` (Task 1)
     fetch-fonts.py         Archivo + JetBrains Mono + OFL texts (Task 12)
     update-feed.py         test keys, signed 0.0.1/0.0.2 installers, the four feeds, a local server (Task 15)
   .keys/                   the TEST signing keys (git-ignored, Task 15)
@@ -69,7 +74,7 @@ desktop/                                 (web UI root = Tauri project root)
       main.rs              calls lorren_lib::run()
       lib.rs               Tauri builder, state, plugins, startup (Task 11)
       paths.rs             data/log dirs, sidecar path, env overrides (Task 11)
-      gguf.rs              GGUF header reader, facts, runnable check, fixture writer (Task 3)
+      gguf.rs              GGUF header reader, facts, runnable check, `run_bytes` memory formula, fixture writer (Task 3)
       library.rs           folders, Modelfile, Ollama, default model (Task 4)
       store.rs             SQLite: chats, message tree, statuses (Task 5)
       monitor.rs           request records, log ring, log file (Task 6)
@@ -79,7 +84,7 @@ desktop/                                 (web UI root = Tauri project root)
       chat.rs              send / stop / regenerate (Task 10)
       commands.rs          Tauri commands + DTOs (Task 11)
       updater.rs           check, download, install (Task 15)
-    tests/supervisor.rs, tests/chat_flow.rs  (integration, fake engine)
+    tests/fake_engine.rs, tests/supervisor.rs, tests/chat_flow.rs  (integration, fake engine)
 ```
 
 ## Tasks
@@ -109,27 +114,27 @@ desktop/                                 (web UI root = Tauri project root)
 **Files:**
 - Create: `desktop/package.json`, `desktop/tsconfig.json`, `desktop/vite.config.ts`, `desktop/index.html`, `desktop/src/main.tsx`, `desktop/src/App.tsx`, `desktop/src/__tests__/App.test.tsx`, `desktop/.gitignore`
 - Create: `desktop/src-tauri/Cargo.toml`, `desktop/src-tauri/build.rs`, `desktop/src-tauri/tauri.conf.json`, `desktop/src-tauri/capabilities/default.json`, `desktop/src-tauri/src/main.rs`, `desktop/src-tauri/src/lib.rs`
-- Create: `desktop/scripts/make-icon.py`, `desktop/src-tauri/icons/*` (generated)
+- Create: `desktop/scripts/make-icon.py`, `desktop/scripts/icon-1024.png` (generated by it), `desktop/src-tauri/icons/*` (generated)
 
 **Interfaces:**
 - Consumes: nothing.
 - Produces: the crate `lorren` with library name `lorren_lib` and `pub fn run()`; the npm scripts `dev`, `build`, `test`, `tauri`; `App` exported from `desktop/src/App.tsx`.
 
-- [ ] **Step 1: Create the worktree**
+- [ ] **Step 1: Check the worktree**
 
-Use superpowers:using-git-worktrees. Concretely:
+The controller already created it. (From scratch it is `git worktree add -b lorren-desktop "<path>" m5-entry`, run in the main `stoke` checkout.) Check:
 
 ```bash
-cd "/m/New Drive/Desktop/Programming/stoke"
-git worktree add -b lorren-desktop "/m/New Drive/Desktop/Programming/stoke-lorren" m5-entry
 cd "/m/New Drive/Desktop/Programming/stoke-lorren"
-git log -1 --format='%h %s'
+git rev-parse --abbrev-ref HEAD
 git diff --quiet b1ee6b3 -- src/ && echo "src/ is the frozen source"
 ```
 
-Expected: a commit at or after `f543c7f`, then `src/ is the frozen source`.
+Expected: `lorren-desktop`, then `src/ is the frozen source`.
 
 - [ ] **Step 2: Install Rust (approved by Kabir 2026-09-25)**
+
+If `~/.cargo/bin/cargo.exe` already exists, skip the install and just print the versions.
 
 ```powershell
 Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile "$env:TEMP\rustup-init.exe"
@@ -428,16 +433,53 @@ ls src-tauri/icons | head
 
 Expected: `32x32.png`, `128x128.png`, `128x128@2x.png`, `icon.ico` among the files.
 
-- [ ] **Step 9: Run both test suites and the dev window**
+- [ ] **Step 9: Run both test suites, then check that the dev app starts**
 
 ```bash
 cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop"
 npx vitest run
 cd src-tauri && cargo test && cd ..
-npx tauri dev
 ```
 
-Expected: Vitest PASS (1), `cargo test` PASS (`ping_answers_pong`), and a window titled "Lorren" showing `lorren`. Close it.
+Expected: Vitest PASS (1) and `cargo test` PASS (`ping_answers_pong`).
+
+Then start the dev app and check it by a process query, with nobody at the window. A person would have looked at the window here; that look moves to Task 16's end-to-end run (automated: it waits for the `lorren` wordmark) and Task 17's demo (Kabir). Three Bash calls:
+
+1. Start the app with the Bash tool's `run_in_background` option, its output in a log file under the system temp folder:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop"
+npx tauri dev > "$TEMP/lorren-task1-dev.log" 2>&1
+```
+
+2. Wait for the window (poll every 5 s, up to 10 minutes: this is the first compile of the crate, so give the call `timeout: 600000`), then keep it up 20 s and check it is still running:
+
+```bash
+windows() { powershell -NoProfile -Command "(Get-Process lorren -ErrorAction SilentlyContinue | Where-Object MainWindowTitle -eq 'Lorren' | Measure-Object).Count" | tr -d '\r'; }
+n=0
+for i in $(seq 1 120); do
+  n=$(windows)
+  [ "$n" = "1" ] && break
+  sleep 5
+done
+echo "windows titled Lorren: $n"
+sleep 20
+echo "windows titled Lorren after 20 s: $(windows)"
+tail -n 5 "$TEMP/lorren-task1-dev.log"
+```
+
+Expected: `windows titled Lorren: 1`, then `windows titled Lorren after 20 s: 1`. Anything else: the tail of the log says why; fix that before going on.
+
+3. Stop everything the first call started, even when the wait failed (ignore "not found"), then verify:
+
+```bash
+taskkill //F //T //IM lorren.exe
+for pid in $(netstat -ano | grep ':5173 .*LISTENING' | awk '{print $NF}' | tr -d '\r' | sort -u); do taskkill //F //T //PID "$pid"; done
+tasklist | grep -i '^lorren\.exe' || echo "no lorren.exe"
+netstat -ano | grep ':5173 .*LISTENING' || echo "nothing listens on 5173"
+```
+
+Expected: `no lorren.exe`, then `nothing listens on 5173`.
 
 - [ ] **Step 10: Commit**
 
@@ -513,7 +555,7 @@ Expected: the last line is `build-engine: OK .../lorren-engine-x86_64-pc-windows
 
 - [ ] **Step 4: Prove it is the same engine as the frozen build**
 
-`stoke info` loads only the header and exits (a one-shot tool, allowed without asking). Compare the static sidecar with the frozen `build/win/stoke.exe` of the main tree:
+`stoke info` maps the model file, prints its metadata and exits (a one-shot tool, allowed without asking). It reads the whole 2.5 GB file, so each run takes a few seconds. Compare the static sidecar with the frozen `build/win/stoke.exe` of the main tree:
 
 ```bash
 M="/m/New Drive/Desktop/Programming/stoke/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
@@ -555,10 +597,11 @@ git commit -m "desktop: build the frozen engine as a static lorren-engine sideca
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `pub const ENGINE_MAX_CTX: u32 = 4096`
+  - `pub const ENGINE_MAX_CTX: u32 = 4096`, `pub const ENGINE_SEQS: u32 = 2`, `pub const RUN_OVERHEAD_BYTES: u64 = 256 << 20`
+  - `pub fn run_bytes(file_bytes: u64, kv_bytes_per_token: u64, ctx: u32, seqs: u32) -> u64` — the memory a loaded model needs: file + KV cache + runtime overhead. The one formula: Task 4 stores it in `ModelInfo.run_bytes` (the Models tab shows it) and Task 8's supervisor refuses a load when free memory is below it plus its spare
   - `pub fn read_header(path: &Path) -> io::Result<Header>` — never panics on a bad file
   - `pub fn facts(h: &Header) -> Result<Facts, String>`
-  - `pub fn check_runnable(h: &Header, f: &Facts) -> Result<(), String>` — `Err` carries the user-facing reason
+  - `pub fn check_runnable(h: &Header, f: &Facts) -> Result<(), String>` — `Err` carries the user-facing reason (architecture, tensor type, a context below `ENGINE_MAX_CTX`, no chat template)
   - `pub fn file_type_name(ft: u32) -> &'static str`, `pub fn ggml_type_name(t: u32) -> &'static str`
   - `Facts { arch, name, size_label, file_type, n_layer, n_head, n_head_kv, head_dim, vocab, ctx_file, template }` with `engine_ctx()` and `kv_bytes_per_token_q8()`
   - `Template::{ChatMl, Llama3, None}` with `as_str()` → `"chatml" | "llama3" | "none"`
@@ -607,6 +650,12 @@ mod tests {
     }
 
     #[test]
+    fn run_bytes_is_the_file_plus_the_kv_cache_plus_the_runtime() {
+        // Qwen3-4B Q4_K_M: 2,497,280,736 B file + 78,336 B/token x 4,096 x 2 (641,728,512 B) + 256 MiB (268,435,456 B)
+        assert_eq!(run_bytes(2_497_280_736, 78_336, 4096, 2), 3_407_444_704);
+    }
+
+    #[test]
     fn a_vision_architecture_is_refused_with_its_name() {
         let p = tmp("vl.gguf");
         let spec = Spec { arch: "qwen2vl", ..Spec::qwen3("qwen2.5vl") };
@@ -624,6 +673,16 @@ mod tests {
         let h = read_header(&p).unwrap();
         let err = check_runnable(&h, &facts(&h).unwrap()).unwrap_err();
         assert!(err.contains("Q5_K"), "{err}");
+    }
+
+    #[test]
+    fn a_context_below_what_the_engine_runs_at_is_refused() {
+        let p = tmp("short.gguf");
+        let spec = Spec { ctx: 2048, ..Spec::llama("x") };
+        fixture::write(&p, &spec).unwrap();
+        let h = read_header(&p).unwrap();
+        let err = check_runnable(&h, &facts(&h).unwrap()).unwrap_err();
+        assert_eq!(err, "context of 2048 tokens is below the 4,096 the engine runs at");
     }
 
     #[test]
@@ -678,7 +737,7 @@ mod tests {
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `cd desktop/src-tauri && cargo test gguf`
-Expected: compile errors — `read_header`, `facts`, `fixture` not found.
+Expected: compile errors — `read_header`, `facts`, `run_bytes`, `fixture` not found.
 
 - [ ] **Step 3: Implement the reader, the facts and the fixture writer**
 
@@ -696,6 +755,10 @@ use std::path::Path;
 
 /// The engine clamps every model to this context (STOKE_M2_MAX_CTX, model.c:43).
 pub const ENGINE_MAX_CTX: u32 = 4096;
+/// Parallel sequences the app runs the engine with (`--seqs`, Global Constraints).
+pub const ENGINE_SEQS: u32 = 2;
+/// The engine's own working memory on top of the file and the KV cache: 256 MiB.
+pub const RUN_OVERHEAD_BYTES: u64 = 256 << 20;
 
 const SUPPORTED_ARCH: [&str; 2] = ["llama", "qwen3"];
 /// ggml tensor type ids the engine loads: F32, Q8_0, Q4_K, Q6_K.
@@ -784,6 +847,13 @@ impl Facts {
     pub fn kv_bytes_per_token_q8(&self) -> u64 {
         self.n_layer as u64 * 2 * self.n_head_kv as u64 * self.head_dim as u64 * 34 / 32
     }
+}
+
+/// The memory a loaded model needs: the file (the engine maps it whole), the KV cache for `seqs`
+/// sequences of `ctx` tokens, and the runtime's own overhead. The supervisor refuses a load when free
+/// memory is below this plus its spare; the Models tab shows the same number.
+pub fn run_bytes(file_bytes: u64, kv_bytes_per_token: u64, ctx: u32, seqs: u32) -> u64 {
+    file_bytes + kv_bytes_per_token * ctx as u64 * seqs as u64 + RUN_OVERHEAD_BYTES
 }
 
 fn bad(msg: &str) -> io::Error {
@@ -966,6 +1036,12 @@ pub fn check_runnable(h: &Header, f: &Facts) -> Result<(), String> {
             ggml_type_name(*t)
         ));
     }
+    if f.ctx_file < ENGINE_MAX_CTX {
+        return Err(format!(
+            "context of {} tokens is below the 4,096 the engine runs at",
+            f.ctx_file
+        ));
+    }
     if f.template == Template::None {
         return Err("no chat template tokens (needs ChatML or Llama-3 header tokens)".into());
     }
@@ -1087,7 +1163,7 @@ pub mod fixture {
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test gguf`
-Expected: 7 passed, 1 ignored.
+Expected: 9 passed, 1 ignored.
 
 Run: `cargo test real_models -- --ignored`
 Expected: PASS (reads Kabir's `nexus.gguf` and the Qwen3-4B file).
@@ -1108,9 +1184,9 @@ git commit -m "desktop: GGUF header reader and the engine's runnable check (task
 - Modify: `desktop/src-tauri/src/lib.rs` (add `pub mod library;`), `desktop/src-tauri/Cargo.toml` (ts-rs)
 
 **Interfaces:**
-- Consumes: `gguf::{read_header, facts, check_runnable, file_type_name, Template}` and `gguf::fixture` (Task 3).
+- Consumes: `gguf::{read_header, facts, check_runnable, file_type_name, Template, run_bytes, ENGINE_MAX_CTX, ENGINE_SEQS}` and `gguf::fixture` (Task 3).
 - Produces:
-  - `ModelInfo` (serde + ts-rs; fields listed in Step 3), `ModelInfo.id` = `"file:<lower-case path>"` or `"ollama:<name>:<tag>"`
+  - `ModelInfo` (serde + ts-rs; fields listed in Step 3), `ModelInfo.id` = `"file:<lower-case path>"` or `"ollama:<name>:<tag>"`; `ModelInfo.run_bytes` = `gguf::run_bytes(size_bytes, kv_bytes_per_token, ENGINE_MAX_CTX, ENGINE_SEQS)`, the memory the engine needs to run the model (0 when the file's facts could not be read)
   - `pub struct LibraryConfig { folders, ollama_models_dir, default_prefix }` with `LibraryConfig::from_env(downloads: PathBuf)`
   - `pub fn scan(cfg: &LibraryConfig) -> Vec<ModelInfo>` — runnable models first, exactly one `is_default` when anything is runnable
   - `pub fn parse_modelfile(text: &str) -> Modelfile { from, system, params }`
@@ -1194,6 +1270,8 @@ mod tests {
         assert!(nexus.path.contains("lorren lib"), "the path keeps its spaces: {}", nexus.path);
         assert_eq!(nexus.template, "llama3");
         assert_eq!(nexus.ctx_engine, 4096);
+        // run_bytes = the file + 60,928 B/token x 4,096 x 2 (499,122,176 B of KV cache) + 256 MiB (268,435,456 B)
+        assert_eq!(nexus.run_bytes, nexus.size_bytes + 499_122_176 + 268_435_456);
     }
 
     #[test]
@@ -1277,6 +1355,9 @@ pub struct ModelInfo {
     pub ctx_engine: u32,
     #[ts(type = "number")]
     pub kv_bytes_per_token: u64,
+    /// The memory the engine needs to run this model: file + KV cache + runtime (`gguf::run_bytes`).
+    #[ts(type = "number")]
+    pub run_bytes: u64,
     /// "chatml", "llama3" or "none"
     pub template: String,
     pub runnable: bool,
@@ -1476,6 +1557,7 @@ fn describe(
         ctx_file: 0,
         ctx_engine: 0,
         kv_bytes_per_token: 0,
+        run_bytes: 0,
         template: "none".into(),
         runnable: false,
         reason: None,
@@ -1499,6 +1581,7 @@ fn describe(
                 m.ctx_file = f.ctx_file;
                 m.ctx_engine = f.engine_ctx();
                 m.kv_bytes_per_token = f.kv_bytes_per_token_q8();
+                m.run_bytes = gguf::run_bytes(m.size_bytes, m.kv_bytes_per_token, gguf::ENGINE_MAX_CTX, gguf::ENGINE_SEQS);
                 m.template = f.template.as_str().into();
                 match gguf::check_runnable(&h, &f) {
                     Ok(()) => m.runnable = true,
@@ -1514,7 +1597,7 @@ fn describe(
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test library`
-Expected: 5 passed. `cargo test` also writes `desktop/src/ipc/bindings/ModelInfo.ts`.
+Expected: 5 passed plus the `export_bindings_*` tests (one here: `ModelInfo`). `cargo test` also writes `desktop/src/ipc/bindings/ModelInfo.ts`.
 
 - [ ] **Step 5: Commit**
 
@@ -1535,7 +1618,7 @@ git commit -m "desktop: model library -- folders, Modelfile sidecar, Ollama impo
 - Consumes: nothing.
 - Produces:
   - `pub fn now_ms() -> i64`
-  - `Role::{User, Assistant}`, `MsgStatus::{Done, Streaming, Stopped, Interrupted, Error}` (serde snake_case, ts-rs)
+  - `Role::{User, Assistant}`, `MsgStatus::{Done, Streaming, Stopped, Interrupted, Error}` (serde snake_case, ts-rs); `Role::as_str(self) -> &'static str` (`"user"` or `"assistant"`; Task 10 builds the engine's `role` from it)
   - `Chat { id, title, model_id, system_prompt, active_leaf_id, created_ms, updated_ms }`
   - `MsgStats { prompt_tokens, completion_tokens, ttft_ms, total_ms, error }`, `Message { id, chat_id, parent_id, role, content, status, model_id, stats, created_ms }`
   - `Store::open(path)`, `Store::open_in_memory()`, `create_chat(model_id, system_prompt)`, `get_chat(id)`, `list_chats()`, `set_chat_model(id, model_id)`, `append_message(chat_id, parent_id, role, content, status, model_id) -> Message` (also moves the chat's active leaf, and titles a new chat from its first user message), `get_message(id)`, `update_content(id, content)`, `finish_message(id, status, &MsgStats)`, `active_path(chat_id) -> Vec<Message>` (root first), `siblings(message_id) -> Vec<Message>` (oldest first), `set_active_leaf(chat_id, message_id)`
@@ -1987,7 +2070,7 @@ impl Store {
 - [ ] **Step 4: Run the tests**
 
 Run: `cargo test store`
-Expected: 6 passed.
+Expected: 6 passed plus the `export_bindings_*` tests (five here: `Role`, `MsgStatus`, `Chat`, `MsgStats`, `Message`).
 
 - [ ] **Step 5: Commit**
 
@@ -2216,7 +2299,7 @@ impl Monitor {
 
 - [ ] **Step 3: Run the tests**
 
-Run: `cargo test monitor` — Expected: 4 passed.
+Run: `cargo test monitor` — Expected: 4 passed plus the `export_bindings_*` tests (two here: `LogLine`, `RequestRecord`).
 
 - [ ] **Step 4: Commit**
 
@@ -2235,13 +2318,18 @@ git commit -m "desktop: monitor -- request records, capped log ring, log file (t
 
 **Interfaces:**
 - Consumes: `lorren_lib::gguf::fixture` (Task 3).
-- Produces: the binary `fake-engine` (built only with `--features fake-engine`; integration tests reach it as `env!("CARGO_BIN_EXE_fake-engine")`). It mirrors `stoke serve`'s command line, banner, `/health`, `/v1/models`, streaming `/v1/chat/completions` (SSE `data:` chunks, `: ping` comments, a finish chunk, a usage chunk, `data: [DONE]`) and the 400 `context_length_exceeded` body, byte for byte in shape. Behaviour switches (environment variables):
+- Produces: the binary `fake-engine` (built only with `--features fake-engine`; integration tests reach it as `env!("CARGO_BIN_EXE_fake-engine")`). It mirrors `stoke serve`'s command line, banner, `/health`, `/v1/models`, streaming `/v1/chat/completions` (SSE `data:` chunks, `: ping` comments, a finish chunk, a usage chunk, `data: [DONE]`) and the 400 `context_length_exceeded` body, in shape; it is not the real engine, and its known differences are listed after the switches. Behaviour switches (environment variables):
   - `FAKE_ENGINE_MODE` = `ok` (default) | `refuse` | `hang` | `crash_after_ms:<N>`
   - `FAKE_ENGINE_CRASH_ONCE` = a file path: with `crash_after_ms`, crash only if the file does not exist yet (and create it)
   - `FAKE_ENGINE_LOAD_MS` delay before the banner; `FAKE_ENGINE_TOKEN_MS` delay between streamed words (default 20)
   - `FAKE_ENGINE_REPLY` the reply (default `Hello from the fake engine.`)
   - `FAKE_ENGINE_EVENTS` a file that gets one line per event: `argv <json>`, `request <json>`, `context_length_exceeded`, `cancelled`, `done`
-  - Like the real engine: refuses `--ctx` above 4096 at startup, and answers 400 when prompt tokens (characters / 4) + `max_tokens` exceed `--ctx`.
+  - Like the real engine: refuses `--ctx` above 4096 at startup, and answers 400 when prompt tokens (characters / 4) + `max_tokens` exceed `--ctx`. Its refusal for an unsupported architecture (`FAKE_ENGINE_MODE=refuse`, always `qwen2vl`) prints the real engine's sentence on stderr: `stoke serve: model: '<path>' -- general.architecture is '<arch>', expected 'qwen3' or 'llama' (this loader implements those two)`.
+  - Known differences from the real engine, which a green test against the fake does not cover:
+    - the fake closes each connection after a response (`Connection: close`); the real engine streams chunked over keep-alive and closes idle keep-alive connections after 60 s;
+    - the fake answers `/health` on its own thread at once; the real engine answers only between scheduler steps;
+    - the fake validates no request fields; the real engine answers 400 for out-of-range values;
+    - the fake decodes JSON string escapes; the real engine templates the raw string (see the Global Constraint on message content).
 - `fake-engine write-fixtures <dir>` writes the fixture library used by the end-to-end run (Task 16).
 
 - [ ] **Step 1: Declare the binary**
@@ -2303,7 +2391,7 @@ fn it_refuses_like_the_engine_does() {
         .output()
         .unwrap();
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("is not supported"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("general.architecture is 'qwen2vl'"));
     let big = Command::new(exe()).args(["serve", "x.gguf", "--port", "0", "--ctx", "8192"]).output().unwrap();
     assert!(String::from_utf8_lossy(&big.stderr).contains("max_ctx 8192 exceeds the model's 4096"));
 }
@@ -2360,7 +2448,10 @@ fn main() {
     }
     let mode = env("FAKE_ENGINE_MODE").unwrap_or_else(|| "ok".into());
     if mode == "refuse" {
-        eprintln!("stoke serve: model: '{model}' -- architecture 'qwen2vl' is not supported");
+        // The real engine's sentence (src/model.c:755-757, behind the `stoke serve: ` of src/server.c:1752).
+        eprintln!(
+            "stoke serve: model: '{model}' -- general.architecture is 'qwen2vl', expected 'qwen3' or 'llama' (this loader implements those two)"
+        );
         std::process::exit(1);
     }
     if let Some(ms) = env("FAKE_ENGINE_LOAD_MS").and_then(|v| v.parse().ok()) {
@@ -2539,7 +2630,7 @@ git commit -m "desktop: fake engine -- a test double of stoke serve (task 7)"
 - Modify: `desktop/src-tauri/src/lib.rs` (add `pub mod engine;`), `Cargo.toml` (tokio, reqwest, windows, thiserror)
 
 **Interfaces:**
-- Consumes: `Monitor` (Task 6); the fake engine for tests (Task 7).
+- Consumes: `Monitor` (Task 6); the fake engine for tests (Task 7); `gguf::{ENGINE_MAX_CTX, ENGINE_SEQS, run_bytes}` (Task 3).
 - Produces:
   - `engine::job::Job` — `Job::kill_on_close() -> io::Result<Job>`, `job.assign(&Child) -> io::Result<()>`; dropping the last `Job` kills its processes
   - `engine::memory::{available_physical_bytes() -> u64, total_physical_bytes() -> u64, process_memory(pid) -> Option<(u64 /*working set*/, u64 /*private*/)>, tree_working_set(root_pid, exclude_pid: Option<u32>) -> u64}`
@@ -2638,10 +2729,18 @@ async fn a_model_path_with_spaces_arrives_as_one_argument() {
 
 #[tokio::test]
 async fn a_refused_model_reports_the_engines_own_reason() {
-    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_MODE", "refuse".into())]), Monitor::new(None));
+    let mon = Monitor::new(None);
+    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_MODE", "refuse".into())]), mon.clone());
     let err = sup.ensure_model(&model("vl", "vl.gguf")).await.unwrap_err();
-    assert!(matches!(err, EngineError::LoadFailed(ref m) if m.contains("is not supported")), "{err}");
+    assert!(matches!(err, EngineError::LoadFailed(ref m) if m.contains("general.architecture is 'qwen2vl'")), "{err}");
     assert_eq!(sup.status().state, EngineState::Failed);
+    // The refusal is a stderr line that arrives before the banner: it is logged at `error`.
+    let line = mon
+        .logs_after(0)
+        .into_iter()
+        .find(|l| l.source == "engine" && l.text.contains("general.architecture is 'qwen2vl'"))
+        .expect("the engine's stderr line is in the log");
+    assert_eq!(line.level, "error");
 }
 
 #[tokio::test]
@@ -2661,8 +2760,12 @@ async fn a_crash_is_restarted_and_three_crashes_give_up() {
 async fn a_hung_engine_is_detected_and_replaced() {
     let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_MODE", "hang".into())]), Monitor::new(None));
     sup.ensure_model(&model("a", "a.gguf")).await.unwrap();
+    let first = sup.status().pid;
     let s = wait_for(&sup, EngineState::Restarting, 5).await;
     assert!(s.last_error.unwrap().contains("/health"));
+    let again = wait_for(&sup, EngineState::Serving, 5).await;
+    assert_ne!(again.pid, first, "a new process replaced the hung one");
+    assert!(again.restarts >= 1);
     sup.stop().await;
 }
 
@@ -2702,6 +2805,13 @@ fn closing_the_job_kills_the_engine() {
 fn the_banner_gives_the_port() {
     assert_eq!(parse_banner("stoke serve: listening on 127.0.0.1:52341  ctx=4096"), Some(52341));
     assert_eq!(parse_banner("fake engine: serving x"), None);
+}
+
+/// The real engine answers /health only between scheduler steps (see `EngineConfig::defaults`).
+#[test]
+fn health_timeout_outlasts_two_prefill_steps() {
+    let c = EngineConfig::defaults(PathBuf::from("lorren-engine.exe"));
+    assert!(c.health_timeout >= Duration::from_secs(30), "{:?}", c.health_timeout);
 }
 ```
 
@@ -2874,11 +2984,13 @@ mod tests {
 
 use crate::engine::job::Job;
 use crate::engine::memory;
+use crate::gguf;
 use crate::monitor::Monitor;
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex};
@@ -2936,13 +3048,15 @@ impl EngineConfig {
     pub fn defaults(exe: PathBuf) -> Self {
         EngineConfig {
             exe,
-            ctx: 4096,
-            seqs: 2,
+            ctx: gguf::ENGINE_MAX_CTX,
+            seqs: gguf::ENGINE_SEQS,
             threads: None,
             kv: "q8".into(),
             load_timeout: Duration::from_secs(120),
             health_interval: Duration::from_secs(5),
-            health_timeout: Duration::from_secs(3),
+            // The real engine answers /health only between scheduler steps. A prefill step is 256 tokens
+            // and takes ~3-4 s at the app's history sizes, and a new connection can wait two steps.
+            health_timeout: Duration::from_secs(30),
             health_misses: 3,
             backoff: vec![Duration::from_secs(1), Duration::from_secs(5), Duration::from_secs(30)],
             failure_window: Duration::from_secs(600),
@@ -3048,7 +3162,12 @@ impl Supervisor {
             monitor,
             tx,
             inner: Mutex::new(Inner { running: None, generation: 0, failures: vec![], restarts: 0 }),
-            http: reqwest::Client::builder().no_proxy().build().expect("http client"),
+            // The engine closes idle keep-alive connections after 60 s; reqwest's default would reuse a dead one.
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .pool_idle_timeout(Duration::from_secs(30))
+                .build()
+                .expect("http client"),
         })
     }
 
@@ -3104,8 +3223,8 @@ impl Supervisor {
         if !self.cfg.check_memory {
             return Ok(());
         }
-        let kv = model.kv_bytes_per_token * self.cfg.ctx as u64 * self.cfg.seqs as u64;
-        let need = model.file_bytes + kv + (256 << 20);
+        // The same number the Models tab shows as the memory to run; `min_free_bytes` is the spare on top.
+        let need = gguf::run_bytes(model.file_bytes, model.kv_bytes_per_token, self.cfg.ctx, self.cfg.seqs);
         let free = memory::available_physical_bytes();
         if free < need + self.cfg.min_free_bytes {
             return Err(EngineError::NotEnoughMemory { model: model.id.clone(), need_mb: need >> 20, free_mb: free >> 20 });
@@ -3151,11 +3270,14 @@ impl Supervisor {
             let _ = j.assign(&child);
         }
         let (banner_tx, banner_rx) = mpsc::channel::<u16>();
+        // Set by the stdout reader when the banner arrives; the stderr reader below reads it.
+        let banner_seen = Arc::new(AtomicBool::new(false));
         let stdout = child.stdout.take().expect("piped stdout");
-        let mon = self.monitor.clone();
+        let (mon, seen_w) = (self.monitor.clone(), banner_seen.clone());
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Some(p) = parse_banner(&line) {
+                    seen_w.store(true, Ordering::SeqCst);
                     let _ = banner_tx.send(p);
                 }
                 mon.log("engine", "info", line);
@@ -3166,7 +3288,9 @@ impl Supervisor {
         let stderr = child.stderr.take().expect("piped stderr");
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let level = if line.contains("fatal") || line.contains("not supported") { "error" } else { "info" };
+                // Before the banner the engine is still loading, so a stderr line is the reason it is about to
+                // stop (the real loader's errors carry no "fatal" prefix). After the banner it is ordinary output.
+                let level = if !banner_seen.load(Ordering::SeqCst) && !line.contains("warning") { "error" } else { "info" };
                 mon.log("engine", level, line.clone());
                 let mut t = tail_w.lock().unwrap();
                 t.push(line);
@@ -3324,9 +3448,11 @@ impl Supervisor {
 ```bash
 cargo test --features fake-engine --test supervisor
 cargo test memory
+cargo test --features fake-engine
+ls ../src/ipc/bindings
 ```
 
-Expected: 8 passed, then 1 passed.
+Expected: 9 passed, then 1 passed, then the whole suite green. The two filtered runs above do not run the ts-rs `export_bindings_*` tests of `engine::supervisor`; the full `cargo test --features fake-engine` does, so `EngineState.ts` and `EngineStatus.ts` now exist in `desktop/src/ipc/bindings` before Step 7 commits that folder.
 
 - [ ] **Step 7: Commit**
 
@@ -3456,7 +3582,7 @@ mod tests {
 }
 ```
 
-Add `pub mod sse; pub mod budget;` to `lib.rs`. Run: `cargo test sse budget` — Expected: compile errors.
+Add `pub mod sse; pub mod budget;` to `lib.rs`. Run: `cargo test -- sse budget` — Expected: compile errors.
 
 - [ ] **Step 2: Implement the SSE parser**
 
@@ -3627,7 +3753,7 @@ git commit -m "desktop: SSE parser (byte-safe) and the history/context budget (t
 - Modify: `desktop/src-tauri/src/lib.rs` (add `pub mod chat;`), `Cargo.toml` (tokio-util)
 
 **Interfaces:**
-- Consumes: `Store` (Task 5), `Monitor` (Task 6), `Supervisor`, `ModelRef` (Task 8), `SseParser`, `ChatChunk` (Task 9), `budget::*` (Task 9), `ModelInfo` (Task 4).
+- Consumes: `Store`, `Role::as_str` (Task 5), `Monitor` (Task 6), `Supervisor`, `ModelRef` (Task 8), `SseParser`, `ChatChunk` (Task 9), `budget::*` (Task 9), `ModelInfo` (Task 4).
 - Produces:
   - `ReplyStats { prompt_tokens, completion_tokens, ttft_ms, total_ms, tokens_per_s, finish_reason }` (ts-rs)
   - `StreamEvent` (serde `tag = "kind"`, snake_case; ts-rs): `Started { message_id, user_message_id, dropped_turns, request_id }`, `Token { text }`, `Finished { stats }`, `Stopped { stats }`, `Interrupted { reason }`, `Error { message }`
@@ -3636,6 +3762,7 @@ git commit -m "desktop: SSE parser (byte-safe) and the history/context budget (t
   - `ChatService::new(store: Arc<Mutex<Store>>, supervisor: Arc<Supervisor>, library: Arc<RwLock<Vec<ModelInfo>>>, monitor: Arc<Monitor>, settings) -> Arc<ChatService>`
   - `send(self: &Arc<Self>, chat_id, text, sink: impl Fn(StreamEvent) + Send + Sync) -> Result<(), ChatError>`; `regenerate(self: &Arc<Self>, chat_id, sink)`; `stop(&self, chat_id)`
   - `pub fn model_ref(m: &ModelInfo) -> ModelRef`
+  - `pub(crate) fn cannot_run_message(name: &str, reason: &str) -> String` — the one wording of `{name} cannot run: {reason}`: the `Display` of `ChatError::NotRunnable` uses it, and Task 11's `set_chat_model` calls it
 
 - [ ] **Step 1: Add the crate**
 
@@ -3976,7 +4103,7 @@ pub enum ChatError {
     Busy,
     #[error("no such model: {0}")]
     UnknownModel(String),
-    #[error("{0} cannot run: {1}")]
+    #[error("{}", cannot_run_message(.0, .1))]
     NotRunnable(String, String),
     #[error("this message is about {0} tokens, more than a {1}-token context can take")]
     TooLong(u32, u32),
@@ -3984,6 +4111,11 @@ pub enum ChatError {
     NothingToRegenerate,
     #[error(transparent)]
     Store(#[from] rusqlite::Error),
+}
+
+/// "<name> cannot run: <reason>", for a chat that picks such a model and for a model switch (Task 11).
+pub(crate) fn cannot_run_message(name: &str, reason: &str) -> String {
+    format!("{name} cannot run: {reason}")
 }
 
 pub fn model_ref(m: &ModelInfo) -> ModelRef {
@@ -4022,17 +4154,10 @@ impl Drop for ActiveGuard<'_> {
     }
 }
 
-fn role_str(r: Role) -> &'static str {
-    match r {
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
-}
-
 fn turns(path: &[Message]) -> Vec<Turn> {
     path.iter()
         .filter(|m| m.status != MsgStatus::Error && !m.content.is_empty())
-        .map(|m| Turn { role: role_str(m.role), content: m.content.clone() })
+        .map(|m| Turn { role: m.role.as_str(), content: m.content.clone() })
         .collect()
 }
 
@@ -4050,7 +4175,12 @@ impl ChatService {
             library,
             monitor,
             settings,
-            http: reqwest::Client::builder().no_proxy().build().expect("http client"),
+            // The engine closes idle keep-alive connections after 60 s; reqwest's default would reuse a dead one.
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .pool_idle_timeout(Duration::from_secs(30))
+                .build()
+                .expect("http client"),
             active: Mutex::new(HashMap::new()),
         })
     }
@@ -4369,11 +4499,11 @@ git commit -m "desktop: chat service -- stream, stop, regenerate, crash and cont
 - Generated: `desktop/src/ipc/bindings/*.ts`
 
 **Interfaces:**
-- Consumes: every service from Tasks 3–10.
+- Consumes: every service from Tasks 3–10, including `chat::cannot_run_message(name, reason)` (Task 10).
 - Produces:
   - `paths::{data_dir(), log_dir(), downloads_dir(), engine_exe()}`; overrides: `LORREN_DATA_DIR`, `LORREN_ENGINE_EXE`
   - `commands::AppState { store, library, monitor, supervisor, chat, started_ms }`
-  - DTOs (ts-rs): `MemoryInfo { app_bytes, engine_bytes, used_bytes, total_bytes }`, `Overview { engine, memory, app_version, started_ms, request_count }`, `MessageView { message, version, versions, sibling_ids }`, `ChatView { chat, messages }`
+  - DTOs (ts-rs): `MemoryInfo { app_bytes, engine_bytes, used_bytes, total_bytes }`, `Overview { engine, memory, app_version, started_ms, request_count }` (`app_version` is `app.package_info().version`, i.e. the version in `tauri.conf.json`), `MessageView { message, version, versions, sibling_ids }`, `ChatView { chat, messages }`
   - Commands (JS name → args): `overview()`, `models()`, `chats()`, `chat({chatId})`, `new_chat({modelId})`, `send({chatId, text, onEvent: Channel<StreamEvent>})`, `regenerate({chatId, onEvent})`, `stop({chatId})`, `set_chat_model({chatId, modelId})`, `select_version({chatId, messageId})`, `requests()`, `logs({after})`
   - Event `engine-status` with an `EngineStatus` payload on every engine state change
   - `commands::chat_view(&Store, chat_id) -> rusqlite::Result<ChatView>`, `commands::memory_info(engine_pid) -> MemoryInfo`
@@ -4397,7 +4527,10 @@ mod tests {
         assert_eq!(super::engine_exe(), std::path::PathBuf::from(r"C:\x\fake-engine.exe"));
         std::env::remove_var("LORREN_ENGINE_EXE");
         assert!(super::engine_exe().ends_with("lorren-engine.exe"));
-        assert!(super::data_dir().ends_with("Lorren") || std::env::var("LORREN_DATA_DIR").is_ok());
+        // The default is a pure function of its arguments, so no environment variable can change this answer.
+        let appdata = std::path::PathBuf::from("appdata");
+        assert_eq!(super::data_dir_from(None, appdata.clone()), appdata.join("Lorren"));
+        assert_eq!(super::data_dir_from(Some(std::path::PathBuf::from("over")), appdata), std::path::PathBuf::from("over"));
     }
 }
 ```
@@ -4433,7 +4566,7 @@ mod tests {
 }
 ```
 
-Run: `cargo test paths commands` — Expected: compile errors.
+Run: `cargo test -- paths commands` — Expected: compile errors.
 
 - [ ] **Step 3: Implement the paths**
 
@@ -4452,9 +4585,14 @@ fn known(k: &str) -> PathBuf {
     env_path(k).unwrap_or_else(std::env::temp_dir)
 }
 
+/// %APPDATA%\Lorren, unless `over` (LORREN_DATA_DIR) names another folder.
+fn data_dir_from(over: Option<PathBuf>, appdata: PathBuf) -> PathBuf {
+    over.unwrap_or_else(|| appdata.join("Lorren"))
+}
+
 /// %APPDATA%\Lorren: the database.
 pub fn data_dir() -> PathBuf {
-    env_path("LORREN_DATA_DIR").unwrap_or_else(|| known("APPDATA").join("Lorren"))
+    data_dir_from(env_path("LORREN_DATA_DIR"), known("APPDATA"))
 }
 
 /// %LOCALAPPDATA%\Lorren\logs, or <LORREN_DATA_DIR>\logs.
@@ -4497,7 +4635,7 @@ use crate::store::{Chat, Message, Store};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{Manager, State};
 use ts_rs::TS;
 
 pub struct AppState {
@@ -4581,13 +4719,14 @@ pub fn chat_view(store: &Store, chat_id: &str) -> rusqlite::Result<ChatView> {
     Ok(ChatView { chat, messages })
 }
 
+/// The version comes from `tauri.conf.json` (which a 0.0.2 build overrides), not from Cargo.toml.
 #[tauri::command]
-pub fn overview(state: State<'_, AppState>) -> Overview {
+pub fn overview(app: tauri::AppHandle, state: State<'_, AppState>) -> Overview {
     let engine = state.supervisor.status();
     Overview {
         memory: memory_info(engine.pid),
         engine,
-        app_version: env!("CARGO_PKG_VERSION").into(),
+        app_version: app.package_info().version.to_string(),
         started_ms: state.started_ms,
         request_count: state.monitor.requests().len() as u32,
     }
@@ -4648,7 +4787,7 @@ pub fn stop(state: State<'_, AppState>, chat_id: String) {
 pub async fn set_chat_model(state: State<'_, AppState>, chat_id: String, model_id: String) -> Result<(), String> {
     let model = state.library.read().unwrap().iter().find(|m| m.id == model_id).cloned().ok_or("no such model")?;
     if !model.runnable {
-        return Err(format!("{} cannot run: {}", model.name, model.reason.clone().unwrap_or_default()));
+        return Err(crate::chat::cannot_run_message(&model.name, model.reason.as_deref().unwrap_or_default()));
     }
     state.store.lock().unwrap().set_chat_model(&chat_id, &model_id).map_err(err)?;
     let sup = state.supervisor.clone();
@@ -4704,7 +4843,7 @@ pub fn run() {
         }))
         .setup(|app| {
             let monitor = monitor::Monitor::new(Some(paths::log_dir().join("lorren.log")));
-            monitor.log("app", "info", format!("Lorren {} starting", env!("CARGO_PKG_VERSION")));
+            monitor.log("app", "info", format!("Lorren {} starting", app.package_info().version));
             std::fs::create_dir_all(paths::data_dir())?;
             let store = store::Store::open(&paths::data_dir().join("lorren.db"))?;
             let models = library::scan(&library::LibraryConfig::from_env(paths::downloads_dir()));
@@ -4769,18 +4908,59 @@ Expected: all tests pass; the bindings directory holds `ChatView.ts`, `EngineSta
 
 - [ ] **Step 7: Smoke-run the app against the fake engine**
 
+Start the app against the fake engine and check it by a process query and its own log, with nobody at the window. A person would have closed the window and read the log here; the look at the window moves to Task 16's end-to-end run (automated) and Task 17's demo (Kabir). Four Bash calls:
+
+1. Build the fake engine and write its fixture library:
+
 ```bash
 cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop/src-tauri"
 cargo build --features fake-engine --bin fake-engine
+rm -rf ../e2e/.work/models ../e2e/.work/data
 ./target/debug/fake-engine.exe write-fixtures ../e2e/.work/models
+```
+
+2. Start the app with the Bash tool's `run_in_background` option, the fake engine's environment set, its output in a log file under the system temp folder:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop/src-tauri"
 export LORREN_ENGINE_EXE="$PWD/target/debug/fake-engine.exe"
 export LORREN_MODEL_DIRS="$PWD/../e2e/.work/models"
 export LORREN_OLLAMA_DIR=none
 export LORREN_DATA_DIR="$PWD/../e2e/.work/data"
-cd .. && timeout 60 npx tauri dev
+cd .. && npx tauri dev > "$TEMP/lorren-task11-dev.log" 2>&1
 ```
 
-Close the window after it opens. Expected in `e2e/.work/data/logs/lorren.log`: `library: 4 models, 3 runnable`, then `engine serving file:...qwen3-4b-instruct-2507-q4_k_m.gguf on port ... after ... s`.
+3. Wait for the window (poll every 5 s, up to 3 minutes; give the call `timeout: 300000`), keep it up 20 s, check it is still running, then read the app's own log:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop"
+windows() { powershell -NoProfile -Command "(Get-Process lorren -ErrorAction SilentlyContinue | Where-Object MainWindowTitle -eq 'Lorren' | Measure-Object).Count" | tr -d '\r'; }
+n=0
+for i in $(seq 1 36); do
+  n=$(windows)
+  [ "$n" = "1" ] && break
+  sleep 5
+done
+echo "windows titled Lorren: $n"
+sleep 20
+echo "windows titled Lorren after 20 s: $(windows)"
+grep -E 'library: 4 models, 3 runnable|engine serving' e2e/.work/data/logs/lorren.log
+tail -n 5 "$TEMP/lorren-task11-dev.log"
+```
+
+Expected: `windows titled Lorren: 1`, then `windows titled Lorren after 20 s: 1`, and in `e2e/.work/data/logs/lorren.log` the lines `library: 4 models, 3 runnable`, then `engine serving file:...qwen3-4b-instruct-2507-q4_k_m.gguf on port ... after ... s`. Anything else: the tail of the log says why; fix that before going on.
+
+4. Stop everything the second call started, even when the wait failed (ignore "not found"), then verify:
+
+```bash
+taskkill //F //T //IM lorren.exe
+taskkill //F //IM fake-engine.exe
+for pid in $(netstat -ano | grep ':5173 .*LISTENING' | awk '{print $NF}' | tr -d '\r' | sort -u); do taskkill //F //T //PID "$pid"; done
+tasklist | grep -i -E '^(lorren|fake-engine)\.exe' || echo "no lorren.exe, no fake-engine.exe"
+netstat -ano | grep ':5173 .*LISTENING' || echo "nothing listens on 5173"
+```
+
+Expected: `no lorren.exe, no fake-engine.exe`, then `nothing listens on 5173`.
 
 - [ ] **Step 8: Commit**
 
@@ -4924,7 +5104,7 @@ describe("App", () => {
 });
 ```
 
-Run: `npx vitest run` — Expected: FAIL (`../ipc/api`, `./components/TopBar` do not exist).
+Run: `npx vitest run` — Expected: FAIL: no element with role `tab` (App.tsx is still Task 1's).
 
 - [ ] **Step 3: The typed API**
 
@@ -5269,7 +5449,7 @@ export function model(p: Partial<ModelInfo>): ModelInfo {
     id: "file:x", name: "x", path: "M:\\New Drive\\ai_models\\x.gguf", source: "folder",
     size_bytes: 2_019_377_696, arch: "llama", quant: "Q4_K_M", size_label: "3B",
     n_layer: 28, n_head: 24, n_head_kv: 8, head_dim: 128, vocab: 128256,
-    ctx_file: 131072, ctx_engine: 4096, kv_bytes_per_token: 60928, template: "llama3",
+    ctx_file: 131072, ctx_engine: 4096, kv_bytes_per_token: 60928, run_bytes: 2_786_935_328, template: "llama3",
     runnable: true, reason: null, system_prompt: null, system_source: null, is_default: false,
     ...p,
   };
@@ -5277,7 +5457,7 @@ export function model(p: Partial<ModelInfo>): ModelInfo {
 
 export const models: ModelInfo[] = [
   model({ id: "file:q", name: "Qwen3-4B-Instruct-2507-Q4_K_M", arch: "qwen3", template: "chatml", n_layer: 36,
-          kv_bytes_per_token: 78336, size_bytes: 2_497_280_736, is_default: true }),
+          kv_bytes_per_token: 78336, size_bytes: 2_497_280_736, run_bytes: 3_407_444_704, is_default: true }),
   model({ id: "file:n", name: "nexus", system_source: "Modelfile",
           system_prompt: "You are Nexus AI, a professional quantitative trader. You give concise, decisive trading verdicts." }),
   model({ id: "ollama:qwen2.5vl:3b", name: "qwen2.5vl:3b", source: "ollama", arch: "qwen2vl", runnable: false,
@@ -5505,15 +5685,31 @@ describe("ChatTab", () => {
     expect(screen.getByText("SEND")).toBeTruthy();
   });
 
-  it("marks where the history stops being sent", async () => {
+  it("marks where the history stops being sent, counting only the turns the host sends", async () => {
+    // The host leaves an error reply out of the history (chat.rs turns()). So the 3 turns not sent are
+    // the first question, the second question and the second answer, and the cut falls after that answer.
+    // Counting every message, as before, would put it after the second question.
+    const one = (m: ReturnType<typeof msg>) => ({ message: m, version: 1, versions: 1, sibling_ids: [m.id] });
+    vi.mocked(api.chat).mockResolvedValue({
+      ...view,
+      messages: [
+        one(msg({ id: "q1", role: "user", content: "first question" })),
+        one(msg({ id: "e1", role: "assistant", parent_id: "q1", status: "error", content: "" })),
+        one(msg({ id: "q2", role: "user", parent_id: "e1", content: "second question" })),
+        one(msg({ id: "r2", role: "assistant", parent_id: "q2", content: "second answer" })),
+        one(msg({ id: "q3", role: "user", parent_id: "r2", content: "third question" })),
+        one(msg({ id: "r3", role: "assistant", parent_id: "q3", content: "third answer" })),
+      ],
+    });
     vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
-      onEvent({ ...started, dropped_turns: 1 } as StreamEvent);
+      onEvent({ ...started, dropped_turns: 3 } as StreamEvent);
       onEvent({ kind: "token", text: "ok" });
     });
     render(<ChatTab overview={overview} />);
-    await screen.findByText("Verdict: HOLD.");
+    await screen.findByText("third answer");
     type("next");
-    expect(await screen.findByText(/1 earlier turn not sent/)).toBeTruthy();
+    const cut = await screen.findByText(/3 earlier turns not sent/);
+    expect(cut.previousElementSibling?.textContent).toContain("second answer");
   });
 
   it("switches reply versions and regenerates", async () => {
@@ -5896,6 +6092,19 @@ import { applyEvent, begin, idle, statsOf, type Live } from "./stream";
 /** At most ~30 redraws a second while tokens stream, so the UI does not compete with the engine (spec §3.8). */
 const FLUSH_MS = 33;
 
+/** The index of the message after which the history cut falls: the `dropped`-th message that counts as a
+ *  turn. The host builds the history it sends from the same list (chat.rs `turns()`): an error reply and an
+ *  empty message are not turns, so they are not counted here either. -1 when nothing was dropped. */
+function lastDroppedIndex(messages: ChatView["messages"], dropped: number): number {
+  let turns = 0;
+  for (let i = 0; i < messages.length && dropped > 0; i++) {
+    const m = messages[i].message;
+    if (m.status !== "error" && m.content !== "") turns += 1;
+    if (turns === dropped) return i;
+  }
+  return -1;
+}
+
 export function ChatTab({ overview }: { overview: Overview | null }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -6013,7 +6222,8 @@ export function ChatTab({ overview }: { overview: Overview | null }) {
   const chat = view?.chat ?? null;
   const lastAssistant = [...messages].reverse().find((m) => m.message.role === "assistant");
   const busy = live.busy || messages.some((m) => m.message.status === "streaming");
-  const cut = live.dropped;
+  const dropped = live.dropped;
+  const cutAfter = lastDroppedIndex(messages, dropped);
 
   return (
     <>
@@ -6032,9 +6242,9 @@ export function ChatTab({ overview }: { overview: Overview | null }) {
                 liveText={mv.message.id === live.messageId && (live.busy || mv.message.status === "streaming") ? live.text : null}
                 onVersion={selectVersion}
               />
-              {cut > 0 && i === cut - 1 && (
+              {dropped > 0 && i === cutAfter && (
                 <div className="history-cut cap">
-                  {cut} earlier turn{cut === 1 ? "" : "s"} not sent: outside the ~1,500-token history budget
+                  {dropped} earlier turn{dropped === 1 ? "" : "s"} not sent: outside the ~1,500-token history budget
                 </div>
               )}
             </Fragment>
@@ -6078,14 +6288,61 @@ npx tsc --noEmit
 
 Expected: every test passes (App 2, stream 4, Markdown 2, ChatTab 10), and no type errors. If `App.test.tsx`'s `findByText("serving")` now finds two elements, the Reply panel is printing the engine state for a chat that is not open; it must print "—" when no chat is open.
 
-- [ ] **Step 9: Look at it**
+- [ ] **Step 9: Check that the app starts against the fake engine**
 
-Run the app against the fake engine as in Task 11 Step 7 (same environment variables), then:
-- `+ NEW`, send "Long or wait?": the reply streams in, the Reply panel shows the first token and speed.
-- REGENERATE: `‹ 2/2 ›` appears; `‹` shows the first version.
-- Switch the model to `nexus`: the top bar shows the engine starting, then serving `nexus`.
+Start the app against the fake engine and check it by a process query and its own log, with nobody at the window. A person would have walked the chat here: `+ NEW`, send "Long or wait?" and watch the reply stream with the first token and speed in the Reply panel, REGENERATE and read `‹ 2/2 ›`, switch the model to `nexus` and watch the top bar restart the engine. That walk moves to Task 16's end-to-end run (automated) and Task 17's demo (Kabir). Four Bash calls:
 
-Close the window.
+1. Build the fake engine and write its fixture library:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop/src-tauri"
+cargo build --features fake-engine --bin fake-engine
+rm -rf ../e2e/.work/models ../e2e/.work/data
+./target/debug/fake-engine.exe write-fixtures ../e2e/.work/models
+```
+
+2. Start the app with the Bash tool's `run_in_background` option, the fake engine's environment set, its output in a log file under the system temp folder:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop/src-tauri"
+export LORREN_ENGINE_EXE="$PWD/target/debug/fake-engine.exe"
+export LORREN_MODEL_DIRS="$PWD/../e2e/.work/models"
+export LORREN_OLLAMA_DIR=none
+export LORREN_DATA_DIR="$PWD/../e2e/.work/data"
+cd .. && npx tauri dev > "$TEMP/lorren-task13-dev.log" 2>&1
+```
+
+3. Wait for the window (poll every 5 s, up to 3 minutes; give the call `timeout: 300000`), keep it up 20 s, check it is still running, then read the app's own log:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop"
+windows() { powershell -NoProfile -Command "(Get-Process lorren -ErrorAction SilentlyContinue | Where-Object MainWindowTitle -eq 'Lorren' | Measure-Object).Count" | tr -d '\r'; }
+n=0
+for i in $(seq 1 36); do
+  n=$(windows)
+  [ "$n" = "1" ] && break
+  sleep 5
+done
+echo "windows titled Lorren: $n"
+sleep 20
+echo "windows titled Lorren after 20 s: $(windows)"
+grep -E 'library: 4 models, 3 runnable|engine serving' e2e/.work/data/logs/lorren.log
+tail -n 5 "$TEMP/lorren-task13-dev.log"
+```
+
+Expected: `windows titled Lorren: 1`, then `windows titled Lorren after 20 s: 1`, and in the app's log the lines `library: 4 models, 3 runnable` and `engine serving file:...qwen3-4b-instruct-2507-q4_k_m.gguf on port ... after ... s`. Anything else: the tail of the log says why; fix that before going on.
+
+4. Stop everything the second call started, even when the wait failed (ignore "not found"), then verify:
+
+```bash
+taskkill //F //T //IM lorren.exe
+taskkill //F //IM fake-engine.exe
+for pid in $(netstat -ano | grep ':5173 .*LISTENING' | awk '{print $NF}' | tr -d '\r' | sort -u); do taskkill //F //T //PID "$pid"; done
+tasklist | grep -i -E '^(lorren|fake-engine)\.exe' || echo "no lorren.exe, no fake-engine.exe"
+netstat -ano | grep ':5173 .*LISTENING' || echo "nothing listens on 5173"
+```
+
+Expected: `no lorren.exe, no fake-engine.exe`, then `nothing listens on 5173`.
 
 - [ ] **Step 10: Commit**
 
@@ -6103,7 +6360,7 @@ git commit -m "desktop: the Chat tab -- streaming Markdown replies, stop, regene
 - Modify: `desktop/src/App.tsx` (render the three tabs)
 
 **Interfaces:**
-- Consumes: `api.models()`, `api.requests()`, `api.logs(after)` (Task 12); the bindings `ModelInfo` (Task 4), `RequestRecord`, `LogLine` (Task 6), `Overview` (Task 11); `format.ts` (`gb`, `secs`, `clock`, `commas`); the `testApi.ts` fixtures `models`, `overview` (Tasks 12–13). `Monitor::logs_after(seq)` returns the lines with a larger `seq`, and numbering starts at 1, so `logs(0)` returns everything (Task 6). `requests()` is newest first.
+- Consumes: `api.models()`, `api.requests()`, `api.logs(after)` (Task 12); the bindings `ModelInfo` (Task 4; its `run_bytes` is the memory the model needs to run), `RequestRecord`, `LogLine` (Task 6), `Overview` (Task 11); `format.ts` (`gb`, `secs`, `clock`, `commas`); the `testApi.ts` fixtures `models`, `overview` (Tasks 12–13). `Monitor::logs_after(seq)` returns the lines with a larger `seq`, and numbering starts at 1, so `logs(0)` returns everything (Task 6). `requests()` is newest first.
 - Produces: `ModelsTab({ overview })`, `RequestsTab()`, `LogsTab()`; App renders them for "Models", "Requests" and "Logs" (Swarm and Settings stay placeholders until milestone 3).
 
 - [ ] **Step 1: Write the failing tests**
@@ -6148,12 +6405,13 @@ describe("ModelsTab", () => {
     expect(screen.getByText(/architecture qwen2vl/)).toBeTruthy();
   });
 
-  it("estimates the memory a model needs: the file plus its KV cache for 2 x 4,096 tokens", async () => {
+  it("shows the memory a model needs to run: its file, its KV cache for 2 x 4,096 tokens and the runtime", async () => {
     vi.mocked(api.models).mockResolvedValue(models);
     render(<ModelsTab overview={overview} />);
     await screen.findByText("qwen2.5vl:3b");
-    // Qwen3-4B: 2,497,280,736 B + 78,336 B/token x 4,096 x 2 (641,728,512 B) = 3,139,009,248 B = 2.9 GB
-    expect(screen.getByText("~2.9 GB")).toBeTruthy();
+    // Qwen3-4B: run_bytes 3,407,444,704 B = 2,497,280,736 (file) + 641,728,512 (78,336 B/token x 4,096 x 2) + 268,435,456 (256 MiB)
+    // 3,407,444,704 / 1,073,741,824 = 3.173 GB, shown with one decimal
+    expect(screen.getByText("~3.2 GB")).toBeTruthy();
   });
 });
 
@@ -6213,8 +6471,6 @@ import type { ModelInfo } from "../ipc/bindings/ModelInfo";
 import type { Overview } from "../ipc/bindings/Overview";
 import "./tabs.css";
 
-/** The engine runs with --seqs 2 at the 4,096-token cap (Global Constraints). */
-const SEQS = 2;
 const COLS = "minmax(240px, 2fr) 80px 76px 80px 76px 84px 110px";
 
 export function ModelsTab({ overview }: { overview: Overview | null }) {
@@ -6265,7 +6521,6 @@ export function ModelsTab({ overview }: { overview: Overview | null }) {
 }
 
 function ModelDetails({ m }: { m: ModelInfo }) {
-  const kv = m.kv_bytes_per_token * m.ctx_engine * SEQS;
   return (
     <>
       <div className="section">
@@ -6284,7 +6539,7 @@ function ModelDetails({ m }: { m: ModelInfo }) {
         <div className="fact"><span className="k">layers · heads · KV heads</span><span className="v num">{m.n_layer} · {m.n_head} · {m.n_head_kv}</span></div>
         <div className="fact"><span className="k">context (file / engine)</span><span className="v num">{commas(m.ctx_file)} / {commas(m.ctx_engine)}</span></div>
         <div className="fact"><span className="k">KV per token (q8)</span><span className="v num">{(m.kv_bytes_per_token / 1024).toFixed(1)} KiB</span></div>
-        <div className="fact"><span className="k">memory to run</span><span className="v num">~{gb(m.size_bytes + kv)}</span></div>
+        <div className="fact"><span className="k">memory to run (model + KV cache + runtime)</span><span className="v num">{m.run_bytes > 0 ? `~${gb(m.run_bytes)}` : "—"}</span></div>
       </div>
       <div className="section">
         <span className="cap">SYSTEM PROMPT{m.system_source ? ` · FROM ${m.system_source.toUpperCase()}` : ""}</span>
@@ -6471,9 +6726,61 @@ npx tsc --noEmit
 
 Expected: every test passes (this task adds 6), no type errors.
 
-- [ ] **Step 6: Look at it against the fake engine**
+- [ ] **Step 6: Check that the app starts against the fake engine**
 
-Run the app as in Task 11 Step 7. Models: four rows, `qwen2.5vl-3b` CAN'T RUN, Qwen3 marked DEFAULT and LOADED, `nexus` shows the trader prompt FROM MODELFILE. Send one chat message, then Requests shows it with a first-token time, and Logs shows `engine serving …`. Close the window.
+Start the app against the fake engine and check it by a process query and its own log, with nobody at the window. A person would have looked at the three tabs here: Models with four rows, `qwen2.5vl-3b` CAN'T RUN, Qwen3 marked DEFAULT and LOADED and `nexus` showing the trader prompt FROM MODELFILE; after one chat message, Requests showing it with a first-token time and Logs showing `engine serving …`. That look moves to Task 16's end-to-end run (automated) and Task 17's demo (Kabir). Four Bash calls:
+
+1. Build the fake engine and write its fixture library:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop/src-tauri"
+cargo build --features fake-engine --bin fake-engine
+rm -rf ../e2e/.work/models ../e2e/.work/data
+./target/debug/fake-engine.exe write-fixtures ../e2e/.work/models
+```
+
+2. Start the app with the Bash tool's `run_in_background` option, the fake engine's environment set, its output in a log file under the system temp folder:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop/src-tauri"
+export LORREN_ENGINE_EXE="$PWD/target/debug/fake-engine.exe"
+export LORREN_MODEL_DIRS="$PWD/../e2e/.work/models"
+export LORREN_OLLAMA_DIR=none
+export LORREN_DATA_DIR="$PWD/../e2e/.work/data"
+cd .. && npx tauri dev > "$TEMP/lorren-task14-dev.log" 2>&1
+```
+
+3. Wait for the window (poll every 5 s, up to 3 minutes; give the call `timeout: 300000`), keep it up 20 s, check it is still running, then read the app's own log:
+
+```bash
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop"
+windows() { powershell -NoProfile -Command "(Get-Process lorren -ErrorAction SilentlyContinue | Where-Object MainWindowTitle -eq 'Lorren' | Measure-Object).Count" | tr -d '\r'; }
+n=0
+for i in $(seq 1 36); do
+  n=$(windows)
+  [ "$n" = "1" ] && break
+  sleep 5
+done
+echo "windows titled Lorren: $n"
+sleep 20
+echo "windows titled Lorren after 20 s: $(windows)"
+grep -E 'library: 4 models, 3 runnable|engine serving' e2e/.work/data/logs/lorren.log
+tail -n 5 "$TEMP/lorren-task14-dev.log"
+```
+
+Expected: `windows titled Lorren: 1`, then `windows titled Lorren after 20 s: 1`, and in the app's log the lines `library: 4 models, 3 runnable` and `engine serving file:...qwen3-4b-instruct-2507-q4_k_m.gguf on port ... after ... s`. Anything else: the tail of the log says why; fix that before going on.
+
+4. Stop everything the second call started, even when the wait failed (ignore "not found"), then verify:
+
+```bash
+taskkill //F //T //IM lorren.exe
+taskkill //F //IM fake-engine.exe
+for pid in $(netstat -ano | grep ':5173 .*LISTENING' | awk '{print $NF}' | tr -d '\r' | sort -u); do taskkill //F //T //PID "$pid"; done
+tasklist | grep -i -E '^(lorren|fake-engine)\.exe' || echo "no lorren.exe, no fake-engine.exe"
+netstat -ano | grep ':5173 .*LISTENING' || echo "nothing listens on 5173"
+```
+
+Expected: `no lorren.exe, no fake-engine.exe`, then `nothing listens on 5173`.
 
 - [ ] **Step 7: Commit**
 
@@ -6488,7 +6795,7 @@ git commit -m "desktop: Models, Requests and Logs tabs (task 14)"
 
 **Files:**
 - Create: `desktop/src-tauri/src/updater.rs`, `desktop/src-tauri/tauri.updater-test.conf.json`, `desktop/scripts/update-feed.py`, `desktop/src/components/UpdateBadge.tsx`, `desktop/src/__tests__/UpdateBadge.test.tsx`
-- Modify: `desktop/src-tauri/Cargo.toml` (plugin; `minisign-verify` for tests), `desktop/src-tauri/tauri.conf.json` (`createUpdaterArtifacts`, `plugins.updater`), `desktop/src-tauri/src/lib.rs` (plugin, service, startup check, commands, version from the config), `desktop/src-tauri/src/commands.rs` (`AppState.updates`, three commands, `overview` takes the version from the config), `desktop/src/ipc/api.ts`, `desktop/src/__tests__/testApi.ts`, `desktop/src/App.tsx` (the badge in the status bar)
+- Modify: `desktop/src-tauri/Cargo.toml` (plugin; `minisign-verify` for tests), `desktop/src-tauri/tauri.conf.json` (`createUpdaterArtifacts`, `plugins.updater`), `desktop/src-tauri/src/lib.rs` (plugin, service, startup check, commands), `desktop/src-tauri/src/commands.rs` (`AppState.updates`, three commands), `desktop/src/ipc/api.ts`, `desktop/src/__tests__/testApi.ts`, `desktop/src/App.tsx` (the badge in the status bar)
 
 **Interfaces:**
 - Consumes: `Monitor` (Task 6); `AppState`, `overview` (Task 11); `StatusBar({overview, children})` (Task 12).
@@ -6723,13 +7030,14 @@ Add `pub mod updater;` to `lib.rs`. Run: `cargo test updater` — Expected: comp
 `desktop/src/__tests__/UpdateBadge.test.tsx`:
 
 ```tsx
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
 import { UpdateBadge } from "../components/UpdateBadge";
 import { api } from "../ipc/api";
+import type { UpdateState } from "../ipc/bindings/UpdateState";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -6749,9 +7057,15 @@ describe("UpdateBadge", () => {
   });
 
   it("shows nothing when updates are not configured", async () => {
-    vi.mocked(api.updateState).mockResolvedValue({ state: "not_configured" });
+    // Before any state arrives the badge also renders nothing, so first wait until the not-configured
+    // state has been delivered and applied; only then does an empty badge mean anything.
+    const delivered = Promise.resolve<UpdateState>({ state: "not_configured" });
+    vi.mocked(api.updateState).mockReturnValue(delivered);
     const { container } = render(<UpdateBadge />);
-    await waitFor(() => expect(api.updateState).toHaveBeenCalled());
+    await act(async () => {
+      await delivered;
+    });
+    expect(api.updateState).toHaveBeenCalled();
     expect(container.textContent).toBe("");
   });
 });
@@ -6772,7 +7086,7 @@ use crate::monitor::Monitor;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use ts_rs::TS;
 
@@ -6911,25 +7225,13 @@ impl UpdateService {
 }
 ```
 
-Run: `cargo test updater` — Expected: 3 passed.
+Run: `cargo test updater` — Expected: 3 passed plus the `export_bindings_*` tests (one here: `UpdateState`).
 
 - [ ] **Step 5: Wire it in**
 
-In `commands.rs`: add `pub updates: Arc<crate::updater::UpdateService>` to `AppState`. Make `overview` read the version from the config, which is what a 0.0.2 build changes (`CARGO_PKG_VERSION` stays 0.0.1):
+In `commands.rs`: add `pub updates: Arc<crate::updater::UpdateService>` to `AppState`, and these three commands. (`overview` stays as Task 11 wrote it: it already reads the version from the config through `app.package_info()`, which is what a 0.0.2 build changes.)
 
 ```rust
-#[tauri::command]
-pub fn overview(app: tauri::AppHandle, state: State<'_, AppState>) -> Overview {
-    let engine = state.supervisor.status();
-    Overview {
-        memory: memory_info(engine.pid),
-        engine,
-        app_version: app.package_info().version.to_string(),
-        started_ms: state.started_ms,
-        request_count: state.monitor.requests().len() as u32,
-    }
-}
-
 #[tauri::command]
 pub fn update_state(state: State<'_, AppState>) -> crate::updater::UpdateState {
     state.updates.state()
@@ -6950,7 +7252,6 @@ pub fn install_update(state: State<'_, AppState>) -> Result<(), String> {
 
 In `lib.rs`:
 - add `pub mod updater;` and `.plugin(tauri_plugin_updater::Builder::new().build())` after the single-instance plugin;
-- log the config's version: `monitor.log("app", "info", format!("Lorren {} starting", app.package_info().version));`
 - create the service and put it in the state: `let updates = updater::UpdateService::new(monitor.clone());` and `updates: updates.clone()` in `AppState { .. }`;
 - after `app.manage(..)`, check 5 s after start and every 6 h (spec §3.7):
 
@@ -7062,24 +7363,25 @@ ls e2e/.work/feed
 
 Expected: `built …/Lorren_0.0.2_x64-setup.exe`, then the four feeds `good`, `nosig`, `tampered`, `wrongkey`.
 
-- [ ] **Step 9: The tamper checks, positive control last**
+- [ ] **Step 9: Check the four feeds as the server delivers them**
 
-Each feed is the good feed with exactly one thing changed, so the good feed's success is what makes the three refusals mean something. Run the 0.0.1 app (dev build) with the test overlay against the fake engine (environment as in Task 11 Step 7):
+Each feed is the good feed with exactly one thing changed: `tampered` has one byte of the installer flipped under the good signature, `wrongkey` is signed with the other key, `nosig` has an empty signature. No person presses a badge here. The badge walk itself (the 0.0.1 app checks `tampered`, `wrongkey` and `nosig`, and each must read `update 0.0.2 refused: signature did not verify` with an `updater` log line `update 0.0.2 REFUSED: …`; then `good` must read `update 0.0.2 ready · RESTART TO INSTALL`) is covered by Task 16's end-to-end update step.
+
+Here, serve each feed in the background in turn, fetch its `latest.json` with curl, check its `version` is `0.0.2` and its signature field (empty for `nosig` only), stop the server and check that port 8765 is free again:
 
 ```bash
-npx tauri dev --config src-tauri/tauri.updater-test.conf.json
+cd "/m/New Drive/Desktop/Programming/stoke-lorren/desktop"
+for feed in good tampered wrongkey nosig; do
+  python scripts/update-feed.py serve "$feed" > "$TEMP/lorren-feed-$feed.log" 2>&1 &
+  for i in $(seq 1 20); do curl -s -o /dev/null http://127.0.0.1:8765/latest.json && break; sleep 0.5; done
+  curl -s http://127.0.0.1:8765/latest.json | python -c "import json,sys; d=json.load(sys.stdin); p=d['platforms']['windows-x86_64']; assert d['version']=='0.0.2', d['version']; assert bool(p['signature']) == ('$feed' != 'nosig'), p; print('$feed: version', d['version'], '| signature', 'present' if p['signature'] else 'empty')"
+  for pid in $(netstat -ano | grep ':8765 .*LISTENING' | awk '{print $NF}' | tr -d '\r' | sort -u); do taskkill //F //T //PID "$pid"; done
+  sleep 1
+  netstat -ano | grep ':8765 .*LISTENING' && echo "FAIL: port 8765 is still in use" || echo "$feed: port 8765 is free"
+done
 ```
 
-In a second terminal, serve each feed in turn (Ctrl+C before the next) and press the badge to check again:
-
-| feed | the badge must read | the Logs tab must show (source `updater`) |
-|---|---|---|
-| `tampered` | `update 0.0.2 refused: signature did not verify` | `update 0.0.2 REFUSED: the signature did not verify (…)` |
-| `wrongkey` | the same | the same |
-| `nosig` | the same | the same |
-| `good` | `update 0.0.2 ready · RESTART TO INSTALL` | `… bytes downloaded and the signature verified` |
-
-If `good` does not reach "ready", the three refusals prove nothing: find out why (the URL, the JSON, the platform key `windows-x86_64`) before going on. If a refusal reads "update check failed" instead, the failure was not the signature, and the check has not passed. Do not press RESTART TO INSTALL in dev; installing is Task 17's, on the real installer. Close the app.
+Expected, feed by feed: `good: version 0.0.2 | signature present`, `tampered: version 0.0.2 | signature present`, `wrongkey: version 0.0.2 | signature present`, `nosig: version 0.0.2 | signature empty`, each followed by `<feed>: port 8765 is free`. If a feed does not look like this, find out why (the URL, the JSON, the platform key `windows-x86_64`) and fix `update-feed.py` before going on: Task 16's update step proves the three refusals only if `good` reaches "ready". Installing is Task 17's, on the real installer.
 
 - [ ] **Step 10: Commit**
 
@@ -7224,8 +7526,8 @@ function stopFeed() {
 }
 
 async function sendMessage(text) {
-  await page.getByLabel("message").fill(text);
-  await page.getByLabel("message").press("Enter");
+  await page.getByRole("textbox", { name: "message", exact: true }).fill(text);
+  await page.getByRole("textbox", { name: "message", exact: true }).press("Enter");
   await page.getByRole("button", { name: "STOP" }).waitFor({ timeout: 15000 });
 }
 
@@ -7256,7 +7558,7 @@ const steps = [
   }],
   ["a new chat switched to Nexus restarts the engine on it", async () => {
     await page.getByRole("tab", { name: "Chat" }).click();
-    await page.getByText("+ NEW").click();
+    await page.getByRole("button", { name: "+ NEW", exact: true }).click();
     const t0 = Date.now();
     await page.locator("select[aria-label=model]").selectOption({ label: "nexus" });
     await until("serving nexus", async () => { const t = await topbar(); return t.includes("serving") && t.includes("nexus"); });
@@ -7280,9 +7582,9 @@ const steps = [
   ["Regenerate makes version 2/2, and the first version is still there", async () => {
     await page.getByRole("button", { name: "REGENERATE" }).click();
     await waitIdle();
-    await page.getByText("2/2").waitFor();
+    await page.getByText("2/2", { exact: true }).waitFor();
     await page.getByLabel("previous version").last().click();
-    await page.getByText("1/2").waitFor();
+    await page.getByText("1/2", { exact: true }).waitFor();
   }],
   ["killing the engine brings it back, and the chat carries on", async () => {
     const before = pids("fake-engine.exe");
@@ -7424,10 +7726,10 @@ Ask Kabir for the time. Then check:
 
 ```bash
 MSYS_NO_PATHCONV=1 wsl.exe -- pgrep -fa run_m7_soak.sh || echo "no soak running"
-powershell -NoProfile -Command "[int]((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1024)"
+powershell -NoProfile -Command "[int](Get-Counter '\Memory\Available MBytes').CounterSamples.CookedValue"
 ```
 
-Expected: `no soak running`, and at least 4,000 (MB free; the engine takes 2–2.5 GB). If a soak run is in progress, stop here: the demo waits for it to finish.
+Expected: `no soak running`, and at least 4,400 MB (the default Qwen3 model needs 4,274 MiB free by Task 8's check: run_bytes 3,250 MiB + the 1,024 MiB spare). If a soak run is in progress, stop here: the demo waits for it to finish.
 
 - [ ] **Step 2: Build the release installers**
 
@@ -7460,9 +7762,9 @@ Expected: `lorren.exe`, `lorren-engine.exe` and the uninstaller; the engine prin
 Start Lorren from the Start menu (no `LORREN_*` variables: the real library). Walk through spec §11.1 and note, for each item, what happened and the time it took:
 
 1. Lorren opens: the Control Room plus Chat, dark. Time it from the click to the window (spec §7: under 1.5 s, not counting the model load).
-2. Models lists Nexus with its trader prompt FROM MODELFILE, Qwen3-4B-Instruct-2507 Q4_K_M (DEFAULT), its Q8_0 and unsloth twins, Llama-3.2-3B-Instruct Q4_K_M and Q8_0, and marks `qwen2.5vl:3b` CAN'T RUN.
+2. Models lists Nexus with its trader prompt FROM MODELFILE, Qwen3-4B-Instruct-2507 Q4_K_M (DEFAULT), its Q8_0 and unsloth twins, Llama-3.2-3B-Instruct Q4_K_M and Q8_0, Ollama's `stoke-bench-qwen3:latest` and `stoke-bench-qwen3-cpu:latest` (both runnable qwen3 rows, from the same 2,497,280,736-byte model layer), and marks `qwen2.5vl:3b` CAN'T RUN.
 3. `+ NEW`, switch the chat to Nexus: the top bar shows the engine restart. Read the switch time from Logs (`engine serving … after N s`).
-4. Ask Nexus something: the reply streams. Stop one reply midway. Regenerate one: `‹ 2/2 ›`.
+4. Ask Nexus something: the reply streams. Stop one reply midway. Regenerate one: `‹ 2/2 ›`. Send one multi-line message (two lines, Shift+Enter between them) and note in the record whether the reply shows a literal `\n` (the engine limit in Global Constraints).
 5. Switch the chat to Qwen3: a visible restart; note the time again.
 6. Task Manager → end `lorren-engine.exe`: the engine comes back by itself, the status bar counts one restart, and the next message works.
 7. Close Lorren and open it again: the chats are there. Then check that no `lorren-engine.exe` is left in Task Manager after closing.
@@ -7491,7 +7793,7 @@ Builds: 0.0.1 and 0.0.2 from `lorren-desktop` at <sha>, the engine sidecar from 
 | # | spec §11.1 item | result | notes |
 |---|---|---|---|
 | 1 | opens: Control Room + Chat, dark | | cold start <n> s |
-| 2 | Models: Nexus (Modelfile), Qwen3 (default), Llama, qwen2.5vl CAN'T RUN | | |
+| 2 | Models: Nexus (Modelfile), Qwen3 (default), Llama, Ollama's `stoke-bench-qwen3` and `stoke-bench-qwen3-cpu`, qwen2.5vl CAN'T RUN | | |
 | 3 | chat with Nexus streams, stops, regenerates | | |
 | 4 | switch to Qwen3 visibly restarts the engine | | <n> s |
 | 5 | killed engine comes back, the chat carries on | | |
@@ -7509,7 +7811,9 @@ Builds: 0.0.1 and 0.0.2 from `lorren-desktop` at <sha>, the engine sidecar from 
 | first token, short prompt | Nexus <n> s, Qwen3 <n> s | (09-25 by hand: 0.48–0.68 / 0.21–0.53 s) |
 
 Known limits shown, not fixed here (spec §8): no KV reuse between turns, so a long chat waits longer for its first word;
-the 4,096-token cap; one model at a time; the library's folders are this PC's until Settings (milestone 3).
+the 4,096-token cap; one model at a time; the library's folders are this PC's until Settings (milestone 3); a newline in a
+message reaches the model as the two characters `\n` (the engine templates the raw JSON; fix queued after m7) -- in the
+two-line test message the reply showed a literal `\n`: <yes/no>.
 
 Kabir's verdict: <his words>.
 ```
