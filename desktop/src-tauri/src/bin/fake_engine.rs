@@ -2,10 +2,31 @@
 //! milestone-1 plan for the switches. Formats follow the real server (src/server.c):
 //! `data: {json}\n\n` chunks, `: ping\n\n` comments, `data: [DONE]\n\n`, and errors shaped
 //! {"error":{"message":..,"type":..,"param":null,"code":null}}.
+//!
+//! It is the real engine's shape, not the real engine. KNOWN DIFFERENCES, which a green test
+//! against the fake does not cover:
+//!
+//! - the fake closes each connection after a response (`Connection: close`); the real engine
+//!   streams chunked over keep-alive and closes idle keep-alive connections after 60 s;
+//! - the fake answers `/health` on its own thread at once; the real engine answers only between
+//!   scheduler steps;
+//! - the fake validates no request fields; the real engine answers 400 for out-of-range values;
+//! - the fake decodes JSON string escapes; the real engine templates the raw string (see the
+//!   Global Constraint on message content);
+//! - the fake does not honour `"stream":false`: every chat request is answered as a stream,
+//!   because the app always streams (the real engine then answers one JSON body);
+//! - the fake sends one `: ping` at stream start; the real engine pings every 15 s of silence
+//!   (`SSE_PING_MS_DEFAULT`, src/server.c);
+//! - the fake answers 404 "not found" for an unknown route, and 404 (never 405) for the wrong
+//!   method on a known one; the real engine says "unknown endpoint" for the first and answers 405
+//!   for the second (it also serves `/v1/completions`, which the fake does not);
+//! - the fake checks `--ctx` before the architecture and hardcodes `max_ctx` as 4096; the real
+//!   engine opens the model first and uses min(model ctx, 4096).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
@@ -19,6 +40,39 @@ fn event(line: &str) {
     }
 }
 
+/// What `FAKE_ENGINE_MODE` asks for. Anything else is refused at startup: a mistyped mode that
+/// silently behaved as `ok` would turn a hang or crash test into a green run of the wrong thing.
+enum Mode {
+    /// `ok`, the default: serve normally.
+    Serve,
+    Refuse,
+    Hang,
+    CrashAfterMs(u64),
+}
+
+fn parse_mode(raw: &str) -> Result<Mode, String> {
+    match raw {
+        "ok" => Ok(Mode::Serve),
+        "refuse" => Ok(Mode::Refuse),
+        "hang" => Ok(Mode::Hang),
+        _ => match raw.strip_prefix("crash_after_ms:").map(str::parse::<u64>) {
+            Some(Ok(ms)) => Ok(Mode::CrashAfterMs(ms)),
+            _ => Err(format!(
+                "fake engine: unknown FAKE_ENGINE_MODE '{raw}' (expected ok | refuse | hang | crash_after_ms:<N>)"
+            )),
+        },
+    }
+}
+
+/// The N in `chatcmpl-N`: one counter for the process, from 1, taken when a request is accepted
+/// (src/server.c `next_req_id`, `start_generation`). A request refused with a 400 takes none.
+static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
+
+/// `s` as a quoted, escaped JSON string (the real server's `buf_json_str`).
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("write-fixtures") {
@@ -29,6 +83,14 @@ fn main() {
         eprintln!("fatal: usage: stoke serve <path.gguf> [--host A] [--port P] [--ctx N] [--seqs N] [--kv q8]");
         std::process::exit(2);
     }
+    // A bad mode is a usage error too: refused before anything is recorded, bound or printed.
+    let mode = match parse_mode(&env("FAKE_ENGINE_MODE").unwrap_or_else(|| "ok".into())) {
+        Ok(mode) => mode,
+        Err(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
     event(&format!("argv {}", serde_json::to_string(&args).unwrap()));
     let model = args.get(2).cloned().unwrap_or_default();
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -39,8 +101,7 @@ fn main() {
         eprintln!("stoke serve: stoke_open: max_ctx {ctx} exceeds the model's 4096");
         std::process::exit(1);
     }
-    let mode = env("FAKE_ENGINE_MODE").unwrap_or_else(|| "ok".into());
-    if mode == "refuse" {
+    if matches!(mode, Mode::Refuse) {
         // The real engine's sentence (src/model.c:755-757, behind the `stoke serve: ` of src/server.c:1752).
         eprintln!(
             "stoke serve: model: '{model}' -- general.architecture is 'qwen2vl', expected 'qwen3' or 'llama' (this loader implements those two)"
@@ -55,7 +116,7 @@ fn main() {
     println!("stoke serve: listening on {host}:{actual}  ctx={ctx}");
     std::io::stdout().flush().unwrap();
     eprintln!("fake engine: serving {model}");
-    if let Some(ms) = mode.strip_prefix("crash_after_ms:").and_then(|v| v.parse::<u64>().ok()) {
+    if let Mode::CrashAfterMs(ms) = mode {
         let armed = match env("FAKE_ENGINE_CRASH_ONCE") {
             Some(marker) if std::path::Path::new(&marker).exists() => false,
             Some(marker) => {
@@ -72,7 +133,7 @@ fn main() {
             });
         }
     }
-    let hang = mode == "hang";
+    let hang = matches!(mode, Mode::Hang);
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };
         if hang {
@@ -153,6 +214,22 @@ fn chat(s: &mut TcpStream, body: &[u8], ctx: u32) -> std::io::Result<()> {
         );
         return respond(s, 400, &error_body(&msg, "context_length_exceeded"));
     }
+    // Accepted: from here the request has its id and its one timestamp (src/server.c
+    // start_generation), and every chunk of the answer shares them.
+    let id = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let created = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    // The usage chunk is sent only when the request asks for it (src/server.c parse_body, :882-887).
+    let want_usage = v["stream_options"]["include_usage"].as_bool().unwrap_or(false);
+    // The model every chunk reports is the REQUEST's own "model" -- "stoke" when it sent none, or an
+    // empty one (src/server.c parse_body, :889-895) -- never the name of the file that was loaded.
+    let model = v["model"].as_str().filter(|m| !m.is_empty()).unwrap_or("stoke");
+    // The envelope every chunk of one answer shares, in the real server's order (src/server.c
+    // stream_envelope, :470-482); each frame then adds its own "choices" (and "usage").
+    let envelope = format!(
+        r#"{{"id":"chatcmpl-{id}","object":"chat.completion.chunk","created":{created},"model":{},"#,
+        json_str(model)
+    );
+    let frame = |rest: &str| format!("data: {envelope}{rest}}}\n\n");
     let reply = env("FAKE_ENGINE_REPLY").unwrap_or_else(|| "Hello from the fake engine.".into());
     let token_ms: u64 = env("FAKE_ENGINE_TOKEN_MS").and_then(|x| x.parse().ok()).unwrap_or(20);
     write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")?;
@@ -163,9 +240,13 @@ fn chat(s: &mut TcpStream, body: &[u8], ctx: u32) -> std::io::Result<()> {
         if n >= max_tokens {
             break;
         }
-        let chunk = serde_json::json!({"id":"chatcmpl-fake","object":"chat.completion.chunk",
-            "choices":[{"index":0,"delta":{"content":w},"finish_reason":null}]});
-        if s.write_all(format!("data: {chunk}\n\n").as_bytes()).and_then(|_| s.flush()).is_err() {
+        // The role rides on the FIRST content delta and on no other (src/server.c stream_delta).
+        let role = if n == 0 { r#""role":"assistant","# } else { "" };
+        let chunk = frame(&format!(
+            r#""choices":[{{"index":0,"delta":{{{role}"content":{}}},"logprobs":null,"finish_reason":null}}]"#,
+            json_str(w)
+        ));
+        if s.write_all(chunk.as_bytes()).and_then(|_| s.flush()).is_err() {
             event("cancelled");
             return Ok(());
         }
@@ -173,11 +254,19 @@ fn chat(s: &mut TcpStream, body: &[u8], ctx: u32) -> std::io::Result<()> {
         std::thread::sleep(Duration::from_millis(token_ms));
     }
     let finish = if (n as usize) < words.len() { "length" } else { "stop" };
-    let done = serde_json::json!({"id":"chatcmpl-fake","object":"chat.completion.chunk",
-        "choices":[{"index":0,"delta":{},"finish_reason":finish}]});
-    let usage = serde_json::json!({"id":"chatcmpl-fake","object":"chat.completion.chunk","choices":[],
-        "usage":{"prompt_tokens":prompt_tokens,"completion_tokens":n,"total_tokens":prompt_tokens + n}});
-    if write!(s, "data: {done}\n\ndata: {usage}\n\ndata: [DONE]\n\n").and_then(|_| s.flush()).is_err() {
+    // The finish chunk (an empty delta carrying the reason), then -- only when asked for -- the usage
+    // chunk with an EMPTY "choices", then the sentinel (src/server.c stream_final, :649-693).
+    let mut tail = frame(&format!(
+        r#""choices":[{{"index":0,"delta":{{}},"logprobs":null,"finish_reason":"{finish}"}}]"#
+    ));
+    if want_usage {
+        tail += &frame(&format!(
+            r#""choices":[],"usage":{{"prompt_tokens":{prompt_tokens},"completion_tokens":{n},"total_tokens":{}}}"#,
+            prompt_tokens + n
+        ));
+    }
+    tail += "data: [DONE]\n\n";
+    if s.write_all(tail.as_bytes()).and_then(|_| s.flush()).is_err() {
         event("cancelled");
         return Ok(());
     }
