@@ -272,6 +272,20 @@ if ! awk -v r="$CLOCK_RATE" 'BEGIN { exit !(r >= 0.8 && r <= 1.25) }'; then
     say "ABORT -- clock rate $CLOCK_RATE is outside 0.8..1.25: no stretch makes that clock trustworthy"
     exit 2
 fi
+# And the clock's CAUSE (design note section 11): this distro's
+# systemd-timesyncd steps the guest to NTP and WSL's own sync slews it back to
+# the host at 1/12 for as long as both run, so the guest clock runs 8.3% fast
+# from a few minutes after the distro starts -- after a short rate measurement
+# may already have read ~1.00. A soak needs it stopped
+# (tests/tooling/guest_clock_settle.sh, which the launcher runs).
+tsd=$(systemctl is-active systemd-timesyncd 2>/dev/null)
+say "guest clock: systemd-timesyncd ${tsd:-unknown}, stretching by $CLOCK_RATE"
+if [ "$MODE" = soak ] && [ "$tsd" = active ]; then
+    say "ABORT -- systemd-timesyncd is running: it and WSL's own time sync fight, and while"
+    say "         they do the guest clock runs 8.3% fast. Run tests/tooling/guest_clock_settle.sh"
+    say "         first (the launcher does)."
+    exit 2
+fi
 for v in "$SLACK_BASE" "$SLACK_PER_CHUNK"; do
     case "$v" in
         ''|-|*[!0-9-]*|?*-*) say "ABORT -- a slack override '$v' is not a whole number of seconds"; exit 2 ;;
@@ -632,7 +646,7 @@ rm -f "$manifest"
 clk1_up=$(cut -d' ' -f1 /proc/uptime); clk1_wall=$(date +%s)
 run_rate=$(awk -v u0="$clk0_up" -v u1="$clk1_up" -v w0="$clk0_wall" -v w1="$clk1_wall" \
     'BEGIN { d = w1 - w0; if (d <= 0) { print "?"; exit } printf "%.4f", (u1 - u0) / d }')
-say "clock: over the driver's $((clk1_wall - clk0_wall)) real s the guest ran $run_rate guest s per real s (stretched by $CLOCK_RATE)"
+say "clock: over the driver's $((clk1_wall - clk0_wall)) real s the guest ran $run_rate guest s per real s (stretched by $CLOCK_RATE; systemd-timesyncd now $(systemctl is-active systemd-timesyncd 2>/dev/null || true))"
 void=0
 if [ "$MODE" = soak ]; then
     if [ "$run_rate" = "?" ] || ! awk -v a="$run_rate" -v b="$CLOCK_RATE" \
