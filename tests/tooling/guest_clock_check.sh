@@ -11,16 +11,21 @@
 # against the HOST clock, read through WSL interop, and refuses a run when the
 # two differ by more than 1%.
 #
-#   sh tests/tooling/guest_clock_check.sh [window_seconds]     (default 240)
+#   sh tests/tooling/guest_clock_check.sh [window_seconds]          (default 240)
+#   sh tests/tooling/guest_clock_check.sh --rate [window_seconds]
 #   sh tests/tooling/guest_clock_check.sh --judge WINDOW < samples
-#       (the verdict alone, on "g0 h0 e0 g1 h1 e1" in ms -- for its tests)
+#   sh tests/tooling/guest_clock_check.sh --judge-rate WINDOW < samples
+#       (the verdicts alone, on "g0 h0 e0 g1 h1 e1" in ms -- for its tests)
 #
-# The verdict is the printed "guest clock:" line. Exit 0 = within 1%;
-# exit 2 = refused: more than 1% off, OR the measurement itself was too
-# uncertain to say -- a check that cannot evaluate must not read as a pass.
+# The verdict is the printed "guest clock:" line. Default mode: exit 0 = within
+# 1%. --rate (design note section 10: the pinned clock was still ~5% fast, so
+# the soak rig STRETCHES its guest-clock lengths instead): prints
+# "guest clock: RATE <guest s per real s> (+/- u)" and exits 0 for any rate in
+# 0.8..1.25. Exit 2 in both modes = refused -- including a measurement too
+# uncertain to say, since a check that cannot evaluate must not read as a pass.
 
-judge() {
-    awk -v win="$1" '
+judge() {   # judge <window> <strict|rate>
+    awk -v win="$1" -v mode="$2" '
     {
         if (NF != 6) { print "guest clock: REFUSED -- a reading failed (" NF " of 6 numbers: " $0 ")"; bad = 1; exit }
         for (i = 1; i <= 6; i++) if ($i !~ /^[0-9]+$/) { print "guest clock: REFUSED -- reading " i " is not a number: " $i; bad = 1; exit }
@@ -32,17 +37,31 @@ judge() {
         dev   = ratio - 1; if (dev < 0) dev = -dev
         line  = sprintf("guest monotonic %.1f s over host %.1f s = ratio %.4f (+/- %.4f)", dg / 1000, dh / 1000, ratio, unc)
         if (unc > 0.005) { print "guest clock: REFUSED -- " line ": too uncertain to judge"; bad = 1; exit }
-        if (dev > 0.01)  { print "guest clock: REFUSED -- " line ": more than 1% off; pin the clocksource and restart the VM (design note section 9)"; bad = 1; exit }
+        if (mode == "rate") {
+            if (ratio < 0.8 || ratio > 1.25) { print "guest clock: REFUSED -- " line ": outside 0.8..1.25, not a clock the rig should stretch"; bad = 1; exit }
+            printf "guest clock: RATE %.4f (+/- %.4f) -- %s\n", ratio, unc, line
+            exit
+        }
+        if (dev > 0.01)  { print "guest clock: REFUSED -- " line ": more than 1% off (the soak rig stretches by --rate instead, design note section 10)"; bad = 1; exit }
         print "guest clock: OK -- " line
     }
     END { if (NR == 0) { print "guest clock: REFUSED -- no samples"; exit 2 } exit bad ? 2 : 0 }'
 }
 
 if [ "${1:-}" = "--judge" ]; then
-    judge "${2:-240}"
+    judge "${2:-240}" strict
+    exit $?
+fi
+if [ "${1:-}" = "--judge-rate" ]; then
+    judge "${2:-240}" rate
     exit $?
 fi
 
+MODE=strict
+if [ "${1:-}" = "--rate" ]; then
+    MODE=rate
+    shift
+fi
 WIN=${1:-240}
 case "$WIN" in
     ''|*[!0-9]*) echo "guest clock: REFUSED -- window '$WIN' is not a whole number of seconds"; exit 2 ;;
@@ -66,4 +85,4 @@ sample() {
 s0=$(sample)
 sleep "$WIN"
 s1=$(sample)
-echo "$s0 $s1" | judge "$WIN"
+echo "$s0 $s1" | judge "$WIN" "$MODE"

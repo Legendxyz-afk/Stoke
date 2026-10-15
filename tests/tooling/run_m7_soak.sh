@@ -179,6 +179,23 @@ SEED=${4:-20260906}
 CHUNK_SECS=$((CHUNK_MIN * 60))
 [ "$MODE" = shake ] && CHUNK_SECS=120
 
+# ▶ THE GUEST CLOCK (design note 2026-10-12-m7-soak-4x6h-rule.md sections 9-10).
+# serve_fuzz's chunk length and the server's --max-seconds both run on the WSL
+# guest's MONOTONIC clock, which on this box runs FAST against the host: 9% on
+# raw tsc, ~5% on both Hyper-V clocksources (2026-10-13; the host checked
+# against time.windows.com). Every length in this script means REAL seconds,
+# so the driver stretches what it hands to those two by the rate that
+# tests/tooling/guest_clock_check.sh --rate measured just before the run (guest
+# seconds per real second), and measures the rate again over the run's own
+# span at the end. Required: an unmeasured clock is not "1".
+CLOCK_RATE=${STOKE_SOAK_CLOCK_RATE:-}
+# The server's budget covers the traffic, the driver's per-chunk work (fuzz
+# teardown, canary, sampling -- 18 to 48 s a chunk in run 1, 2026-10-13, whose
+# flat 120 s did not cover six of them) and the last in-flight exchange.
+# Overridable ONLY so the rig's own test can starve the server on purpose.
+SLACK_BASE=${STOKE_SOAK_SLACK_BASE_S:-120}
+SLACK_PER_CHUNK=${STOKE_SOAK_SLACK_PER_CHUNK_S:-60}
+
 # The serving shape. The probe shrinks ONLY the pool: same seqs, same threads,
 # same traffic, so what it measures is the arena walk and not a different
 # server.
@@ -242,6 +259,24 @@ rm -f "$SRVLOG" "$SANLOG".* "$BANK" "$LOG" "$CSV" "$WIT" 2>/dev/null
 
 # ---- PRE-FLIGHT. Every one of these has cost this project a run. ----
 say "=== M7 soak pre-flight (stamp $STAMP, mode $MODE) ==="
+
+# The clock rate and the slack (see where they are read, above). Refused, not
+# defaulted: a run on an unmeasured clock is the run-1 failure again.
+case "$CLOCK_RATE" in
+    ''|*[!0-9.]*|*.*.*|.*|*.)
+        say "ABORT -- STOKE_SOAK_CLOCK_RATE='$CLOCK_RATE' is not a measured rate: run"
+        say "         sh tests/tooling/guest_clock_check.sh --rate first (the launcher does)"
+        exit 2 ;;
+esac
+if ! awk -v r="$CLOCK_RATE" 'BEGIN { exit !(r >= 0.8 && r <= 1.25) }'; then
+    say "ABORT -- clock rate $CLOCK_RATE is outside 0.8..1.25: no stretch makes that clock trustworthy"
+    exit 2
+fi
+for v in "$SLACK_BASE" "$SLACK_PER_CHUNK"; do
+    case "$v" in
+        ''|-|*[!0-9-]*|?*-*) say "ABORT -- a slack override '$v' is not a whole number of seconds"; exit 2 ;;
+    esac
+done
 for f in "$model" "$bin" "$fuzz"; do
     [ -e "$f" ] || { say "ABORT -- missing $f"; exit 1; }
 done
@@ -339,7 +374,24 @@ say "arena: $SEQS seqs x $blocks_per_seq blocks = $n_blocks blocks x $block_byte
 # ---- ONE server, for the whole window. Slack covers the last in-flight
 # exchange only: --max-seconds starts when it begins LISTENING, so the model
 # load sits outside it, which is what "serve for N seconds" should mean.
-srv_secs=$((TOTAL_SECS + 120))
+#
+# ▶ AND THE BUDGET COVERS THE DRIVER, IN REAL SECONDS, STRETCHED TO GUEST ONES
+# (design note section 10). It was TOTAL_SECS + 120 until run 1 (2026-10-13):
+# six chunks of driver work outgrew the 120 s, the server ended itself ~1 min
+# before chunk 6 did, and the driver died reading a server that was gone.
+n_chunks=$(( (TOTAL_SECS + CHUNK_SECS - 1) / CHUNK_SECS ))
+[ "$n_chunks" -lt 1 ] && n_chunks=1
+srv_real=$((TOTAL_SECS + SLACK_BASE + n_chunks * SLACK_PER_CHUNK))
+# --max-seconds 0 means NO limit to the server, so a starved budget is refused
+# rather than turned into a server that never ends itself.
+if [ "$srv_real" -lt 60 ]; then
+    say "ABORT -- the server budget would be ${srv_real} s; the slack overrides starve it below a minute"
+    exit 2
+fi
+srv_secs=$(awk -v s="$srv_real" -v r="$CLOCK_RATE" 'BEGIN { printf "%d", s * r + 0.5 }')
+chunk_guest=$(awk -v s="$CHUNK_SECS" -v r="$CLOCK_RATE" 'BEGIN { printf "%d", s * r + 0.5 }')
+say "clock: rate $CLOCK_RATE guest s per real s -- each chunk ${CHUNK_SECS} real s = ${chunk_guest} guest s;" \
+    "server budget ${srv_real} real s (traffic + ${SLACK_BASE} + ${n_chunks} x ${SLACK_PER_CHUNK}) = ${srv_secs} guest s"
 
 # The witness first: new kernel messages only (-W; the boot lines are in the
 # pre-flight above), line-flushed so a record reaches /mnt/m before whatever
@@ -490,23 +542,25 @@ printf 't_s,rss_mb,anon_mb,file_mb,data_mb,hwm_mb,gens,arena_mb,arena_swapped_mb
 sidecar_pid=$!
 
 # ---- chunked driver ----
-n_chunks=$(( (TOTAL_SECS + CHUNK_SECS - 1) / CHUNK_SECS ))
-[ "$n_chunks" -lt 1 ] && n_chunks=1
-say "driver: $n_chunks chunk(s) of ${CHUNK_SECS}s"
+say "driver: $n_chunks chunk(s) of ${CHUNK_SECS}s (${chunk_guest} guest s each)"
+# The run's own clock reading starts here and ends after the last chunk.
+clk0_up=$(cut -d' ' -f1 /proc/uptime); clk0_wall=$(date +%s)
 
 manifest=$(mktemp)
 find tests/data/http_corpus -type f 2>/dev/null | head -200 > "$manifest"
 n_corpus=$(wc -l < "$manifest" | tr -d ' ')
 say "corpus: $n_corpus files"
 
+srv_gone=""
 i=1
 while [ "$i" -le "$n_chunks" ]; do
     if ! kill -0 "$srv_pid" 2>/dev/null; then
         say "⚠ server exited early, before chunk $i -- stopping the driver"
+        srv_gone="before chunk $i"
         break
     fi
     cseed=$((SEED + i))
-    out=$("$fuzz" 127.0.0.1 "$port" "$CHUNK_SECS" "$manifest" 4 "$cseed" 20000 3 2>&1)
+    out=$("$fuzz" 127.0.0.1 "$port" "$chunk_guest" "$manifest" 4 "$cseed" 20000 3 2>&1)
     frc=$?
     # A killed fuzz is a lost CHUNK, not a lost run: the server (-1000) is
     # still there and the loop goes on. Said out loud, because a chunk line
@@ -531,12 +585,30 @@ while [ "$i" -le "$n_chunks" ]; do
         "http://127.0.0.1:$port/v1/chat/completions" 2>/dev/null || printf '000 timeout')
     ccode=${canary%% *}; csecs=${canary#* }
     exch=$(printf '%s' "$out" | sed -n 's/.* \([0-9]*\) answered exchanges.*/\1/p' | head -1)
-    set -- $(mem_fields "$srv_pid")
+    mix=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/"/\\"/g')
+    # ▶ IS THE SERVER STILL THERE? (design note section 10.) Run 1 (2026-10-13)
+    # died HERE without a verdict: the server's deadline came during chunk 6,
+    # /proc held no status to read, `set --` set nothing, and `rss=$1` killed
+    # the driver under `set -u`. A server that is gone is a READING: the chunk
+    # is banked as far as it got, its stall readings are not counted (they
+    # measure the absence), and the verdict below says whether the server
+    # ended itself (VOID) or not (FAIL). gawk and mawk print nothing for a pid
+    # that is gone; a zombie not yet reaped reads VmRSS 0 (the last sidecar
+    # rows of run 1 and of this fix's red run).
+    mf=$(mem_fields "$srv_pid")
+    case "$mf" in
+        ''|'0 '*)
+            bankline "{\"chunk\":$i,\"seed\":$cseed,\"secs\":$CHUNK_SECS,\"guest_secs\":$chunk_guest,\"fuzz_rc\":$frc,\"server\":\"gone\",\"exchanges\":${exch:-null},\"canary_code\":\"$ccode\",\"canary_s\":\"$csecs\",\"mix\":\"$mix\"}"
+            say "⚠ the server ended DURING chunk $i/$n_chunks (fuzz rc=$frc, exch=${exch:-?}, canary=$ccode) -- stopping the driver"
+            say "  $(printf '%s' "$out" | grep -E 'serve_fuzz:' | tr '\n' ' ')"
+            srv_gone="during chunk $i"
+            break ;;
+    esac
+    set -- $mf
     rss=$1; anon=$2; filem=$3; datam=$4
     arena=$(arena_rss "$srv_pid" | cut -d' ' -f1)
     gens=$(gens_in "$SRVLOG")
-    mix=$(printf '%s' "$out" | tr '\n' ' ' | sed 's/"/\\"/g')
-    bankline "{\"chunk\":$i,\"seed\":$cseed,\"secs\":$CHUNK_SECS,\"fuzz_rc\":$frc,\"rss_mb\":${rss:-null},\"anon_mb\":${anon:-null},\"file_mb\":${filem:-null},\"data_mb\":${datam:-null},\"arena_mb\":${arena:-null},\"gens_cumulative\":$gens,\"exchanges\":${exch:-null},\"canary_code\":\"$ccode\",\"canary_s\":\"$csecs\",\"mix\":\"$mix\"}"
+    bankline "{\"chunk\":$i,\"seed\":$cseed,\"secs\":$CHUNK_SECS,\"guest_secs\":$chunk_guest,\"fuzz_rc\":$frc,\"rss_mb\":${rss:-null},\"anon_mb\":${anon:-null},\"file_mb\":${filem:-null},\"data_mb\":${datam:-null},\"arena_mb\":${arena:-null},\"gens_cumulative\":$gens,\"exchanges\":${exch:-null},\"canary_code\":\"$ccode\",\"canary_s\":\"$csecs\",\"mix\":\"$mix\"}"
     say "chunk $i/$n_chunks rc=$frc rss=${rss:-?}MB (anon ${anon:-?} file ${filem:-?} data ${datam:-?} arena ${arena:-?}/$arena_mib) gens=$gens exch=${exch:-?} canary=$ccode/${csecs}s"
     say "  $(printf '%s' "$out" | grep -E 'serve_fuzz:' | tr '\n' ' ')"
     if [ "$ccode" != "200" ]; then
@@ -550,6 +622,26 @@ while [ "$i" -le "$n_chunks" ]; do
     i=$((i + 1))
 done
 rm -f "$manifest"
+
+# The run's own clock reading (design note section 10): the guest's rate over
+# the whole driver span, against the rate the chunks were stretched by. The
+# guest WALL clock is kept on the host's by Hyper-V time sync (it is stepped
+# back whenever the fast guest clock runs ahead), so over hours it is a
+# real-seconds ruler; over a 6-minute shakedown its steps are too coarse to
+# grade, so only soak mode is graded on it.
+clk1_up=$(cut -d' ' -f1 /proc/uptime); clk1_wall=$(date +%s)
+run_rate=$(awk -v u0="$clk0_up" -v u1="$clk1_up" -v w0="$clk0_wall" -v w1="$clk1_wall" \
+    'BEGIN { d = w1 - w0; if (d <= 0) { print "?"; exit } printf "%.4f", (u1 - u0) / d }')
+say "clock: over the driver's $((clk1_wall - clk0_wall)) real s the guest ran $run_rate guest s per real s (stretched by $CLOCK_RATE)"
+void=0
+if [ "$MODE" = soak ]; then
+    if [ "$run_rate" = "?" ] || ! awk -v a="$run_rate" -v b="$CLOCK_RATE" \
+            'BEGIN { d = (a - b) / b; if (d < 0) d = -d; exit !(d <= 0.01) }'; then
+        say "VOID -- the guest clock's rate over the run ($run_rate) is more than 1% from the rate the"
+        say "        chunks were stretched by ($CLOCK_RATE): the chunks were not the registered length"
+        void=1
+    fi
+fi
 
 say "waiting for the server to end ITSELF (never signalled -- this IS the leak check)"
 wait "$srv_pid"; srv_rc=$?
@@ -579,6 +671,24 @@ if [ "$srv_rc" -ne 0 ]; then
     say "FAIL -- server exited $srv_rc (a sanitizer abort exits non-zero; so does a crash)"
     tail -40 "$SRVLOG" | sed 's/^/  /' | tee -a "$LOG"
     fail=1
+fi
+# ▶ A SERVER THAT ENDED BEFORE ITS DRIVER (design note section 10). Ended
+# ITSELF -- exit 0, and its log's last line is the deadline's own "requests
+# completed, exiting" -- its budget did not cover the driver: the traffic was
+# cut short, the reading does not exist, and the run is VOID (re-run with its
+# seed). Anything else that ended it is the engine's, and FAIL outranks VOID.
+if [ -n "$srv_gone" ]; then
+    srv_last=$(tail -n 1 "$SRVLOG" 2>/dev/null)
+    case "$srv_rc:$srv_last" in
+        "0:stoke serve: "*" requests completed, exiting")
+            say "VOID -- the server ended ITSELF $srv_gone of $n_chunks ('$srv_last'): its budget,"
+            say "        ${srv_real} real s = ${srv_secs} guest s, did not cover the driver, so the traffic was cut short"
+            void=1 ;;
+        *)
+            say "FAIL -- the server ended $srv_gone of $n_chunks, and not by its own deadline"
+            say "        (exit $srv_rc; its log ends: '$srv_last')"
+            fail=1 ;;
+    esac
 fi
 if ls "$SANLOG".* > /dev/null 2>&1; then
     say "FAIL -- the sanitizer reported:"
@@ -675,7 +785,12 @@ if [ "$MODE" = soak ] && [ "$HOURS" -eq 6 ]; then
     rss_win=10800; rss_label="gate [3] 4 x 6 h scheme, seed $SEED, final 3 h"
 fi
 rss_rule=$(sh tests/tooling/soak_rss_rule.sh "$CSV" "$TOTAL_SECS" "$block_bytes" "$rss_win" 2>&1)
-if [ "$MODE" = soak ] && { [ "$HOURS" -ge 24 ] || [ "$HOURS" -eq 6 ]; }; then
+if [ "$void" -ne 0 ]; then
+    # A VOID run has no reading to grade (design note section 7): its memory
+    # line is reported, and neither passes nor fails the run.
+    say "RSS rule, REPORTED not graded (the run is VOID, above): $rss_rule"
+    rss_word="RSS not graded"
+elif [ "$MODE" = soak ] && { [ "$HOURS" -ge 24 ] || [ "$HOURS" -eq 6 ]; }; then
     say "RSS rule ($rss_label): $rss_rule"
     case "$rss_rule" in
         "FLAT ("*) rss_word="RSS FLAT" ;;
@@ -696,5 +811,12 @@ if [ "$fail" -ne 0 ]; then
     say "=== M7 soak: FAILED ==="
     exit 1
 fi
-say "=== M7 soak: OK ($n_chunks chunks, ${killed:-0} lost, ${TOTAL_SECS}s, $n_gen generations, no sanitizer reports, ${oomlines:-0} OOM/balloon lines, $rss_word) ==="
+if [ "$void" -ne 0 ]; then
+    # Engine evidence of a failure outranks a rig error (FAILED is checked
+    # first); with none, a run whose reading does not exist is VOID and is
+    # re-run with its own seed (design note section 7).
+    say "=== M7 soak: VOID (the reading does not exist -- see the VOID line above; re-run with seed $SEED) ==="
+    exit 2
+fi
+say "=== M7 soak: OK ($n_chunks chunks, ${killed:-0} lost, ${TOTAL_SECS}s at clock rate $CLOCK_RATE (run $run_rate), $n_gen generations, no sanitizer reports, ${oomlines:-0} OOM/balloon lines, $rss_word) ==="
 exit 0

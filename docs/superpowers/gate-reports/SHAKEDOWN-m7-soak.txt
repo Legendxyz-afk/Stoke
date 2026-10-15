@@ -1,7 +1,8 @@
-08:27:48  === M7 soak pre-flight (stamp SHAKEDOWN-m7-soak, mode shake) ===
-08:27:48  binaries: build/linux-asan/stoke 337bbc1b501e111f  build/linux-asan/serve_fuzz ab4299ca0dbd2303  (git ?)
-08:27:48  memory available: 7404 MB
-08:27:48  VM: MemTotal 7940 MB, swap 4096 MB, no hv_balloon line in dmesg; .wslconfig: /mnt/c/Users/Kabir/.wslconfig; uid 0
+04:20:10  === M7 soak pre-flight (stamp SHAKEDOWN-m7-soak, mode shake) ===
+04:20:11  binaries: build/linux-asan/stoke 337bbc1b501e111f  build/linux-asan/serve_fuzz ab4299ca0dbd2303  (git ?)
+04:20:11  memory available: 7403 MB
+04:20:12  RSS rule self-test: test_soak_rss_rule: 27/27 OK
+04:20:12  VM: MemTotal 7940 MB, swap 4096 MB, hv_balloon: Max. dynamic memory size: 8192 MB; .wslconfig: /mnt/c/Users/Kabir/.wslconfig; uid 0
   .wslconfig: # Written 2026-09-18 for the stoke M7 24 h soak (tests/tooling/run_m7_soak.sh):
   .wslconfig: # an EXPLICIT cap and swap instead of the 50%-of-host default, so host memory
   .wslconfig: # pressure reaches the guest as swap first and an OOM kill second. 8 GB is the
@@ -10,32 +11,36 @@
   .wslconfig: [wsl2]
   .wslconfig: memory=8GB
   .wslconfig: swap=4GB
-08:27:49  arena: 4 seqs x 64 blocks = 256 blocks x 4718592 B (n_layer=36 n_head_kv=8 head_dim=128 f32 K+V) = 1152 MiB; model file 2381 MiB (mmap'd, file-backed)
-08:27:49  dmesg witness pid 444 -> SHAKEDOWN-m7-soak.dmesg (oom_score_adj -1000)
-08:27:49  starting server: 480s budget, port 18171, build build/linux-asan, --ctx 1024 --seqs 4 --threads 4
-08:27:50  server up (pid 454, oom_score_adj -1000)
-08:27:50  RSS at t=0: 72 MB (anon 56, file 16, data 14681374); arena located at 79df7dc1c000-79dfc5c20000 (1179664 KiB against 2 x 589824), resident 0 MiB, swapped 0 MiB -- before any request
-08:27:50  driver: 3 chunk(s) of 120s
-08:27:50  corpus: 51 files
-08:30:11  chunk 1/3 rc=0 rss=2665MB (anon 273 file 2392 data 14681460 arena 137/1152) gens=26 exch=61 canary=200/8.578173s
-08:30:11    serve_fuzz: 127.0.0.1:18171 for 120s, 4 clients, 51 corpus files, seed 20260907, read 20000ms, max_tok<=3 serve_fuzz: 90 actions, 61 answered exchanges, 0 refused serve_fuzz: 20 requests asked for a sampler (10 of those for a repeat penalty) serve_fuzz: OK 
-08:32:22  chunk 2/3 rc=0 rss=2811MB (anon 418 file 2392 data 14681460 arena 281/1152) gens=59 exch=59 canary=200/8.652492s
-08:32:22    serve_fuzz: 127.0.0.1:18171 for 120s, 4 clients, 51 corpus files, seed 20260908, read 20000ms, max_tok<=3 serve_fuzz: 76 actions, 59 answered exchanges, 0 refused serve_fuzz: 23 requests asked for a sampler (8 of those for a repeat penalty) serve_fuzz: OK 
-08:34:41  chunk 3/3 rc=0 rss=2936MB (anon 543 file 2392 data 14681461 arena 404/1152) gens=80 exch=51 canary=200/10.851540s
-08:34:41    serve_fuzz: 127.0.0.1:18171 for 120s, 4 clients, 51 corpus files, seed 20260909, read 20000ms, max_tok<=3 serve_fuzz: 69 actions, 51 answered exchanges, 0 refused serve_fuzz: 15 requests asked for a sampler (6 of those for a repeat penalty) serve_fuzz: OK 
-08:34:41  waiting for the server to end ITSELF (never signalled -- this IS the leak check)
-08:35:21  server exited 0
-08:35:21  ⚠ the dmesg witness recorded 1 OOM/balloon line(s) (5 kernel lines in all):
-  [Fri Sep 18 08:28:34 2026] hv_balloon: Max. dynamic memory size: 8192 MB
-08:35:21  host side, afterwards: Hyper-V-Worker-Admin event 18508 says how the VM ended --
-08:35:21    powershell: Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Hyper-V-Worker-Admin';Id=18508} -MaxEvents 3 | Format-List TimeCreated,Message
-08:35:21  RSS: 2665 MB -> 2936 MB over 3 chunk(s) (anon 273 -> 543, file 2392 -> 2392; arena bound 1152 MiB anon, file bound 2381 MiB)
-08:35:21  series (SHAKEDOWN-m7-soak.rss.csv): n=94 sat=0 anon0=56 data0=14681374 arena0=0 anon_min=56 anon_max=545 anon_last=545 data_last=14681461 arena_last=406 gens_last=81
-08:35:21    (saturation level = arena 1152 - one block = 1147 MiB resident in the arena's own mappings)
-08:35:21  ⚠ RSS is REPORTED, not gated: a threshold picked now would be picked
-08:35:21    without a baseline, and this project does not fit bands to results.
-08:35:21    The first full run establishes the baseline; the SECOND can gate it.
-08:35:21  traffic mix per chunk is banked in SHAKEDOWN-m7-soak.jsonl -- the roadmap
-08:35:21  requires the driver to report what its traffic ACTUALLY CONTAINED, and
-08:35:21  'it was busy' is not that.
-08:35:21  === M7 soak: OK (3 chunks, 0 lost, 360s, 81 generations, no sanitizer reports, 1 OOM/balloon lines) ===
+  .wslconfig: # 2026-10-13 (M7 gate [3], design note 2026-10-12-m7-soak-4x6h-rule.md section 9):
+  .wslconfig: # the guest picked raw `tsc` (detected at 2611.197 MHz) and its monotonic clock ran
+  .wslconfig: # ~9% fast against the host. The Hyper-V reference-TSC clocksource takes its scale
+  .wslconfig: # from the hypervisor instead. Verify with tests/tooling/guest_clock_check.sh.
+  .wslconfig: kernelCommandLine = clocksource=hyperv_clocksource_tsc_page
+04:20:12  arena: 4 seqs x 64 blocks = 256 blocks x 4718592 B (n_layer=36 n_head_kv=8 head_dim=128 f32 K+V) = 1152 MiB; model file 2381 MiB (mmap'd, file-backed)
+04:20:12  clock: rate 0.9993 guest s per real s -- each chunk 120 real s = 120 guest s; server budget 660 real s (traffic + 120 + 3 x 60) = 660 guest s
+04:20:12  dmesg witness pid 538 -> SHAKEDOWN-m7-soak.dmesg (oom_score_adj -1000)
+04:20:12  starting server: 660s budget, port 18171, build build/linux-asan, --ctx 1024 --seqs 4 --threads 4, ASan quarantine 64 MiB
+04:20:13  server up (pid 548, oom_score_adj -1000)
+04:20:13  RSS at t=0: 72 MB (anon 56, file 16, data 14681374); arena located at 7f4f2621c000-7f4f6e220000 (1179664 KiB against 2 x 589824), resident 0 MiB, swapped 0 MiB -- before any request
+04:20:13  driver: 3 chunk(s) of 120s (120 guest s each)
+04:20:13  corpus: 51 files
+04:22:30  chunk 1/3 rc=0 rss=2644MB (anon 251 file 2392 data 14681449 arena 128/1152) gens=24 exch=57 canary=200/8.451187s
+04:22:30    serve_fuzz: 127.0.0.1:18171 for 120s, 4 clients, 51 corpus files, seed 20260907, read 20000ms, max_tok<=3 serve_fuzz: 83 actions, 57 answered exchanges, 0 refused serve_fuzz: 18 requests asked for a sampler (10 of those for a repeat penalty) serve_fuzz: OK 
+04:24:44  chunk 2/3 rc=0 rss=2797MB (anon 404 file 2392 data 14681450 arena 279/1152) gens=59 exch=65 canary=200/8.600153s
+04:24:44    serve_fuzz: 127.0.0.1:18171 for 120s, 4 clients, 51 corpus files, seed 20260908, read 20000ms, max_tok<=3 serve_fuzz: 87 actions, 65 answered exchanges, 0 refused serve_fuzz: 24 requests asked for a sampler (8 of those for a repeat penalty) serve_fuzz: OK 
+04:26:51  chunk 3/3 rc=0 rss=2910MB (anon 517 file 2392 data 14681450 arena 391/1152) gens=80 exch=51 canary=200/8.555877s
+04:26:51    serve_fuzz: 127.0.0.1:18171 for 120s, 4 clients, 51 corpus files, seed 20260909, read 20000ms, max_tok<=3 serve_fuzz: 68 actions, 51 answered exchanges, 0 refused serve_fuzz: 15 requests asked for a sampler (6 of those for a repeat penalty) serve_fuzz: OK 
+04:26:51  clock: over the driver's 398 real s the guest ran 1.0790 guest s per real s (stretched by 0.9993)
+04:26:51  waiting for the server to end ITSELF (never signalled -- this IS the leak check)
+04:30:23  server exited 0
+04:30:23  dmesg witness: no OOM or balloon lines over the run (2 kernel lines in all)
+04:30:23  host side, afterwards: Hyper-V-Worker-Admin event 18508 says how the VM ended --
+04:30:23    powershell: Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Hyper-V-Worker-Admin';Id=18508} -MaxEvents 3 | Format-List TimeCreated,Message
+04:30:23  RSS: 2644 MB -> 2910 MB over 3 chunk(s) (anon 251 -> 517, file 2392 -> 2392; arena bound 1152 MiB anon, file bound 2381 MiB)
+04:30:24  series (SHAKEDOWN-m7-soak.rss.csv): n=129 sat=0 anon0=56 data0=14681374 arena0=0 anon_min=56 anon_max=517 anon_last=517 data_last=14681450 arena_last=391 gens_last=80
+04:30:24    (saturation level = arena 1152 - one block = 1147 MiB resident in the arena's own mappings)
+04:30:24  RSS rule, REPORTED not graded (a 0 h shake run is not a gate run): VOID (the series spans 610 s, shorter than the 21600 s window -- nothing to grade)
+04:30:24  traffic mix per chunk is banked in SHAKEDOWN-m7-soak.jsonl -- the roadmap
+04:30:24  requires the driver to report what its traffic ACTUALLY CONTAINED, and
+04:30:24  'it was busy' is not that.
+04:30:24  === M7 soak: OK (3 chunks, 0 lost, 360s at clock rate 0.9993 (run 1.0790), 80 generations, no sanitizer reports, 0 OOM/balloon lines, RSS not graded) ===

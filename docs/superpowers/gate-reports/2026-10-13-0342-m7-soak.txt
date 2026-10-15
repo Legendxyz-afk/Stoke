@@ -1,0 +1,30 @@
+03:42:44  === M7 soak pre-flight (stamp 2026-10-13-0342-m7-soak, mode soak) ===
+03:42:44  binaries: build/linux-asan/stoke 337bbc1b501e111f  build/linux-asan/serve_fuzz ab4299ca0dbd2303  (git ?)
+03:42:44  memory available: 7411 MB
+03:42:45  RSS rule self-test: test_soak_rss_rule: 27/27 OK
+03:42:45  VM: MemTotal 7940 MB, swap 4096 MB, hv_balloon: Max. dynamic memory size: 8192 MB; .wslconfig: /mnt/c/Users/Kabir/.wslconfig; uid 0
+  .wslconfig: # Written 2026-09-18 for the stoke M7 24 h soak (tests/tooling/run_m7_soak.sh):
+  .wslconfig: # an EXPLICIT cap and swap instead of the 50%-of-host default, so host memory
+  .wslconfig: # pressure reaches the guest as swap first and an OOM kill second. 8 GB is the
+  .wslconfig: # same number the default gave this 15.6 GB box; the swap is the change.
+  .wslconfig: # Takes effect at the next VM start (wsl --shutdown, or the idle timer).
+  .wslconfig: [wsl2]
+  .wslconfig: memory=8GB
+  .wslconfig: swap=4GB
+03:42:45  arena: 4 seqs x 64 blocks = 256 blocks x 4718592 B (n_layer=36 n_head_kv=8 head_dim=128 f32 K+V) = 1152 MiB; model file 2381 MiB (mmap'd, file-backed)
+03:42:45  dmesg witness pid 3342 -> 2026-10-13-0342-m7-soak.dmesg (oom_score_adj -1000)
+03:42:45  starting server: 21720s budget, port 18171, build build/linux-asan, --ctx 1024 --seqs 4 --threads 4, ASan quarantine 16 MiB
+03:42:47  server up (pid 3352, oom_score_adj -1000)
+03:42:47  RSS at t=0: 54 MB (anon 37, file 16, data 14681358); arena located at 748e2f41c000-748e77420000 (1179664 KiB against 2 x 589824), resident 0 MiB, swapped 0 MiB -- before any request
+03:42:47  driver: 6 chunk(s) of 3600s
+03:42:47  corpus: 51 files
+04:38:33  chunk 1/6 rc=0 rss=3622MB (anon 1230 file 2392 data 14681421 arena 1116/1152) gens=737 exch=1652 canary=200/11.279608s
+04:38:33    serve_fuzz: 127.0.0.1:18171 for 3600s, 4 clients, 51 corpus files, seed 20261013, read 20000ms, max_tok<=3 serve_fuzz: 2436 actions, 1652 answered exchanges, 0 refused serve_fuzz: 528 requests asked for a sampler (178 of those for a repeat penalty) serve_fuzz: OK 
+05:33:59  chunk 2/6 rc=0 rss=3650MB (anon 1258 file 2392 data 14681421 arena 1148/1152) gens=1468 exch=1559 canary=200/9.860708s
+05:33:59    serve_fuzz: 127.0.0.1:18171 for 3600s, 4 clients, 51 corpus files, seed 20261014, read 20000ms, max_tok<=3 serve_fuzz: 2304 actions, 1559 answered exchanges, 0 refused serve_fuzz: 532 requests asked for a sampler (164 of those for a repeat penalty) serve_fuzz: OK 
+06:29:19  chunk 3/6 rc=0 rss=3655MB (anon 1262 file 2392 data 14681422 arena 1152/1152) gens=2201 exch=1592 canary=200/11.670882s
+06:29:19    serve_fuzz: 127.0.0.1:18171 for 3600s, 4 clients, 51 corpus files, seed 20261015, read 20000ms, max_tok<=3 serve_fuzz: 2319 actions, 1592 answered exchanges, 0 refused serve_fuzz: 541 requests asked for a sampler (185 of those for a repeat penalty) serve_fuzz: OK 
+07:24:43  chunk 4/6 rc=0 rss=3655MB (anon 1262 file 2392 data 14681422 arena 1152/1152) gens=2941 exch=1568 canary=200/8.477087s
+07:24:43    serve_fuzz: 127.0.0.1:18171 for 3600s, 4 clients, 51 corpus files, seed 20261016, read 20000ms, max_tok<=3 serve_fuzz: 2352 actions, 1568 answered exchanges, 0 refused serve_fuzz: 551 requests asked for a sampler (186 of those for a repeat penalty) serve_fuzz: OK 
+08:20:17  chunk 5/6 rc=0 rss=3655MB (anon 1263 file 2392 data 14681422 arena 1152/1152) gens=3617 exch=1523 canary=200/8.453674s
+08:20:17    serve_fuzz: 127.0.0.1:18171 for 3600s, 4 clients, 51 corpus files, seed 20261017, read 20000ms, max_tok<=3 serve_fuzz: 2293 actions, 1523 answered exchanges, 0 refused serve_fuzz: 491 requests asked for a sampler (170 of those for a repeat penalty) serve_fuzz: OK 
