@@ -5,6 +5,7 @@ pub mod monitor;
 pub mod store;
 pub mod sse;
 pub mod budget;
+pub mod chat;
 
 #[tauri::command]
 fn ping() -> String {
