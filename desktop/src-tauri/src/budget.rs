@@ -1,5 +1,6 @@
 //! Which part of a chat to send, and how long a reply may be (spec §3.2).
 //! The app has no tokenizer: it estimates conservatively, and the engine's 400 reply corrects it.
+//! Digit runs can still under-count, since the tokenizer may give each digit its own token, and the engine's 400 reply corrects it.
 
 /// Earlier turns sent with each message, in estimated tokens (decided 2026-09-25).
 pub const HISTORY_BUDGET: u32 = 1_500;
@@ -16,14 +17,14 @@ pub struct Turn {
     pub content: String,
 }
 
-/// About 3.5 characters per token, rounded up, plus the template's per-message cost.
+/// About 3.5 bytes of UTF-8 per token, rounded up, plus the template's per-message cost.
 pub fn estimate_tokens(text: &str) -> u32 {
-    let chars = text.chars().count() as u32;
-    (chars * 2 + 6) / 7 + PER_MESSAGE
+    let bytes = text.len() as u32;
+    (bytes * 2 + 6) / 7 + PER_MESSAGE
 }
 
 /// Keeps the most recent earlier turns that fit in `budget`, whole messages only, and never
-/// starts on an assistant turn. Returns the kept turns and how many were dropped.
+/// starts on a turn that is not the user's. Returns the kept turns and how many were dropped.
 pub fn select_history(history: &[Turn], budget: u32) -> (Vec<Turn>, u32) {
     let mut used = 0u32;
     let mut start = history.len();
@@ -94,6 +95,8 @@ mod tests {
         assert_eq!(max_tokens_for(4096, 500, REPLY_CAP), Some(1024));
         assert_eq!(max_tokens_for(4096, 3500, REPLY_CAP), Some(4096 - 3500 - 8));
         assert_eq!(max_tokens_for(4096, 4060, REPLY_CAP), None);
+        assert_eq!(max_tokens_for(4096, 4096 - 8 - 64, REPLY_CAP), Some(64));
+        assert_eq!(max_tokens_for(4096, 4096 - 8 - 63, REPLY_CAP), None);
     }
 
     /// Review Focus 5: a pasted document longer than the whole context.
@@ -110,5 +113,36 @@ mod tests {
         let msg = "prompt is 4210 tokens and max_tokens is 1024, which exceeds the context length of 4096";
         assert_eq!(parse_context_error(msg), Some((4210, 1024, 4096)));
         assert_eq!(parse_context_error("something else"), None);
+    }
+
+    /// Review R43: the most recent turns are kept, never the oldest, and never past the budget.
+    #[test]
+    fn select_history_keeps_the_newest_turns_within_budget() {
+        let h = vec![
+            Turn { role: "user", content: "a".repeat(70) },
+            Turn { role: "assistant", content: "b".repeat(700) },
+            Turn { role: "user", content: "c".repeat(70) },
+            Turn { role: "assistant", content: "d".repeat(70) },
+        ];
+        let budget = estimate_tokens(&"x".repeat(70)) * 3;
+        let (kept, dropped) = select_history(&h, budget);
+        assert_eq!(kept, h[2..].to_vec());
+        assert_eq!(dropped, 2);
+        let spent: u32 = kept.iter().map(|t| estimate_tokens(&t.content)).sum();
+        assert!(spent <= budget, "kept {spent} tokens of a {budget} budget");
+    }
+
+    /// Review R44: the estimate counts UTF-8 bytes, so non-ASCII text is not under-counted.
+    #[test]
+    fn non_ascii_text_estimates_more_tokens_than_ascii_of_the_same_length() {
+        let hindi = "नमस्ते दुनिया";
+        let ascii = "x".repeat(hindi.chars().count());
+        assert_eq!(hindi.chars().count(), ascii.chars().count());
+        assert!(
+            estimate_tokens(hindi) > estimate_tokens(&ascii),
+            "non-ASCII {} vs ASCII {}",
+            estimate_tokens(hindi),
+            estimate_tokens(&ascii)
+        );
     }
 }

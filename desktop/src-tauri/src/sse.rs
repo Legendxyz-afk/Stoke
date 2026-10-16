@@ -1,6 +1,7 @@
 //! Splits an SSE byte stream into events (spec §3.2). Bytes are buffered until a whole line
 //! has arrived, so a UTF-8 character split across network chunks is never decoded in halves
 //! (a 0x0A byte never occurs inside a multi-byte UTF-8 sequence).
+//! This is a line-per-event parser for the Stoke engine's framing (one `data:` line per event), not a general SSE parser.
 
 use serde::Deserialize;
 
@@ -111,5 +112,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(u.usage.unwrap().completion_tokens, 6);
+        let f: ChatChunk = serde_json::from_str(
+            r#"{"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(f.choices[0].delta.content, None);
+        assert_eq!(f.choices[0].finish_reason.as_deref(), Some("stop"));
+        let r: ChatChunk = serde_json::from_str(
+            r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.choices[0].delta.content.as_deref(), Some(""));
     }
 }
