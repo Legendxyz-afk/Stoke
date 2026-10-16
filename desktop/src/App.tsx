@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import "./fonts.css";
 import "./theme.css";
+import { ChatTab } from "./chat/ChatTab";
 import { Placeholder } from "./components/Placeholder";
 import { StatusBar } from "./components/StatusBar";
 import { TopBar, type Tab } from "./components/TopBar";
@@ -52,7 +53,15 @@ export function App() {
   return (
     <div className="app">
       <TopBar tab={tab} onTab={setTab} overview={overview} error={error} />
-      <main className="content">{renderTab(tab, overview)}</main>
+      <main className="content">
+        {/* Always mounted (R36a): a reply streaming here keeps its events, its live text and the
+            composer draft while another tab shows. `display: contents` keeps the three columns in
+            the content row. */}
+        <div style={{ display: tab === "Chat" ? "contents" : "none" }}>
+          <ChatTab overview={overview} />
+        </div>
+        {tab !== "Chat" && renderTab(tab, overview)}
+      </main>
       <StatusBar overview={overview} />
     </div>
   );

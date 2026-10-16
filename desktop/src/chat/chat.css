@@ -1,0 +1,27 @@
+.chat-item { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: none; border: 0;
+             border-bottom: 1px solid var(--l20); padding: 12px 20px; color: var(--d80); cursor: pointer; font-size: 12.5px; }
+.chat-item.selected { background: var(--sel); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.messages { flex: 1; padding: 18px 28px; display: flex; flex-direction: column; gap: 18px; }
+.msg { display: flex; flex-direction: column; gap: 6px; max-width: 860px; }
+.msg-head { display: flex; gap: 12px; align-items: center; }
+.msg-user { white-space: pre-wrap; background: var(--field); border: 1px solid var(--l24); padding: 10px 14px; }
+.msg-error { color: var(--flame); font-family: var(--mono); font-size: 11px; }
+.versions { display: inline-flex; gap: 6px; align-items: center; }
+.status-stopped, .status-interrupted, .status-streaming { color: var(--shared); }
+.status-error { color: var(--flame); }
+.status-ok { color: var(--d72); }
+.history-cut { border-top: 1px dashed var(--l30); padding-top: 6px; }
+.waiting { color: var(--d60); font-family: var(--mono); font-size: 11px; }
+.notice { color: var(--flame); font-family: var(--mono); font-size: 11px; padding: 0 20px 8px; }
+.composer { border-top: 1px solid var(--l27); padding: 12px 20px; display: flex; gap: 12px; align-items: flex-end; }
+.composer textarea { flex: 1; min-height: 44px; max-height: 200px; resize: vertical; background: var(--field); color: var(--text);
+                     border: 1px solid var(--l30); padding: 10px 12px; font-size: 13px; }
+.composer-actions { display: flex; gap: 8px; }
+.md { line-height: 1.55; overflow-wrap: anywhere; }
+.md pre { background: var(--code); border: 1px solid var(--l24); padding: 10px 12px; overflow-x: auto; }
+.md code { font-family: var(--mono); font-size: 12px; }
+.md table { border-collapse: collapse; }
+.md th, .md td { border: 1px solid var(--l27); padding: 4px 8px; }
+.md-link { color: var(--shared); text-decoration: underline dotted; }
+.right select { background: var(--field); color: var(--text); border: 1px solid var(--l30); padding: 7px 8px;
+                font-family: var(--mono); font-size: 11px; }

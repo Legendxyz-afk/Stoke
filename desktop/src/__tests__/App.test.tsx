@@ -5,7 +5,8 @@ vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() 
 
 import { App } from "../App";
 import { api } from "../ipc/api";
-import { overview } from "./testApi";
+import type { StreamEvent } from "../ipc/bindings/StreamEvent";
+import { chat, models, msg, overview, view as storedChat, withTurn } from "./testApi";
 
 describe("App", () => {
   it("shows the wordmark, the six tabs and the engine state", async () => {
@@ -93,5 +94,64 @@ describe("App when the host does not answer", () => {
     view.unmount(); // the cleanup runs unlisten.then((f) => f()); a missing function would be an unhandled rejection
     await act(async () => {});
     expect(logged.mock.calls).toEqual([["engine-status listener failed:", "event:default not allowed by ACL"]]);
+  });
+});
+
+// R36(a): the Chat tab stays mounted while another tab shows. If it were unmounted on a tab switch, a reply streaming
+// into it would lose its events and its live text (and be left on STOP for good), and the composer draft would be gone.
+describe("App keeps the Chat tab mounted", () => {
+  const started: StreamEvent = { kind: "started", message_id: "a3", user_message_id: "u3", dropped_turns: 0, request_id: "req_1" };
+  const done = { prompt_tokens: 60, completion_tokens: 1, ttft_ms: 212, total_ms: 650, tokens_per_s: null, finish_reason: "stop" };
+  const messageBox = () => screen.getByLabelText("message") as HTMLTextAreaElement;
+  const tab = (name: string) => fireEvent.click(screen.getByRole("tab", { name }));
+
+  beforeEach(() => {
+    vi.mocked(api.overview).mockReset().mockImplementation(async () => overview);
+    vi.mocked(api.onEngineStatus).mockReset().mockImplementation(async () => () => {});
+    vi.mocked(api.models).mockReset().mockResolvedValue(models);
+    vi.mocked(api.chats).mockReset().mockResolvedValue([chat]);
+    vi.mocked(api.chat).mockReset().mockResolvedValue(storedChat);
+    vi.mocked(api.send).mockReset();
+  });
+
+  it("keeps the composer draft across a tab switch", async () => {
+    render(<App />);
+    await screen.findByText("Verdict: HOLD.");
+    fireEvent.change(messageBox(), { target: { value: "draft text" } });
+    tab("Swarm");
+    expect(screen.queryByRole("textbox", { name: "message" })).toBeNull(); // not shown over the other tab
+    tab("Chat");
+    expect(messageBox().value).toBe("draft text");
+  });
+
+  it("keeps a reply that streams while another tab shows live, and ends it, on return", async () => {
+    // The store as the host would have it: the reply is a streaming row until it finishes.
+    let phase: "idle" | "streaming" | "done" = "idle";
+    vi.mocked(api.chat).mockImplementation(async () =>
+      phase === "idle"
+        ? storedChat
+        : withTurn(storedChat, "go", msg({ id: "a3", role: "assistant", parent_id: "u3",
+            content: phase === "done" ? "Buy" : "", status: phase === "done" ? "done" : "streaming" })));
+    let end!: () => void;
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      onEvent(started);
+      onEvent({ kind: "token", text: "Buy " });
+      await new Promise<void>((r) => (end = r));
+      onEvent({ kind: "finished", stats: done });
+    });
+    render(<App />);
+    await screen.findByText("Verdict: HOLD.");
+    phase = "streaming";
+    fireEvent.change(messageBox(), { target: { value: "go" } });
+    fireEvent.click(screen.getByRole("button", { name: "SEND" }));
+    tab("Swarm");
+    tab("Chat");
+    expect(await screen.findByText("Buy")).toBeTruthy(); // the live text: the stored row is still empty
+    expect(screen.getByRole("button", { name: "STOP" })).toBeTruthy();
+    phase = "done";
+    end();
+    expect(await screen.findByRole("button", { name: "SEND" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "STOP" })).toBeNull();
+    expect(screen.getByText("Buy")).toBeTruthy();
   });
 });
