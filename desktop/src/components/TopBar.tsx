@@ -1,0 +1,45 @@
+import { gb, mb } from "../format";
+import type { Overview } from "../ipc/bindings/Overview";
+
+export const TABS = ["Chat", "Swarm", "Models", "Requests", "Logs", "Settings"] as const;
+export type Tab = (typeof TABS)[number];
+
+export function modelName(path: string | null | undefined): string {
+  if (!path) return "no model";
+  const file = path.split(/[\\/]/).pop() ?? path;
+  return file.replace(/\.gguf$/i, "");
+}
+
+export function TopBar({ tab, onTab, overview }: { tab: Tab; onTab: (t: Tab) => void; overview: Overview | null }) {
+  const e = overview?.engine;
+  return (
+    <header className="topbar">
+      <div className="brand">
+        <span className="wordmark">lorren</span>
+        <span className="version">{overview?.app_version ?? "…"}</span>
+      </div>
+      <nav className="tabs" role="tablist">
+        {TABS.map((t) => (
+          <button key={t} role="tab" className="tab" aria-selected={t === tab} onClick={() => onTab(t)}>
+            {t}
+          </button>
+        ))}
+      </nav>
+      <div className="engine" aria-label="engine">
+        <span>
+          <i className={`dot ${e?.state ?? "stopped"}`} />
+          {e?.state ?? "starting"}
+        </span>
+        <span className="ell" style={{ maxWidth: 260 }}>{modelName(e?.model_path)}</span>
+        <span className="dim">t={e?.threads ?? "auto"}</span>
+        <span className="dim">kv {e?.kv ?? "q8"}</span>
+        {overview && (
+          <span className="dim">
+            app {mb(overview.memory.app_bytes)} · engine {gb(overview.memory.engine_bytes)} ·{" "}
+            {gb(overview.memory.used_bytes)}/{gb(overview.memory.total_bytes)}
+          </span>
+        )}
+      </div>
+    </header>
+  );
+}
