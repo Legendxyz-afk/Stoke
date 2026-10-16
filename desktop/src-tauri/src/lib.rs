@@ -3,6 +3,8 @@ pub mod gguf;
 pub mod library;
 pub mod monitor;
 pub mod store;
+pub mod sse;
+pub mod budget;
 
 #[tauri::command]
 fn ping() -> String {
