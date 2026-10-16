@@ -381,3 +381,42 @@ async fn a_memory_refusal_brings_the_previous_one_back() {
     assert!(s.pid.is_some() && s.pid != first_pid, "a new process serves the previous model: {s:?}");
     sup.stop().await;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Pre-review addition (task 10): the clause of R38a that no ruling test pinned. Shown not vacuous by
+// running it against the mutant that drops the `p.id != model.id` filter (see task-10-report.md).
+// ---------------------------------------------------------------------------------------------
+
+/// R38a: only a DIFFERENT running model is brought back. Asking again for the model that was running (after
+/// a crash, or from Failed) has no fallback: without the `p.id != model.id` filter this request would start
+/// the old model once more after the refusal and end Serving, and a request that keeps failing (a load
+/// timeout, say) would be tried twice under the supervisor's lock before its error came back.
+#[tokio::test]
+async fn a_request_for_the_model_that_was_running_has_no_fallback() {
+    let mon = Monitor::new(None);
+    // The engine dies 200 ms after its banner and the health watcher (60 s) does not get there first, so the
+    // supervisor still holds the dead process as "running" when the next request arrives.
+    let mut c = cfg(&[("FAKE_ENGINE_MODE", "crash_after_ms:200".into())]);
+    c.health_interval = Duration::from_secs(60);
+    c.check_memory = true;
+    c.min_free_bytes = 0;
+    let sup = Supervisor::new(c, mon.clone());
+    let a = model("a", "a.gguf");
+    let port = sup.ensure_model(&a).await.unwrap();
+    // Wait for the crash itself (the port stops accepting), not for a guessed number of milliseconds.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(std::time::Instant::now() < deadline, "the fake engine never crashed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await; // the process reads as exited a moment after its socket closes
+    // The same id again, and it no longer fits.
+    let grown = ModelRef { file_bytes: 1 << 60, ..a.clone() };
+    let err = sup.ensure_model(&grown).await.unwrap_err();
+    assert!(matches!(err, EngineError::NotEnoughMemory { .. }), "{err}");
+    let s = sup.status();
+    assert_eq!(s.state, EngineState::Failed, "no fallback to the model that was just asked for: {s:?}");
+    let warns: Vec<String> = mon.logs_after(0).into_iter().filter(|l| l.level == "warn").map(|l| l.text).collect();
+    assert!(warns.iter().all(|w| !w.contains("did not start")), "{warns:?}");
+    sup.stop().await;
+}

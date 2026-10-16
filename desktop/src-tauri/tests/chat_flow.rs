@@ -356,3 +356,63 @@ async fn stop_during_a_model_load_leaves_the_engine_serving() {
     let s = w.svc.supervisor.status();
     assert_eq!((s.state, s.model_id.as_deref()), (EngineState::Serving, Some(w.qwen.as_str())), "{s:?}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Pre-review addition (task 10): the clause of R38b that no ruling test pinned. Shown not vacuous by running it
+// against the mutant that marks a model CAN'T RUN on ANY start error (see task-10-report.md).
+// ---------------------------------------------------------------------------------------------
+
+/// R38b: ONLY the engine's own refusal of the file (LoadFailed) marks a model CAN'T RUN. A memory refusal is not
+/// the file's fault and can pass later: the row stays runnable, the previous model serves again, and the next
+/// send in that chat tries again instead of being refused up front. `world()` switches the memory check off, so
+/// this test builds its own world with it on, and makes the nexus file look larger than any PC's memory.
+#[tokio::test]
+async fn a_memory_refusal_does_not_mark_the_model_cant_run() {
+    let dir = std::env::temp_dir().join(format!("lorren chat {}-memrefuse", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    fixture::write(&dir.join("Qwen3-4B-Instruct-2507-Q4_K_M.gguf"), &Spec::qwen3("Qwen3-4B")).unwrap();
+    fixture::write(&dir.join("nexus.gguf"), &Spec::llama("Nexus_Model")).unwrap();
+    let mut models = library::scan(&LibraryConfig {
+        folders: vec![dir.clone()],
+        ollama_models_dir: None,
+        default_prefix: "qwen3-4b-instruct-2507-q4_k_m".into(),
+    });
+    let qwen = models.iter().find(|m| m.is_default).unwrap().id.clone();
+    let nexus = models.iter().find(|m| m.name == "nexus").unwrap().id.clone();
+    models.iter_mut().find(|m| m.id == nexus).unwrap().size_bytes = 1 << 60; // no PC has this much memory
+    let mut cfg = EngineConfig::defaults(PathBuf::from(env!("CARGO_BIN_EXE_fake-engine")));
+    cfg.check_memory = true;
+    cfg.min_free_bytes = 0;
+    cfg.env = vec![("FAKE_ENGINE_TOKEN_MS".into(), "1".into())];
+    let monitor = Monitor::new(None);
+    let sup = Supervisor::new(cfg, monitor.clone());
+    let store = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+    let svc = ChatService::new(store, sup, Arc::new(RwLock::new(models)), monitor, fast());
+
+    let qchat = svc.store.lock().unwrap().create_chat(&qwen, None).unwrap().id;
+    let (qseen, qsink) = collector();
+    svc.send(&qchat, "hi", qsink).await.unwrap();
+    let qevents = qseen.lock().unwrap().clone();
+    assert!(matches!(qevents.last(), Some(StreamEvent::Finished { .. })), "{qevents:?}");
+
+    // Twice: the second send must reach the engine again, not be refused up front with NotRunnable.
+    let nchat = svc.store.lock().unwrap().create_chat(&nexus, None).unwrap().id;
+    for round in 0..2 {
+        let (nseen, nsink) = collector();
+        svc.send(&nchat, "hello", nsink)
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: a memory refusal must not make the chat refuse up front: {e}"));
+        let events = nseen.lock().unwrap().clone();
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error { message }) if message.contains("not enough memory")),
+            "round {round}: {events:?}"
+        );
+        let entry = svc.library.read().unwrap().iter().find(|m| m.id == nexus).cloned().unwrap();
+        assert!(entry.runnable && entry.reason.is_none(), "round {round}: the row is still runnable: {entry:?}");
+        let s = svc.supervisor.status();
+        assert_eq!((s.state, s.model_id.as_deref()), (EngineState::Serving, Some(qwen.as_str())), "round {round}: {s:?}");
+    }
+    svc.supervisor.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
