@@ -10,8 +10,20 @@ export function modelName(path: string | null | undefined): string {
   return file.replace(/\.gguf$/i, "");
 }
 
-export function TopBar({ tab, onTab, overview }: { tab: Tab; onTab: (t: Tab) => void; overview: Overview | null }) {
+export function TopBar({
+  tab,
+  onTab,
+  overview,
+  error,
+}: {
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  overview: Overview | null;
+  /** Why the host did not answer. Until one overview has arrived it replaces "starting" with "host unreachable". */
+  error?: string;
+}) {
   const e = overview?.engine;
+  const unreachable = !overview && error !== undefined;
   return (
     <header className="topbar">
       <div className="brand">
@@ -26,10 +38,17 @@ export function TopBar({ tab, onTab, overview }: { tab: Tab; onTab: (t: Tab) => 
         ))}
       </nav>
       <div className="engine" aria-label="engine">
-        <span>
-          <i className={`dot ${e?.state ?? "stopped"}`} />
-          {e?.state ?? "starting"}
-        </span>
+        {unreachable ? (
+          <span className="flame-text" title={error}>
+            <i className="dot failed" />
+            host unreachable
+          </span>
+        ) : (
+          <span>
+            <i className={`dot ${e?.state ?? "stopped"}`} />
+            {e?.state ?? "starting"}
+          </span>
+        )}
         <span className="ell" style={{ maxWidth: 260 }}>{modelName(e?.model_path)}</span>
         <span className="dim">t={e?.threads ?? "auto"}</span>
         <span className="dim">kv {e?.kv ?? "q8"}</span>
