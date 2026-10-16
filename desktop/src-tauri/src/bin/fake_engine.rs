@@ -2,6 +2,7 @@
 //! milestone-1 plan for the switches. Formats follow the real server (src/server.c):
 //! `data: {json}\n\n` chunks, `: ping\n\n` comments, `data: [DONE]\n\n`, and errors shaped
 //! {"error":{"message":..,"type":..,"param":null,"code":null}}.
+//! `FAKE_ENGINE_REFUSE_MODEL=<text>` (Task 10): refuse exactly as `FAKE_ENGINE_MODE=refuse` does, but only a model whose path contains `<text>`.
 //!
 //! It is the real engine's shape, not the real engine. KNOWN DIFFERENCES, which a green test
 //! against the fake does not cover:
@@ -101,7 +102,10 @@ fn main() {
         eprintln!("stoke serve: stoke_open: max_ctx {ctx} exceeds the model's 4096");
         std::process::exit(1);
     }
-    if matches!(mode, Mode::Refuse) {
+    // FAKE_ENGINE_REFUSE_MODEL=<text>: the refusal below, for the model whose path contains <text> only. A model
+    // that does not contain it gets whatever FAKE_ENGINE_MODE says, as usual. (`env` reads an empty value as unset.)
+    let refuses_this_model = env("FAKE_ENGINE_REFUSE_MODEL").is_some_and(|text| model.contains(&text));
+    if matches!(mode, Mode::Refuse) || refuses_this_model {
         // The real engine's sentence (src/model.c:755-757, behind the `stoke serve: ` of src/server.c:1752).
         eprintln!(
             "stoke serve: model: '{model}' -- general.architecture is 'qwen2vl', expected 'qwen3' or 'llama' (this loader implements those two)"

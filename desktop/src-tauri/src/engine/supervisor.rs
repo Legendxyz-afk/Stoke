@@ -298,6 +298,14 @@ impl Supervisor {
 
     /// Makes sure the engine is serving `model`, starting or switching it if needed.
     /// Waits for any start already in progress. Returns the port.
+    ///
+    /// Switching from another model that is running: when `model` does not start (any error: the engine
+    /// refuses the file, the memory check, a timeout, a spawn failure), the previous model is started
+    /// again under the same lock and the ORIGINAL error is returned, so the user keeps the engine they had
+    /// (spec 5, R38). Asking again for the model that was running (after a crash, or from Failed) has no fallback.
+    ///
+    /// Not cancel-safe: dropping this future mid-load leaves the status at Starting/Restarting. Spawn it;
+    /// never drop it (R39).
     pub async fn ensure_model(self: &Arc<Self>, model: &ModelRef) -> Result<u16, EngineError> {
         let mut inner = self.inner.lock().await;
         let status = self.status();
@@ -309,8 +317,21 @@ impl Supervisor {
         if status.state == EngineState::Failed {
             inner.failures.clear(); // an explicit request retries after giving up
         }
+        // R38: the model to bring back if this switch fails. Only a RUNNING model counts, and not the one
+        // being asked for (a re-request after a crash, or from Failed, has nothing to fall back to).
+        let previous = inner.running.as_ref().map(|r| r.model.clone()).filter(|p| p.id != model.id);
         self.stop_locked(&mut inner);
-        self.start_locked(&mut inner, model.clone(), false).await
+        match self.start_locked(&mut inner, model.clone(), false).await {
+            Ok(port) => Ok(port),
+            Err(e) => {
+                if let Some(p) = previous {
+                    self.monitor.log("app", "warn", format!("{} did not start; starting {} again", model.id, p.id));
+                    // Its own failure is logged and leaves the status at Failed, like any other start.
+                    let _ = self.start_locked(&mut inner, p, false).await;
+                }
+                Err(e)
+            }
+        }
     }
 
     pub async fn stop(&self) {
@@ -349,8 +370,12 @@ impl Supervisor {
 
     async fn start_locked(self: &Arc<Self>, inner: &mut Inner, model: ModelRef, restart: bool) -> Result<u16, EngineError> {
         if let Err(e) = self.memory_check(&model) {
+            // The refusal names the model it refused (R40), not the one that ran before: a Models row keyed
+            // on model_id must not be marked CAN'T RUN for the wrong model.
             self.set(|s| {
                 s.state = EngineState::Failed;
+                s.model_id = Some(model.id.clone());
+                s.model_path = Some(model.path.to_string_lossy().to_string());
                 s.last_error = Some(e.to_string());
             });
             self.monitor.log("app", "error", e.to_string());

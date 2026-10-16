@@ -312,3 +312,72 @@ async fn the_engines_banner_is_logged_under_source_engine() {
     }
     sup.stop().await;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Task 10 rulings R38 / R40: what a refused or failed model switch leaves behind. Each was run
+// RED against the unfixed supervisor first.
+// ---------------------------------------------------------------------------------------------
+
+/// R40: the memory refusal sets Failed and last_error, so model_id/model_path must name the model it
+/// refused. Left alone they name the previous model (or none), and a Models row keyed on model_id would
+/// mark the wrong model CAN'T RUN.
+#[tokio::test]
+async fn a_memory_refusal_names_the_model_it_refused() {
+    let mut c = cfg(&[]);
+    c.check_memory = true;
+    c.min_free_bytes = 0;
+    let sup = Supervisor::new(c, Monitor::new(None));
+    let huge = ModelRef { id: "huge".into(), path: PathBuf::from("M:/New Drive/ai models/huge.gguf"), file_bytes: 1 << 60, kv_bytes_per_token: 0 };
+    let err = sup.ensure_model(&huge).await.unwrap_err();
+    assert!(matches!(err, EngineError::NotEnoughMemory { .. }), "{err}");
+    let s = sup.status();
+    assert_eq!(s.state, EngineState::Failed, "{s:?}");
+    assert_eq!(s.model_id.as_deref(), Some("huge"), "{s:?}");
+    assert_eq!(s.model_path.as_deref(), Some("M:/New Drive/ai models/huge.gguf"), "{s:?}");
+}
+
+/// R38a, spec 5: "a model won't load ... and the previous model is started again". The fake refuses only
+/// a path that contains FAKE_ENGINE_REFUSE_MODEL, so the first model loads and the second does not.
+#[tokio::test]
+async fn a_model_that_will_not_load_brings_the_previous_one_back() {
+    let mon = Monitor::new(None);
+    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_REFUSE_MODEL", "refusable".into())]), mon.clone());
+    sup.ensure_model(&model("prev-model", "prev.gguf")).await.unwrap();
+    let first_pid = sup.status().pid;
+    assert!(first_pid.is_some());
+    let err = sup.ensure_model(&model("refused-model", "refusable-b.gguf")).await.unwrap_err();
+    assert!(
+        matches!(&err, EngineError::LoadFailed(line) if line.contains("general.architecture is 'qwen2vl'") && line.contains("refusable-b.gguf")),
+        "the original error comes back: {err}"
+    );
+    let s = sup.status();
+    assert_eq!(s.state, EngineState::Serving, "{s:?}");
+    assert_eq!(s.model_id.as_deref(), Some("prev-model"), "{s:?}");
+    assert_eq!(s.model_path.as_deref(), Some("prev.gguf"), "{s:?}");
+    assert!(s.pid.is_some() && s.pid != first_pid, "a new process serves the previous model: {s:?}");
+    let port = s.port.expect("a serving engine has a port");
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok(), "the previous model's engine is really listening");
+    let warns: Vec<String> = mon.logs_after(0).into_iter().filter(|l| l.level == "warn").map(|l| l.text).collect();
+    assert_eq!(warns, ["refused-model did not start; starting prev-model again"], "{warns:?}");
+    sup.stop().await;
+}
+
+/// R38a again, for a refusal that comes before any process is started: the memory check runs after the
+/// old engine has been stopped, so without the fallback the user is left with no engine at all.
+#[tokio::test]
+async fn a_memory_refusal_brings_the_previous_one_back() {
+    let mut c = cfg(&[]);
+    c.check_memory = true;
+    c.min_free_bytes = 0;
+    let sup = Supervisor::new(c, Monitor::new(None));
+    sup.ensure_model(&model("a", "a.gguf")).await.unwrap(); // file_bytes 0: needs only the runtime's own 256 MiB
+    let first_pid = sup.status().pid;
+    let huge = ModelRef { id: "huge".into(), path: PathBuf::from("huge.gguf"), file_bytes: 1 << 60, kv_bytes_per_token: 0 };
+    let err = sup.ensure_model(&huge).await.unwrap_err();
+    assert!(matches!(err, EngineError::NotEnoughMemory { .. }), "{err}");
+    let s = sup.status();
+    assert_eq!(s.state, EngineState::Serving, "{s:?}");
+    assert_eq!(s.model_id.as_deref(), Some("a"), "{s:?}");
+    assert!(s.pid.is_some() && s.pid != first_pid, "a new process serves the previous model: {s:?}");
+    sup.stop().await;
+}
