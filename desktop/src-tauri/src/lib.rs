@@ -8,6 +8,7 @@ pub mod monitor;
 pub mod paths;
 pub mod sse;
 pub mod store;
+pub mod updater;
 
 use commands::AppState;
 use std::sync::{Arc, Mutex, RwLock};
@@ -21,6 +22,7 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let monitor = monitor::Monitor::new(Some(paths::log_dir().join("lorren.log")));
             monitor.log("app", "info", format!("Lorren {} starting", app.package_info().version));
@@ -42,7 +44,22 @@ pub fn run() {
             let chat = chat::ChatService::new(store.clone(), supervisor.clone(), library.clone(), monitor.clone(), chat::ChatSettings::default());
             // `AppState` takes `chat`; the startup load below keeps its own handle on the service (R38/R39).
             let startup_chat = chat.clone();
-            app.manage(AppState { store, library, monitor, supervisor: supervisor.clone(), chat, started_ms: store::now_ms() });
+            let updates = updater::UpdateService::new(monitor.clone());
+            app.manage(AppState { store, library, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), started_ms: store::now_ms() });
+
+            // Updates (spec §3.7): a check 5 s after start, then every 6 h. Without an endpoint the first check says
+            // "not configured" and the loop ends.
+            let (updates_bg, handle_bg) = (updates.clone(), app.handle().clone());
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                loop {
+                    updates_bg.check(&handle_bg).await;
+                    if updates_bg.state() == updater::UpdateState::NotConfigured {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+                }
+            });
 
             let handle = app.handle().clone();
             let mut rx = supervisor.subscribe();
@@ -74,7 +91,10 @@ pub fn run() {
             commands::set_chat_model,
             commands::select_version,
             commands::requests,
-            commands::logs
+            commands::logs,
+            commands::update_state,
+            commands::check_update,
+            commands::install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lorren");

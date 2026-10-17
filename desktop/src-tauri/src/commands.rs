@@ -18,6 +18,7 @@ pub struct AppState {
     pub monitor: Arc<Monitor>,
     pub supervisor: Arc<Supervisor>,
     pub chat: Arc<ChatService>,
+    pub updates: Arc<crate::updater::UpdateService>,
     pub started_ms: i64,
 }
 
@@ -184,6 +185,25 @@ pub fn requests(state: State<'_, AppState>) -> Vec<RequestRecord> {
 #[tauri::command]
 pub fn logs(state: State<'_, AppState>, after: u64) -> Vec<LogLine> {
     state.monitor.logs_after(after)
+}
+
+#[tauri::command]
+pub fn update_state(state: State<'_, AppState>) -> crate::updater::UpdateState {
+    state.updates.state()
+}
+
+#[tauri::command]
+pub async fn check_update(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let updates = state.updates.clone();
+    updates.check(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn install_update(state: State<'_, AppState>) -> Result<(), String> {
+    // R37: the sidecar must not be running when NSIS replaces it.
+    state.supervisor.stop().await;
+    state.updates.install()
 }
 
 #[cfg(test)]

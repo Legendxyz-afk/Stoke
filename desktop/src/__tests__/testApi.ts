@@ -4,6 +4,7 @@ import type { ChatView } from "../ipc/bindings/ChatView";
 import type { Message } from "../ipc/bindings/Message";
 import type { ModelInfo } from "../ipc/bindings/ModelInfo";
 import type { Overview } from "../ipc/bindings/Overview";
+import type { UpdateState } from "../ipc/bindings/UpdateState";
 
 export const overview: Overview = {
   engine: {
@@ -40,7 +41,11 @@ export function mockApi() {
     selectVersion: vi.fn(async () => {}),
     requests: vi.fn(async () => []),
     logs: vi.fn(async () => []),
+    updateState: vi.fn(async (): Promise<UpdateState> => ({ state: "not_configured" })),
+    checkUpdate: vi.fn(async () => {}),
+    installUpdate: vi.fn(async () => {}),
     onEngineStatus: vi.fn(async () => () => {}),
+    onUpdateState: vi.fn(async () => () => {}),
   };
 }
 

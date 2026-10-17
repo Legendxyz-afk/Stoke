@@ -8,6 +8,7 @@ import type { ModelInfo } from "./bindings/ModelInfo";
 import type { Overview } from "./bindings/Overview";
 import type { RequestRecord } from "./bindings/RequestRecord";
 import type { StreamEvent } from "./bindings/StreamEvent";
+import type { UpdateState } from "./bindings/UpdateState";
 
 function channel(onEvent: (e: StreamEvent) => void): Channel<StreamEvent> {
   const ch = new Channel<StreamEvent>();
@@ -30,8 +31,13 @@ export const api = {
   selectVersion: (chatId: string, messageId: string) => invoke<void>("select_version", { chatId, messageId }),
   requests: () => invoke<RequestRecord[]>("requests"),
   logs: (after: number) => invoke<LogLine[]>("logs", { after }),
+  updateState: () => invoke<UpdateState>("update_state"),
+  checkUpdate: () => invoke<void>("check_update"),
+  installUpdate: () => invoke<void>("install_update"),
   onEngineStatus: (cb: (s: EngineStatus) => void): Promise<UnlistenFn> =>
     listen<EngineStatus>("engine-status", (e) => cb(e.payload)),
+  onUpdateState: (cb: (s: UpdateState) => void): Promise<UnlistenFn> =>
+    listen<UpdateState>("update-state", (e) => cb(e.payload)),
 };
 
 export type Api = typeof api;

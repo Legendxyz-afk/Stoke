@@ -5,6 +5,7 @@ import { ChatTab } from "./chat/ChatTab";
 import { Placeholder } from "./components/Placeholder";
 import { StatusBar } from "./components/StatusBar";
 import { TopBar, type Tab } from "./components/TopBar";
+import { UpdateBadge } from "./components/UpdateBadge";
 import { api } from "./ipc/api";
 import type { Overview } from "./ipc/bindings/Overview";
 import { LogsTab } from "./tabs/LogsTab";
@@ -65,7 +66,9 @@ export function App() {
         </div>
         {tab !== "Chat" && renderTab(tab, overview)}
       </main>
-      <StatusBar overview={overview} />
+      <StatusBar overview={overview}>
+        <UpdateBadge />
+      </StatusBar>
     </div>
   );
 }
