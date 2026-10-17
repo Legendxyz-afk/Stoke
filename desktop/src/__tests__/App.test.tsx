@@ -165,7 +165,7 @@ describe("App keeps the Chat tab mounted", () => {
     expect(api.models).toHaveBeenCalledTimes(1); // hiding it asks for nothing
     tab("Chat");
     await waitFor(() => expect(api.models).toHaveBeenCalledTimes(2));
-    tab("Models");
+    tab("Settings"); // not Models: that tab asks the host for the models itself, and this test counts the Chat tab's calls
     tab("Chat");
     await waitFor(() => expect(api.models).toHaveBeenCalledTimes(3));
     expect(api.chats).toHaveBeenCalledTimes(1); // its first load worked, so it is not asked again

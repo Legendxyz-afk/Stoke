@@ -1,0 +1,10 @@
+.wide { border-right: 0; }
+.table-row.clickable { cursor: pointer; }
+.pill.tag { margin-left: 8px; }
+.accent-text { color: var(--accent); }
+.shared-text { color: var(--shared); }
+.filters { margin-left: auto; display: flex; gap: 14px; }
+.link.on { color: var(--text); }
+.logbox { flex: 1; padding: 10px 22px; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
+.log-warn { color: var(--accent); }
+.log-error { color: var(--flame); }

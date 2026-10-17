@@ -7,6 +7,9 @@ import { StatusBar } from "./components/StatusBar";
 import { TopBar, type Tab } from "./components/TopBar";
 import { api } from "./ipc/api";
 import type { Overview } from "./ipc/bindings/Overview";
+import { LogsTab } from "./tabs/LogsTab";
+import { ModelsTab } from "./tabs/ModelsTab";
+import { RequestsTab } from "./tabs/RequestsTab";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("Chat");
@@ -67,6 +70,16 @@ export function App() {
   );
 }
 
-function renderTab(tab: Tab, _overview: Overview | null): ReactNode {
-  return <Placeholder tab={tab} />;
+/** Every tab but Chat, which App keeps mounted itself (R36a). These mount when shown and unmount when hidden, so their polls stop. */
+function renderTab(tab: Tab, overview: Overview | null): ReactNode {
+  switch (tab) {
+    case "Models":
+      return <ModelsTab overview={overview} />;
+    case "Requests":
+      return <RequestsTab />;
+    case "Logs":
+      return <LogsTab />;
+    default:
+      return <Placeholder tab={tab} />;
+  }
 }
