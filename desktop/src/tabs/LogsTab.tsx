@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { clock } from "../format";
 import { api } from "../ipc/api";
 import type { LogLine } from "../ipc/bindings/LogLine";
+import { HostFailure, useHostFailure } from "./HostFailure";
 import "./tabs.css";
 
 const SOURCES = ["all", "app", "engine", "updater"] as const;
@@ -19,24 +20,31 @@ export function LogsTab() {
   /** Whether the reader was at the end of the box at the last scroll event. It has to be known from before new lines make
    *  the box longer: measured afterwards, a reader who is at the end looks like one who is not. A box just opened follows its end. */
   const atBottom = useRef(true);
+  const { failure, report, clear } = useHostFailure("logs");
 
   useEffect(() => {
     let alive = true;
+    // A failed call leaves `after` where it was, so the next call asks again for the lines it did not get.
     const tick = () =>
-      api.logs(after.current)
-        .then((ls) => {
-          if (!alive || ls.length === 0) return;
+      api.logs(after.current).then(
+        (ls) => {
+          if (!alive) return;
+          clear();
+          if (ls.length === 0) return;
           after.current = ls[ls.length - 1].seq;
           setLines((prev) => [...prev, ...ls].slice(-KEEP));
-        })
-        .catch(() => {});
+        },
+        (e) => {
+          if (alive) report(e);
+        },
+      );
     tick();
     const t = setInterval(tick, 1000);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [report, clear]);
 
   // R37: new lines are followed only while the reader is at the end. One who scrolled up to read is left where they are.
   useEffect(() => {
@@ -57,6 +65,7 @@ export function LogsTab() {
           ))}
         </span>
       </div>
+      {failure !== null && <HostFailure what="log" reason={failure} />}
       <div
         className="scroll mono logbox"
         ref={box}

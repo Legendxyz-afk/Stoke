@@ -3,6 +3,7 @@ import { commas, gb } from "../format";
 import { api } from "../ipc/api";
 import type { ModelInfo } from "../ipc/bindings/ModelInfo";
 import type { Overview } from "../ipc/bindings/Overview";
+import { HostFailure, useHostFailure } from "./HostFailure";
 import "./tabs.css";
 
 const COLS = "minmax(240px, 2fr) 80px 76px 80px 76px 84px 110px";
@@ -10,14 +11,17 @@ const COLS = "minmax(240px, 2fr) 80px 76px 80px 76px 84px 110px";
 export function ModelsTab({ overview }: { overview: Overview | null }) {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const { failure, report } = useHostFailure("models");
+  // One call each time the tab is shown (it mounts when shown), so a failure lasts until the tab is shown again.
   useEffect(() => {
-    api.models()
-      .then((ms) => {
+    api.models().then(
+      (ms) => {
         setModels(ms);
         setSelected((s) => s ?? ms[0]?.id ?? null);
-      })
-      .catch(() => {});
-  }, []);
+      },
+      report,
+    );
+  }, [report]);
   const m = models.find((x) => x.id === selected) ?? null;
   const loaded = overview?.engine.model_id;
   return (
@@ -25,8 +29,9 @@ export function ModelsTab({ overview }: { overview: Overview | null }) {
       <section className="col center">
         <div className="head">
           <span className="title">Models</span>
-          <span className="cap">{models.length} IN LIBRARY · {models.filter((x) => x.runnable).length} RUNNABLE</span>
+          {failure === null && <span className="cap">{models.length} IN LIBRARY · {models.filter((x) => x.runnable).length} RUNNABLE</span>}
         </div>
+        {failure !== null && <HostFailure what="models" reason={failure} />}
         <div className="table-head" style={{ gridTemplateColumns: COLS }}>
           <span>NAME</span><span>SOURCE</span><span>ARCH</span><span>QUANT</span><span>SIZE</span><span>TEMPLATE</span><span>STATUS</span>
         </div>

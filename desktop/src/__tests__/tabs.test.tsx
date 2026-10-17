@@ -1,15 +1,16 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
 import { App } from "../App";
 import { api } from "../ipc/api";
 import type { LogLine } from "../ipc/bindings/LogLine";
+import type { RequestRecord } from "../ipc/bindings/RequestRecord";
 import { LogsTab } from "../tabs/LogsTab";
 import { ModelsTab } from "../tabs/ModelsTab";
 import { RequestsTab } from "../tabs/RequestsTab";
-import { models, overview } from "./testApi";
+import { captureHostErrors, models, overview } from "./testApi";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -164,5 +165,157 @@ describe("App shows the three tabs", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Logs" }));
     expect(await screen.findByText("UPDATER")).toBeTruthy(); // one of the Logs tab's source filters
     expect(screen.queryByText("No requests yet.")).toBeNull();
+  });
+});
+
+// R63: a host call that fails must read as a failure, not as an empty library, an empty list or an empty log. The two
+// polled tabs repeat their call every second, so they log a failure once per distinct message, not on every tick.
+describe("R63: a failed host call is shown, not stated as an empty tab", () => {
+  let hostErrors: MockInstance<typeof console.error>;
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset();
+    vi.mocked(api.requests).mockReset();
+    vi.mocked(api.logs).mockReset();
+    hostErrors = captureHostErrors(); // the "<call> failed:" lines go to this spy; anything else still reaches stderr
+  });
+  afterEach(() => {
+    hostErrors.mockRestore();
+    vi.useRealTimers();
+  });
+  /** One second on: a polled tab makes its next call. */
+  const poll = () => act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+
+  describe("ModelsTab", () => {
+    it("says why the library could not be read, not '0 IN LIBRARY · 0 RUNNABLE'", async () => {
+      vi.mocked(api.models).mockRejectedValue("Command models not found"); // Tauri rejects with the command's error string
+      render(<ModelsTab overview={overview} />);
+      const notice = await screen.findByText("could not load the models: Command models not found");
+      expect(notice.classList.contains("flame-text")).toBe(true);
+      expect(screen.getByRole("alert")).toBe(notice); // announced, as ChatTab's notice is
+      expect(screen.queryByText(/IN LIBRARY/)).toBeNull();
+      expect(hostErrors.mock.calls).toEqual([["models failed:", "Command models not found"]]);
+    });
+  });
+
+  describe("RequestsTab", () => {
+    const request = (model: string): RequestRecord => ({
+      id: `req_${model}`, started_ms: Date.now(), source: "chat", endpoint: "/v1/chat/completions", model,
+      prompt_tokens: 41, completion_tokens: 5, ttft_ms: 480, total_ms: 730, tokens_per_s: 16.0, status: "ok", dropped_turns: 0,
+    });
+
+    it("says why the requests could not be read, not 'No requests yet.', and logs it once however long the poll fails", async () => {
+      vi.useFakeTimers();
+      const fault = new Error("the monitor is busy"); // a JavaScript fault rejects with an Error, whose message counts
+      vi.mocked(api.requests)
+        .mockRejectedValueOnce(fault).mockRejectedValueOnce(fault).mockRejectedValueOnce(fault)
+        .mockResolvedValueOnce([]);
+      render(<RequestsTab />);
+      await act(async () => {}); // the call made on mount fails
+      const notice = screen.getByText("could not load the requests: the monitor is busy");
+      expect(notice.classList.contains("flame-text")).toBe(true);
+      expect(screen.queryByText("No requests yet.")).toBeNull();
+      expect(screen.queryByText(/THIS SESSION/)).toBeNull();
+
+      await poll();
+      await poll();
+      expect(api.requests).toHaveBeenCalledTimes(3); // three failing calls...
+      expect(hostErrors.mock.calls).toEqual([["requests failed:", "the monitor is busy"]]); // ...one line in the log
+
+      await poll(); // the host answers, and says there are none: now that is what the tab says
+      expect(screen.queryByText(/could not load/)).toBeNull();
+      expect(screen.getByText("No requests yet.")).toBeTruthy();
+      expect(screen.getByText("0 THIS SESSION · NEWEST FIRST")).toBeTruthy();
+    });
+
+    it("keeps the rows it has, shows a new message, clears the notice when the host answers, and reports a new outage again", async () => {
+      vi.useFakeTimers();
+      vi.mocked(api.requests)
+        .mockResolvedValueOnce([request("nexus")])
+        .mockRejectedValueOnce("boom")
+        .mockRejectedValueOnce(new Error("other"))
+        .mockResolvedValueOnce([request("llama"), request("nexus")])
+        .mockRejectedValueOnce(new Error("other")); // the message it failed with before it recovered
+      render(<RequestsTab />);
+      await act(async () => {}); // the call made on mount works
+      expect(screen.getByText("nexus")).toBeTruthy();
+      expect(screen.queryByText(/could not load/)).toBeNull();
+
+      await poll(); // fails: the rows already shown stay, with the reason above them
+      expect(screen.getByText("could not load the requests: boom")).toBeTruthy();
+      expect(screen.getByText("nexus")).toBeTruthy();
+      expect(screen.getByText("1 THIS SESSION · NEWEST FIRST")).toBeTruthy();
+
+      await poll(); // fails with another message: that one is shown, and logged
+      expect(screen.getByText("could not load the requests: other")).toBeTruthy();
+      expect(screen.queryByText("could not load the requests: boom")).toBeNull();
+      expect(hostErrors.mock.calls).toEqual([["requests failed:", "boom"], ["requests failed:", "other"]]);
+
+      await poll(); // works again: the notice goes and the new rows show
+      expect(screen.queryByText(/could not load/)).toBeNull();
+      expect(screen.getByText("llama")).toBeTruthy();
+      expect(screen.getByText("2 THIS SESSION · NEWEST FIRST")).toBeTruthy();
+
+      await poll(); // a failure after that is a new outage, reported again even though the message is the same as before
+      expect(screen.getByText("could not load the requests: other")).toBeTruthy();
+      expect(hostErrors.mock.calls).toEqual([["requests failed:", "boom"], ["requests failed:", "other"], ["requests failed:", "other"]]);
+    });
+  });
+
+  describe("LogsTab", () => {
+    const logLine = (seq: number, text: string): LogLine => ({ seq, time_ms: Date.now(), source: "app", level: "info", text });
+
+    it("says why the log could not be read, and logs it once however long the poll fails", async () => {
+      vi.useFakeTimers();
+      vi.mocked(api.logs)
+        .mockRejectedValueOnce("boom").mockRejectedValueOnce("boom").mockRejectedValueOnce("boom")
+        .mockResolvedValueOnce([]);
+      render(<LogsTab />);
+      await act(async () => {}); // the call made on mount fails
+      const notice = screen.getByText("could not load the log: boom");
+      expect(notice.classList.contains("flame-text")).toBe(true);
+
+      await poll();
+      await poll();
+      expect(api.logs).toHaveBeenCalledTimes(3); // three failing calls...
+      expect(hostErrors.mock.calls).toEqual([["logs failed:", "boom"]]); // ...one line in the log
+
+      await poll(); // the host answers, with nothing new
+      expect(screen.queryByText(/could not load/)).toBeNull();
+    });
+
+    it("keeps the lines it has, asks again from the last one it got, shows a new message, clears the notice when the host answers, and reports a new outage again", async () => {
+      vi.useFakeTimers();
+      vi.mocked(api.logs)
+        .mockResolvedValueOnce([logLine(1, "first")])
+        .mockRejectedValueOnce("boom")
+        .mockRejectedValueOnce(new Error("other"))
+        .mockResolvedValueOnce([logLine(2, "second")])
+        .mockRejectedValueOnce(new Error("other")); // the message it failed with before it recovered
+      render(<LogsTab />);
+      await act(async () => {}); // the call made on mount works
+      expect(screen.getByText("first")).toBeTruthy();
+      expect(screen.queryByText(/could not load/)).toBeNull();
+
+      await poll(); // fails: the lines already shown stay, with the reason above them
+      expect(screen.getByText("could not load the log: boom")).toBeTruthy();
+      expect(screen.getByText("first")).toBeTruthy();
+
+      await poll(); // fails with another message: that one is shown, and logged
+      expect(screen.getByText("could not load the log: other")).toBeTruthy();
+      expect(screen.queryByText("could not load the log: boom")).toBeNull();
+      expect(hostErrors.mock.calls).toEqual([["logs failed:", "boom"], ["logs failed:", "other"]]);
+
+      await poll(); // works again: the notice goes and the new line is added to the old
+      expect(screen.queryByText(/could not load/)).toBeNull();
+      expect(screen.getByText("first")).toBeTruthy();
+      expect(screen.getByText("second")).toBeTruthy();
+
+      await poll(); // a failure after that is a new outage, reported again even though the message is the same as before
+      expect(screen.getByText("could not load the log: other")).toBeTruthy();
+      expect(hostErrors.mock.calls).toEqual([["logs failed:", "boom"], ["logs failed:", "other"], ["logs failed:", "other"]]);
+
+      // A failed call does not move the cursor: every call asked for the lines after the last one it had received.
+      expect(vi.mocked(api.logs).mock.calls.map(([after]) => after)).toEqual([0, 1, 1, 1, 2]);
+    });
   });
 });
