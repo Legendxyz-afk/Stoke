@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
@@ -153,5 +153,21 @@ describe("App keeps the Chat tab mounted", () => {
     expect(await screen.findByRole("button", { name: "SEND" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "STOP" })).toBeNull();
     expect(screen.getByText("Buy")).toBeTruthy();
+  });
+
+  // R60: it stays mounted, so its models() would otherwise run once per session. App tells it when it is shown.
+  it("asks the host for the models again each time the Chat tab is shown, and for the chats only once", async () => {
+    render(<App />);
+    await screen.findByText("Verdict: HOLD.");
+    expect(api.models).toHaveBeenCalledTimes(1);
+    expect(api.chats).toHaveBeenCalledTimes(1);
+    tab("Swarm");
+    expect(api.models).toHaveBeenCalledTimes(1); // hiding it asks for nothing
+    tab("Chat");
+    await waitFor(() => expect(api.models).toHaveBeenCalledTimes(2));
+    tab("Models");
+    tab("Chat");
+    await waitFor(() => expect(api.models).toHaveBeenCalledTimes(3));
+    expect(api.chats).toHaveBeenCalledTimes(1); // its first load worked, so it is not asked again
   });
 });

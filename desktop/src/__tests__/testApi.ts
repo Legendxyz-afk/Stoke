@@ -44,6 +44,17 @@ export function mockApi() {
   };
 }
 
+/** Take the "<call> failed:" lines that ChatTab logs when a host call is rejected (R57) out of stderr and into the
+ *  returned spy. Any other console.error, React's act() warnings among them, still reaches stderr, and is in the
+ *  spy's calls too, so a test that compares them with the expected lines also fails on a stray warning. */
+export function captureHostErrors() {
+  const real = console.error.bind(console);
+  return vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    if (typeof args[0] === "string" && /^\w+ failed:$/.test(args[0])) return;
+    real(...args);
+  });
+}
+
 export function model(p: Partial<ModelInfo>): ModelInfo {
   return {
     id: "file:x", name: "x", path: "M:\\New Drive\\ai_models\\x.gguf", source: "folder",

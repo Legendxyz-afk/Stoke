@@ -58,7 +58,7 @@ export function App() {
             composer draft while another tab shows. `display: contents` keeps the three columns in
             the content row. */}
         <div style={{ display: tab === "Chat" ? "contents" : "none" }}>
-          <ChatTab overview={overview} />
+          <ChatTab overview={overview} active={tab === "Chat"} />
         </div>
         {tab !== "Chat" && renderTab(tab, overview)}
       </main>

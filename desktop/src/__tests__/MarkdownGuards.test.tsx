@@ -45,3 +45,20 @@ describe("KaTeX", () => {
     expect(copies, `KaTeX copies in package-lock.json: ${copies.join(", ")}`).toHaveLength(1);
   });
 });
+
+describe("chat.css", () => {
+  // Vitest blanks every CSS import (`?raw` too) and this project has no Node types, so the stylesheet is read as a file.
+  // (Node's fs rejects the `URL` class that the jsdom environment installs, so the path is built from the string.)
+  const readStylesheet = async () => {
+    const [fs, url] = ["node:fs", "node:url"];
+    const { readFileSync } = (await import(/* @vite-ignore */ fs)) as { readFileSync(file: string, encoding: "utf8"): string };
+    const { fileURLToPath } = (await import(/* @vite-ignore */ url)) as { fileURLToPath(file: string): string };
+    return readFileSync(fileURLToPath(import.meta.url).replace(/__tests__[\\/][^\\/]+$/, "chat/chat.css"), "utf8");
+  };
+
+  // github-dark.css gives `pre code.hljs` its own background and 1em of padding. Without this rule they are painted
+  // over the design's code box (`.md pre`: --code background, 10px 12px padding), which then shows as a box in a box.
+  it("takes highlight.js's own background and padding off a code block, so the design's code box shows", async () => {
+    expect(await readStylesheet()).toMatch(/\.md pre code\.hljs\s*\{[^}]*\bbackground:\s*transparent;[^}]*\bpadding:\s*0;/);
+  });
+});

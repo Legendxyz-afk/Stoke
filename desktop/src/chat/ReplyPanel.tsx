@@ -2,8 +2,7 @@ import { commas, secs } from "../format";
 import type { Chat } from "../ipc/bindings/Chat";
 import type { ModelInfo } from "../ipc/bindings/ModelInfo";
 import type { Overview } from "../ipc/bindings/Overview";
-import type { ReplyStats } from "../ipc/bindings/ReplyStats";
-import type { Live } from "./stream";
+import type { Live, SavedStats } from "./stream";
 
 export function ReplyPanel({ chat, models, overview, live, busy, last, onModel }: {
   chat: Chat | null;
@@ -12,7 +11,7 @@ export function ReplyPanel({ chat, models, overview, live, busy, last, onModel }
   live: Live;
   /** A reply is being written: this window's (`live.busy`) or one the stored chat still shows as streaming (R36d). */
   busy: boolean;
-  last: ReplyStats | null;
+  last: SavedStats | null;
   onModel: (modelId: string) => void;
 }) {
   const current = models.find((m) => m.id === chat?.model_id);
@@ -45,7 +44,7 @@ export function ReplyPanel({ chat, models, overview, live, busy, last, onModel }
           <span className="v num">{stats?.tokens_per_s != null ? `${stats.tokens_per_s.toFixed(1)} tok/s` : "—"}</span></div>
         <div className="fact"><span className="k">tokens in · out</span>
           <span className="v num">{stats?.prompt_tokens ?? "—"} · {stats?.completion_tokens ?? "—"}</span></div>
-        <div className="fact"><span className="k">total</span><span className="v num">{stats ? secs(stats.total_ms) : "—"}</span></div>
+        <div className="fact"><span className="k">total</span><span className="v num">{secs(stats?.total_ms)}</span></div>
       </div>
       <div className="section">
         <span className="cap">CONTEXT</span>

@@ -20,6 +20,7 @@
 .md { line-height: 1.55; overflow-wrap: anywhere; }
 .md pre { background: var(--code); border: 1px solid var(--l24); padding: 10px 12px; overflow-x: auto; }
 .md code { font-family: var(--mono); font-size: 12px; }
+.md pre code.hljs { background: transparent; padding: 0; }
 .md table { border-collapse: collapse; }
 .md th, .md td { border: 1px solid var(--l27); padding: 4px 8px; }
 .md-link { color: var(--shared); text-decoration: underline dotted; }

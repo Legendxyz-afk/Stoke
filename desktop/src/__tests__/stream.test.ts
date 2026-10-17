@@ -34,4 +34,12 @@ describe("statsOf", () => {
                     stats: { prompt_tokens: 41, completion_tokens: 21, ttft_ms: 500, total_ms: 1500, error: null } });
     expect(statsOf(m)).toMatchObject({ prompt_tokens: 41, completion_tokens: 21, ttft_ms: 500, total_ms: 1500, tokens_per_s: 20 });
   });
+
+  it("has no total for a reply that never got one, not a total of 0", () => {
+    const streaming = msg({ id: "a", role: "assistant", content: "", status: "streaming" });
+    expect(statsOf(streaming)).toMatchObject({ prompt_tokens: null, ttft_ms: null, total_ms: null, tokens_per_s: null });
+    const early = msg({ id: "b", role: "assistant", content: "half", status: "interrupted",
+                        stats: { prompt_tokens: 41, completion_tokens: 3, ttft_ms: 300, total_ms: null, error: "the engine stopped responding" } });
+    expect(statsOf(early)).toMatchObject({ prompt_tokens: 41, completion_tokens: 3, ttft_ms: 300, total_ms: null, tokens_per_s: null });
+  });
 });

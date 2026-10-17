@@ -9,6 +9,8 @@ import remarkMath from "remark-math";
 
 /** Model output. Raw HTML is dropped (`skipHtml`), a link never navigates the app window, and an
  *  image is never fetched: the app shows no remote content (spec §3.8).
+ *  Maths is `$$...$$` only (R58): Lorren's chats are about prices, and "entry $68,400, target $72,000" must not
+ *  be read as a formula between two single dollar signs.
  *  Memoized: react-markdown parses its whole text on every render (~6 ms for a 900-character reply), and ChatTab
  *  re-renders on every keystroke and every streamed flush, so a settled message must not be parsed again. */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -16,7 +18,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
     <div className="md">
       <ReactMarkdown
         skipHtml
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
         rehypePlugins={[rehypeKatex, rehypeHighlight]}
         components={{
           a: ({ children, href }) => (

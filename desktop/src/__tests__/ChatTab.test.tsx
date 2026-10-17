@@ -1,12 +1,13 @@
-import { createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
 import { ChatTab } from "../chat/ChatTab";
 import { api } from "../ipc/api";
+import type { ChatView } from "../ipc/bindings/ChatView";
 import type { StreamEvent } from "../ipc/bindings/StreamEvent";
-import { chat, models, msg, overview, view, withTurn } from "./testApi";
+import { captureHostErrors, chat, models, msg, overview, view, withTurn } from "./testApi";
 
 const started: StreamEvent = { kind: "started", message_id: "a3", user_message_id: "u3", dropped_turns: 0, request_id: "req_1" };
 const done = { prompt_tokens: 60, completion_tokens: 4, ttft_ms: 212, total_ms: 650, tokens_per_s: 7.0, finish_reason: "stop" };
@@ -21,6 +22,16 @@ beforeEach(() => {
   vi.mocked(api.models).mockResolvedValue(models);
   vi.mocked(api.chats).mockResolvedValue([chat]);
   vi.mocked(api.chat).mockResolvedValue(view);
+});
+
+// ChatTab logs "<call> failed:" for a rejected host call (R57). Those lines go to this spy, not to stderr; anything else
+// that reaches console.error (an act() warning, say) still reaches stderr.
+let hostErrors: MockInstance<typeof console.error>;
+beforeEach(() => {
+  hostErrors = captureHostErrors();
+});
+afterEach(() => {
+  hostErrors.mockRestore();
 });
 
 describe("ChatTab", () => {
@@ -173,6 +184,10 @@ describe("ChatTab, R36", () => {
     type("  a pasted document  ");
     expect((await screen.findByRole("alert")).textContent).toContain("more than a 4096-token context");
     expect(messageBox().value).toBe("a pasted document");
+    // R57: a refused send is a failed host call like any other, and is logged once
+    expect(hostErrors.mock.calls).toEqual([
+      ["send failed:", "this message is about 6250 tokens, more than a 4096-token context can take"],
+    ]);
   });
 
   it("(b) does not put a refused message over a newer draft", async () => {
@@ -227,5 +242,290 @@ describe("ChatTab, R36", () => {
     type("go");
     await screen.findByText("STOP");
     expect(modelBox().disabled).toBe(true);
+  });
+});
+
+// Review fix round 1: rulings R56 to R60 and the review's items 6 to 8. Each test was run against the code of commit
+// d21e826 first. A test that passes there is a pin, and the mutation that proves it is named in the report.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+/** Node's unhandledRejection events during a test. Vitest also fails the whole run on one; this makes the test say so. */
+function watchUnhandledRejections() {
+  type Emitter = {
+    on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+    off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+  };
+  const proc = (globalThis as unknown as { process: Emitter }).process;
+  const seen: unknown[] = [];
+  const listener = (reason: unknown) => {
+    seen.push(reason);
+  };
+  proc.on("unhandledRejection", listener);
+  return { seen, stop: () => proc.off("unhandledRejection", listener) };
+}
+
+describe("ChatTab, fix round 1", () => {
+  // Nothing an earlier test left on the mocks (a rejection, a queue of one-off results) may reach these tests.
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset().mockResolvedValue(models);
+    vi.mocked(api.chats).mockReset().mockResolvedValue([chat]);
+    vi.mocked(api.chat).mockReset().mockResolvedValue(view);
+    vi.mocked(api.send).mockReset();
+    vi.mocked(api.regenerate).mockReset();
+    vi.mocked(api.stop).mockReset();
+    vi.mocked(api.selectVersion).mockReset();
+    vi.mocked(api.setChatModel).mockReset();
+    vi.mocked(api.newChat).mockReset();
+  });
+
+  describe("R57: a failed host call is shown in the notice and logged once", () => {
+    it("models(): shown, logged, and not wiped when the first chat opens", async () => {
+      vi.mocked(api.models).mockRejectedValue("the model list could not be read");
+      render(<ChatTab overview={overview} />);
+      expect((await screen.findByRole("alert")).textContent).toContain("the model list could not be read");
+      await screen.findByText("Verdict: HOLD.");
+      expect(screen.getByRole("alert").textContent).toContain("the model list could not be read");
+      expect(hostErrors.mock.calls).toEqual([["models failed:", "the model list could not be read"]]);
+    });
+
+    it("selectVersion(): shown, logged, nothing switched, and no unhandled rejection", async () => {
+      const unhandled = watchUnhandledRejections();
+      try {
+        vi.mocked(api.selectVersion).mockRejectedValue("there is no such message");
+        render(<ChatTab overview={overview} />);
+        await screen.findByText("2/2");
+        fireEvent.click(screen.getByLabelText("previous version"));
+        expect((await screen.findByRole("alert")).textContent).toContain("there is no such message");
+        expect(hostErrors.mock.calls).toEqual([["selectVersion failed:", "there is no such message"]]);
+        expect(screen.getByText("2/2")).toBeTruthy();
+        await settle(); // Node reports an unhandled rejection once the microtasks have drained
+        expect(unhandled.seen).toEqual([]);
+      } finally {
+        unhandled.stop();
+      }
+    });
+
+    it("stop(): shown and logged", async () => {
+      vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+        onEvent(started);
+        await new Promise<void>(() => {}); // the reply goes on for the whole test
+      });
+      vi.mocked(api.stop).mockRejectedValue("the host did not answer");
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("Verdict: HOLD.");
+      type("go");
+      fireEvent.click(await screen.findByText("STOP"));
+      expect((await screen.findByRole("alert")).textContent).toContain("the host did not answer");
+      expect(hostErrors.mock.calls).toEqual([["stop failed:", "the host did not answer"]]);
+    });
+
+    it("the chat reload that follows an event: shown and logged", async () => {
+      vi.mocked(api.chat).mockResolvedValueOnce(view).mockRejectedValue("the store is busy");
+      vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+        onEvent(started);
+      });
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("Verdict: HOLD.");
+      type("go");
+      expect((await screen.findByRole("alert")).textContent).toContain("the store is busy");
+      expect(hostErrors.mock.calls).toEqual([["chat failed:", "the store is busy"]]);
+    });
+
+    it("the chat list refresh that follows an event: shown and logged", async () => {
+      vi.mocked(api.chats).mockResolvedValueOnce([chat]).mockRejectedValue("the chat list is unavailable");
+      vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+        onEvent(started);
+        onEvent({ kind: "finished", stats: done });
+      });
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("Verdict: HOLD.");
+      type("go");
+      expect((await screen.findByRole("alert")).textContent).toContain("the chat list is unavailable");
+      expect(hostErrors.mock.calls).toEqual([["chats failed:", "the chat list is unavailable"]]);
+    });
+
+    it("switching the model and starting a chat were shown already; they are logged too", async () => {
+      vi.mocked(api.setChatModel).mockRejectedValue("the model cannot be started");
+      vi.mocked(api.newChat).mockRejectedValue("the store is read-only");
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("Verdict: HOLD.");
+      fireEvent.change(screen.getByLabelText("model"), { target: { value: "file:q" } });
+      expect((await screen.findByRole("alert")).textContent).toContain("the model cannot be started");
+      fireEvent.click(screen.getByText("+ NEW"));
+      await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("the store is read-only"));
+      expect(hostErrors.mock.calls).toEqual([
+        ["setChatModel failed:", "the model cannot be started"],
+        ["newChat failed:", "the store is read-only"],
+      ]);
+    });
+  });
+
+  describe("R56: the transcript follows a streaming reply only while the reader is at the bottom", () => {
+    /** A chat with a reply that goes on for the whole test, in a transcript that is 1000 px long in a 100 px window
+     *  (jsdom has no layout, so the geometry and the scroll position are given). */
+    async function openStreamingChat() {
+      let say!: (text: string) => void;
+      vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+        onEvent(started);
+        say = (text) => onEvent({ kind: "token", text });
+        await new Promise<void>(() => {});
+      });
+      vi.mocked(api.chat)
+        .mockResolvedValueOnce(view)
+        .mockResolvedValue(withTurn(view, "go", msg({ id: "a3", role: "assistant", parent_id: "u3", content: "", status: "streaming" })));
+      const { rerender } = render(<ChatTab overview={overview} active />);
+      await screen.findByText("Verdict: HOLD.");
+      const box = screen.getByLabelText("messages");
+      const at = { top: 0 };
+      Object.defineProperty(box, "scrollHeight", { configurable: true, value: 1000 });
+      Object.defineProperty(box, "clientHeight", { configurable: true, value: 100 });
+      Object.defineProperty(box, "scrollTop", { configurable: true, get: () => at.top, set: (v: number) => (at.top = v) });
+      type("go");
+      await screen.findByText("go"); // the turn is in the transcript
+      return {
+        at,
+        /** The reader scrolls: the browser fires a scroll event. */
+        scrollTo: (top: number) => {
+          at.top = top;
+          fireEvent.scroll(box);
+        },
+        say: (text: string) => say(text),
+        show: (shown: boolean) => rerender(<ChatTab overview={overview} active={shown} />),
+      };
+    }
+
+    it("leaves a reader who scrolled up where they are, and follows one at the bottom", async () => {
+      const t = await openStreamingChat();
+      t.scrollTo(0); // 1000 - 0 - 100 = 900 px from the end
+      t.say("Hello");
+      await screen.findByText("Hello");
+      expect(t.at.top).toBe(0);
+
+      t.scrollTo(900); // 1000 - 900 - 100 = 0 px from the end
+      t.say(" and more");
+      await screen.findByText("Hello and more");
+      expect(t.at.top).toBe(1000);
+    });
+
+    it("leaves the transcript alone while the tab is hidden, and follows to the end when it is shown again", async () => {
+      const t = await openStreamingChat();
+      t.scrollTo(900); // the reader is at the end
+      t.show(false);
+      t.at.top = 123; // a hidden element has no layout; whatever it reports is not touched
+      t.say("Arrived while hidden");
+      await screen.findByText("Arrived while hidden");
+      expect(t.at.top).toBe(123);
+      t.show(true); // text came in while they were away: they come back to the end of it
+      expect(t.at.top).toBe(1000);
+    });
+
+    it("does not pull a reader who left in the middle of the transcript down when the tab is shown again", async () => {
+      const t = await openStreamingChat();
+      t.scrollTo(300);
+      t.show(false);
+      t.say("Arrived while hidden");
+      await screen.findByText("Arrived while hidden");
+      t.show(true);
+      expect(t.at.top).toBe(300);
+    });
+  });
+
+  describe("R59: reloads keep their order", () => {
+    it("drops the result of an older reload that lands after a newer one", async () => {
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("2/2");
+      const saying = (text: string): ChatView => ({
+        ...view,
+        messages: [view.messages[0], { ...view.messages[1], message: { ...view.messages[1].message, content: text } }],
+      });
+      let first!: (v: ChatView) => void;
+      let second!: (v: ChatView) => void;
+      vi.mocked(api.chat)
+        .mockImplementationOnce(() => new Promise<ChatView>((resolve) => (first = resolve)))
+        .mockImplementationOnce(() => new Promise<ChatView>((resolve) => (second = resolve)));
+      // each version switch reloads the chat: two reloads are in flight at once
+      fireEvent.click(screen.getByLabelText("previous version"));
+      fireEvent.click(screen.getByLabelText("previous version"));
+      await waitFor(() => expect(api.chat).toHaveBeenCalledTimes(3)); // the open's, and these two
+      await act(async () => second(saying("the newer answer")));
+      expect(screen.getByText("the newer answer")).toBeTruthy();
+      await act(async () => first(saying("the older answer"))); // the first call answers last
+      expect(screen.queryByText("the older answer")).toBeNull();
+      expect(screen.getByText("the newer answer")).toBeTruthy();
+    });
+  });
+
+  describe("R60: the tab refreshes what the host can change while it is hidden, each time it is shown", () => {
+    const qwen = () => screen.getByRole("option", { name: /Qwen3-4B/ }) as HTMLOptionElement;
+
+    it("fetches the models again, and the chat list only if its first load failed", async () => {
+      const { rerender } = render(<ChatTab overview={overview} active />);
+      await screen.findByText("Verdict: HOLD.");
+      expect(api.models).toHaveBeenCalledTimes(1);
+      expect(api.chats).toHaveBeenCalledTimes(1);
+      expect(qwen().disabled).toBe(false);
+      // the host has since found that it cannot run this one
+      vi.mocked(api.models).mockResolvedValue(
+        models.map((m) => (m.id === "file:q" ? { ...m, runnable: false, reason: "the model file is gone" } : m)),
+      );
+      rerender(<ChatTab overview={overview} active={false} />);
+      expect(api.models).toHaveBeenCalledTimes(1); // hiding it asks for nothing
+      rerender(<ChatTab overview={overview} active />);
+      await waitFor(() => expect(qwen().disabled).toBe(true));
+      expect(api.models).toHaveBeenCalledTimes(2);
+      expect(api.chats).toHaveBeenCalledTimes(1);
+    });
+
+    it("loads the chat list again when its first load failed, and the failure notice goes with it", async () => {
+      vi.mocked(api.chats).mockRejectedValueOnce("the store is locked");
+      const { rerender } = render(<ChatTab overview={overview} active />);
+      expect((await screen.findByRole("alert")).textContent).toContain("the store is locked");
+      expect(screen.queryByText("Verdict: HOLD.")).toBeNull();
+      rerender(<ChatTab overview={overview} active={false} />);
+      rerender(<ChatTab overview={overview} active />);
+      expect(await screen.findByText("Verdict: HOLD.")).toBeTruthy();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(api.chats).toHaveBeenCalledTimes(2);
+      expect(hostErrors.mock.calls).toEqual([["chats failed:", "the store is locked"]]);
+    });
+
+    it("clears a models() failure when the next load succeeds", async () => {
+      vi.mocked(api.models).mockRejectedValueOnce("the model list could not be read").mockResolvedValue(models);
+      const { rerender } = render(<ChatTab overview={overview} active />);
+      expect((await screen.findByRole("alert")).textContent).toContain("the model list could not be read");
+      await screen.findByText("Verdict: HOLD.");
+      rerender(<ChatTab overview={overview} active={false} />);
+      rerender(<ChatTab overview={overview} active />);
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+      expect(screen.getByRole("option", { name: /nexus/ })).toBeTruthy(); // the list is there now
+    });
+  });
+
+  describe("item 8: the LAST REPLY panel has no total for a reply that never got one", () => {
+    const totalShown = () => screen.getByText("total").nextElementSibling?.textContent;
+
+    it("shows a dash, not 0 ms, while the saved reply is still streaming", async () => {
+      vi.mocked(api.chat).mockResolvedValue(
+        withTurn(view, "go", msg({ id: "a3", role: "assistant", parent_id: "u3", content: "Bu", status: "streaming" })),
+      );
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("Bu");
+      expect(totalShown()).toBe("—");
+      expect(screen.queryByText("0 ms")).toBeNull();
+    });
+
+    it("shows a dash, not 0 ms, for a reply that ended early, and still shows the figures it has", async () => {
+      vi.mocked(api.chat).mockResolvedValue(
+        withTurn(view, "go", msg({
+          id: "a3", role: "assistant", parent_id: "u3", content: "Half an ans", status: "interrupted",
+          stats: { prompt_tokens: 41, completion_tokens: 3, ttft_ms: 300, total_ms: null, error: "the engine stopped responding" },
+        })),
+      );
+      render(<ChatTab overview={overview} />);
+      await screen.findByText("Half an ans");
+      expect(totalShown()).toBe("—");
+      expect(screen.queryByText("0 ms")).toBeNull();
+      expect(screen.getByText("300 ms")).toBeTruthy();
+    });
   });
 });

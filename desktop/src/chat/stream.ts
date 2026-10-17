@@ -39,8 +39,12 @@ export function applyEvent(s: Live, e: StreamEvent): Live {
   }
 }
 
+/** A live reply's numbers, except that the total may be missing: a saved reply that is still streaming, or that ended
+ *  early (the engine stopped answering), never got one. A missing total is `null`, never a total of 0. */
+export type SavedStats = Omit<ReplyStats, "total_ms"> & { total_ms: number | null };
+
 /** A saved reply's numbers in the shape of a live one. Speed counts the tokens after the first. */
-export function statsOf(m: Message): ReplyStats {
+export function statsOf(m: Message): SavedStats {
   const s = m.stats;
   const gen = s.total_ms != null && s.ttft_ms != null ? s.total_ms - s.ttft_ms : null;
   const n = s.completion_tokens;
@@ -48,7 +52,7 @@ export function statsOf(m: Message): ReplyStats {
     prompt_tokens: s.prompt_tokens,
     completion_tokens: n,
     ttft_ms: s.ttft_ms,
-    total_ms: s.total_ms ?? 0,
+    total_ms: s.total_ms,
     tokens_per_s: n != null && n > 1 && gen != null && gen > 0 ? (n - 1) / (gen / 1000) : null,
     finish_reason: null,
   };
