@@ -4,9 +4,27 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 fn exe() -> &'static str {
     env!("CARGO_BIN_EXE_fake-engine")
+}
+
+/// Runs `cmd` to its end and returns what it wrote, or fails the test when it has not exited within `secs` (the child
+/// is killed first). The tests that expect the fake to REFUSE something need this: `Command::output()` has no deadline,
+/// and a guard that regresses leaves the fake serving for ever, so the test would hang instead of failing.
+fn exit_within(cmd: &mut Command, secs: u64) -> std::process::Output {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the fake had not exited after {secs} s (it was killed): the refusal it should have made is missing");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -55,6 +73,8 @@ impl Fake {
             .args(["serve", "M:/New Drive/Llama-3.2-3B.gguf", "--host", "127.0.0.1", "--port", "0", "--ctx", "4096"])
             .env("FAKE_ENGINE_TOKEN_MS", "1")
             .stdout(Stdio::piped())
+            // Not inherited: the fake's stderr lines would otherwise be printed into every `cargo test` run.
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let mut line = String::new();
@@ -145,8 +165,22 @@ fn chunks_carry_the_real_envelope() {
 #[test]
 fn an_unknown_mode_exits_2() {
     for mode in ["bogus", "Hang", "crash_after_ms:abc"] {
-        let out = Command::new(exe()).args(["serve", "x.gguf", "--port", "0"]).env("FAKE_ENGINE_MODE", mode).output().unwrap();
+        let out = exit_within(Command::new(exe()).args(["serve", "x.gguf", "--port", "0"]).env("FAKE_ENGINE_MODE", mode), 10);
         assert_eq!(out.status.code(), Some(2), "{mode}");
         assert!(String::from_utf8_lossy(&out.stderr).contains(mode), "{mode}");
+    }
+}
+
+/// The two millisecond switches are refused like an unknown mode when they are not a whole number. They used to be
+/// ignored, so `FAKE_ENGINE_TOKEN_MS=10ms` ran at the default 20 ms a token and a timing test went green for the wrong
+/// reason. Refused means: exit 2, a stderr line that names the variable and the value, and nothing on stdout (no banner).
+#[test]
+fn a_millisecond_switch_that_is_not_a_whole_number_exits_2() {
+    for (var, value) in [("FAKE_ENGINE_TOKEN_MS", "10ms"), ("FAKE_ENGINE_LOAD_MS", "2.5s"), ("FAKE_ENGINE_TOKEN_MS", "-5")] {
+        let out = exit_within(Command::new(exe()).args(["serve", "x.gguf", "--port", "0"]).env(var, value), 10);
+        assert_eq!(out.status.code(), Some(2), "{var}={value}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(var) && err.contains(value), "{var}={value}: {err}");
+        assert!(out.stdout.is_empty(), "{var}={value}: nothing is printed before the refusal: {}", String::from_utf8_lossy(&out.stdout));
     }
 }

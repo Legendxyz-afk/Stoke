@@ -681,12 +681,23 @@ mod tests {
     #[test]
     fn the_memory_arithmetic_saturates_instead_of_panicking() {
         assert_eq!(run_bytes(u64::MAX, u64::MAX, u32::MAX, u32::MAX), u64::MAX);
-        let p = tmp("sat.gguf");
-        let set = [("llama.block_count", u32::MAX), ("llama.attention.key_length", 1 << 31), ("llama.attention.value_length", 1 << 31)];
-        fixture::write_with(&p, &Spec::llama("x"), 3, &[], &set).unwrap();
-        let f = facts(&read_header(&p).unwrap());
-        if let Ok(f) = f {
-            assert_eq!(f.kv_bytes_per_token_q8(), u64::MAX);
+        // Two headers that `facts` accepts (it checks each field on its own, not their product) and whose product does not
+        // fit in 64 bits. Unconditional: were `facts` ever to reject one, the test fails there instead of asserting nothing.
+        // The second is exactly 2^64 elements per token: a wrapping multiply reads that as 0, and 0 x 34 does not overflow,
+        // so the `checked_mul` that follows could not rescue it (on the first header it would). A plain `*` panics on both.
+        let huge = [("llama.block_count", u32::MAX), ("llama.attention.key_length", 1 << 31), ("llama.attention.value_length", 1 << 31)];
+        let two_to_the_64 = [
+            ("llama.block_count", 1 << 31),
+            ("llama.attention.head_count", 1 << 15),
+            ("llama.attention.head_count_kv", 1 << 15),
+            ("llama.attention.key_length", 1 << 17),
+            ("llama.attention.value_length", 1 << 17),
+        ];
+        for (name, set) in [("huge", &huge[..]), ("two_to_the_64", &two_to_the_64[..])] {
+            let p = tmp(&format!("sat-{name}.gguf"));
+            fixture::write_with(&p, &Spec::llama("x"), 3, &[], set).unwrap();
+            let f = facts(&read_header(&p).unwrap()).unwrap_or_else(|e| panic!("{name}: a header with huge sizes is accepted: {e}"));
+            assert_eq!(f.kv_bytes_per_token_q8(), u64::MAX, "{name}");
         }
     }
 

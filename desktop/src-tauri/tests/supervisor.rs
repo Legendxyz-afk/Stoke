@@ -181,7 +181,7 @@ async fn a_spawn_failure_marks_the_engine_failed() {
 }
 
 /// An engine that does not print its banner within `load_timeout` is killed and reported as such.
-/// (FAKE_ENGINE_LOAD_MS is spelled as a plain integer: the fake ignores a value it cannot parse.)
+/// (FAKE_ENGINE_LOAD_MS is spelled as a plain integer: the fake refuses a value it cannot parse, with exit 2.)
 #[tokio::test]
 async fn a_load_that_outlasts_the_timeout_is_reported_and_the_engine_killed() {
     let mon = Monitor::new(None);
@@ -313,6 +313,31 @@ async fn the_engines_banner_is_logged_under_source_engine() {
         .unwrap_or_else(|| panic!("no 'engine serving' line: {logs:?}"));
     assert!(banner.seq < serving.seq, "the engine's banner comes before the app's 'engine serving' line: {logs:?}");
     sup.stop().await;
+}
+
+/// A healthy start puts no `error` line in the Logs. The fake used to print its own "serving" line on STDERR, which the
+/// supervisor's stderr reader logs as an `error` whenever it gets there before the stdout reader has seen the banner (about
+/// 15 starts in 40), so the e2e's Logs showed errors that meant nothing. The real engine writes nothing to stderr once it
+/// serves, and now the fake's line is ordinary stdout, logged as `info`. Twelve starts, each of a different model so that
+/// each one is a real start: the race is lost by the old fake in nearly every such run.
+#[tokio::test]
+async fn healthy_starts_log_no_error_line() {
+    let mon = Monitor::new(None);
+    let sup = Supervisor::new(cfg(&[]), mon.clone());
+    for round in 0..12 {
+        sup.ensure_model(&model(&format!("m{round}"), &format!("m{round}.gguf"))).await.unwrap();
+    }
+    sup.stop().await;
+    // The reader threads outlive `ensure_model`: wait until the last start's "serving" line has been read too.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let serving = |logs: &[lorren_lib::monitor::LogLine]| logs.iter().filter(|l| l.source == "engine" && l.text.starts_with("fake engine: serving")).count();
+    while serving(&mon.logs_after(0)) < 12 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let logs = mon.logs_after(0);
+    assert_eq!(serving(&logs), 12, "the fake's serving line is engine output, once per start: {logs:?}");
+    let errors: Vec<_> = logs.iter().filter(|l| l.level == "error").collect();
+    assert!(errors.is_empty(), "a healthy start logged errors: {errors:?}");
 }
 
 /// R47: an engine that exits during its load without writing a line has given no reason of its own. The error says so

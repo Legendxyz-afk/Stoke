@@ -5,6 +5,7 @@
 //! `FAKE_ENGINE_REFUSE_MODEL=<text>` (Task 10): refuse exactly as `FAKE_ENGINE_MODE=refuse` does, but only a model whose path contains `<text>`.
 //! `FAKE_ENGINE_MODE=silent_exit` (R47): an engine killed, or crashing, during its load: it waits out `FAKE_ENGINE_LOAD_MS`, then exits 1
 //! with no banner and not a line on either stream.
+//! `FAKE_ENGINE_LOAD_MS` and `FAKE_ENGINE_TOKEN_MS` take a whole number of milliseconds; anything else is refused at startup (exit 2).
 //!
 //! It is the real engine's shape, not the real engine. KNOWN DIFFERENCES, which a green test
 //! against the fake does not cover:
@@ -33,6 +34,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
+}
+
+/// A millisecond switch: unset (or empty) is `None`; a value that is not a whole number is an error that names the
+/// variable and the value.
+fn env_ms(name: &str) -> Result<Option<u64>, String> {
+    match env(name) {
+        None => Ok(None),
+        Some(v) => v
+            .parse()
+            .map(Some)
+            .map_err(|_| format!("fake engine: {name} '{v}' is not a whole number of milliseconds")),
+    }
 }
 
 fn event(line: &str) {
@@ -97,6 +110,15 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // The two millisecond switches are validated here as well: a value that is not a whole number is a usage error, not
+    // a switch that quietly means the default (`FAKE_ENGINE_TOKEN_MS=10ms` would run at 20 ms a token).
+    let (load_ms, token_ms) = match (env_ms("FAKE_ENGINE_LOAD_MS"), env_ms("FAKE_ENGINE_TOKEN_MS")) {
+        (Ok(load), Ok(token)) => (load, token.unwrap_or(20)),
+        (Err(msg), _) | (_, Err(msg)) => {
+            eprintln!("{msg}");
+            std::process::exit(2);
+        }
+    };
     event(&format!("argv {}", serde_json::to_string(&args).unwrap()));
     let model = args.get(2).cloned().unwrap_or_default();
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
@@ -117,7 +139,7 @@ fn main() {
         );
         std::process::exit(1);
     }
-    if let Some(ms) = env("FAKE_ENGINE_LOAD_MS").and_then(|v| v.parse().ok()) {
+    if let Some(ms) = load_ms {
         std::thread::sleep(Duration::from_millis(ms));
     }
     if matches!(mode, Mode::SilentExit) {
@@ -126,9 +148,15 @@ fn main() {
     }
     let listener = TcpListener::bind((host.as_str(), port)).expect("bind");
     let actual = listener.local_addr().unwrap().port();
-    println!("stoke serve: listening on {host}:{actual}  ctx={ctx}");
-    std::io::stdout().flush().unwrap();
-    eprintln!("fake engine: serving {model}");
+    // The real engine writes nothing to stderr once it is serving, so the fake's own "serving" line goes to STDOUT, after
+    // the banner. On stderr the supervisor's stderr reader logged it as an `error` whenever it won the race with the
+    // stdout reader that sets "the banner has been seen". Both lines go in one write, and a reader that has already gone
+    // away is no error: the tests that wait for the banner read one line and let the pipe go.
+    {
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "stoke serve: listening on {host}:{actual}  ctx={ctx}\nfake engine: serving {model}\n");
+        let _ = out.flush();
+    }
     if let Mode::CrashAfterMs(ms) = mode {
         let armed = match env("FAKE_ENGINE_CRASH_ONCE") {
             Some(marker) if std::path::Path::new(&marker).exists() => false,
@@ -155,12 +183,12 @@ fn main() {
         }
         let model = model.clone();
         std::thread::spawn(move || {
-            let _ = handle(stream, &model, ctx);
+            let _ = handle(stream, &model, ctx, token_ms);
         });
     }
 }
 
-fn handle(mut s: TcpStream, model: &str, ctx: u32) -> std::io::Result<()> {
+fn handle(mut s: TcpStream, model: &str, ctx: u32, token_ms: u64) -> std::io::Result<()> {
     let mut r = BufReader::new(s.try_clone()?);
     let mut first = String::new();
     r.read_line(&mut first)?;
@@ -188,7 +216,7 @@ fn handle(mut s: TcpStream, model: &str, ctx: u32) -> std::io::Result<()> {
             let body = serde_json::json!({"object":"list","data":[{"id":id,"object":"model","created":0,"owned_by":"stoke"}]});
             respond(&mut s, 200, &format!("{body}\n"))
         }
-        ("POST", "/v1/chat/completions") => chat(&mut s, &body, ctx),
+        ("POST", "/v1/chat/completions") => chat(&mut s, &body, ctx, token_ms),
         _ => respond(&mut s, 404, &error_body("not found", "invalid_request_error")),
     }
 }
@@ -211,7 +239,7 @@ fn respond(s: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
     s.flush()
 }
 
-fn chat(s: &mut TcpStream, body: &[u8], ctx: u32) -> std::io::Result<()> {
+fn chat(s: &mut TcpStream, body: &[u8], ctx: u32, token_ms: u64) -> std::io::Result<()> {
     event(&format!("request {}", String::from_utf8_lossy(body)));
     let v: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
     let chars: usize = v["messages"]
@@ -244,7 +272,6 @@ fn chat(s: &mut TcpStream, body: &[u8], ctx: u32) -> std::io::Result<()> {
     );
     let frame = |rest: &str| format!("data: {envelope}{rest}}}\n\n");
     let reply = env("FAKE_ENGINE_REPLY").unwrap_or_else(|| "Hello from the fake engine.".into());
-    let token_ms: u64 = env("FAKE_ENGINE_TOKEN_MS").and_then(|x| x.parse().ok()).unwrap_or(20);
     write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")?;
     s.write_all(b": ping\n\n")?;
     let words: Vec<&str> = reply.split_inclusive(' ').collect();

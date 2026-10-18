@@ -318,7 +318,7 @@ async fn a_model_the_engine_refuses_is_marked_cant_run_and_the_previous_model_se
 /// runs to its end in a task of its own, so the engine ends up Serving the model that was asked for.
 #[tokio::test]
 async fn stop_during_a_model_load_leaves_the_engine_serving() {
-    // A plain integer: the fake silently ignores a *_MS value it cannot parse.
+    // A plain integer: the fake refuses a *_MS value it cannot parse (exit 2 at startup), so a mistyped one cannot pass for the default.
     let w = world("loadstop", &[("FAKE_ENGINE_LOAD_MS", "1500"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
     let chat = new_chat(&w, &w.qwen);
     let (seen, sink) = collector();
@@ -336,6 +336,10 @@ async fn stop_during_a_model_load_leaves_the_engine_serving() {
     assert!(starting, "the engine never reported Starting: {:?}", w.svc.supervisor.status());
     w.svc.stop(&chat);
     task.await.unwrap().unwrap();
+    // Stop returned PROMPTLY: the load takes 1.5 s and is still going on. A send that waited for the load to end before it
+    // acted on Stop would only have returned once the engine was Serving.
+    let s = w.svc.supervisor.status();
+    assert_eq!(s.state, EngineState::Starting, "Stop must not wait for the load: {s:?}");
     let evs = seen.lock().unwrap().clone();
     assert!(matches!(evs.last(), Some(StreamEvent::Stopped { .. })), "{evs:?}");
     assert_eq!(last_reply(&w, &chat).status, MsgStatus::Stopped);
