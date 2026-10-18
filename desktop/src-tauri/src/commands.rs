@@ -103,7 +103,8 @@ pub fn overview(app: tauri::AppHandle, state: State<'_, AppState>) -> Overview {
         engine,
         app_version: app.package_info().version.to_string(),
         started_ms: state.started_ms,
-        request_count: state.monitor.requests().len() as u32,
+        // Requests started this session; the list the Requests tab shows holds only the newest 500.
+        request_count: u32::try_from(state.monitor.request_count()).unwrap_or(u32::MAX),
     }
 }
 
@@ -122,15 +123,28 @@ pub fn chat(state: State<'_, AppState>, chat_id: String) -> Result<ChatView, Str
     chat_view(&state.store.lock().unwrap(), &chat_id).map_err(err)
 }
 
+/// The model a new chat is bound to (R50). With an id, that model: it has to exist and be runnable, and is never
+/// swapped for another. Without one, the default if it can run, else the first model that can; `is_default` stays on a
+/// model the engine refused (R38 marks it CAN'T RUN), so it cannot be taken on its own word.
+pub fn pick_model(models: &[ModelInfo], id: Option<&str>) -> Result<ModelInfo, String> {
+    if let Some(id) = id {
+        let m = models.iter().find(|m| m.id == id).ok_or("no such model")?;
+        if !m.runnable {
+            return Err(crate::chat::cannot_run_message(&m.name, m.reason.as_deref().unwrap_or_default()));
+        }
+        return Ok(m.clone());
+    }
+    models
+        .iter()
+        .find(|m| m.is_default && m.runnable)
+        .or_else(|| models.iter().find(|m| m.runnable))
+        .cloned()
+        .ok_or_else(|| "there is no runnable model in the library".to_string())
+}
+
 #[tauri::command]
 pub fn new_chat(state: State<'_, AppState>, model_id: Option<String>) -> Result<Chat, String> {
-    let model = {
-        let lib = state.library.read().unwrap();
-        model_id
-            .and_then(|id| lib.iter().find(|m| m.id == id && m.runnable).cloned())
-            .or_else(|| lib.iter().find(|m| m.is_default).cloned())
-    }
-    .ok_or("there is no runnable model in the library")?;
+    let model = pick_model(&state.library.read().unwrap(), model_id.as_deref())?;
     state.store.lock().unwrap().create_chat(&model.id, None).map_err(err)
 }
 
@@ -243,5 +257,63 @@ mod tests {
     fn memory_info_counts_this_process() {
         let m = memory_info(None);
         assert!(m.app_bytes > 0 && m.total_bytes > m.used_bytes && m.engine_bytes == 0);
+    }
+
+    /// A library entry with only the fields `pick_model` reads set.
+    fn entry(id: &str, runnable: bool, is_default: bool) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            name: format!("{id}-name"),
+            path: format!("M:/models/{id}.gguf"),
+            source: "folder".into(),
+            size_bytes: 1,
+            arch: "llama".into(),
+            quant: "Q4_K_M".into(),
+            size_label: String::new(),
+            n_layer: 1,
+            n_head: 1,
+            n_head_kv: 1,
+            head_dim: 32,
+            vocab: 1,
+            ctx_file: 4096,
+            ctx_engine: 4096,
+            kv_bytes_per_token: 1,
+            run_bytes: 1,
+            template: "chatml".into(),
+            runnable,
+            reason: (!runnable).then(|| format!("{id} was refused")),
+            system_prompt: None,
+            system_source: None,
+            is_default,
+        }
+    }
+
+    /// R50: an explicit id is never swapped for the default. A model that cannot run is refused with the same
+    /// words a send and a model switch use; one that is not in the library is "no such model".
+    #[test]
+    fn an_explicit_model_that_cannot_run_is_refused_not_swapped_for_the_default() {
+        let lib = [entry("default", true, true), entry("broken", false, false), entry("other", true, false)];
+        let err = pick_model(&lib, Some("broken")).unwrap_err();
+        assert_eq!(err, crate::chat::cannot_run_message("broken-name", "broken was refused"));
+        assert_eq!(pick_model(&lib, Some("missing")).unwrap_err(), "no such model");
+        assert_eq!(pick_model(&lib, Some("other")).unwrap().id, "other");
+    }
+
+    /// R50: after the engine refuses the default (R38 marks it CAN'T RUN, `is_default` stays), "+ NEW" binds to
+    /// the first model that can run, not to the dead default.
+    #[test]
+    fn a_default_that_cannot_run_gives_way_to_the_first_runnable_model() {
+        let lib = [entry("default", false, true), entry("broken", false, false), entry("first", true, false), entry("second", true, false)];
+        assert_eq!(pick_model(&lib, None).unwrap().id, "first");
+        // A default that can run is taken even when it is not first.
+        let lib = [entry("first", true, false), entry("default", true, true)];
+        assert_eq!(pick_model(&lib, None).unwrap().id, "default");
+    }
+
+    #[test]
+    fn with_nothing_runnable_there_is_no_model_to_pick() {
+        let lib = [entry("default", false, true), entry("broken", false, false)];
+        assert_eq!(pick_model(&lib, None).unwrap_err(), "there is no runnable model in the library");
+        assert_eq!(pick_model(&[], None).unwrap_err(), "there is no runnable model in the library");
     }
 }

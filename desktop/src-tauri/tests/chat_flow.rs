@@ -416,3 +416,33 @@ async fn a_memory_refusal_does_not_mark_the_model_cant_run() {
     svc.supervisor.stop().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Final wave (R47): the case of R38b that the "refuses" and "memory" tests above leave open.
+// ---------------------------------------------------------------------------------------------
+
+/// R47: an engine that is killed, or crashes, DURING a load and prints nothing has given no reason of its own, so
+/// it is not a verdict on the file: the row stays runnable and the next send tries again. (An engine that REFUSES the
+/// file, as in the first R38 test, marks the row CAN'T RUN with its own words.) The fake's `silent_exit` mode exits 1
+/// before the banner without writing a line to either stream.
+#[tokio::test]
+async fn an_engine_that_dies_silently_during_a_load_does_not_mark_the_model_cant_run() {
+    let w = world("silentdie", &[("FAKE_ENGINE_MODE", "silent_exit"), ("FAKE_ENGINE_LOAD_MS", "100")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    // Twice: the second send must reach the engine again, not be refused up front with NotRunnable.
+    for round in 0..2 {
+        let (seen, sink) = collector();
+        w.svc
+            .send(&chat, "hello", sink)
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: a silent death must not make the chat refuse up front: {e}"));
+        let events = seen.lock().unwrap().clone();
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error { message }) if message == "the engine stopped while loading: no output"),
+            "round {round}: {events:?}"
+        );
+        let entry = w.svc.library.read().unwrap().iter().find(|m| m.id == w.qwen).cloned().unwrap();
+        assert!(entry.runnable && entry.reason.is_none(), "round {round}: the row is still runnable: {entry:?}");
+        assert_eq!(w.svc.supervisor.status().state, EngineState::Failed, "round {round}");
+    }
+}

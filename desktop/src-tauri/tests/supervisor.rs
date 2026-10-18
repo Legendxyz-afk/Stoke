@@ -74,7 +74,7 @@ async fn a_refused_model_reports_the_engines_own_reason() {
     let mon = Monitor::new(None);
     let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_MODE", "refuse".into())]), mon.clone());
     let err = sup.ensure_model(&model("vl", "vl.gguf")).await.unwrap_err();
-    assert!(matches!(err, EngineError::LoadFailed(ref m) if m.contains("general.architecture is 'qwen2vl'")), "{err}");
+    assert!(matches!(err, EngineError::LoadFailed(Some(ref m)) if m.contains("general.architecture is 'qwen2vl'")), "{err}");
     assert_eq!(sup.status().state, EngineState::Failed);
     // The refusal is a stderr line that arrives before the banner: it is logged at `error`.
     let line = mon
@@ -292,25 +292,44 @@ async fn an_explicit_request_retries_after_the_supervisor_has_given_up() {
     sup.stop().await;
 }
 
-/// The engine's own output reaches the Monitor under source "engine" (the Logs tab).
+/// The engine's own output reaches the Monitor under source "engine" (the Logs tab), and its banner is there BEFORE the
+/// supervisor's own "engine serving ..." line: the stdout reader logs a line first and announces the banner after (the
+/// order itself is pinned by the unit test in supervisor.rs), so by the time `ensure_model` returns the line is in the
+/// log and no waiting for it is needed.
 #[tokio::test]
 async fn the_engines_banner_is_logged_under_source_engine() {
     let mon = Monitor::new(None);
     let sup = Supervisor::new(cfg(&[]), mon.clone());
     let port = sup.ensure_model(&model("a", "a.gguf")).await.unwrap();
-    // The stdout reader sends the banner to the supervisor and then logs the line, on its own thread.
-    let want = format!("listening on 127.0.0.1:{port}");
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        let found = mon.logs_after(0).into_iter().find(|l| l.source == "engine" && l.text.contains(&want));
-        if let Some(l) = found {
-            assert_eq!(l.level, "info");
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "the banner never reached the log: {:?}", mon.logs_after(0));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let logs = mon.logs_after(0);
+    let banner = logs
+        .iter()
+        .find(|l| l.source == "engine" && l.text.contains(&format!("listening on 127.0.0.1:{port}")))
+        .unwrap_or_else(|| panic!("the banner is not in the log yet: {logs:?}"));
+    assert_eq!(banner.level, "info");
+    let serving = logs
+        .iter()
+        .find(|l| l.source == "app" && l.text.starts_with("engine serving"))
+        .unwrap_or_else(|| panic!("no 'engine serving' line: {logs:?}"));
+    assert!(banner.seq < serving.seq, "the engine's banner comes before the app's 'engine serving' line: {logs:?}");
     sup.stop().await;
+}
+
+/// R47: an engine that exits during its load without writing a line has given no reason of its own. The error says so
+/// as data (`LoadFailed(None)`, which the chat service does not mark a model CAN'T RUN for), and in the same words as
+/// before ("no output"); the supervisor is Failed with those words, and nothing was logged as the engine's output.
+#[tokio::test]
+async fn an_engine_that_exits_silently_during_its_load_gives_no_reason() {
+    let mon = Monitor::new(None);
+    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_MODE", "silent_exit".into())]), mon.clone());
+    let err = sup.ensure_model(&model("a", "a.gguf")).await.unwrap_err();
+    assert!(matches!(err, EngineError::LoadFailed(None)), "{err:?}");
+    assert_eq!(err.to_string(), "the engine stopped while loading: no output");
+    let s = sup.status();
+    assert_eq!(s.state, EngineState::Failed);
+    assert_eq!(s.last_error.as_deref(), Some("the engine stopped while loading: no output"));
+    let engine_lines: Vec<_> = mon.logs_after(0).into_iter().filter(|l| l.source == "engine").collect();
+    assert!(engine_lines.is_empty(), "the silent engine wrote nothing: {engine_lines:?}");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -347,7 +366,7 @@ async fn a_model_that_will_not_load_brings_the_previous_one_back() {
     assert!(first_pid.is_some());
     let err = sup.ensure_model(&model("refused-model", "refusable-b.gguf")).await.unwrap_err();
     assert!(
-        matches!(&err, EngineError::LoadFailed(line) if line.contains("general.architecture is 'qwen2vl'") && line.contains("refusable-b.gguf")),
+        matches!(&err, EngineError::LoadFailed(Some(line)) if line.contains("general.architecture is 'qwen2vl'") && line.contains("refusable-b.gguf")),
         "the original error comes back: {err}"
     );
     let s = sup.status();

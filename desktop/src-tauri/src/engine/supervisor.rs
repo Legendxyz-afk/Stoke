@@ -77,7 +77,9 @@ impl EngineConfig {
             // and takes ~3-4 s at the app's history sizes, and a new connection can wait two steps.
             health_timeout: Duration::from_secs(30),
             health_misses: 3,
-            backoff: vec![Duration::from_secs(1), Duration::from_secs(5), Duration::from_secs(30)],
+            // One delay for each restart the supervisor can make: the third failure in `failure_window` gives up, so
+            // there are two (R41). `recover` still falls back to 30 s for a config whose `max_failures` asks for more.
+            backoff: vec![Duration::from_secs(1), Duration::from_secs(5)],
             failure_window: Duration::from_secs(600),
             max_failures: 3,
             env: vec![],
@@ -121,8 +123,11 @@ pub struct ModelRef {
 pub enum EngineError {
     #[error("not enough memory to load {model}: it needs about {need_mb} MB and {free_mb} MB is free (1 GB is kept spare)")]
     NotEnoughMemory { model: String, need_mb: u64, free_mb: u64 },
-    #[error("the engine stopped while loading: {0}")]
-    LoadFailed(String),
+    /// The engine stopped before its banner. `Some(line)` is the last line it wrote to stderr: its own reason, so the
+    /// file is what it refused. `None` is an engine that said nothing (killed, or crashed silently): no verdict on the
+    /// file, and nothing to mark it CAN'T RUN with (R47).
+    #[error("the engine stopped while loading: {}", .0.as_deref().unwrap_or("no output"))]
+    LoadFailed(Option<String>),
     #[error("the engine did not start within {0} s")]
     LoadTimeout(u64),
     #[error("the engine has failed {0} times in 10 minutes; see Logs")]
@@ -186,6 +191,18 @@ fn spawn_stderr_reader(
     done_rx
 }
 
+/// One line of the engine's stdout. The line goes into the log FIRST; only then is the banner announced (the flag the
+/// stderr reader reads is set, and `announce` is called with the port). The supervisor logs "engine serving ..." as soon
+/// as it has the port, so a banner logged after the announcement could appear in Logs after that line.
+fn on_stdout_line(line: String, monitor: &Monitor, seen: &AtomicBool, announce: &mut impl FnMut(u16)) {
+    let port = parse_banner(&line);
+    monitor.log("engine", "info", line);
+    if let Some(p) = port {
+        seen.store(true, Ordering::SeqCst);
+        announce(p);
+    }
+}
+
 /// Waits up to `cap` for a reader from `spawn_stderr_reader` to finish. False when it did not.
 async fn drained(done: oneshot::Receiver<()>, cap: Duration) -> bool {
     tokio::time::timeout(cap, done).await.is_ok()
@@ -214,7 +231,7 @@ async fn load_error(
         return EngineError::LoadTimeout(load_timeout.as_secs());
     }
     let reason = tail.lock().unwrap().iter().rev().find(|l| !l.trim().is_empty()).cloned();
-    EngineError::LoadFailed(reason.unwrap_or_else(|| "no output".into()))
+    EngineError::LoadFailed(reason)
 }
 
 /// Puts `child` in a job object that kills it when the app's last handle closes (spec 3.1). When the job
@@ -428,11 +445,9 @@ impl Supervisor {
         let (mon, seen_w) = (self.monitor.clone(), banner_seen.clone());
         std::thread::spawn(move || {
             for_each_line(stdout, |line| {
-                if let Some(p) = parse_banner(&line) {
-                    seen_w.store(true, Ordering::SeqCst);
+                on_stdout_line(line, &mon, &seen_w, &mut |p| {
                     let _ = banner_tx.send(p);
-                }
-                mon.log("engine", "info", line);
+                })
             });
         });
         let tail = Arc::new(StdMutex::new(Vec::<String>::new()));
@@ -669,7 +684,7 @@ mod tests {
         };
         let done = spawn_stderr_reader(pipe, seen, mon.clone(), tail.clone());
         let err = load_error(true, Duration::from_secs(120), done, Duration::from_secs(5), &tail, &mon).await;
-        assert!(matches!(&err, EngineError::LoadFailed(m) if m == "stoke serve: model: 'x' -- bad"), "{err}");
+        assert!(matches!(&err, EngineError::LoadFailed(Some(m)) if m == "stoke serve: model: 'x' -- bad"), "{err}");
     }
 
     #[tokio::test]
@@ -679,7 +694,8 @@ mod tests {
         let done = spawn_stderr_reader(Stuck(held), seen, mon.clone(), tail.clone());
         let t0 = Instant::now();
         let err = load_error(true, Duration::from_secs(120), done, Duration::from_millis(200), &tail, &mon).await;
-        assert!(matches!(&err, EngineError::LoadFailed(m) if m == "no output"), "{err}");
+        assert!(matches!(&err, EngineError::LoadFailed(None)), "{err}");
+        assert_eq!(err.to_string(), "the engine stopped while loading: no output");
         assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
         let w = warnings(&mon);
         assert_eq!(w.len(), 1, "{w:?}");
@@ -716,6 +732,33 @@ mod tests {
         drained(spawn_stderr_reader(Cursor::new(text.into_bytes()), seen, mon, tail.clone()), Duration::from_secs(5)).await;
         let t = tail.lock().unwrap();
         assert_eq!((t.len(), t.first().map(String::as_str), t.last().map(String::as_str)), (20, Some("line 11"), Some("line 30")));
+    }
+
+    /// The supervisor logs "engine serving ..." as soon as it is told the port, so the engine's own banner has to be in
+    /// the log by then or Logs shows the two the wrong way round. `announce` here looks at the log at the moment it is
+    /// called: the banner line must already be there (and the stderr reader's flag already set).
+    #[test]
+    fn the_banner_line_is_logged_before_the_banner_is_announced() {
+        let mon = Monitor::new(None);
+        let seen = AtomicBool::new(false);
+        let banner = "stoke serve: listening on 127.0.0.1:52341  ctx=4096";
+        let mut at_announce = None;
+        on_stdout_line(banner.into(), &mon, &seen, &mut |port| {
+            at_announce = Some((port, mon.logs_after(0).into_iter().map(|l| l.text).collect::<Vec<_>>(), seen.load(Ordering::SeqCst)));
+        });
+        let (port, logged, flag) = at_announce.expect("the banner was announced");
+        assert_eq!(port, 52341);
+        assert_eq!(logged, [banner], "the banner line is in the log when the port is announced");
+        assert!(flag, "the stderr reader's flag is set when the port is announced");
+        // Any other line is only logged: nothing is announced and the flag stays down.
+        let seen = AtomicBool::new(false);
+        on_stdout_line("loading weights".into(), &mon, &seen, &mut |_| panic!("not a banner"));
+        assert!(!seen.load(Ordering::SeqCst));
+        let all = mon.logs_after(0);
+        assert_eq!(all.iter().map(|l| (l.source.as_str(), l.level.as_str(), l.text.as_str())).collect::<Vec<_>>(), [
+            ("engine", "info", banner),
+            ("engine", "info", "loading weights"),
+        ]);
     }
 
     /// A process that outlives the test body, standing in for the engine.
@@ -781,6 +824,15 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// R41: one delay for each restart the supervisor can make. The third failure in the window gives up before a third
+    /// delay would be read, so a third entry would be configuration that never runs.
+    #[test]
+    fn the_default_backoff_has_a_delay_for_each_restart_and_none_that_is_never_read() {
+        let c = EngineConfig::defaults(PathBuf::from("lorren-engine.exe"));
+        assert_eq!(c.backoff, [Duration::from_secs(1), Duration::from_secs(5)]);
+        assert_eq!(c.backoff.len(), c.max_failures - 1);
     }
 
     /// Global Constraints: `--threads N` only when set.

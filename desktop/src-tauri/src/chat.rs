@@ -172,9 +172,10 @@ impl ChatService {
         let m = model.clone();
         tokio::spawn(async move {
             let started = supervisor.ensure_model(&model_ref(&m)).await;
-            // Only the engine's own refusal of the file marks the model. A memory refusal, a load timeout and a
-            // spawn failure are not the file's fault and can pass later.
-            if let Err(EngineError::LoadFailed(line)) = &started {
+            // Only the engine's own refusal of the file marks the model: a start that ended with a line of the
+            // engine's own in `LoadFailed`. An engine that died without a word (killed, or crashed silently), a memory
+            // refusal, a load timeout and a spawn failure are not the file's fault and can pass later (R47).
+            if let Err(EngineError::LoadFailed(Some(line))) = &started {
                 if let Some(entry) = library.write().unwrap().iter_mut().find(|e| e.id == m.id) {
                     entry.runnable = false;
                     entry.reason = Some(line.clone());

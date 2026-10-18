@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use ts_rs::TS;
 
@@ -62,6 +63,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub struct Monitor {
     logs: Mutex<LogRing>,
     requests: Mutex<VecDeque<RequestRecord>>,
+    /// Requests started since the app began. `requests` keeps only the newest MAX_REQUESTS, so its length stops at 500.
+    started: AtomicU64,
     file: Option<Mutex<File>>,
 }
 
@@ -83,6 +86,7 @@ impl Monitor {
         let m = Arc::new(Monitor {
             logs: Mutex::new(LogRing { seq: 0, lines: VecDeque::new() }),
             requests: Mutex::new(VecDeque::new()),
+            started: AtomicU64::new(0),
             file,
         });
         if let Some(msg) = open_error {
@@ -133,6 +137,7 @@ impl Monitor {
             status: "streaming".into(),
             dropped_turns: 0,
         };
+        self.started.fetch_add(1, Ordering::Relaxed);
         let mut q = lock(&self.requests);
         q.push_back(record);
         while q.len() > MAX_REQUESTS {
@@ -149,6 +154,11 @@ impl Monitor {
 
     pub fn requests(&self) -> Vec<RequestRecord> {
         lock(&self.requests).iter().rev().cloned().collect()
+    }
+
+    /// How many requests have been started this session, however many of them `requests()` still holds.
+    pub fn request_count(&self) -> u64 {
+        self.started.load(Ordering::Relaxed)
     }
 }
 
@@ -229,6 +239,19 @@ mod tests {
         assert_eq!(list.len(), MAX_REQUESTS);
         assert_eq!(list[0].id, *ids.last().unwrap());
         assert!(!list.iter().any(|r| r.id == ids[0]));
+    }
+
+    /// The status bar's "N requests" is the number started this session. The list holds the newest MAX_REQUESTS only,
+    /// so counting its length stops at 500 while the requests go on.
+    #[test]
+    fn the_request_count_goes_on_past_the_cap_of_the_list() {
+        let m = Monitor::new(None);
+        assert_eq!(m.request_count(), 0);
+        for _ in 0..MAX_REQUESTS + 5 {
+            m.start_request("chat", "/e", "m");
+        }
+        assert_eq!(m.requests().len(), MAX_REQUESTS);
+        assert_eq!(m.request_count(), (MAX_REQUESTS + 5) as u64);
     }
 
     #[test]

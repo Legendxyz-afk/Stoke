@@ -3,6 +3,8 @@
 //! `data: {json}\n\n` chunks, `: ping\n\n` comments, `data: [DONE]\n\n`, and errors shaped
 //! {"error":{"message":..,"type":..,"param":null,"code":null}}.
 //! `FAKE_ENGINE_REFUSE_MODEL=<text>` (Task 10): refuse exactly as `FAKE_ENGINE_MODE=refuse` does, but only a model whose path contains `<text>`.
+//! `FAKE_ENGINE_MODE=silent_exit` (R47): an engine killed, or crashing, during its load: it waits out `FAKE_ENGINE_LOAD_MS`, then exits 1
+//! with no banner and not a line on either stream.
 //!
 //! It is the real engine's shape, not the real engine. KNOWN DIFFERENCES, which a green test
 //! against the fake does not cover:
@@ -49,6 +51,8 @@ enum Mode {
     Refuse,
     Hang,
     CrashAfterMs(u64),
+    /// Exits 1 during the load, before the banner, having printed nothing.
+    SilentExit,
 }
 
 fn parse_mode(raw: &str) -> Result<Mode, String> {
@@ -56,10 +60,11 @@ fn parse_mode(raw: &str) -> Result<Mode, String> {
         "ok" => Ok(Mode::Serve),
         "refuse" => Ok(Mode::Refuse),
         "hang" => Ok(Mode::Hang),
+        "silent_exit" => Ok(Mode::SilentExit),
         _ => match raw.strip_prefix("crash_after_ms:").map(str::parse::<u64>) {
             Some(Ok(ms)) => Ok(Mode::CrashAfterMs(ms)),
             _ => Err(format!(
-                "fake engine: unknown FAKE_ENGINE_MODE '{raw}' (expected ok | refuse | hang | crash_after_ms:<N>)"
+                "fake engine: unknown FAKE_ENGINE_MODE '{raw}' (expected ok | refuse | hang | silent_exit | crash_after_ms:<N>)"
             )),
         },
     }
@@ -114,6 +119,10 @@ fn main() {
     }
     if let Some(ms) = env("FAKE_ENGINE_LOAD_MS").and_then(|v| v.parse().ok()) {
         std::thread::sleep(Duration::from_millis(ms));
+    }
+    if matches!(mode, Mode::SilentExit) {
+        // Killed, or crashed, while loading (R47): no banner, and no line for the supervisor to take as the reason.
+        std::process::exit(1);
     }
     let listener = TcpListener::bind((host.as_str(), port)).expect("bind");
     let actual = listener.local_addr().unwrap().port();
