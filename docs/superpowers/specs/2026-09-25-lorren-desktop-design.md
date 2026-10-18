@@ -127,8 +127,8 @@ engine; depends on the sidecar binary and the settings.
   1 GB of RAM free is not started; the app offers smaller settings instead.
 - **Health:** `GET /health` every 5 s. Three misses in a row means the engine
   is hung.
-- **Crash or hang:** restart after 1 s, then 5 s, then 30 s. After three
-  failures in 10 minutes it stops, shows the log, and offers a manual restart.
+- **Crash or hang:** restart after 1 s, then after 5 s; a third failure
+  within 10 minutes stops it, shows the log, and offers a manual restart.
 - **Output:** the engine's stderr goes into a ring buffer and the log file. A
   load failure shows the engine's own last error line, for example an
   unsupported architecture.
@@ -418,7 +418,7 @@ engine versions.
 
 - **A model won't load:** its row turns CAN'T RUN with the engine's own message
   (from stderr), and the previous model is started again.
-- **The engine crashes or hangs:** it restarts after 1, 5 and 30 s (§3.1). The
+- **The engine crashes or hangs:** it restarts after 1 s, then 5 s (§3.1). The
   chat keeps the partial reply, marked "interrupted". After three failures in
   10 minutes the app stops, shows the log, and offers a restart.
 - **Not enough memory:** it estimates before loading (§3.1) and never starts a

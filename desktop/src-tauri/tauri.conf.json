@@ -32,6 +32,10 @@
     "externalBin": [
       "binaries/lorren-engine"
     ],
+    "resources": {
+      "../src/fonts/OFL-Archivo.txt": "OFL-Archivo.txt",
+      "../src/fonts/OFL-JetBrainsMono.txt": "OFL-JetBrainsMono.txt"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
