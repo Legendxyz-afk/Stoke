@@ -201,6 +201,10 @@ pub async fn check_update(app: tauri::AppHandle, state: State<'_, AppState>) -> 
 
 #[tauri::command]
 pub async fn install_update(state: State<'_, AppState>) -> Result<(), String> {
+    // R64: with no verified update waiting there is nothing to install, so say so and leave the engine running.
+    if state.updates.ready_version().is_none() {
+        return Err(crate::updater::NO_VERIFIED_UPDATE.to_string());
+    }
     // R37: the sidecar must not be running when NSIS replaces it.
     state.supervisor.stop().await;
     state.updates.install()

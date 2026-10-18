@@ -1,11 +1,13 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
+import { StatusBar } from "../components/StatusBar";
 import { UpdateBadge } from "../components/UpdateBadge";
 import { api } from "../ipc/api";
 import type { UpdateState } from "../ipc/bindings/UpdateState";
+import { captureHostErrors, overview } from "./testApi";
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -35,5 +37,187 @@ describe("UpdateBadge", () => {
     });
     expect(api.updateState).toHaveBeenCalled();
     expect(container.textContent).toBe("");
+  });
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+/** Node's unhandledRejection events during a test (the same helper as in ChatTab.test.tsx). Vitest also fails the whole
+ *  run on one; this makes the test say so. */
+function watchUnhandledRejections() {
+  type Emitter = {
+    on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+    off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+  };
+  const proc = (globalThis as unknown as { process: Emitter }).process;
+  const seen: unknown[] = [];
+  const listener = (reason: unknown) => {
+    seen.push(reason);
+  };
+  proc.on("unhandledRejection", listener);
+  return { seen, stop: () => proc.off("unhandledRejection", listener) };
+}
+
+// R64: a host call the badge makes can fail like any other (a misnamed or unregistered command, an ACL, or, for the
+// install, the plugin refusing). The reason is shown in the badge, ahead of its action, and logged once; a state that
+// arrives takes it away. The badge must not swallow it, and must not look like "nothing to report".
+describe("UpdateBadge when a host call fails (R64)", () => {
+  let hostErrors: MockInstance<typeof console.error>;
+  /** The callback the badge handed to onUpdateState: calling it is the host emitting an update-state event. */
+  let emit!: (s: UpdateState) => void;
+  const ready: UpdateState = { state: "ready", version: "0.0.2" };
+  const upToDate: UpdateState = { state: "up_to_date", version: "0.0.1" };
+  /** The badge where App puts it: Task 16's end-to-end test presses the last `.statusbar button`. */
+  const inStatusBar = () =>
+    render(
+      <StatusBar overview={overview}>
+        <UpdateBadge />
+      </StatusBar>,
+    );
+
+  beforeEach(() => {
+    // Nothing an earlier test left on the mocks (a rejection, a one-off result) may reach these tests.
+    vi.mocked(api.updateState).mockReset().mockImplementation(async () => ({ state: "not_configured" }));
+    vi.mocked(api.checkUpdate).mockReset().mockImplementation(async () => {});
+    vi.mocked(api.installUpdate).mockReset().mockImplementation(async () => {});
+    vi.mocked(api.onUpdateState).mockReset().mockImplementation(async (cb) => {
+      emit = cb;
+      return () => {};
+    });
+    hostErrors = captureHostErrors(); // the "<call> failed:" lines go to this spy; anything else still reaches stderr
+  });
+  afterEach(() => {
+    hostErrors.mockRestore();
+  });
+
+  it("installUpdate(): the reason is shown before the button and logged once, the button stays the last one and can be pressed again", async () => {
+    const reason = "update 0.0.2 could not be installed: Access is denied. (os error 5)";
+    vi.mocked(api.updateState).mockResolvedValue(ready);
+    vi.mocked(api.installUpdate).mockRejectedValue(reason);
+    const { container } = inStatusBar();
+    const button = await screen.findByText(/0\.0\.2 ready · RESTART TO INSTALL/);
+
+    fireEvent.click(button);
+    const notice = await screen.findByText(`could not install the update: ${reason}`);
+    expect(notice.tagName).toBe("SPAN"); // a span: the badge's action stays the last button in the bar
+    expect(notice.classList.contains("flame-text")).toBe(true);
+    expect(notice.getAttribute("title")).toBe(`could not install the update: ${reason}`); // the line is cut to fit the bar; this has all of it
+    expect(notice.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // before the button
+    const buttons = container.querySelectorAll(".statusbar button");
+    expect(buttons[buttons.length - 1]).toBe(button);
+    expect(hostErrors.mock.calls).toEqual([["installUpdate failed:", reason]]);
+
+    fireEvent.click(button); // the state is still Ready, so the host can be asked again; the same reason is not logged again
+    await waitFor(() => expect(api.installUpdate).toHaveBeenCalledTimes(2));
+    await act(async () => {});
+    expect(screen.getByText(`could not install the update: ${reason}`)).toBeTruthy();
+    expect(hostErrors.mock.calls).toEqual([["installUpdate failed:", reason]]);
+  });
+
+  it("checkUpdate(): the reason is shown before the button and logged once", async () => {
+    vi.mocked(api.updateState).mockResolvedValue(upToDate);
+    vi.mocked(api.checkUpdate).mockRejectedValue("Command check_update not found");
+    const { container } = inStatusBar();
+    const button = await screen.findByText(/up to date \(0\.0\.1\)/);
+
+    fireEvent.click(button);
+    const notice = await screen.findByText("could not check for updates: Command check_update not found");
+    expect(notice.tagName).toBe("SPAN");
+    expect(notice.classList.contains("flame-text")).toBe(true);
+    expect(notice.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const buttons = container.querySelectorAll(".statusbar button");
+    expect(buttons[buttons.length - 1]).toBe(button);
+    expect(hostErrors.mock.calls).toEqual([["checkUpdate failed:", "Command check_update not found"]]);
+  });
+
+  it("updateState(): the reason is shown, and it is all the badge shows, so the badge is not empty", async () => {
+    vi.mocked(api.updateState).mockRejectedValue("Command update_state not found");
+    const { container } = render(<UpdateBadge />);
+    const notice = await screen.findByText("could not read the update state: Command update_state not found");
+    expect(notice.tagName).toBe("SPAN");
+    expect(notice.classList.contains("flame-text")).toBe(true);
+    expect(container.textContent).toBe("could not read the update state: Command update_state not found");
+    expect(screen.getByRole("alert")).toBe(notice); // announced, as the tabs' notices and ChatTab's are
+    expect(container.querySelector("button")).toBeNull();
+    expect(hostErrors.mock.calls).toEqual([["updateState failed:", "Command update_state not found"]]);
+  });
+
+  it("onUpdateState(): the reason is shown and logged, and unmounting after it rejects nothing", async () => {
+    const unhandled = watchUnhandledRejections();
+    try {
+      vi.mocked(api.onUpdateState).mockRejectedValueOnce("event:default not allowed by ACL");
+      const view = render(<UpdateBadge />);
+      const notice = await screen.findByText("could not follow the update state: event:default not allowed by ACL");
+      expect(notice.tagName).toBe("SPAN");
+      expect(notice.classList.contains("flame-text")).toBe(true);
+      expect(hostErrors.mock.calls).toEqual([["onUpdateState failed:", "event:default not allowed by ACL"]]);
+      view.unmount(); // the cleanup runs un.then((f) => f()); with no function to call that would be an unhandled rejection
+      await settle(); // Node reports an unhandled rejection once the microtasks have drained
+      expect(unhandled.seen).toEqual([]);
+    } finally {
+      unhandled.stop();
+    }
+  });
+
+  it("a state event after a failure takes the failure line away, and a failure after that is shown and logged again", async () => {
+    vi.mocked(api.updateState).mockRejectedValueOnce("Command update_state not found");
+    vi.mocked(api.installUpdate).mockRejectedValue("the installer could not be started");
+    vi.mocked(api.checkUpdate).mockRejectedValue("Command check_update not found");
+    const { container } = render(<UpdateBadge />);
+    await screen.findByText("could not read the update state: Command update_state not found");
+
+    act(() => emit(ready)); // the snapshot failed, then a state arrives: the badge has something to show, so the failure goes
+    expect(screen.queryByText(/could not read/)).toBeNull();
+    expect(container.textContent).toBe("update 0.0.2 ready · RESTART TO INSTALL");
+
+    fireEvent.click(screen.getByText(/RESTART TO INSTALL/));
+    await screen.findByText("could not install the update: the installer could not be started");
+    act(() => emit(upToDate)); // another state event takes the install failure away as well
+    expect(screen.queryByText(/could not install/)).toBeNull();
+    expect(container.textContent).toBe("up to date (0.0.1)");
+
+    fireEvent.click(screen.getByText(/up to date/));
+    await screen.findByText("could not check for updates: Command check_update not found");
+    act(() => emit(ready)); // and the check failure
+    expect(screen.queryByText(/could not check/)).toBeNull();
+    expect(container.textContent).toBe("update 0.0.2 ready · RESTART TO INSTALL");
+
+    fireEvent.click(screen.getByText(/RESTART TO INSTALL/)); // the same failure again is a new outage, not a repeat of the one logged
+    await screen.findByText("could not install the update: the installer could not be started");
+    expect(hostErrors.mock.calls).toEqual([
+      ["updateState failed:", "Command update_state not found"],
+      ["installUpdate failed:", "the installer could not be started"],
+      ["checkUpdate failed:", "Command check_update not found"],
+      ["installUpdate failed:", "the installer could not be started"],
+    ]);
+  });
+
+  it.each([
+    { press: "install", state: ready, label: /RESTART TO INSTALL/, call: () => api.installUpdate, notice: "could not install the update: the host said no" },
+    { press: "check", state: upToDate, label: /up to date/, call: () => api.checkUpdate, notice: "could not check for updates: the host said no" },
+  ])("$press: a press that works the next time takes its own failure line away", async ({ state, label, call, notice }) => {
+    vi.mocked(api.updateState).mockResolvedValue(state);
+    vi.mocked(call()).mockRejectedValueOnce("the host said no").mockResolvedValue(undefined);
+    render(<UpdateBadge />);
+    const button = await screen.findByText(label);
+    fireEvent.click(button);
+    await screen.findByText(notice);
+
+    fireEvent.click(button); // no state event in between: it is the answer that works which clears the line
+    await waitFor(() => expect(screen.queryByText(/could not/)).toBeNull());
+    expect(call()).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(label)).toBe(button);
+  });
+
+  it("a snapshot that arrives after the listener failed does not hide that the badge can no longer follow the state", async () => {
+    let snapshot!: (s: UpdateState) => void;
+    vi.mocked(api.updateState).mockReturnValue(new Promise<UpdateState>((resolve) => (snapshot = resolve)));
+    vi.mocked(api.onUpdateState).mockRejectedValueOnce("event:default not allowed by ACL");
+    render(<UpdateBadge />);
+    await screen.findByText("could not follow the update state: event:default not allowed by ACL");
+
+    await act(async () => snapshot(upToDate)); // only an event shows that following works; a snapshot is a one-off read
+    expect(screen.getByText(/up to date \(0\.0\.1\)/)).toBeTruthy();
+    expect(screen.getByText("could not follow the update state: event:default not allowed by ACL")).toBeTruthy();
   });
 });

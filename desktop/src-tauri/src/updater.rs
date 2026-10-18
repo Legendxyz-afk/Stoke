@@ -52,6 +52,11 @@ pub fn classify(e: &tauri_plugin_updater::Error) -> Verdict {
     }
 }
 
+/// What an install press is told when no downloaded, verified update is waiting. `install_update` checks for that
+/// before it stops the engine and `UpdateService::install` checks again when it takes the update, so both use these
+/// words and cannot drift apart (R64).
+pub const NO_VERIFIED_UPDATE: &str = "no verified update is waiting";
+
 pub struct UpdateService {
     state: Mutex<UpdateState>,
     pending: Mutex<Option<(Update, Vec<u8>)>>,
@@ -138,12 +143,33 @@ impl UpdateService {
         }
     }
 
+    /// The version of the downloaded, verified update that is waiting for the user to restart, if there is one.
+    /// `install_update` asks this before it stops the engine, so a press with nothing waiting leaves the engine alone.
+    pub fn ready_version(&self) -> Option<String> {
+        self.pending.lock().unwrap().as_ref().map(|(update, _)| update.version.clone())
+    }
+
     /// Installs the verified update. On Windows the plugin starts the NSIS installer and exits the
     /// app; the engine dies with it (job object, Task 8).
+    ///
+    /// When the plugin cannot install, the update and its bytes go back into `pending` and the state stays `Ready`, so
+    /// the badge still offers the install and the next press tries again; the reason is logged and returned (R64).
+    /// `Update::install` borrows the bytes (it verifies them again, then starts the installer), which is what makes
+    /// the hand-back possible. It returns only on failure on Windows: on success the app exits inside it.
     pub fn install(&self) -> Result<(), String> {
-        let (update, bytes) = self.pending.lock().unwrap().take().ok_or("no verified update is waiting")?;
+        let Some((update, bytes)) = self.pending.lock().unwrap().take() else {
+            return Err(NO_VERIFIED_UPDATE.to_string());
+        };
         self.monitor.log("updater", "info", format!("installing {}", update.version));
-        update.install(bytes).map_err(|e| e.to_string())
+        match update.install(&bytes) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let message = format!("update {} could not be installed: {e}", update.version);
+                self.monitor.log("updater", "error", message.clone());
+                *self.pending.lock().unwrap() = Some((update, bytes));
+                Err(message)
+            }
+        }
     }
 }
 
@@ -179,5 +205,18 @@ mod tests {
         let j = serde_json::to_value(UpdateState::Ready { version: "0.0.2".into() }).unwrap();
         assert_eq!(j, serde_json::json!({"state": "ready", "version": "0.0.2"}));
         assert_eq!(serde_json::to_value(UpdateState::NotConfigured).unwrap(), serde_json::json!({"state": "not_configured"}));
+    }
+
+    // R64: the install command asks whether a verified update is waiting before it stops the engine, so that has to be
+    // answerable without an `Update` in hand, and the command and `install()` have to say the same words when it is not.
+    // Only this branch is tested: a plugin `Update` cannot be built outside the plugin, so a waiting update, and
+    // `Update::install` failing and handing its bytes back, can be checked by reading only.
+    #[test]
+    fn with_nothing_downloaded_no_update_is_ready_and_install_says_so_in_the_shared_words() {
+        let service = UpdateService::new(Monitor::new(None));
+        assert_eq!(service.ready_version(), None);
+        assert_eq!(NO_VERIFIED_UPDATE, "no verified update is waiting"); // the words the badge shows after "could not install the update: "
+        assert_eq!(service.install(), Err(NO_VERIFIED_UPDATE.to_string()));
+        assert_eq!(service.ready_version(), None); // asking, and being refused, used nothing up
     }
 }
