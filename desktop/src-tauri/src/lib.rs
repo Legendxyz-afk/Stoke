@@ -18,6 +18,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
+                // `show` first (R64d): tao's `set_focus` does nothing for a window that is not visible, and a failed
+                // update install leaves the window hidden.
+                let _ = w.show();
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }

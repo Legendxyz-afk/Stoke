@@ -9,7 +9,7 @@ use crate::store::{Chat, Message, Store};
 use serde::Serialize;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{Manager, State};
 use ts_rs::TS;
 
 pub struct AppState {
@@ -200,14 +200,23 @@ pub async fn check_update(app: tauri::AppHandle, state: State<'_, AppState>) -> 
 }
 
 #[tauri::command]
-pub async fn install_update(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn install_update(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     // R64: with no verified update waiting there is nothing to install, so say so and leave the engine running.
     if state.updates.ready_version().is_none() {
         return Err(crate::updater::NO_VERIFIED_UPDATE.to_string());
     }
     // R37: the sidecar must not be running when NSIS replaces it.
     state.supervisor.stop().await;
-    state.updates.install()
+    let result = state.updates.install();
+    if result.is_err() {
+        // R64d: the plugin's pre-install hook (cleanup_before_exit) hid every window; show it again so the notice can be read.
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+    }
+    result
 }
 
 #[cfg(test)]
