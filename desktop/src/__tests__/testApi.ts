@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import type { Api } from "../ipc/api";
 import type { Chat } from "../ipc/bindings/Chat";
 import type { ChatView } from "../ipc/bindings/ChatView";
 import type { Message } from "../ipc/bindings/Message";
@@ -27,6 +28,8 @@ export const overview: Overview = {
   request_count: 3,
 };
 
+/** The module the tests put in place of `../ipc/api`. `satisfies Api` makes a mock that drifts from the real API (a call
+ *  renamed, one missing, one whose arguments or result changed) a type error, not a test that runs against nothing. */
 export function mockApi() {
   return {
     overview: vi.fn(async () => overview),
@@ -46,7 +49,7 @@ export function mockApi() {
     installUpdate: vi.fn(async () => {}),
     onEngineStatus: vi.fn(async () => () => {}),
     onUpdateState: vi.fn(async () => () => {}),
-  };
+  } satisfies Api;
 }
 
 /** Take the "<call> failed:" lines that ChatTab logs when a host call is rejected (R57) out of stderr and into the

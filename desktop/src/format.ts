@@ -1,5 +1,7 @@
 export const mb = (b: number) => `${Math.round(b / 1048576).toLocaleString("en-US")} MB`;
-export const gb = (b: number) => `${(b / 1073741824).toFixed(1)} GB`;
+/** The number of GB, one decimal, without the unit: for "used/total GB", where the unit is written once. */
+export const gbn = (b: number) => (b / 1073741824).toFixed(1);
+export const gb = (b: number) => `${gbn(b)} GB`;
 export const secs = (ms: number | null | undefined) =>
   ms == null ? "—" : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
 export const clock = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour12: false });

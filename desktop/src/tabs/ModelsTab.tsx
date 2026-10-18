@@ -6,7 +6,10 @@ import type { Overview } from "../ipc/bindings/Overview";
 import { HostFailure, useHostFailure } from "./HostFailure";
 import "./tabs.css";
 
-const COLS = "minmax(240px, 2fr) 80px 76px 80px 76px 84px 110px";
+// The fixed columns are each as wide as their longest real value: SOURCE folder/ollama, ARCH qwen2vl, QUANT Q4_K_M, SIZE
+// "12.5 GB", TEMPLATE chatml/llama3 (and the header's own word), STATUS the CAN'T RUN pill. The name takes what is left and
+// shortens first; with a 320 px right panel that is ~265 px at the window's minimum width, and all seven columns show.
+const COLS = "minmax(140px, 1fr) 56px 64px 56px 64px 64px 80px";
 
 export function ModelsTab({ overview }: { overview: Overview | null }) {
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -39,8 +42,8 @@ export function ModelsTab({ overview }: { overview: Overview | null }) {
           {models.map((x) => (
             <div key={x.id} role="row" className={`table-row clickable ${x.id === selected ? "selected" : ""}`}
                  style={{ gridTemplateColumns: COLS, height: 44 }} onClick={() => setSelected(x.id)}>
-              <span className="ell">
-                <span>{x.name}</span>
+              <span className="name-cell">
+                <span className="ell">{x.name}</span>
                 {x.is_default && <span className="pill tag accent-text">DEFAULT</span>}
                 {x.id === loaded && <span className="pill tag shared-text">LOADED</span>}
               </span>

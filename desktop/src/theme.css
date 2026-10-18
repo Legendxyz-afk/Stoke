@@ -37,6 +37,9 @@ button, input, textarea, select { font-family: inherit; }
 .tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
 .engine { margin-left: auto; display: flex; align-items: center; gap: 22px; padding: 0 22px;
           font-family: var(--mono); font-size: 11px; color: var(--d68); min-width: 0; }
+/* Every item of the cluster stays on one line, whole; the model name (the only `.ell` in it) is the one that gives way. */
+.engine > * { white-space: nowrap; flex-shrink: 0; }
+.engine > .ell { flex-shrink: 1; min-width: 0; }
 .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 7px; background: var(--d50); }
 .dot.serving { background: var(--accent); }
 .dot.starting, .dot.restarting { background: var(--shared); }
@@ -53,9 +56,10 @@ button, input, textarea, select { font-family: inherit; }
 .head { padding: 13px 20px 11px; border-bottom: 1px solid var(--l27); display: flex; align-items: baseline; gap: 10px; }
 .title { font-size: 13px; font-weight: 600; }
 .section { padding: 16px 20px; border-bottom: 1px solid var(--l22); display: flex; flex-direction: column; gap: 10px; }
-.fact { display: flex; justify-content: space-between; gap: 14px; font-family: var(--mono); font-size: 11px; }
+.fact { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 14px; font-family: var(--mono); font-size: 11px; }
 .fact .k { color: var(--d58); flex-shrink: 0; }
-.fact .v { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A value that does not fit beside its label goes under it, right-aligned, instead of being cut or drawn over it. */
+.fact .v { margin-left: auto; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .btn { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; cursor: pointer; background: none;
        border: 1px solid var(--l30); color: var(--d72); padding: 9px 14px; }
 .btn.accent { border-color: var(--accent); color: var(--accent); }
@@ -73,3 +77,14 @@ button, input, textarea, select { font-family: inherit; }
               letter-spacing: 0.1em; color: var(--d55); border-bottom: 1px solid var(--l27); }
 .table-row { display: grid; gap: 14px; align-items: center; padding: 0 22px; border-bottom: 1px solid var(--l20); }
 .table-row.selected { background: var(--sel); }
+
+/* Up to 1279 px wide (the window's minimum is 1100) the bars and the side columns give up some room, so that the top bar's
+   engine cluster, the Models table and the Chat composer fit. One query for all of it. */
+@media (max-width: 1279px) {
+  .brand { padding: 0 16px; }
+  .tab { padding: 0 12px; }
+  .engine { gap: 14px; padding: 0 16px; }
+  .engine .static { display: none; }
+  .left { width: 220px; }
+  .right { width: 320px; }
+}

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
 import { App } from "../App";
+import { StatusBar } from "../components/StatusBar";
+import { TopBar } from "../components/TopBar";
 import { api } from "../ipc/api";
 import type { StreamEvent } from "../ipc/bindings/StreamEvent";
 import { chat, models, msg, overview, view as storedChat, withTurn } from "./testApi";
@@ -169,5 +171,34 @@ describe("App keeps the Chat tab mounted", () => {
     tab("Chat");
     await waitFor(() => expect(api.models).toHaveBeenCalledTimes(3));
     expect(api.chats).toHaveBeenCalledTimes(1); // its first load worked, so it is not asked again
+  });
+});
+
+// The two bars cut a long text with an ellipsis (a 30 px status bar, a top bar that shares its width with six tabs): the
+// whole text is in the element's title, so it can be read where it is cut.
+describe("the bars keep the full text of what they cut off", () => {
+  it("the top bar's model name carries its whole name in a title", () => {
+    render(<TopBar tab="Chat" onTab={() => {}} overview={overview} />);
+    const name = screen.getByText("Qwen3-4B-Instruct-2507-Q4_K_M");
+    expect(name.classList.contains("ell")).toBe(true); // the element that gets the ellipsis
+    expect(name.getAttribute("title")).toBe("Qwen3-4B-Instruct-2507-Q4_K_M");
+  });
+
+  // The memory item reads "app N MB · engine N GB · used/total GB": the unit once at the end, every number kept (the bar
+  // is tight at 1100 px). `static` marks the two settings that the stylesheet leaves out below 1280 px.
+  it("the top bar's memory writes the GB unit once after used/total, and marks t= and kv as the items that can go", () => {
+    render(<TopBar tab="Chat" onTab={() => {}} overview={overview} />);
+    expect(screen.getByText(/^app 150 MB/).textContent).toBe("app 150 MB · engine 2.4 GB · 10.0/15.6 GB");
+    expect(screen.getByText("t=auto").classList.contains("static")).toBe(true);
+    expect(screen.getByText("kv q8").classList.contains("static")).toBe(true);
+    expect(screen.getByText("serving").classList.contains("static")).toBe(false);
+  });
+
+  it("the status bar's last engine error carries its whole text in a title", () => {
+    const last_error = "the engine stopped while loading: stoke serve: model: 'M:/New Drive/ai models/x.gguf' -- general.architecture is 'qwen2vl'";
+    render(<StatusBar overview={{ ...overview, engine: { ...overview.engine, last_error } }} />);
+    const line = screen.getByText(last_error);
+    expect(line.classList.contains("ell")).toBe(true);
+    expect(line.getAttribute("title")).toBe(last_error);
   });
 });

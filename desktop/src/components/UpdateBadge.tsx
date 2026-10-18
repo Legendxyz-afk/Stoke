@@ -18,18 +18,14 @@ export function UpdateBadge() {
   const install = useHostFailure("installUpdate");
   useEffect(() => {
     let alive = true;
-    api.updateState().then(
-      (next) => {
-        if (!alive) return;
-        setS(next);
-        read.clear();
-      },
-      (e) => {
-        if (alive) read.report(e);
-      },
-    );
+    /** An event has arrived. It is newer than a snapshot that is still on its way, so that snapshot is dropped. */
+    let heard = false;
+    // The listener goes in FIRST, and the snapshot is read once it is registered (or has failed to be): read first, an
+    // event emitted before the listener was in place would be lost, and an answer that landed after an event would put
+    // the older state over the newer one.
     const unlisten = api
       .onUpdateState((next) => {
+        heard = true;
         setS(next);
         read.clear();
         follow.clear();
@@ -40,6 +36,18 @@ export function UpdateBadge() {
         if (alive) follow.report(e);
         return () => {}; // the cleanup below still calls whatever this resolves to (R51)
       });
+    void unlisten.then(() =>
+      api.updateState().then(
+        (next) => {
+          if (!alive || heard) return;
+          setS(next);
+          read.clear();
+        },
+        (e) => {
+          if (alive) read.report(e);
+        },
+      ),
+    );
     return () => {
       alive = false;
       unlisten.then((f) => f());

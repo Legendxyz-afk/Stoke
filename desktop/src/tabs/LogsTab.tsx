@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { clock } from "../format";
 import { api } from "../ipc/api";
 import type { LogLine } from "../ipc/bindings/LogLine";
@@ -47,7 +47,9 @@ export function LogsTab() {
   }, [report, clear]);
 
   // R37: new lines are followed only while the reader is at the end. One who scrolled up to read is left where they are.
-  useEffect(() => {
+  // A layout effect, as in the Chat tab: it runs before the browser paints, so the new lines are never seen one frame at
+  // the old scroll position.
+  useLayoutEffect(() => {
     const b = box.current;
     if (b && atBottom.current) b.scrollTop = b.scrollHeight;
   }, [lines, filter]);

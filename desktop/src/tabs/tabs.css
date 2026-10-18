@@ -1,11 +1,18 @@
 .wide { border-right: 0; }
 .table-row.clickable { cursor: pointer; }
 .pill.tag { margin-left: 8px; }
+/* A model's name and its DEFAULT / LOADED tags: the name shortens first, the tags are never cut. */
+.name-cell { display: flex; align-items: center; min-width: 0; }
+.name-cell > .ell { min-width: 0; }
+.name-cell > .pill.tag { flex: none; }
 .accent-text { color: var(--accent); }
 .shared-text { color: var(--shared); }
 .tab-notice { padding: 10px 22px; border-bottom: 1px solid var(--l22); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
 .filters { margin-left: auto; display: flex; gap: 14px; }
 .link.on { color: var(--text); }
 .logbox { flex: 1; padding: 10px 22px; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
+/* A line that wraps continues under its message, not under the time column: a hanging indent of the prefix, which is the
+   clock's 8 characters, a space and the source padded to 8 (LogsTab). A long path breaks wherever it has to. */
+.logbox > div { padding-left: 17ch; text-indent: -17ch; overflow-wrap: anywhere; }
 .log-warn { color: var(--accent); }
 .log-error { color: var(--flame); }

@@ -141,10 +141,13 @@ export function ChatTab({ overview, active: shown = true }: {
   // R56: while a reply streams, the transcript follows the new text, but only if the reader is at its end. A reader
   // who scrolled up to read is not pulled down. Hidden (display: none) the transcript has no layout, so it is left
   // alone; when it is shown again it follows to the end, if that is where the reader was.
+  // R61: it follows a change of the chat view as well, under the same rule. A chat is opened with `atBottom` true, so it
+  // opens at its end; and the reload that ends a reply (the stored reply replaces the live text, and may be longer)
+  // re-follows a reader who stayed at the end.
   useLayoutEffect(() => {
     const el = transcript.current;
     if (shown && el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [live.text, shown]);
+  }, [live.text, shown, view]);
 
   const flush = () => {
     timer.current = null;

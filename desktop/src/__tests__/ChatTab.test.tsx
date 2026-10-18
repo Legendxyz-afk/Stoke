@@ -529,3 +529,90 @@ describe("ChatTab, fix round 1", () => {
     });
   });
 });
+
+// R61: the transcript followed only the live text of a streaming reply, so a chat opened at its TOP, a chat clicked in the
+// list stayed wherever the one before had been left, and the reload that ends a reply (the stored reply replaces the live
+// text, and may be longer) did not re-follow. It now follows a change of the chat view as well, under the same rule as
+// R56: only while the reader is at the end. jsdom has no layout, so the box is given a geometry and a scroll position the
+// test can read and move; `height` can grow, as the transcript does when the stored reply lands.
+describe("ChatTab, R61: the transcript follows a change of the chat while the reader is at its end", () => {
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset().mockResolvedValue(models);
+    vi.mocked(api.chats).mockReset().mockResolvedValue([chat]);
+    // A new object on every call, as the host's answer is: the same one twice would not be a change for React.
+    vi.mocked(api.chat).mockReset().mockImplementation(async () => ({ ...view }));
+    vi.mocked(api.send).mockReset();
+    vi.mocked(api.selectVersion).mockReset().mockResolvedValue(undefined);
+  });
+
+  /** The messages box exists from the first render, before any chat has loaded: give it its geometry then. */
+  function giveGeometry(height: number) {
+    const box = screen.getByLabelText("messages");
+    const at = { top: 0, height };
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => at.height });
+    Object.defineProperty(box, "clientHeight", { configurable: true, value: 100 });
+    Object.defineProperty(box, "scrollTop", { configurable: true, get: () => at.top, set: (v: number) => (at.top = v) });
+    return {
+      at,
+      /** The reader scrolls: the browser moves the position and fires a scroll event. */
+      scrollTo: (top: number) => {
+        at.top = top;
+        fireEvent.scroll(box);
+      },
+    };
+  }
+
+  it("opens a chat at the end of its transcript, not at its top", async () => {
+    render(<ChatTab overview={overview} active />);
+    const { at } = giveGeometry(1000);
+    await screen.findByText("Verdict: HOLD.");
+    expect(at.top).toBe(1000);
+  });
+
+  it("opens the chat that is clicked in the list at its end, whatever the reader had done in the one before", async () => {
+    const second = { ...chat, id: "c2", title: "Second chat" };
+    vi.mocked(api.chats).mockResolvedValue([chat, second]);
+    vi.mocked(api.chat).mockImplementation(async (id) => ({ ...view, chat: id === "c2" ? second : chat }));
+    render(<ChatTab overview={overview} active />);
+    const t = giveGeometry(1000);
+    await screen.findByText("Verdict: HOLD.");
+    t.scrollTo(100); // the reader is partway up the first chat
+    t.at.height = 1400; // the second one is longer
+    fireEvent.click(screen.getByText("Second chat"));
+    await waitFor(() => expect(t.at.top).toBe(1400));
+  });
+
+  it("re-follows when the reload that ends a reply replaces the live text with a longer stored reply", async () => {
+    render(<ChatTab overview={overview} active />);
+    const t = giveGeometry(1000);
+    await screen.findByText("Verdict: HOLD.");
+    let finish!: () => void;
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      onEvent(started);
+      onEvent({ kind: "token", text: "Hello" });
+      await new Promise<void>((resolve) => (finish = resolve));
+      onEvent({ kind: "finished", stats: done });
+    });
+    vi.mocked(api.chat).mockImplementation(async () =>
+      withTurn(view, "go", msg({ id: "a3", role: "assistant", parent_id: "u3", content: "Hello, and the rest of the stored reply" })),
+    );
+    type("go");
+    await screen.findByText("Hello"); // the live text is in; the reader is at the end (nobody scrolled)
+    t.at.height = 1600; // the stored reply is longer than what streamed
+    finish();
+    await waitFor(() => expect(t.at.top).toBe(1600));
+  });
+
+  it("does not pull a reader who scrolled up down when the chat is reloaded", async () => {
+    render(<ChatTab overview={overview} active />);
+    const t = giveGeometry(1000);
+    await screen.findByText("2/2");
+    expect(t.at.top).toBe(1000);
+    t.scrollTo(200); // 1000 - 200 - 100 = 700 px from the end
+    t.at.height = 1300; // the reload brings more
+    fireEvent.click(screen.getByLabelText("previous version")); // a version switch reloads the chat
+    await waitFor(() => expect(api.chat).toHaveBeenCalledTimes(2));
+    await act(async () => {}); // the answer is applied
+    expect(t.at.top).toBe(200);
+  });
+});

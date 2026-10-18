@@ -11,7 +11,7 @@ export function StatusBar({ overview, children }: { overview: Overview | null; c
       <span>{e?.restarts ?? 0} engine restarts</span>
       {e?.load_ms != null && <span>last load {secs(e.load_ms)}</span>}
       {e?.last_error && (
-        <span className="ell" style={{ color: "var(--flame)", maxWidth: 520 }}>{e.last_error}</span>
+        <span className="ell" style={{ color: "var(--flame)", maxWidth: 520 }} title={e.last_error}>{e.last_error}</span>
       )}
       <span className="spacer" />
       {children}

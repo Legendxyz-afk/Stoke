@@ -1,4 +1,4 @@
-import { gb, mb } from "../format";
+import { gb, gbn, mb } from "../format";
 import type { Overview } from "../ipc/bindings/Overview";
 
 export const TABS = ["Chat", "Swarm", "Models", "Requests", "Logs", "Settings"] as const;
@@ -49,13 +49,14 @@ export function TopBar({
             {e?.state ?? "starting"}
           </span>
         )}
-        <span className="ell" style={{ maxWidth: 260 }}>{modelName(e?.model_path)}</span>
-        <span className="dim">t={e?.threads ?? "auto"}</span>
-        <span className="dim">kv {e?.kv ?? "q8"}</span>
+        <span className="ell" style={{ maxWidth: 260 }} title={modelName(e?.model_path)}>{modelName(e?.model_path)}</span>
+        {/* `static`: settings that do not change while the app runs; below 1280 px the bar leaves them out to make room (theme.css) */}
+        <span className="dim static">t={e?.threads ?? "auto"}</span>
+        <span className="dim static">kv {e?.kv ?? "q8"}</span>
         {overview && (
           <span className="dim">
             app {mb(overview.memory.app_bytes)} · engine {gb(overview.memory.engine_bytes)} ·{" "}
-            {gb(overview.memory.used_bytes)}/{gb(overview.memory.total_bytes)}
+            {gbn(overview.memory.used_bytes)}/{gb(overview.memory.total_bytes)}
           </span>
         )}
       </div>

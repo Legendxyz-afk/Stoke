@@ -221,3 +221,65 @@ describe("UpdateBadge when a host call fails (R64)", () => {
     expect(screen.getByText("could not follow the update state: event:default not allowed by ACL")).toBeTruthy();
   });
 });
+
+// The badge subscribes before it reads. Reading first loses an event emitted before the listener is registered, and lets a
+// snapshot that is answered after an event overwrite the newer state with an older one. Each of these was run against the
+// badge as it was (snapshot first) and failed there.
+describe("UpdateBadge: the listener first, then the snapshot", () => {
+  /** The callback the badge handed to onUpdateState: calling it is the host emitting an update-state event. */
+  let emit!: (s: UpdateState) => void;
+  const ready: UpdateState = { state: "ready", version: "0.0.2" };
+  const upToDate: UpdateState = { state: "up_to_date", version: "0.0.1" };
+
+  beforeEach(() => {
+    vi.mocked(api.updateState).mockReset().mockImplementation(async () => ({ state: "not_configured" }));
+    vi.mocked(api.onUpdateState).mockReset().mockImplementation(async (cb) => {
+      emit = cb;
+      return () => {};
+    });
+  });
+
+  it("an event that arrives before the snapshot is answered is not overwritten by it", async () => {
+    let answer!: (s: UpdateState) => void;
+    vi.mocked(api.updateState).mockReturnValue(new Promise<UpdateState>((resolve) => (answer = resolve)));
+    const { container } = render(<UpdateBadge />);
+    await waitFor(() => expect(api.updateState).toHaveBeenCalled()); // the snapshot is on its way
+    act(() => emit(ready)); // the host emits while it is
+    expect(container.textContent).toBe("update 0.0.2 ready · RESTART TO INSTALL");
+
+    await act(async () => answer(upToDate)); // the older answer lands
+    expect(container.textContent).toBe("update 0.0.2 ready · RESTART TO INSTALL");
+  });
+
+  it("registers the listener before it asks for the snapshot, and asks for it once the listener is in place", async () => {
+    let registered!: (unlisten: () => void) => void;
+    vi.mocked(api.onUpdateState).mockImplementation(() => new Promise((resolve) => (registered = resolve)));
+    render(<UpdateBadge />);
+    await act(async () => {}); // whatever the badge is going to do has been done
+    expect(api.onUpdateState).toHaveBeenCalledTimes(1);
+    expect(api.updateState).not.toHaveBeenCalled(); // the listener is not registered yet, so nothing is read
+
+    await act(async () => registered(() => {}));
+    expect(api.updateState).toHaveBeenCalledTimes(1);
+  });
+
+  it("still reads the snapshot when the listener could not be registered", async () => {
+    vi.mocked(api.onUpdateState).mockRejectedValue("event:default not allowed by ACL");
+    vi.mocked(api.updateState).mockResolvedValue(upToDate);
+    const hostErrors = captureHostErrors();
+    try {
+      render(<UpdateBadge />);
+      expect(await screen.findByText(/up to date \(0\.0\.1\)/)).toBeTruthy(); // a one-off read is better than none
+      expect(screen.getByText("could not follow the update state: event:default not allowed by ACL")).toBeTruthy();
+    } finally {
+      hostErrors.mockRestore();
+    }
+  });
+
+  it("an answer that arrives with no event before it is shown", async () => {
+    vi.mocked(api.updateState).mockResolvedValue(ready);
+    const { container } = render(<UpdateBadge />);
+    await screen.findByText(/0\.0\.2 ready/);
+    expect(container.textContent).toBe("update 0.0.2 ready · RESTART TO INSTALL");
+  });
+});

@@ -2,7 +2,9 @@
 // driven through WebView2's DevTools port. Prints one line per step; the verdict is the last line.
 //   npm run e2e            build, then run
 //   npm run e2e -- --no-build
-// The last two steps are MEASUREMENTS (R66): they fail only when a reading could not be taken, never on its value.
+// The layout step ASSERTS the defects the 1100 px screenshots showed (R70: one-line top-bar items, tables that fit their
+// column, uncut tags, a hanging Logs indent, a 300 px composer). The last step is a MEASUREMENT (R66): it fails only when a
+// reading could not be taken, never on its value.
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -195,6 +197,130 @@ async function step(name, fn) {
   console.log(`ok   ${name}`);
 }
 
+// <in-page>
+// The checks of the layout step (R70). This runs IN THE PAGE (Playwright serialises it), so it uses nothing from this
+// file. `tab` is the tab on show and `width` the window's width in CSS px. It returns the defects it found as sentences
+// (one per kind of defect, naming the first element that has it and how many more do), the controls that failed (a
+// reading that cannot be trusted, because what it is about is not on screen), and the numbers it read.
+function layoutDefects({ tab, width }) {
+  const found = new Map();
+  const controls = [];
+  const facts = {};
+  const add = (kind, message) => {
+    const known = found.get(kind);
+    if (known) known.more += 1;
+    else found.set(kind, { message, more: 0 });
+  };
+  const rect = (el) => el.getBoundingClientRect();
+  const shown = (el) => el.getClientRects().length > 0; // the Chat tab stays in the DOM, hidden, while another tab shows
+  const px = (n) => `${Math.round(n * 10) / 10} px`;
+  const name = (el) => {
+    const cls = typeof el.className === "string" && el.className.trim() ? "." + el.className.trim().split(/\s+/).join(".") : "";
+    const text = (el.textContent ?? "").trim().replace(/\s+/g, " ");
+    return `<${el.tagName.toLowerCase()}${cls}> "${text.length > 28 ? text.slice(0, 28) + "..." : text}"`;
+  };
+
+  // (a) The top bar: each item of the engine cluster on one line, and the cluster within its box.
+  const engine = document.querySelector(".topbar .engine");
+  const items = [...engine.children];
+  facts.engine_items = items.length;
+  const engineText = engine.textContent ?? "";
+  if (items.length < 5 || !engineText.includes("Qwen3-4B-Instruct-2507-Q4_K_M") || !engineText.includes("app ")) {
+    controls.push(`the engine cluster holds ${items.length} items and reads "${engineText.slice(0, 80)}": it has to show the long default model name and the memory`);
+  }
+  for (const item of items) {
+    if (!shown(item)) continue; // an item the layout leaves out on purpose
+    const fontSize = parseFloat(getComputedStyle(item).fontSize);
+    if (rect(item).height > 1.6 * fontSize) add("topbar-lines", `top bar item ${name(item)} is ${px(rect(item).height)} tall: more than one line of ${px(fontSize)} text`);
+    if (rect(item).right > rect(engine).right + 0.5) add("topbar-edge", `top bar item ${name(item)} ends at ${px(rect(item).right)}, past the engine cluster's edge at ${px(rect(engine).right)}`);
+  }
+  if (engine.scrollWidth > engine.clientWidth) add("topbar-overflow", `.topbar .engine overflows sideways: scrollWidth ${engine.scrollWidth} px > clientWidth ${engine.clientWidth} px`);
+
+  // (b) A table fits the centre column: no row wider than itself, no cell past the column's right edge (the header is not
+  // inside a scroll box, so it would be drawn over the right panel), no scroll box that scrolls sideways.
+  const centre = [...document.querySelectorAll("section.center")].find(shown);
+  if (tab === "Models" || tab === "Requests") {
+    if (!centre) controls.push("no centre column is showing");
+    else {
+      const edge = rect(centre).right;
+      facts.table_rows = centre.querySelectorAll(".table-row").length;
+      if (facts.table_rows < 1) controls.push(`the ${tab} table has no row to measure`);
+      for (const row of centre.querySelectorAll(".table-head, .table-row")) {
+        if (row.scrollWidth > row.clientWidth) add("row-overflow", `${name(row)} is wider than its box: scrollWidth ${row.scrollWidth} px > clientWidth ${row.clientWidth} px`);
+        for (const cell of row.children) {
+          if (rect(cell).right > edge + 0.5) add("cell-edge", `in ${name(row)} the cell ${name(cell)} ends at ${px(rect(cell).right)}, past the centre column's right edge at ${px(edge)}`);
+        }
+      }
+      for (const box of centre.querySelectorAll(".scroll")) {
+        if (box.scrollWidth > box.clientWidth) add("scroll-sideways", `${name(box)} scrolls sideways: scrollWidth ${box.scrollWidth} px > clientWidth ${box.clientWidth} px`);
+      }
+    }
+  }
+
+  // (c) A DEFAULT / LOADED tag is whole: not past its cell's right edge, not wider than itself, not cut at the top or bottom.
+  const tags = [...document.querySelectorAll(".pill.tag")].filter(shown);
+  facts.tags = tags.length;
+  if (tab === "Models" && tags.length < 2) controls.push(`the Models table shows ${tags.length} DEFAULT/LOADED tags; the default model is the loaded one, so there are two`);
+  for (const tag of tags) {
+    const t = rect(tag);
+    const c = rect(tag.parentElement);
+    if (t.right > c.right + 0.5 || tag.scrollWidth > tag.clientWidth + 1) {
+      add("tag-cut-right", `the tag ${name(tag)} is cut: it ends at ${px(t.right)} where its cell ends at ${px(c.right)} (scrollWidth ${tag.scrollWidth} px, clientWidth ${tag.clientWidth} px)`);
+    }
+    if (t.top < c.top - 1 || t.bottom > c.bottom + 1) {
+      add("tag-cut-vertical", `the tag ${name(tag)} is cut at the top or bottom: it spans ${px(t.top)} to ${px(t.bottom)} in a cell that spans ${px(c.top)} to ${px(c.bottom)}`);
+    }
+  }
+
+  // (d) Logs: a line that wraps continues under its message, not under the time column.
+  if (tab === "Logs") {
+    const lines = [...document.querySelectorAll(".logbox > div")];
+    facts.log_lines = lines.length;
+    facts.log_lines_wrapped = 0;
+    for (const line of lines) {
+      const message = line.lastElementChild;
+      const range = document.createRange();
+      range.selectNodeContents(message);
+      const rects = [...range.getClientRects()].filter((r) => r.width > 0);
+      if (rects.length < 2) continue;
+      facts.log_lines_wrapped += 1;
+      const first = rects[0].left;
+      const leftmost = Math.min(...rects.map((r) => r.left));
+      if (leftmost < first - 1) add("log-hang", `the log line ${name(line)} wraps to ${px(leftmost)}, left of where its message starts (${px(first)}): under the time column`);
+    }
+    if (facts.log_lines < 1) controls.push("the Logs tab shows no line");
+    if (width === 1100 && facts.log_lines_wrapped < 1) controls.push("no log line wraps at 1100 px, so the hanging indent had nothing to hold");
+  }
+
+  // (e) Chat at 1100: the composer's text box is at least 300 px wide beside its buttons.
+  if (tab === "Chat") {
+    const box = document.querySelector(".composer textarea");
+    if (!box || !shown(box)) controls.push("the composer's text box is not showing");
+    else {
+      facts.composer_textarea_px = Math.round(rect(box).width * 10) / 10;
+      if (width === 1100 && rect(box).width < 300) add("composer", `the composer's text box ${name(box)} is ${px(rect(box).width)} wide: under 300 px at 1100 px`);
+    }
+  }
+
+  // (f) The right panel (Chat's reply panel, Models' details): each value whole, on one line, clear of its label.
+  for (const fact of document.querySelectorAll(".right .fact")) {
+    if (!shown(fact)) continue;
+    const label = fact.querySelector(".k");
+    const value = fact.querySelector(".v");
+    if (!label || !value) continue;
+    const fontSize = parseFloat(getComputedStyle(value).fontSize);
+    if (value.scrollWidth > value.clientWidth + 1) add("panel-cut", `the panel value ${name(value)} is cut: scrollWidth ${value.scrollWidth} px > clientWidth ${value.clientWidth} px`);
+    if (rect(value).height > 1.6 * fontSize) add("panel-lines", `the panel value ${name(value)} runs onto a second line`);
+    const l = rect(label);
+    const v = rect(value);
+    if (v.top < l.bottom && l.top < v.bottom && v.left < l.right - 0.5) add("panel-overlap", `the panel label ${name(label)} overlaps its value ${name(value)}`);
+  }
+
+  const defects = [...found.values()].map(({ message, more }) => (more ? `${message} (and ${more} more like it)` : message));
+  return { defects, controls, facts };
+}
+// </in-page>
+
 const steps = [
   ["the window: wordmark, six tabs, the engine serving the default model", async () => {
     const tabs = await page.getByRole("tab").allInnerTexts();
@@ -297,13 +423,22 @@ const steps = [
     if (!(o.memory.app_bytes > 0)) throw new Error("app memory not measured");
     if (!(await topbar()).includes("app ")) throw new Error("memory not shown in the top bar");
   }],
-  // R66, measurement 1. Each tab is shown at 1100 px (the window's minimum) and at 1440 px (its default), a screenshot
-  // is saved, and three numbers are read: the top bar's height, how far the document overflows sideways, and how far
-  // <main> does. The values are for the controller to read; the step fails only if one could not be taken.
-  ["the layout at 1100 and 1440 px is captured", async () => {
+  // R66 + R70. Each tab is shown at 1100 px (the window's minimum) and at 1440 px (its default), a screenshot is saved,
+  // three numbers are read (the top bar's height, how far the document overflows sideways, and how far <main> does: the
+  // values are for the controller to read), and `layoutDefects` (above) looks for the defects the 1100 px screenshots
+  // showed. The step fails on those, naming the width, the tab and the element, and on a reading that could not be taken.
+  ["the layout fits at 1100 and 1440 px", async () => {
+    // The app was relaunched two steps back, so the Requests table is empty and the top bar has only what the default model
+    // gives it. One message to the default model gives the table a row to measure and the bar the long model name.
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    await page.getByRole("button", { name: "+ NEW", exact: true }).click();
+    await until("the default model serving", async () => { const t = await topbar(); return t.includes("serving") && t.includes("Qwen3-4B-Instruct-2507-Q4_K_M"); });
+    await sendMessage("Layout check.");
+    await waitIdle();
     const shots = path.join(WORK, "shots");
     fs.mkdirSync(shots, { recursive: true });
     const layout = (measurements.layout = {});
+    const defects = [];
     const cdp = await page.context().newCDPSession(page);
     try {
       for (const [width, height] of [[1100, 800], [1440, 900]]) {
@@ -329,12 +464,18 @@ const steps = [
               main_overflow_px: main.scrollWidth - main.clientWidth,
             };
           });
+          const read = await page.evaluate(layoutDefects, { tab, width });
+          // CONTROL: a reading of something that is not on screen would pass for any layout.
+          if (read.controls.length) throw new Error(`${width} px, ${tab} tab: the reading is not valid: ${read.controls.join("; ")}`);
+          Object.assign(layout[width][tab], read.facts);
+          for (const d of read.defects) defects.push(`${width} px, ${tab} tab: ${d}`);
         }
       }
     } finally {
       await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
       await cdp.detach().catch(() => {});
     }
+    if (defects.length) throw new Error(`${defects.length} layout defect(s): ${defects.join(" | ")}`);
   }],
   // R66, measurement 2. A ~900-word Markdown reply streams at 10 ms a token; a requestAnimationFrame recorder runs
   // from just before SEND is pressed until it returns, and the gaps between frames are the reading. A hidden window
