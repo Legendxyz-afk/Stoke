@@ -1,0 +1,2 @@
+[Sun Oct 18 19:23:19 2026] systemd-journald[41]: File /var/log/journal/335841b8781e468c911946e1dddeaabc/user-1000.journal corrupted or uncleanly shut down, renaming and replacing.
+[Sun Oct 18 22:40:09 2026] TCP: eth0: Driver has suspect GRO implementation, TCP performance may be compromised.
