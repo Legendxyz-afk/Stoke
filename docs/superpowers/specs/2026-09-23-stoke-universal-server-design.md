@@ -309,9 +309,10 @@ source.** That puts all of the following before v0.1:
 4. **Downloads.**
    - **castagents.com, the company site, is the front door** (Kabir,
      2026-09-24): download page and docs, e.g. `castagents.com/lorren`. A
-     static site is enough. ⚠ castagents.com and castagent.com expire in
-     November 2026 (Nov 25 and Nov 7). Renew them for several years first,
-     because the updater depends on the domain.
+     static site is enough. ⚠ castagents.com and castagent.com are not
+     owned yet (corrected 2026-10-19: another registrant holds both, and Kabir
+     will not buy them before the product earns money). The updater depends
+     on the domain, so one Kabir controls is needed before any public release.
    - **GitHub Releases on the public repo** hold the files: free bandwidth,
      plus checksums.
    - **The signed update manifest** lives at a stable URL on castagents.com

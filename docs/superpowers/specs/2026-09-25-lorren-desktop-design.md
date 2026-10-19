@@ -597,11 +597,14 @@ gets its own plan, written after you have used the one before it.
 - An OK to install Rust (rustup, about 1 GB).
 - An OK to run the engine for the demo and the opt-in smoke test. These are
   model servers, and the standing rule is to ask first.
-- Cloudflare: create the R2 bucket and attach `updates.castagents.com`.
+- Cloudflare: create the R2 bucket and attach the update host
+  (`updates.castagents.com` once that domain is bought; see below).
 - Generate the two minisign key pairs, store them offline, and hand over the
   public keys.
-- Renew castagents.com (it expires 2026-11-25; the updater depends on it) and
-  castagent.com (2026-11-07).
+- Buy castagents.com (and castagent.com). Corrected 2026-10-19: neither is
+  owned yet. Another registrant holds both, and Kabir will not buy them before
+  the product earns money. The updater needs a domain Kabir controls before
+  any public release.
 - Later: a code-signing certificate, which removes the SmartScreen warning. v1
   ships without one.
 

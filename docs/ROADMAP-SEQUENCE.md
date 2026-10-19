@@ -857,8 +857,10 @@ Every item states: **what · why it is here · blocked on · done when · hazard
   mark for our software would likely be refused, and a holder could object.
   ⇒ **Lorren confirmed, launched from castagents.com**, which is the front
   door and also hosts the update manifest. ⚠ **castagents.com and
-  castagent.com expire 2026-11-25 and 2026-11-07. Renew them for several
-  years, because the updater depends on the domain.**
+  castagent.com are NOT owned yet** (corrected 2026-10-19: another registrant
+  holds both at NameBright, with terms ending 2026-11-25 and 2026-11-07; Kabir
+  will not buy them before the product earns money). **The updater's manifest
+  needs a domain Kabir controls before any public release.**
 - **Availability, checked 2026-09-24** (RDAP from the IANA bootstrap, the
   registry APIs, `gh api`, and USPTO tmsearch; every sweep carried a
   known-taken and a known-free control):
