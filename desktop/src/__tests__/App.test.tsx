@@ -194,6 +194,26 @@ describe("the bars keep the full text of what they cut off", () => {
     expect(screen.getByText("serving").classList.contains("static")).toBe(false);
   });
 
+  // Demo D6: "1 engine restarts". A count of one is singular, for the requests as well.
+  it("the status bar counts in the singular for one request and one engine restart", () => {
+    const counts = (request_count: number, restarts: number) => ({ ...overview, request_count, engine: { ...overview.engine, restarts } });
+    const { rerender } = render(<StatusBar overview={counts(1, 1)} />);
+    expect(screen.getByText("1 request")).toBeTruthy();
+    expect(screen.getByText("1 engine restart")).toBeTruthy();
+    rerender(<StatusBar overview={counts(0, 0)} />);
+    expect(screen.getByText("0 requests")).toBeTruthy();
+    expect(screen.getByText("0 engine restarts")).toBeTruthy();
+    rerender(<StatusBar overview={counts(2, 12)} />);
+    expect(screen.getByText("2 requests")).toBeTruthy();
+    expect(screen.getByText("12 engine restarts")).toBeTruthy();
+  });
+
+  it("the status bar counts nothing before the first overview arrives", () => {
+    render(<StatusBar overview={null} />);
+    expect(screen.getByText("0 requests")).toBeTruthy();
+    expect(screen.getByText("0 engine restarts")).toBeTruthy();
+  });
+
   it("the status bar's last engine error carries its whole text in a title", () => {
     const last_error = "the engine stopped while loading: stoke serve: model: 'M:/New Drive/ai models/x.gguf' -- general.architecture is 'qwen2vl'";
     render(<StatusBar overview={{ ...overview, engine: { ...overview.engine, last_error } }} />);

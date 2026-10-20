@@ -15,13 +15,18 @@ describe("applyEvent", () => {
     expect(s).toMatchObject({ busy: false, ended: "finished", stats });
   });
 
-  // Demo D2: `queued` comes first, as soon as the host has stored the message and the reply's placeholder.
-  it("knows the reply's message from queued on", () => {
-    let s = begin();
+  // Demo D2: `queued` comes first, as soon as the host has stored the message and the reply's placeholder; `started` only
+  // when the engine has taken the request. The time Send was pressed is kept through both, for the pending status.
+  it("knows the reply's message from queued on, and keeps when Send was pressed", () => {
+    let s = begin(1000);
+    expect(s).toMatchObject({ busy: true, sentAt: 1000, messageId: null });
     s = applyEvent(s, { kind: "queued", message_id: "a3", user_message_id: "u3" });
-    expect(s).toMatchObject({ busy: true, messageId: "a3", text: "" });
+    expect(s).toMatchObject({ busy: true, sentAt: 1000, messageId: "a3", text: "" });
     s = applyEvent(s, { kind: "started", message_id: "a3", user_message_id: "u3", dropped_turns: 2, request_id: "req_1" });
-    expect(s).toMatchObject({ busy: true, messageId: "a3", dropped: 2 });
+    expect(s).toMatchObject({ busy: true, sentAt: 1000, messageId: "a3", dropped: 2 });
+    s = applyEvent(s, { kind: "finished", stats });
+    expect(s).toMatchObject({ busy: false, ended: "finished" });
+    expect(idle.sentAt).toBeNull();
   });
 
   it("keeps a refusal that arrives before the reply starts", () => {

@@ -31,6 +31,14 @@ function lastDroppedIndex(messages: ChatView["messages"], dropped: number): numb
   return -1;
 }
 
+/** The model a chat made now would get (demo D1): the one picked in the panel if it can still run, else the default if it can
+ *  run, else the first that can. The host's `pick_model(None)` takes the same road (R50), so the picker never promises a
+ *  model the host would not give. */
+function modelForNewChat(models: ModelInfo[], picked: string | null): string | null {
+  const runnable = models.filter((m) => m.runnable);
+  return (runnable.find((m) => m.id === picked) ?? runnable.find((m) => m.is_default) ?? runnable[0])?.id ?? null;
+}
+
 export function ChatTab({ overview, active: shown = true }: {
   overview: Overview | null;
   /** The Chat tab is showing. App keeps this component mounted while another tab shows (R36a), so each time this
@@ -45,6 +53,11 @@ export function ChatTab({ overview, active: shown = true }: {
   const [notice, setNotice] = useState<string | null>(null);
   /** The composer's text lives here, not in Composer, so a message the host refuses can be put back (R36b). */
   const [draft, setDraft] = useState("");
+  /** With no chat open, the model picked in the panel for the chat that Send will make (demo D1). Null until one is picked. */
+  const [picked, setPicked] = useState<string | null>(null);
+  /** A message typed with no chat open, waiting for the chat made for it to be open: opening a chat resets the live reply, so
+   *  the send may only start after that has happened. The effect that opens a chat consumes it. */
+  const sendOnOpen = useRef<{ chatId: string; text: string } | null>(null);
   /** The id of the chat that is open (the state above, readable from callbacks that outlive a render). */
   const active = useRef<string | null>(null);
   const pending = useRef("");
@@ -136,6 +149,13 @@ export function ChatTab({ overview, active: shown = true }: {
     if (previous !== null) clearNotice();
     if (activeId) void reload(activeId);
     else setView(null);
+    // A message typed before this chat existed (demo D1) goes now, through the same path as any other: after the reset
+    // above, so that nothing of the reply that starts is wiped by it, and with the refusal handling of every send.
+    const first = sendOnOpen.current;
+    if (first && first.chatId === activeId) {
+      sendOnOpen.current = null;
+      void run("send", first.chatId, (cb) => api.send(first.chatId, first.text, cb), first.text);
+    }
   }, [activeId, reload, clearNotice]);
 
   // R56: while a reply streams, the transcript follows the new text, but only if the reader is at its end. A reader
@@ -193,9 +213,31 @@ export function ChatTab({ overview, active: shown = true }: {
 
   const send = (text: string) => {
     const id = activeId;
-    if (!id) return;
+    if (!id) {
+      void startChat(text);
+      return;
+    }
     setDraft("");
     void run("send", id, (cb) => api.send(id, text, cb), text);
+  };
+  /** Demo D1: with no chat open, a message makes the chat. The chat is made on the model the panel shows, the list is
+   *  refreshed, the chat is opened, and the text is sent in it by the effect that opens it (`sendOnOpen`). The composer
+   *  empties and counts as busy from the moment of Send, as for any send, so a second Enter makes no second chat; if the chat
+   *  cannot be made the text goes back (R36b) and the notice says why. */
+  const startChat = async (text: string) => {
+    clearNotice();
+    setDraft("");
+    setLive(begin());
+    try {
+      const c = await api.newChat(modelForNewChat(models, picked));
+      await refreshChats();
+      sendOnOpen.current = { chatId: c.id, text };
+      setActiveId(c.id);
+    } catch (e) {
+      setDraft((d) => (d === "" ? text : d));
+      setLive(idle);
+      fail("newChat", e);
+    }
   };
   const regenerate = () => {
     const id = activeId;
@@ -216,7 +258,10 @@ export function ChatTab({ overview, active: shown = true }: {
   };
   const setModel = async (modelId: string) => {
     const id = activeId;
-    if (!id) return;
+    if (!id) {
+      setPicked(modelId); // no chat yet: this is the model Send will make one on, and no host call
+      return;
+    }
     try {
       await api.setChatModel(id, modelId);
       await reload(id);
@@ -242,6 +287,15 @@ export function ChatTab({ overview, active: shown = true }: {
   const busy = live.busy || messages.some((m) => m.message.status === "streaming");
   const dropped = live.dropped;
   const cutAfter = lastDroppedIndex(messages, dropped);
+  const picker = chat?.model_id ?? modelForNewChat(models, picked) ?? "";
+  // Demo D2: the reply being written has no token yet. Its row shows `<phase> · <N> s` in place of an empty text; while the
+  // engine is not serving this chat's model (starting, restarting, or on another one) the phase is `loading <model>`.
+  const waiting = live.busy && live.text === "" && live.messageId !== null && live.sentAt !== null ? { id: live.messageId, since: live.sentAt } : null;
+  const engine = overview?.engine;
+  const loading =
+    chat && (engine?.state === "starting" || engine?.state === "restarting" || engine?.model_id !== chat.model_id)
+      ? (models.find((m) => m.id === chat.model_id)?.name ?? "the model")
+      : null;
 
   return (
     <>
@@ -260,12 +314,13 @@ export function ChatTab({ overview, active: shown = true }: {
             atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_PX;
           }}
         >
-          {!chat && <div className="dim mono" style={{ fontSize: 11 }}>Start a chat with + NEW.</div>}
+          {!chat && <div className="dim mono" style={{ fontSize: 11 }}>Type a message to start a chat.</div>}
           {messages.map((mv, i) => (
             <Fragment key={mv.message.id}>
               <MessageRow
                 mv={mv}
                 liveText={mv.message.id === live.messageId && (live.busy || mv.message.status === "streaming") ? live.text : null}
+                pending={waiting && waiting.id === mv.message.id ? { since: waiting.since, loading } : null}
                 onVersion={selectVersion}
               />
               {dropped > 0 && i === cutAfter && (
@@ -275,15 +330,12 @@ export function ChatTab({ overview, active: shown = true }: {
               )}
             </Fragment>
           ))}
-          {live.busy && live.messageId == null && (
-            <div className="waiting">waiting for the engine ({overview?.engine.state ?? "starting"})…</div>
-          )}
         </div>
         {(notice ?? live.error) && <div className="notice" role="alert">{notice ?? live.error}</div>}
-        <Composer draft={draft} onDraft={setDraft} busy={busy} disabled={!chat} canRegenerate={!!lastAssistant}
+        <Composer draft={draft} onDraft={setDraft} busy={busy} canRegenerate={!!lastAssistant}
                   onSend={send} onStop={stop} onRegenerate={regenerate} />
       </section>
-      <ReplyPanel chat={chat} models={models} overview={overview} live={live} busy={busy}
+      <ReplyPanel chat={chat} modelId={picker} models={models} overview={overview} live={live} busy={busy}
                   last={lastAssistant ? statsOf(lastAssistant.message) : null} onModel={setModel} />
     </>
   );

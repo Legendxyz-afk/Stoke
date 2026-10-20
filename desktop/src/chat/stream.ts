@@ -6,6 +6,8 @@ import type { StreamEvent } from "../ipc/bindings/StreamEvent";
 export type Live = {
   /** From the moment Send is pressed until the reply ends. */
   busy: boolean;
+  /** When Send (or Regenerate) was pressed, in ms since the epoch: the pending reply counts its seconds from here. */
+  sentAt: number | null;
   /** The assistant message, from the moment the host has stored its placeholder (`queued`), which is before the engine is asked for anything. */
   messageId: string | null;
   text: string;
@@ -16,10 +18,10 @@ export type Live = {
   error: string | null;
 };
 
-export const idle: Live = { busy: false, messageId: null, text: "", dropped: 0, stats: null, ended: null, error: null };
+export const idle: Live = { busy: false, sentAt: null, messageId: null, text: "", dropped: 0, stats: null, ended: null, error: null };
 
-export function begin(): Live {
-  return { ...idle, busy: true };
+export function begin(now: number = Date.now()): Live {
+  return { ...idle, busy: true, sentAt: now };
 }
 
 export function applyEvent(s: Live, e: StreamEvent): Live {

@@ -4,8 +4,10 @@ import type { ModelInfo } from "../ipc/bindings/ModelInfo";
 import type { Overview } from "../ipc/bindings/Overview";
 import type { Live, SavedStats } from "./stream";
 
-export function ReplyPanel({ chat, models, overview, live, busy, last, onModel }: {
+export function ReplyPanel({ chat, modelId, models, overview, live, busy, last, onModel }: {
   chat: Chat | null;
+  /** The model the picker shows: the open chat's, or, with no chat open, the one a chat made now would get (demo D1). */
+  modelId: string;
   models: ModelInfo[];
   overview: Overview | null;
   live: Live;
@@ -14,7 +16,7 @@ export function ReplyPanel({ chat, models, overview, live, busy, last, onModel }
   last: SavedStats | null;
   onModel: (modelId: string) => void;
 }) {
-  const current = models.find((m) => m.id === chat?.model_id);
+  const current = models.find((m) => m.id === modelId);
   const e = overview?.engine;
   const engine = !chat ? "—" : e?.model_id === chat.model_id ? (e?.state ?? "—") : e?.state === "starting" ? "switching" : "loads on the next send";
   const stats = live.stats ?? last;
@@ -24,11 +26,10 @@ export function ReplyPanel({ chat, models, overview, live, busy, last, onModel }
     <aside className="col right">
       <div className="section">
         <span className="cap">MODEL</span>
-        <select aria-label="model" value={chat?.model_id ?? ""} disabled={!chat || busy}
-                onChange={(ev) => onModel(ev.target.value)}>
+        <select aria-label="model" value={modelId} disabled={busy} onChange={(ev) => onModel(ev.target.value)}>
           {models.map((m) => (
             <option key={m.id} value={m.id} disabled={!m.runnable} title={m.reason ?? ""}>
-              {m.name}{m.runnable ? "" : " (can't run)"}
+              {m.name}{m.is_default ? " (default)" : ""}{m.runnable ? "" : " (can't run)"}
             </option>
           ))}
         </select>

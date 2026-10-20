@@ -97,8 +97,8 @@ function action(s: UpdateState, check: () => void, install: () => void): ReactNo
       );
     case "refused":
       return (
-        <button className="link flame-text" title={s.reason} onClick={check}>
-          update {s.version} refused: signature did not verify · check again
+        <button className="link flame-text" title={`${s.reason}; nothing was installed`} onClick={check}>
+          {`update ${s.version} refused · ${s.label} · check again`}
         </button>
       );
     case "failed":

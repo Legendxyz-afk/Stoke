@@ -10,3 +10,5 @@ export const since = (startMs: number, now = Date.now()) => {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
 };
 export const commas = (n: number) => n.toLocaleString("en-US");
+/** "1 request", "2 requests", "0 requests": the noun is singular for exactly one. */
+export const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

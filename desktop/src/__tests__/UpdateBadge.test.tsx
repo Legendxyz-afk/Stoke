@@ -20,9 +20,33 @@ describe("UpdateBadge", () => {
   });
 
   it("says a refused update was refused, and can check again", async () => {
-    vi.mocked(api.updateState).mockResolvedValue({ state: "refused", version: "0.0.2", label: "unsigned", reason: "the update has no signature" });
+    vi.mocked(api.updateState).mockResolvedValue({
+      state: "refused",
+      version: "0.0.2",
+      label: "installer altered or damaged",
+      reason: "the downloaded installer does not match its signature, so it changed after it was signed",
+    });
     render(<UpdateBadge />);
     fireEvent.click(await screen.findByText(/0\.0\.2 refused/));
+    await waitFor(() => expect(api.checkUpdate).toHaveBeenCalled());
+  });
+
+  // Demo D7: the badge said "refused: signature did not verify" and its tooltip said "the signature did not verify (The
+  // signature verification failed)", which is the same thing twice. The badge now gives the cause in a few words, and the
+  // tooltip the same cause as one sentence, and that nothing was installed.
+  it("says why in a few words in the badge, and in one sentence, with what that means, in the tooltip", async () => {
+    vi.mocked(api.updateState).mockResolvedValue({
+      state: "refused",
+      version: "0.0.2",
+      label: "untrusted signing key",
+      reason: "the update is signed with a key this Lorren does not trust",
+    });
+    render(<UpdateBadge />);
+    const badge = await screen.findByRole("button", { name: /0\.0\.2 refused/ });
+    expect(badge.textContent).toBe("update 0.0.2 refused · untrusted signing key · check again");
+    expect(badge.getAttribute("title")).toBe("the update is signed with a key this Lorren does not trust; nothing was installed");
+    expect(badge.classList.contains("flame-text")).toBe(true);
+    fireEvent.click(badge);
     await waitFor(() => expect(api.checkUpdate).toHaveBeenCalled());
   });
 
@@ -112,6 +136,15 @@ describe("UpdateBadge when a host call fails (R64)", () => {
     await act(async () => {});
     expect(screen.getByText(`could not install the update: ${reason}`)).toBeTruthy();
     expect(hostErrors.mock.calls).toEqual([["installUpdate failed:", reason]]);
+  });
+
+  // R64 and demo D7: the e2e presses the last `.statusbar button`, which has to be the badge's action, refused or not.
+  it("a refused update's badge is the last button of the status bar", async () => {
+    vi.mocked(api.updateState).mockResolvedValue({ state: "refused", version: "0.0.2", label: "unsigned", reason: "the update has no signature" });
+    const { container } = inStatusBar();
+    const badge = await screen.findByText("update 0.0.2 refused · unsigned · check again");
+    const buttons = container.querySelectorAll(".statusbar button");
+    expect(buttons[buttons.length - 1]).toBe(badge);
   });
 
   it("checkUpdate(): the reason is shown before the button and logged once", async () => {

@@ -1,13 +1,15 @@
-import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
 import { ChatTab } from "../chat/ChatTab";
 import { api } from "../ipc/api";
+import type { Chat } from "../ipc/bindings/Chat";
 import type { ChatView } from "../ipc/bindings/ChatView";
+import type { Overview } from "../ipc/bindings/Overview";
 import type { StreamEvent } from "../ipc/bindings/StreamEvent";
-import { captureHostErrors, chat, models, msg, overview, view, withTurn } from "./testApi";
+import { captureHostErrors, chat, model, models, msg, overview, view, withTurn } from "./testApi";
 
 const started: StreamEvent = { kind: "started", message_id: "a3", user_message_id: "u3", dropped_turns: 0, request_id: "req_1" };
 const done = { prompt_tokens: 60, completion_tokens: 4, ttft_ms: 212, total_ms: 650, tokens_per_s: 7.0, finish_reason: "stop" };
@@ -81,21 +83,6 @@ describe("ChatTab", () => {
     fireEvent.click(await screen.findByText("STOP"));
     await waitFor(() => expect(api.stop).toHaveBeenCalledWith("c1"));
     expect(await screen.findByText("SEND")).toBeTruthy();
-  });
-
-  it("shows that it is waiting for the engine before the reply starts", async () => {
-    let go!: () => void;
-    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
-      await new Promise<void>((r) => (go = r));
-      onEvent(started);
-      onEvent({ kind: "finished", stats: done });
-    });
-    render(<ChatTab overview={overview} />);
-    await screen.findByText("Verdict: HOLD.");
-    type("hello");
-    expect(await screen.findByText(/waiting for the engine/)).toBeTruthy();
-    go();
-    await waitFor(() => expect(screen.queryByText(/waiting for the engine/)).toBeNull());
   });
 
   it("shows a refusal that arrives before the reply starts", async () => {
@@ -614,5 +601,372 @@ describe("ChatTab, R61: the transcript follows a change of the chat while the re
     await waitFor(() => expect(api.chat).toHaveBeenCalledTimes(2));
     await act(async () => {}); // the answer is applied
     expect(t.at.top).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Demo wave (2026-10-20), group 2: D1 (type first), D2 (the pending reply), D4 (the picker marks the default).
+// Each test was run RED first, against the code of commit 3f7fd2a.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const queuedFor = (messageId: string, userMessageId: string): StreamEvent => ({ kind: "queued", message_id: messageId, user_message_id: userMessageId });
+const one = (m: ReturnType<typeof msg>) => ({ message: m, version: 1, versions: 1, sibling_ids: [m.id] });
+
+describe("ChatTab, demo D4: the picker marks the default model", () => {
+  const optionTexts = () => within(screen.getByLabelText("model")).getAllByRole("option").map((o) => o.textContent);
+
+  it("writes (default) after the default model's name, and (can't run) after one that cannot run", async () => {
+    render(<ChatTab overview={overview} />);
+    await screen.findByText("Verdict: HOLD.");
+    expect(optionTexts()).toEqual(["Qwen3-4B-Instruct-2507-Q4_K_M (default)", "nexus", "qwen2.5vl:3b (can't run)"]);
+  });
+
+  it("says both for a default that the engine refused", async () => {
+    vi.mocked(api.models).mockResolvedValue(models.map((m) => (m.is_default ? { ...m, runnable: false, reason: "the engine refused it" } : m)));
+    render(<ChatTab overview={overview} />);
+    await screen.findByText("Verdict: HOLD.");
+    expect(optionTexts()[0]).toBe("Qwen3-4B-Instruct-2507-Q4_K_M (default) (can't run)");
+  });
+});
+
+describe("ChatTab, demo D1: type first, the chat is made on Send", () => {
+  const messageBox = () => screen.getByLabelText("message") as HTMLTextAreaElement;
+  const modelBox = () => screen.getByLabelText("model") as HTMLSelectElement;
+  /** The chat the host makes for the first message. */
+  const fresh: Chat = { ...chat, id: "c9", title: "", model_id: "file:q", active_leaf_id: null };
+  /** A library whose FIRST row is not the default: the demo's picker showed that first row. */
+  const llama = model({ id: "file:l", name: "Llama-3.2-3B-Instruct-Q4_K_M" });
+  const library = [llama, ...models];
+  const storedFresh = (text: string): ChatView => ({
+    chat: { ...fresh, title: text, active_leaf_id: "a1" },
+    messages: [
+      one(msg({ id: "u1", role: "user", chat_id: "c9", content: text })),
+      one(msg({ id: "a1", role: "assistant", chat_id: "c9", parent_id: "u1", content: "", status: "streaming", model_id: "file:q" })),
+    ],
+  });
+  /** The host as it answers a send: a moment after the call, when the chat is open, it says queued, started, and a token. */
+  const answerWith = (reply: string) =>
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      await Promise.resolve();
+      onEvent(queuedFor("a1", "u1"));
+      onEvent({ ...started, message_id: "a1", user_message_id: "u1" });
+      onEvent({ kind: "token", text: reply });
+      await new Promise<void>(() => {}); // the reply goes on for the whole test
+    });
+  const openEmpty = async () => {
+    render(<ChatTab overview={overview} />);
+    await screen.findByText("Type a message to start a chat.");
+    await waitFor(() => expect(modelBox().value).toBe("file:q")); // the models have landed
+  };
+
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset().mockResolvedValue(library);
+    vi.mocked(api.chats).mockReset().mockResolvedValueOnce([]).mockResolvedValue([{ ...fresh, title: "hello" }]);
+    vi.mocked(api.chat).mockReset().mockImplementation(async () => storedFresh("hello"));
+    vi.mocked(api.newChat).mockReset().mockResolvedValue(fresh);
+    vi.mocked(api.send).mockReset().mockImplementation(async () => {});
+    vi.mocked(api.setChatModel).mockReset();
+    vi.mocked(api.stop).mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("opens with the composer enabled, a prompt to type, and the model a new chat would get in the picker", async () => {
+    await openEmpty();
+    expect(screen.queryByText(/Start a chat with/)).toBeNull();
+    expect(messageBox().disabled).toBe(false);
+    expect(modelBox().disabled).toBe(false);
+    expect(modelBox().value).toBe("file:q"); // the default, not the first row (Llama)
+    expect(screen.getByText("engine").nextElementSibling?.textContent).toBe("—");
+    expect((screen.getByText("SEND") as HTMLButtonElement).disabled).toBe(true); // nothing typed yet
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    expect((screen.getByText("SEND") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("offers the first model that can run when the default cannot", async () => {
+    vi.mocked(api.models).mockResolvedValue([
+      model({ id: "file:x", name: "broken", runnable: false, reason: "the engine refused it" }),
+      ...models.map((m) => (m.is_default ? { ...m, runnable: false, reason: "the engine refused it" } : m)),
+    ]);
+    render(<ChatTab overview={overview} />);
+    await screen.findByText("Type a message to start a chat.");
+    await waitFor(() => expect(modelBox().value).toBe("file:n")); // nexus: the first row that can run
+  });
+
+  it("makes the chat on Enter with the picker's model, sends the text in it, and the reply streams in", async () => {
+    answerWith("Buy at ₹68,400");
+    await openEmpty();
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    expect(await screen.findByText("Buy at ₹68,400")).toBeTruthy();
+    expect(api.newChat).toHaveBeenCalledTimes(1);
+    expect(api.newChat).toHaveBeenCalledWith("file:q");
+    expect(api.send).toHaveBeenCalledTimes(1);
+    expect(api.send).toHaveBeenCalledWith("c9", "hello", expect.any(Function));
+    // The chat is made, the list refreshed, and only then is the text sent.
+    const at = (f: unknown) => vi.mocked(f as typeof api.send).mock.invocationCallOrder[0];
+    expect(at(api.newChat)).toBeLessThan(at(api.send));
+    expect(vi.mocked(api.chats).mock.invocationCallOrder[1]).toBeGreaterThan(at(api.newChat));
+    expect(vi.mocked(api.chats).mock.invocationCallOrder[1]).toBeLessThan(at(api.send));
+    // The open-chat effect resets the live reply; the send has to come after it, or the reply that has started is wiped.
+    expect(screen.getByText("STOP")).toBeTruthy();
+    expect(messageBox().value).toBe("");
+    expect(screen.getByText("hello", { selector: ".msg-user" })).toBeTruthy(); // the user's message, from the stored chat
+  });
+
+  it("makes the chat on the SEND button too", async () => {
+    answerWith("Hello there");
+    await openEmpty();
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    fireEvent.click(screen.getByText("SEND"));
+    expect(await screen.findByText("Hello there")).toBeTruthy();
+    expect(api.newChat).toHaveBeenCalledTimes(1);
+    expect(api.send).toHaveBeenCalledWith("c9", "hello", expect.any(Function));
+  });
+
+  it("makes the chat on the model that was picked first, and the pick alone calls no host function", async () => {
+    answerWith("ok");
+    vi.mocked(api.newChat).mockResolvedValue({ ...fresh, model_id: "file:n" });
+    await openEmpty();
+    fireEvent.change(modelBox(), { target: { value: "file:n" } });
+    expect(modelBox().value).toBe("file:n");
+    expect(api.setChatModel).not.toHaveBeenCalled();
+    expect(api.newChat).not.toHaveBeenCalled();
+    expect(screen.getByText("engine").nextElementSibling?.textContent).toBe("—"); // still no chat
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    await waitFor(() => expect(api.send).toHaveBeenCalled());
+    expect(api.newChat).toHaveBeenCalledTimes(1);
+    expect(api.newChat).toHaveBeenCalledWith("file:n");
+    expect(api.setChatModel).not.toHaveBeenCalled();
+  });
+
+  it("puts the text back when the host refuses the send, and shows why, as for a chat that was already open", async () => {
+    vi.mocked(api.send).mockRejectedValue("this message is about 6250 tokens, more than a 4096-token context can take");
+    vi.mocked(api.chat).mockImplementation(async () => ({ chat: fresh, messages: [] })); // a refused message is stored nowhere
+    await openEmpty();
+    fireEvent.change(messageBox(), { target: { value: "  a pasted document  " } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    expect((await screen.findByRole("alert")).textContent).toContain("more than a 4096-token context");
+    expect(messageBox().value).toBe("a pasted document");
+    expect(hostErrors.mock.calls).toEqual([["send failed:", "this message is about 6250 tokens, more than a 4096-token context can take"]]);
+    expect(screen.getByText("SEND")).toBeTruthy(); // not stuck on STOP
+  });
+
+  it("puts the text back, and sends nothing, when the chat cannot be made", async () => {
+    vi.mocked(api.newChat).mockRejectedValue("there is no runnable model in the library");
+    await openEmpty();
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    expect((await screen.findByRole("alert")).textContent).toContain("there is no runnable model in the library");
+    expect(messageBox().value).toBe("hello");
+    expect(api.send).not.toHaveBeenCalled();
+    expect(hostErrors.mock.calls).toEqual([["newChat failed:", "there is no runnable model in the library"]]);
+    expect(screen.getByText("SEND")).toBeTruthy();
+  });
+
+  it("does not make a chat on the Enter that confirms an input-method composition", async () => {
+    await openEmpty();
+    fireEvent.change(messageBox(), { target: { value: "こんにちは" } });
+    const composing = createEvent.keyDown(messageBox(), { key: "Enter", isComposing: true }) as KeyboardEvent;
+    expect(composing.isComposing).toBe(true);
+    fireEvent(messageBox(), composing);
+    expect(api.newChat).not.toHaveBeenCalled();
+  });
+
+  it("makes one chat for one message, however often Enter is pressed while it is being made", async () => {
+    let made!: (c: Chat) => void;
+    vi.mocked(api.newChat).mockImplementation(() => new Promise<Chat>((resolve) => (made = resolve)));
+    answerWith("ok");
+    await openEmpty();
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    expect(messageBox().value).toBe("");
+    fireEvent.change(messageBox(), { target: { value: "and another" } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    expect(api.newChat).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("STOP")).toBeTruthy(); // the composer counts the message as on its way
+    await act(async () => made(fresh));
+    await waitFor(() => expect(api.send).toHaveBeenCalledTimes(1));
+    expect(api.send).toHaveBeenCalledWith("c9", "hello", expect.any(Function));
+  });
+
+  it("shows the pending reply's status for a message typed with no chat open, counted from Send", async () => {
+    let say!: (e: StreamEvent) => void;
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      say = onEvent;
+      await new Promise<void>(() => {});
+    });
+    await openEmpty();
+    vi.useFakeTimers();
+    fireEvent.change(messageBox(), { target: { value: "hello" } });
+    fireEvent.keyDown(messageBox(), { key: "Enter" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0); // the chat is made and opened, and the send has begun
+    });
+    expect(api.send).toHaveBeenCalledTimes(1);
+    await act(async () => say(queuedFor("a1", "u1")));
+    expect(screen.getByText("thinking")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(screen.getByText("reading the chat · 3 s")).toBeTruthy(); // the open-chat reset did not take Send's time away
+  });
+});
+
+describe("ChatTab, demo D2: the pending reply shows that work is going on", () => {
+  /** The engine serves the chat's model (nexus), so the status is a word and not `loading nexus`. */
+  const nexusServing: Overview = { ...overview, engine: { ...overview.engine, model_id: "file:n" } };
+  const queued = queuedFor("a3", "u3");
+  const pendingView = () =>
+    withTurn(view, "and now?", msg({ id: "a3", role: "assistant", parent_id: "u3", model_id: "file:n", content: "", status: "streaming" }));
+
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset().mockResolvedValue(models);
+    vi.mocked(api.chats).mockReset().mockResolvedValue([chat]);
+    vi.mocked(api.chat).mockReset().mockResolvedValue(view);
+    vi.mocked(api.send).mockReset();
+    vi.mocked(api.regenerate).mockReset();
+    vi.mocked(api.stop).mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Opens the chat, presses SEND with fake timers running from that moment, and lets the host say `queued`. */
+  async function queueAReply(shownOverview: Overview = nexusServing) {
+    let say!: (e: StreamEvent) => void;
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      say = onEvent;
+      await new Promise<void>(() => {}); // the reply goes on for the whole test
+    });
+    const shown = render(<ChatTab overview={shownOverview} />);
+    await screen.findByText("Verdict: HOLD.");
+    vi.useFakeTimers();
+    vi.mocked(api.chat).mockResolvedValue(pendingView());
+    type("and now?");
+    expect(api.send).toHaveBeenCalledTimes(1);
+    await act(async () => say(queued));
+    return {
+      ...shown,
+      say: (e: StreamEvent) => act(async () => say(e)),
+      tick: (ms: number) =>
+        act(async () => {
+          await vi.advanceTimersByTimeAsync(ms);
+        }),
+    };
+  }
+
+  it("shows the user's message and the pending reply as soon as the host says queued, before started", async () => {
+    await queueAReply();
+    expect(screen.getByText("and now?", { selector: ".msg-user" })).toBeTruthy(); // the stored message, before any `started`
+    expect(vi.mocked(api.chat)).toHaveBeenCalledTimes(2); // the chat's opening, and queued's reload
+    const status = screen.getByText("thinking"); // under a second: the word alone
+    expect(status.closest(".msg")?.classList.contains("assistant")).toBe(true);
+    expect(status.closest(".msg")?.querySelector(".msg-head")?.textContent).toContain("MODEL");
+    expect(screen.queryByText(/waiting for the engine/)).toBeNull();
+  });
+
+  it("counts whole seconds from Send and turns the word every 2.5 s", async () => {
+    const t = await queueAReply();
+    await t.tick(1000);
+    expect(screen.getByText("thinking · 1 s")).toBeTruthy();
+    await t.tick(2000);
+    expect(screen.getByText("reading the chat · 3 s")).toBeTruthy();
+    await t.tick(2000);
+    expect(screen.getByText("pondering · 5 s")).toBeTruthy();
+  });
+
+  it("says `loading <model>` while the engine is starting, restarting, or on another model", async () => {
+    for (const engine of [
+      { ...overview.engine, model_id: "file:n", state: "starting" as const },
+      { ...overview.engine, model_id: "file:n", state: "restarting" as const },
+      { ...overview.engine, model_id: "file:q", state: "serving" as const }, // serving the OTHER model
+    ]) {
+      const t = await queueAReply({ ...overview, engine });
+      await t.tick(3000);
+      expect(screen.getByText("loading nexus · 3 s"), engine.state + " " + engine.model_id).toBeTruthy();
+      t.unmount();
+      vi.useRealTimers();
+      vi.mocked(api.send).mockReset();
+      vi.mocked(api.chat).mockReset().mockResolvedValue(view);
+    }
+  });
+
+  it("goes from `loading <model>` to the words when the engine is serving the chat's model", async () => {
+    const starting = { ...overview, engine: { ...overview.engine, model_id: "file:n", state: "starting" as const } };
+    const t = await queueAReply(starting);
+    await t.tick(3000);
+    expect(screen.getByText("loading nexus · 3 s")).toBeTruthy();
+    t.rerender(<ChatTab overview={nexusServing} />);
+    expect(screen.getByText("reading the chat · 3 s")).toBeTruthy();
+  });
+
+  it("adds the dim hint about long chats after 15 s with no token", async () => {
+    const t = await queueAReply();
+    await t.tick(14_000);
+    expect(screen.queryByText(/long chats take longer/)).toBeNull();
+    await t.tick(1000);
+    const hint = screen.getByText("long chats take longer: the model re-reads the last ~1,500 tokens of the chat before it answers");
+    expect(hint.classList.contains("dim")).toBe(true);
+  });
+
+  it("is gone with the first token, and the interval with it", async () => {
+    const t = await queueAReply();
+    await t.tick(2000);
+    expect(vi.getTimerCount()).toBe(1); // one interval for the one pending reply
+    await t.say({ ...started, message_id: "a3", user_message_id: "u3" });
+    expect(screen.getByText("thinking · 2 s")).toBeTruthy(); // started is not a token
+    await t.say({ kind: "token", text: "Buy" });
+    await t.tick(40); // the flush that shows the tokens
+    expect(screen.getByText("Buy")).toBeTruthy();
+    expect(screen.queryByText(/thinking|reading the chat|pondering/)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears its interval when the Chat tab goes away", async () => {
+    const t = await queueAReply();
+    expect(vi.getTimerCount()).toBe(1);
+    t.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps STOP working throughout, and the status goes when the reply is stopped before its first token", async () => {
+    const t = await queueAReply();
+    await t.tick(2000);
+    vi.mocked(api.stop).mockImplementation(async () => {});
+    fireEvent.click(screen.getByText("STOP"));
+    expect(api.stop).toHaveBeenCalledWith("c1");
+    // the host has marked the placeholder stopped by the time it says so
+    vi.mocked(api.chat).mockResolvedValue(withTurn(view, "and now?", msg({ id: "a3", role: "assistant", parent_id: "u3", content: "", status: "stopped" })));
+    await t.say({ kind: "stopped", stats: done });
+    expect(screen.queryByText(/thinking|reading the chat/)).toBeNull();
+    expect(screen.getByText("SEND")).toBeTruthy();
+  });
+
+  it("shows the same status for a regenerate, counted from the press", async () => {
+    let say!: (e: StreamEvent) => void;
+    vi.mocked(api.regenerate).mockImplementation(async (_chatId, onEvent) => {
+      say = onEvent;
+      await new Promise<void>(() => {});
+    });
+    render(<ChatTab overview={nexusServing} />);
+    await screen.findByText("Verdict: HOLD.");
+    vi.useFakeTimers();
+    vi.mocked(api.chat).mockResolvedValue({
+      ...view,
+      messages: [
+        view.messages[0],
+        { message: msg({ id: "a3", role: "assistant", parent_id: "u1", model_id: "file:n", content: "", status: "streaming" }), version: 3, versions: 3, sibling_ids: ["a1", "a2", "a3"] },
+      ],
+    });
+    fireEvent.click(screen.getByText("REGENERATE"));
+    await act(async () => say(queuedFor("a3", "u1")));
+    expect(screen.getByText("thinking")).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(screen.getByText("reading the chat · 3 s")).toBeTruthy();
   });
 });

@@ -336,6 +336,26 @@ const steps = [
     await page.getByText(/FROM MODELFILE/).waitFor();
     await page.getByText(/You are Nexus AI/).waitFor();
   }],
+  // Demo D1 + D4. Nothing has been typed and no chat exists yet. The composer is enabled and the transcript says to type; the
+  // picker is enabled and shows the model a new chat will get, which is the default and says so; a message typed here makes
+  // the chat on that model and is sent in it.
+  ["type first: with no chat open, a typed message makes the chat on the default model", async () => {
+    await page.getByRole("tab", { name: "Chat" }).click();
+    await page.getByText("Type a message to start a chat.").waitFor({ timeout: 5000 });
+    if (!(await page.getByRole("textbox", { name: "message", exact: true }).isEnabled())) throw new Error("the composer is disabled with no chat open");
+    const picker = page.locator("select[aria-label=model]");
+    if (!(await picker.isEnabled())) throw new Error("the model picker is disabled with no chat open");
+    const shown = await picker.evaluate((el) => el.selectedOptions[0]?.textContent ?? "");
+    if (shown !== "Qwen3-4B-Instruct-2507-Q4_K_M (default)") throw new Error(`the picker shows "${shown}", not the default model marked (default)`);
+    await sendMessage("Hello, first message.");
+    await page.locator(".messages").getByText("Verdict: HOLD.").first().waitFor({ timeout: 15000 });
+    await waitIdle();
+    const chats = await page.locator(".chat-item").allInnerTexts();
+    if (chats.length !== 1 || !chats[0].includes("Hello, first message.") || !chats[0].includes("Qwen3-4B-Instruct-2507-Q4_K_M")) {
+      throw new Error(`the chat list after the first message: ${JSON.stringify(chats)}`);
+    }
+  }],
+  // The one step that still makes its chat with "+ NEW".
   ["a new chat switched to Nexus restarts the engine on it", async () => {
     await page.getByRole("tab", { name: "Chat" }).click();
     await page.getByRole("button", { name: "+ NEW", exact: true }).click();
@@ -374,7 +394,8 @@ const steps = [
       const now = pids("fake-engine.exe");
       return now.length === 1 && now[0] !== before[0] && (await topbar()).includes("serving");
     });
-    await until("the restart counted", async () => (await page.locator(".statusbar").innerText()).includes("1 engine restarts"));
+    // Demo D6: one restart reads "1 engine restart" (and "1 engine restarts" would not).
+    await until("the restart counted", async () => /(^|\D)1 engine restart(?!s)/.test(await page.locator(".statusbar").innerText()));
     await sendMessage("Still there?");
     await waitIdle();
   }],
@@ -391,6 +412,12 @@ const steps = [
     // Each refusal is read from its own REFUSED log line, never from the badge alone: the badge
     // still shows the previous feed's identical text until the new check lands, and a check that
     // failed for another reason (no server, bad JSON) logs a warning, not a refusal.
+    // Demo D7: the words each refusal gets in the badge (a few words) and in the log (one sentence and the code for support).
+    const refusals = {
+      tampered: { label: "installer altered or damaged", sentence: "does not match its signature", code: "[Minisign(InvalidSignature)]" },
+      wrongkey: { label: "untrusted signing key", sentence: "a key this Lorren does not trust", code: "[Minisign(UnexpectedKeyId)]" },
+      nosig: { label: "unsigned", sentence: "the update has no signature", code: "[EmptySignature]" },
+    };
     let refused = 0;
     for (const name of ["tampered", "wrongkey", "nosig", "good"]) {
       if (!fs.existsSync(path.join(WORK, "feed", name, "latest.json"))) throw new Error("no feeds: run `python scripts/update-feed.py build 0.0.2` then `feeds` (Task 15)");
@@ -402,7 +429,17 @@ const steps = [
       } else {
         refused += 1;
         await until(`the ${name} update refused`, async () => (await updaterLines()).filter((t) => t.includes("REFUSED")).length === refused, 60000);
-        if (!(await badge()).includes("0.0.2 refused: signature did not verify")) throw new Error(`badge after ${name}: ${await badge()}`);
+        const want = refusals[name];
+        // The log line is written just before the state event reaches the badge, and the previous feed's badge reads
+        // differently (its own label), so the badge is waited for and not read once.
+        await until(`the ${name} badge`, async () => (await badge()).includes(`update 0.0.2 refused · ${want.label} · check again`), 10000).catch(async (e) => {
+          throw new Error(`${e.message}; the bar says: ${await badge()}`);
+        });
+        const title = await page.locator(".statusbar button").last().getAttribute("title");
+        if (!title?.includes(want.sentence) || !title.endsWith("; nothing was installed")) throw new Error(`the badge's tooltip after ${name}: ${title}`);
+        const line = (await updaterLines()).filter((t) => t.includes("REFUSED")).at(-1) ?? "";
+        if (!line.includes(want.sentence) || !line.endsWith(`; nothing was installed ${want.code}`)) throw new Error(`the log line after ${name}: ${line}`);
+        if (line.includes("The signature verification failed") || line.includes("did not verify")) throw new Error(`the log line repeats the plugin's text: ${line}`);
       }
       stopFeed();
     }

@@ -1,10 +1,13 @@
 import type { MessageView } from "../ipc/bindings/MessageView";
 import { Markdown } from "./Markdown";
+import { PendingStatus, type Pending } from "./Pending";
 
-export function MessageRow({ mv, liveText, onVersion }: {
+export function MessageRow({ mv, liveText, pending, onVersion }: {
   mv: MessageView;
   /** The streaming text, while this is the reply being written. */
   liveText: string | null;
+  /** This is the reply being written and it has no token yet: its body is the status line (demo D2) instead of an empty text. */
+  pending: Pending | null;
   onVersion: (messageId: string) => void;
 }) {
   const m = mv.message;
@@ -26,7 +29,13 @@ export function MessageRow({ mv, liveText, onVersion }: {
           <span className={`pill status-${m.status}`}>{m.status.toUpperCase()}</span>
         )}
       </div>
-      {m.role === "user" ? <div className="msg-user">{text}</div> : <Markdown text={text} />}
+      {m.role === "user" ? (
+        <div className="msg-user">{text}</div>
+      ) : pending ? (
+        <PendingStatus since={pending.since} loading={pending.loading} />
+      ) : (
+        <Markdown text={text} />
+      )}
       {m.status === "error" && m.stats.error && <div className="msg-error">{m.stats.error}</div>}
     </div>
   );
