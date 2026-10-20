@@ -15,6 +15,15 @@ describe("applyEvent", () => {
     expect(s).toMatchObject({ busy: false, ended: "finished", stats });
   });
 
+  // Demo D2: `queued` comes first, as soon as the host has stored the message and the reply's placeholder.
+  it("knows the reply's message from queued on", () => {
+    let s = begin();
+    s = applyEvent(s, { kind: "queued", message_id: "a3", user_message_id: "u3" });
+    expect(s).toMatchObject({ busy: true, messageId: "a3", text: "" });
+    s = applyEvent(s, { kind: "started", message_id: "a3", user_message_id: "u3", dropped_turns: 2, request_id: "req_1" });
+    expect(s).toMatchObject({ busy: true, messageId: "a3", dropped: 2 });
+  });
+
   it("keeps a refusal that arrives before the reply starts", () => {
     const s = applyEvent(begin(), { kind: "error", message: "the engine refused the request (400 Bad Request)" });
     expect(s).toMatchObject({ busy: false, messageId: null, ended: "error", error: "the engine refused the request (400 Bad Request)" });

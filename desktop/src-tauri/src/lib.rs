@@ -9,6 +9,7 @@ pub mod paths;
 pub mod sse;
 pub mod store;
 pub mod updater;
+pub mod window_state;
 
 use commands::AppState;
 use std::sync::{Arc, Mutex, RwLock};
@@ -42,9 +43,15 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // The main window's state is saved when it is asked to close (demo D8).
+        .on_window_event(window_state::on_window_event)
         .setup(|app| {
+            // First of all, before the store and the library scan: the window is created hidden (tauri.conf.json), placed as
+            // the last run left it (maximized the first time), and shown, so it appears as early as it can (demo D8).
+            let window_note = window_state::restore(app);
             let monitor = monitor::Monitor::new(Some(paths::log_dir().join("lorren.log")));
             monitor.log("app", "info", format!("Lorren {} starting", app.package_info().version));
+            monitor.log("app", "info", window_note);
             let store = open_store(&monitor, &paths::data_dir())?;
             let models = library::scan(&library::LibraryConfig::from_env(paths::downloads_dir()));
             monitor.log(

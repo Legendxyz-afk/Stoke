@@ -27,6 +27,9 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security"
 tokio-util = "0.7.20"
 tauri-plugin-single-instance = "2.5.4"
 tauri-plugin-updater = "2.14.0"
+# The updater plugin's own signature library, at the version the plugin pins: `classify` (updater.rs) matches its error
+# type, so the two must be the same crate.
+minisign-verify = "=0.3.0"
 
 [features]
 fake-engine = []
@@ -37,4 +40,6 @@ path = "src/bin/fake_engine.rs"
 required-features = ["fake-engine"]
 
 [dev-dependencies]
-minisign-verify = "=0.3.0"
+# `tauri::test::mock_app` + the real updater plugin, so a test can ask `Update::verify` itself what a bad signature gives.
+tauri = { version = "2", features = ["test"] }
+base64 = "0.22.1"

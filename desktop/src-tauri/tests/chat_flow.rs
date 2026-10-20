@@ -74,7 +74,9 @@ async fn a_reply_streams_into_the_ui_and_the_store() {
     let (seen, sink) = collector();
     w.svc.send(&chat, "Long or wait?", sink).await.unwrap();
     let seen = seen.lock().unwrap();
-    assert!(matches!(seen.first(), Some(StreamEvent::Started { dropped_turns: 0, .. })));
+    // `queued` comes first (demo D2), then `started` once the engine has taken the request.
+    assert!(matches!(seen.first(), Some(StreamEvent::Queued { .. })), "{seen:?}");
+    assert!(matches!(seen.get(1), Some(StreamEvent::Started { dropped_turns: 0, .. })), "{seen:?}");
     let text: String = seen.iter().filter_map(|e| match e { StreamEvent::Token { text } => Some(text.clone()), _ => None }).collect();
     assert_eq!(text, "Verdict: HOLD.");
     assert!(matches!(seen.last(), Some(StreamEvent::Finished { stats }) if stats.completion_tokens == Some(2)));
@@ -172,7 +174,8 @@ async fn a_full_context_is_trimmed_and_retried_once() {
     let (seen, sink) = collector();
     w.svc.send(&chat, "and now?", sink).await.unwrap();
     let seen = seen.lock().unwrap();
-    assert!(matches!(seen.first(), Some(StreamEvent::Started { dropped_turns, .. }) if *dropped_turns > 0), "{seen:?}");
+    // (`started` is the second event: `queued` is the first, demo D2.)
+    assert!(matches!(seen.get(1), Some(StreamEvent::Started { dropped_turns, .. }) if *dropped_turns > 0), "{seen:?}");
     assert!(matches!(seen.last(), Some(StreamEvent::Finished { .. })), "{seen:?}");
     assert_eq!(events(&w).matches("context_length_exceeded").count(), 1);
 }
@@ -193,7 +196,8 @@ async fn the_history_budget_drops_the_oldest_turns() {
     }
     let (seen, sink) = collector();
     w.svc.send(&chat, "latest", sink).await.unwrap();
-    assert!(matches!(seen.lock().unwrap().first(), Some(StreamEvent::Started { dropped_turns, .. }) if *dropped_turns >= 2));
+    // (`started` is the second event: `queued` is the first, demo D2.)
+    assert!(matches!(seen.lock().unwrap().get(1), Some(StreamEvent::Started { dropped_turns, .. }) if *dropped_turns >= 2));
     let body = events(&w);
     assert!(!body.contains("turn 0") && body.contains("latest"), "{body}");
 }
@@ -449,4 +453,139 @@ async fn an_engine_that_dies_silently_during_a_load_does_not_mark_the_model_cant
         assert!(entry.runnable && entry.reason.is_none(), "round {round}: the row is still runnable: {entry:?}");
         assert_eq!(w.svc.supervisor.status().state, EngineState::Failed, "round {round}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Demo wave (2026-10-20), D2 and D3. Each test was run RED first: the event did not exist, and the warm-up was not sent.
+// ---------------------------------------------------------------------------------------------
+
+fn kind(e: &StreamEvent) -> &'static str {
+    match e {
+        StreamEvent::Queued { .. } => "queued",
+        StreamEvent::Started { .. } => "started",
+        StreamEvent::Token { .. } => "token",
+        StreamEvent::Finished { .. } => "finished",
+        StreamEvent::Stopped { .. } => "stopped",
+        StreamEvent::Interrupted { .. } => "interrupted",
+        StreamEvent::Error { .. } => "error",
+    }
+}
+
+/// One event, with what the host looked like the moment it was sent: the engine's state and model, and the chat's stored
+/// path as (id, role, status).
+type Snapshot = (StreamEvent, EngineState, Option<String>, Vec<(String, Role, MsgStatus)>);
+
+fn recorder(w: &World, chat: &str) -> (Arc<Mutex<Vec<Snapshot>>>, impl Fn(StreamEvent) + Send + Sync) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (record, svc, chat) = (seen.clone(), w.svc.clone(), chat.to_string());
+    (seen, move |e| {
+        let engine = svc.supervisor.status();
+        let path = svc.store.lock().unwrap().active_path(&chat).unwrap().into_iter().map(|m| (m.id, m.role, m.status)).collect();
+        record.lock().unwrap().push((e, engine.state, engine.model_id, path));
+    })
+}
+
+/// D2: while the engine starts or switches (a minute, for a big model) the UI heard nothing, and the message the user had
+/// just sent was not on screen. `queued` is the first event, sent as soon as the user's message and the reply's placeholder
+/// are stored and BEFORE the engine is asked for anything. The load takes 400 ms here, so "before" is a state the test can
+/// read off the supervisor: Stopped at `queued`, Serving at `started`.
+#[tokio::test]
+async fn a_send_begins_with_queued_before_the_engine_is_asked_for_anything() {
+    let w = world("queued-send", &[("FAKE_ENGINE_LOAD_MS", "400"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = recorder(&w, &chat);
+    w.svc.send(&chat, "hello", sink).await.unwrap();
+    let seen = seen.lock().unwrap();
+    let kinds: Vec<_> = seen.iter().map(|s| kind(&s.0)).collect();
+    assert_eq!(kinds[..2], ["queued", "started"], "{kinds:?}");
+    assert!(kinds.len() > 3 && kinds[2..kinds.len() - 1].iter().all(|k| *k == "token") && kinds.last() == Some(&"finished"), "{kinds:?}");
+
+    let stored = w.svc.store.lock().unwrap().active_path(&chat).unwrap();
+    let (user, reply) = (&stored[0], &stored[1]);
+    let (queued, state, _model, path) = &seen[0];
+    match queued {
+        StreamEvent::Queued { message_id, user_message_id } => assert_eq!((message_id, user_message_id), (&reply.id, &user.id)),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(*state, EngineState::Stopped, "the engine had not been asked to start when `queued` was sent");
+    assert_eq!(
+        path,
+        &[(user.id.clone(), Role::User, MsgStatus::Done), (reply.id.clone(), Role::Assistant, MsgStatus::Streaming)],
+        "both messages were stored when `queued` was sent: the user's, and the reply as a streaming placeholder"
+    );
+    assert_eq!(seen[1].1, EngineState::Serving, "`started` comes once the engine serves");
+    assert_eq!(
+        serde_json::to_value(&seen[0].0).unwrap(),
+        serde_json::json!({"kind": "queued", "message_id": reply.id, "user_message_id": user.id}),
+        "the wire form the UI reads"
+    );
+}
+
+/// The same for a regenerate, which is the case that switches models: the chat has moved to another model, the engine
+/// still serves the first, and `queued` is sent while it does. The new placeholder is a sibling of the first reply.
+#[tokio::test]
+async fn a_regenerate_begins_with_queued_before_the_engine_is_switched() {
+    let w = world("queued-regen", &[("FAKE_ENGINE_LOAD_MS", "300"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (_first, first_sink) = collector();
+    w.svc.send(&chat, "hi", first_sink).await.unwrap();
+    let first_reply = last_reply(&w, &chat);
+    w.svc.store.lock().unwrap().set_chat_model(&chat, &w.nexus).unwrap();
+
+    let (seen, sink) = recorder(&w, &chat);
+    w.svc.regenerate(&chat, sink).await.unwrap();
+    let seen = seen.lock().unwrap();
+    let kinds: Vec<_> = seen.iter().map(|s| kind(&s.0)).collect();
+    assert_eq!(kinds[..2], ["queued", "started"], "{kinds:?}");
+    assert_eq!(kinds.last(), Some(&"finished"), "{kinds:?}");
+
+    let new_reply = last_reply(&w, &chat);
+    let user_id = first_reply.parent_id.clone().expect("the first reply answers the user's message");
+    assert_ne!(new_reply.id, first_reply.id);
+    match &seen[0].0 {
+        StreamEvent::Queued { message_id, user_message_id } => assert_eq!((message_id, user_message_id), (&new_reply.id, &user_id)),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!((seen[0].1, seen[0].2.as_deref()), (EngineState::Serving, Some(w.qwen.as_str())), "at `queued` the engine still serves the old model");
+    assert_eq!(
+        seen[0].3,
+        [(user_id.clone(), Role::User, MsgStatus::Done), (new_reply.id.clone(), Role::Assistant, MsgStatus::Streaming)],
+        "the new placeholder is stored when `queued` is sent"
+    );
+    assert_eq!((seen[1].1, seen[1].2.as_deref()), (EngineState::Serving, Some(w.nexus.as_str())), "`started` comes once nexus serves");
+}
+
+/// D2 for a reply that cannot start: the UI has been told `queued`, and then hears why.
+#[tokio::test]
+async fn a_send_the_engine_refuses_is_queued_first_and_then_ends_in_an_error() {
+    let w = world("queued-refused", &[("FAKE_ENGINE_MODE", "refuse")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = recorder(&w, &chat);
+    w.svc.send(&chat, "hello", sink).await.unwrap();
+    let kinds: Vec<_> = seen.lock().unwrap().iter().map(|s| kind(&s.0)).collect();
+    assert_eq!(kinds, ["queued", "error"]);
+}
+
+/// D3: the warm-up that follows the engine's banner goes through the supervisor's own client. The chat service does not
+/// see it, and neither do the Requests list nor the request counter: the engine got two requests, the app knows of one.
+#[tokio::test]
+async fn the_engines_warm_up_is_not_a_request_the_chat_service_or_the_list_sees() {
+    let w = world("warmup-hidden", &[("FAKE_ENGINE_REPLY", "Verdict: HOLD."), ("FAKE_ENGINE_TOKEN_MS", "5")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    w.svc.send(&chat, "Long or wait?", sink).await.unwrap();
+    let bodies: Vec<serde_json::Value> = events(&w)
+        .lines()
+        .filter_map(|l| l.strip_prefix("request "))
+        .map(|b| serde_json::from_str(b).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 2, "the warm-up, then the reply: {bodies:?}");
+    assert_eq!(bodies[0]["max_tokens"], 1, "{}", bodies[0]);
+    assert!(!bodies[0].to_string().contains("Long or wait?"), "{}", bodies[0]);
+    assert_eq!(bodies[1]["max_tokens"], 1024, "{}", bodies[1]);
+    assert!(bodies[1].to_string().contains("Long or wait?"), "{}", bodies[1]);
+    assert_eq!(w.svc.monitor.requests().len(), 1);
+    assert_eq!(w.svc.monitor.request_count(), 1);
+    let text: String = seen.lock().unwrap().iter().filter_map(|e| match e { StreamEvent::Token { text } => Some(text.clone()), _ => None }).collect();
+    assert_eq!(text, "Verdict: HOLD.", "the warm-up's token is not in the reply");
 }

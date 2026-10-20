@@ -20,7 +20,7 @@ describe("UpdateBadge", () => {
   });
 
   it("says a refused update was refused, and can check again", async () => {
-    vi.mocked(api.updateState).mockResolvedValue({ state: "refused", version: "0.0.2", reason: "the signature did not verify" });
+    vi.mocked(api.updateState).mockResolvedValue({ state: "refused", version: "0.0.2", label: "unsigned", reason: "the update has no signature" });
     render(<UpdateBadge />);
     fireEvent.click(await screen.findByText(/0\.0\.2 refused/));
     await waitFor(() => expect(api.checkUpdate).toHaveBeenCalled());

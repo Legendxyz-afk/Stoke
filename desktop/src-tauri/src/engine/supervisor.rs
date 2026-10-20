@@ -5,6 +5,7 @@ use crate::engine::job::Job;
 use crate::engine::memory;
 use crate::gguf;
 use crate::monitor::Monitor;
+use futures_util::StreamExt;
 use serde::Serialize;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -52,6 +53,9 @@ pub struct EngineConfig {
     pub threads: Option<u32>,
     pub kv: String,
     pub load_timeout: Duration,
+    /// How long the one-token warm-up request that follows the banner may take, from the request to the end of its answer
+    /// (demo D3). The real engine's first forward pass pages the model in: 3-4 s for a 4B model on this PC's disk.
+    pub warmup_timeout: Duration,
     pub health_interval: Duration,
     pub health_timeout: Duration,
     pub health_misses: u32,
@@ -72,6 +76,7 @@ impl EngineConfig {
             threads: None,
             kv: "q8".into(),
             load_timeout: Duration::from_secs(120),
+            warmup_timeout: Duration::from_secs(120),
             health_interval: Duration::from_secs(5),
             // The real engine answers /health only between scheduler steps. A prefill step is 256 tokens
             // and takes ~3-4 s at the app's history sizes, and a new connection can wait two steps.
@@ -144,6 +149,26 @@ pub fn parse_banner(line: &str) -> Option<u16> {
 /// How long a failed start waits for the thread reading the engine's stderr to reach the end of the pipe.
 /// That takes microseconds once the process is gone; the cap is for a pipe something else keeps open.
 const STDERR_DRAIN_CAP: Duration = Duration::from_secs(2);
+
+/// The warm-up request's body (demo D3): one token of one short message, asked for the way the app asks for every reply.
+const WARMUP_BODY: &str =
+    r#"{"messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":true,"stream_options":{"include_usage":true}}"#;
+
+/// A failed request in words: a timeout says so, and for how long; anything else gives its text and its causes.
+fn describe(e: &reqwest::Error, limit: Duration) -> String {
+    use std::error::Error as _;
+    if e.is_timeout() {
+        return format!("no complete answer within {} s", limit.as_secs_f64());
+    }
+    let mut text = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        text.push_str(": ");
+        text.push_str(&c.to_string());
+        cause = c.source();
+    }
+    text
+}
 
 /// Calls `f` with each line of `src` until it ends or fails. The decoding is lossy on purpose: `BufRead::lines`
 /// stops at the first line that is not UTF-8, and the real engine writes the model path (in the ANSI code
@@ -370,6 +395,45 @@ impl Supervisor {
         });
     }
 
+    /// One 1-token chat request, read to the end of its answer (demo D3). The real engine maps the model and its pages come
+    /// in on the first forward pass, so the first reply after every load waited 3-4 s even for "hello" while the top bar said
+    /// "serving" and "engine 0.0 GB". Doing it before `Serving` is set means a reply can start quickly the moment the engine
+    /// counts as serving, and `load_ms` says how long that took.
+    ///
+    /// It is an optimisation and never a gate: a warm-up that fails or times out is one `warn` line, and the engine serves
+    /// all the same. It is not a user request: it goes through the supervisor's own client, shows in neither the Requests list
+    /// nor the request counter, and the chat service never sees it. The caller holds the supervisor's lock, which is the lock
+    /// the load holds, so a send that waits for the engine waits for this too.
+    async fn warm_up(&self, port: u16) {
+        let t = Instant::now();
+        match self.warm_up_request(port).await {
+            Ok(()) => self.monitor.log("app", "info", format!("engine warm-up {:.2} s", t.elapsed().as_secs_f64())),
+            Err(why) => self.monitor.log("app", "warn", format!("engine warm-up failed: {why}")),
+        }
+    }
+
+    async fn warm_up_request(&self, port: u16) -> Result<(), String> {
+        let limit = self.cfg.warmup_timeout;
+        // The timeout covers the whole request, up to the end of the body.
+        let resp = self
+            .http
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(WARMUP_BODY)
+            .timeout(limit)
+            .send()
+            .await
+            .map_err(|e| describe(&e, limit))?;
+        if !resp.status().is_success() {
+            return Err(format!("the engine answered {}", resp.status()));
+        }
+        let mut body = resp.bytes_stream();
+        while let Some(chunk) = body.next().await {
+            chunk.map_err(|e| describe(&e, limit))?;
+        }
+        Ok(())
+    }
+
     fn memory_check(&self, model: &ModelRef) -> Result<(), EngineError> {
         if !self.cfg.check_memory {
             return Ok(());
@@ -464,6 +528,8 @@ impl Supervisor {
         .unwrap_or(Err(true));
         match waited {
             Ok(port) => {
+                // Before `Serving` (demo D3), and so inside `load_ms` and the "engine serving" line below.
+                self.warm_up(port).await;
                 let load_ms = t0.elapsed().as_millis() as u64;
                 let pid = child.id();
                 let restarts = inner.restarts;

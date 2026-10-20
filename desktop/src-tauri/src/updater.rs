@@ -28,28 +28,72 @@ pub enum UpdateState {
     },
     /// Downloaded and its signature verified: installs when the user restarts.
     Ready { version: String },
-    /// Downloaded, but its signature did not verify: thrown away, nothing installed.
-    Refused { version: String, reason: String },
+    /// Downloaded (or announced), but not trustworthy: thrown away, nothing installed. `label` is a few words for the
+    /// badge and `reason` one sentence for its tooltip: the same cause, said once each (demo D7).
+    Refused { version: String, label: String, reason: String },
     Failed { message: String },
+}
+
+/// Why an update was refused, said once in plain words (demo D7): a few words for the badge, one sentence for its
+/// tooltip and the log, and the error's Debug form as a code for support. The plugin's own Display text is never
+/// repeated next to the sentence: it says the same thing in other words.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Refusal {
+    pub label: String,
+    pub sentence: String,
+    pub code: String,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
     NotConfigured,
-    Refused(String),
+    Refused(Refusal),
     Failed(String),
 }
 
+/// What a failed download or check means. The words of a refusal are the brief's table (demo D7); the error itself goes
+/// into `Refusal::code`. `Update::verify` (tauri-plugin-updater 2.14, src/updater.rs:901) makes every refusal here: the
+/// download ends with it (:895), and it reads the key and the signature (`verify_signature`, :1893) before it binds the
+/// signed version (`verify_signed_version`, :1925).
 pub fn classify(e: &tauri_plugin_updater::Error) -> Verdict {
+    use minisign_verify::Error as M;
     use tauri_plugin_updater::Error as E;
+    let refused = |label: &str, sentence: &str| {
+        Verdict::Refused(Refusal { label: label.into(), sentence: sentence.into(), code: format!("{e:?}") })
+    };
     match e {
         E::EmptyEndpoints => Verdict::NotConfigured,
-        // The last two are tauri-plugin-updater 2.14's version-binding checks, made by the same `Update::verify`.
-        E::Minisign(_) | E::Base64(_) | E::SignatureUtf8(_) | E::SignedVersionMismatch { .. } | E::MissingSignedVersion => {
-            Verdict::Refused(format!("the signature did not verify ({e})"))
+        // The signature is well formed and the key is ours, and the bytes do not match it.
+        E::Minisign(M::InvalidSignature) => refused(
+            "installer altered or damaged",
+            "the downloaded installer does not match its signature, so it changed after it was signed",
+        ),
+        // A well formed signature made by another key (minisign compares the key ids before anything else).
+        E::Minisign(M::UnexpectedKeyId) => refused("untrusted signing key", "the update is signed with a key this Lorren does not trust"),
+        // Not base64, not UTF-8, or not a minisign signature (a wrong algorithm, a cut-short text, an empty one).
+        E::Base64(_) | E::SignatureUtf8(_) | E::Minisign(_) => refused("unreadable signature", "the update's signature cannot be read"),
+        // The two version-binding checks of the same `Update::verify`.
+        E::SignedVersionMismatch { .. } => {
+            refused("signature for another version", "the signature is for a different version than the one offered")
         }
+        E::MissingSignedVersion => refused("signature names no version", "the signature does not say which version it is for"),
         _ => Verdict::Failed(e.to_string()),
     }
+}
+
+/// A feed entry with no signature at all (an empty or blank string): refused before anything is downloaded.
+pub fn is_unsigned(signature: &str) -> bool {
+    signature.trim().is_empty()
+}
+
+pub fn unsigned() -> Refusal {
+    Refusal { label: "unsigned".into(), sentence: "the update has no signature".into(), code: "EmptySignature".into() }
+}
+
+/// The log line for a refusal: the sentence, then the error's Debug form in brackets. That is a code for whoever supports
+/// the user, never prose, and it is the only place the plugin's error shows.
+pub fn refusal_log_line(version: &str, r: &Refusal) -> String {
+    format!("update {version} REFUSED: {}; nothing was installed [{}]", r.sentence, r.code)
 }
 
 /// What an install press is told when no downloaded, verified update is waiting. `install_update` checks for that
@@ -89,16 +133,18 @@ impl UpdateService {
     fn fail<R: Runtime>(&self, app: &AppHandle<R>, version: Option<String>, e: &tauri_plugin_updater::Error) {
         match classify(e) {
             Verdict::NotConfigured => self.set(app, UpdateState::NotConfigured),
-            Verdict::Refused(reason) => {
-                let v = version.unwrap_or_default();
-                self.monitor.log("updater", "error", format!("update {v} REFUSED: {reason}; nothing was installed"));
-                self.set(app, UpdateState::Refused { version: v, reason });
-            }
+            Verdict::Refused(r) => self.refuse(app, version.unwrap_or_default(), r),
             Verdict::Failed(message) => {
                 self.monitor.log("updater", "warn", format!("update check failed: {message}"));
                 self.set(app, UpdateState::Failed { message });
             }
         }
+    }
+
+    /// Logs a refusal and shows it. Nothing was installed.
+    fn refuse<R: Runtime>(&self, app: &AppHandle<R>, version: String, r: Refusal) {
+        self.monitor.log("updater", "error", refusal_log_line(&version, &r));
+        self.set(app, UpdateState::Refused { version, label: r.label, reason: r.sentence });
     }
 
     /// Takes the check, or says another one has it: false while a check or a download is running and while a verified
@@ -134,6 +180,9 @@ impl UpdateService {
         };
         let version = update.version.clone();
         self.monitor.log("updater", "info", format!("update {version} offered at {}", update.download_url));
+        if is_unsigned(&update.signature) {
+            return self.refuse(app, version, unsigned());
+        }
         self.set(app, UpdateState::Downloading { version: version.clone(), done: 0, total: None });
         let (me, progress_app, v) = (self.clone(), app.clone(), version.clone());
         let mut done = 0u64;
@@ -199,26 +248,102 @@ mod tests {
     use super::*;
     use tauri_plugin_updater::Error as E;
 
-    #[test]
-    fn a_signature_that_does_not_verify_is_a_refusal() {
-        assert!(matches!(classify(&E::Minisign(minisign_verify::Error::InvalidSignature)), Verdict::Refused(_)));
-        assert!(matches!(classify(&E::SignatureUtf8("not base64".into())), Verdict::Refused(_)));
+    // Demo D7: a refusal is said once, in plain words. The table is the brief's: the error, the label for the badge and
+    // the sentence for the tooltip and the log. tauri-plugin-updater 2.14 has two version-binding refusals next to the
+    // signature ones (the signature is valid but was made for another version than the feed announced, or names none
+    // where one is required): both are "the package is not what was announced", thrown away, not a failed check to retry.
+    fn refusal_rows() -> Vec<(E, &'static str, &'static str)> {
+        use base64::Engine as _;
+        use minisign_verify::Error as M;
+        let unreadable = "the update's signature cannot be read";
+        let not_base64 = base64::engine::general_purpose::STANDARD.decode("***").unwrap_err();
+        vec![
+            (
+                E::Minisign(M::InvalidSignature),
+                "installer altered or damaged",
+                "the downloaded installer does not match its signature, so it changed after it was signed",
+            ),
+            (E::Minisign(M::UnexpectedKeyId), "untrusted signing key", "the update is signed with a key this Lorren does not trust"),
+            (E::Base64(not_base64), "unreadable signature", unreadable),
+            (E::SignatureUtf8("not base64".into()), "unreadable signature", unreadable),
+            (E::Minisign(M::InvalidEncoding), "unreadable signature", unreadable),
+            (E::Minisign(M::UnexpectedAlgorithm), "unreadable signature", unreadable),
+            (E::Minisign(M::UnsupportedAlgorithm), "unreadable signature", unreadable),
+            (E::Minisign(M::UnsupportedLegacyMode), "unreadable signature", unreadable),
+            (E::Minisign(M::IoError(std::io::Error::other("disk"))), "unreadable signature", unreadable),
+            (
+                E::SignedVersionMismatch { signed: "0.0.1".into(), announced: "0.0.9".into() },
+                "signature for another version",
+                "the signature is for a different version than the one offered",
+            ),
+            (E::MissingSignedVersion, "signature names no version", "the signature does not say which version it is for"),
+        ]
     }
 
-    // tauri-plugin-updater 2.14 added two more ways for `Update::verify` to reject a download: the signature is
-    // valid but was made for another version than the feed announced, or carries no version where one is required.
-    // Both are "the package is not what was announced": thrown away, not a failed check to retry.
     #[test]
-    fn a_package_signed_for_another_version_is_a_refusal() {
-        let mismatch = E::SignedVersionMismatch { signed: "0.0.1".into(), announced: "0.0.9".into() };
-        assert!(matches!(classify(&mismatch), Verdict::Refused(_)));
-        assert!(matches!(classify(&E::MissingSignedVersion), Verdict::Refused(_)));
+    fn each_refusal_gets_its_label_and_its_sentence_and_the_debug_form_as_a_code() {
+        for (e, label, sentence) in refusal_rows() {
+            let want = Refusal { label: label.into(), sentence: sentence.into(), code: format!("{e:?}") };
+            assert_eq!(classify(&e), Verdict::Refused(want), "{e:?}");
+        }
     }
 
+    /// The plugin's Display text says the same thing as the sentence in other words ("The signature verification failed"
+    /// beside "did not verify"); neither the label nor the sentence carries it, nor any parenthesised error text.
+    #[test]
+    fn the_plugins_own_text_is_never_printed_next_to_the_sentence() {
+        for (e, ..) in refusal_rows() {
+            let Verdict::Refused(r) = classify(&e) else { panic!("{e:?} is a refusal") };
+            let own = e.to_string();
+            for (what, text) in [("label", &r.label), ("sentence", &r.sentence)] {
+                assert!(!text.contains(&own), "{e:?}: the {what} {text:?} repeats {own:?}");
+                assert!(!text.contains("verification failed") && !text.contains("did not verify"), "{e:?}: the {what} {text:?}");
+                assert!(!text.contains('(') && !text.contains(&r.code), "{e:?}: the {what} {text:?} carries error text");
+            }
+        }
+    }
+
+    /// Anything that is not a refusal keeps its meaning: a network failure is a failed check, no endpoint is not configured.
     #[test]
     fn a_network_failure_is_not_a_refusal_and_no_endpoint_is_not_configured() {
         assert!(matches!(classify(&E::Network("connection refused".into())), Verdict::Failed(_)));
         assert_eq!(classify(&E::EmptyEndpoints), Verdict::NotConfigured);
+    }
+
+    /// A feed entry with no signature is caught from the entry itself, before a byte of the installer is downloaded.
+    #[test]
+    fn an_empty_or_blank_signature_in_the_feed_is_unsigned() {
+        for blank in ["", " ", "\n", "  \t\r\n "] {
+            assert!(is_unsigned(blank), "{blank:?}");
+        }
+        for there in ["dW50cnVzdGVkIGNvbW1lbnQ6", "x", " x "] {
+            assert!(!is_unsigned(there), "{there:?}");
+        }
+        let u = unsigned();
+        assert_eq!((u.label.as_str(), u.sentence.as_str(), u.code.as_str()), ("unsigned", "the update has no signature", "EmptySignature"));
+    }
+
+    /// The Debug form is a code for support: it goes at the end of the log line, in brackets, after the sentence.
+    #[test]
+    fn the_log_line_is_the_sentence_then_the_code_in_brackets() {
+        let Verdict::Refused(r) = classify(&E::Minisign(minisign_verify::Error::InvalidSignature)) else { panic!("a refusal") };
+        assert_eq!(
+            refusal_log_line("0.0.2", &r),
+            "update 0.0.2 REFUSED: the downloaded installer does not match its signature, so it changed after it was signed; nothing was installed [Minisign(InvalidSignature)]"
+        );
+        assert_eq!(
+            refusal_log_line("0.0.2", &unsigned()),
+            "update 0.0.2 REFUSED: the update has no signature; nothing was installed [EmptySignature]"
+        );
+    }
+
+    #[test]
+    fn the_refused_state_carries_the_label_and_the_sentence() {
+        let refused = UpdateState::Refused { version: "0.0.2".into(), label: "unsigned".into(), reason: "the update has no signature".into() };
+        assert_eq!(
+            serde_json::to_value(refused).unwrap(),
+            serde_json::json!({"state": "refused", "version": "0.0.2", "label": "unsigned", "reason": "the update has no signature"})
+        );
     }
 
     #[test]
@@ -295,7 +420,7 @@ mod tests {
             UpdateState::Idle,
             UpdateState::NotConfigured,
             UpdateState::UpToDate { version: "0.0.1".into() },
-            UpdateState::Refused { version: "0.0.2".into(), reason: "the signature did not verify".into() },
+            UpdateState::Refused { version: "0.0.2".into(), label: "unsigned".into(), reason: "the update has no signature".into() },
             UpdateState::Failed { message: "connection refused".into() },
         ] {
             let service = service_in(from.clone());

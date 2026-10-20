@@ -33,6 +33,9 @@ pub struct ReplyStats {
 #[ts(export)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// The host has stored the user's message and the reply's placeholder; the engine has not been asked for anything
+    /// yet (it may still have to start or switch, which can take a minute). The first event of every reply (demo D2).
+    Queued { message_id: String, user_message_id: String },
     Started { message_id: String, user_message_id: String, dropped_turns: u32, request_id: String },
     Token { text: String },
     Finished { stats: ReplyStats },
@@ -293,6 +296,10 @@ impl ChatService {
             MsgStatus::Streaming,
             Some(&model.id),
         )?;
+        // Demo D2: the user's message and the reply's placeholder are stored, and the engine has not been asked for anything
+        // yet. Say so at once: starting or switching the engine can take a minute, and the UI shows the message and a pending
+        // reply from here on instead of nothing. (`Started` follows when the engine has accepted the request.)
+        sink(StreamEvent::Queued { message_id: asst.id.clone(), user_message_id: user_msg.id.clone() });
         let req = self.monitor.start_request("chat", "/v1/chat/completions", &model.name);
 
         // 1. The engine: start or switch it, or wait for a start already under way. `ensure_model` is not

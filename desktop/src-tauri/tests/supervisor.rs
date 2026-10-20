@@ -12,6 +12,9 @@ fn cfg(env: &[(&str, String)]) -> EngineConfig {
     c.health_timeout = Duration::from_millis(300);
     c.backoff = vec![Duration::from_millis(50); 3];
     c.load_timeout = Duration::from_secs(10);
+    // The one-token warm-up that follows the banner (demo D3). The fake answers it in a token's time; only a test that
+    // makes the fake hang (a warm-up that is never answered) shortens this.
+    c.warmup_timeout = Duration::from_secs(5);
     c.check_memory = false;
     c.env = env.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
     c
@@ -100,7 +103,11 @@ async fn a_crash_is_restarted_and_three_crashes_give_up() {
 
 #[tokio::test]
 async fn a_hung_engine_is_detected_and_replaced() {
-    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_MODE", "hang".into())]), Monitor::new(None));
+    // A hung fake accepts the connection and never answers, so the warm-up that follows the banner gets no answer
+    // either: it gives up after `warmup_timeout` (demo D3; the engine serves anyway), and the health watcher goes on from there.
+    let mut c = cfg(&[("FAKE_ENGINE_MODE", "hang".into())]);
+    c.warmup_timeout = Duration::from_millis(300);
+    let sup = Supervisor::new(c, Monitor::new(None));
     sup.ensure_model(&model("a", "a.gguf")).await.unwrap();
     let first = sup.status().pid;
     let s = wait_for(&sup, EngineState::Restarting, 5).await;
@@ -462,5 +469,132 @@ async fn a_request_for_the_model_that_was_running_has_no_fallback() {
     assert_eq!(s.state, EngineState::Failed, "no fallback to the model that was just asked for: {s:?}");
     let warns: Vec<String> = mon.logs_after(0).into_iter().filter(|l| l.level == "warn").map(|l| l.text).collect();
     assert!(warns.iter().all(|w| !w.contains("did not start")), "{warns:?}");
+    sup.stop().await;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Demo D3: the first reply after every engine load waited 3-4 s even for "hello" (ttft 4,110 ms against 350 ms for the
+// next one): the real engine maps the model and its pages come in on the first forward pass, while the top bar said
+// "serving" and "engine 0.0 GB". The supervisor now sends one 1-token request before it reports Serving.
+// ---------------------------------------------------------------------------------------------
+
+/// The `request ...` lines the fake wrote to its events log, in the order the requests arrived.
+fn request_lines(ev: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(ev).unwrap_or_default().lines().filter(|l| l.starts_with("request ")).map(String::from).collect()
+}
+
+/// The warm-up is one streamed chat request of one token, and it has reached the engine BEFORE the status turns Serving.
+/// The fake spends `FAKE_ENGINE_TOKEN_MS` on a token, so the warm-up takes at least 300 ms here: the status can be looked
+/// at while the request is already at the engine. Looking at both together, over and over, is the evidence of the order:
+/// an engine that is warmed after it is announced shows no request while the status still says Starting.
+#[tokio::test]
+async fn the_engine_is_warmed_with_one_token_before_it_counts_as_serving() {
+    let ev = events_file("warmup");
+    let mon = Monitor::new(None);
+    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_EVENTS", ev.display().to_string()), ("FAKE_ENGINE_TOKEN_MS", "300".into())]), mon.clone());
+    let start = {
+        let sup = sup.clone();
+        tokio::spawn(async move { sup.ensure_model(&model("a", "a.gguf")).await })
+    };
+    let mut starting_with_the_request_there = false;
+    let requests_at_serving = loop {
+        let state = sup.status().state;
+        let requests = request_lines(&ev).len();
+        if state == EngineState::Starting && requests == 1 {
+            starting_with_the_request_there = true;
+        }
+        if state == EngineState::Serving {
+            break requests;
+        }
+        assert!(state != EngineState::Failed, "the start failed: {:?}", sup.status());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    };
+    start.await.unwrap().unwrap();
+    assert!(starting_with_the_request_there, "the warm-up was never at the engine while the status still said Starting");
+    assert_eq!(requests_at_serving, 1, "by the time the status said Serving, the warm-up had reached the engine");
+
+    let requests = request_lines(&ev);
+    assert_eq!(requests.len(), 1, "exactly one request in all: {requests:?}");
+    let body: serde_json::Value = serde_json::from_str(requests[0].strip_prefix("request ").unwrap()).unwrap();
+    assert_eq!(body["max_tokens"], 1, "{body}");
+    assert_eq!(body["stream"], true, "{body}");
+    assert_eq!(body["stream_options"]["include_usage"], true, "{body}");
+    assert_eq!(body["messages"], serde_json::json!([{"role": "user", "content": "hi"}]), "{body}");
+
+    // `load_ms`, and the app's "engine serving ... after N s" line, now include the warm-up (the fake's one token takes 300 ms).
+    let s = sup.status();
+    assert!(s.load_ms.unwrap() >= 300, "{s:?}");
+    let logs = mon.logs_after(0);
+    let warm = logs.iter().find(|l| l.source == "app" && l.text.starts_with("engine warm-up ")).unwrap_or_else(|| panic!("no warm-up line: {logs:?}"));
+    assert_eq!(warm.level, "info");
+    let secs: f64 = warm.text.strip_prefix("engine warm-up ").unwrap().strip_suffix(" s").unwrap().parse().unwrap_or_else(|_| panic!("{:?}", warm.text));
+    assert!((0.3..5.0).contains(&secs), "{:?}", warm.text);
+    let serving = logs.iter().find(|l| l.source == "app" && l.text.starts_with("engine serving")).unwrap();
+    assert!(warm.seq < serving.seq, "the warm-up line comes before the serving line: {logs:?}");
+    let serving_s: f64 = serving.text.rsplit("after ").next().unwrap().strip_suffix(" s").unwrap().parse().unwrap();
+    assert!(serving_s >= 0.3, "{:?}", serving.text);
+    sup.stop().await;
+}
+
+/// The warm-up is an optimisation and never a gate: an engine that takes the connection and never answers costs
+/// `warmup_timeout`, one warning line, and then serves like any other. (The hang mode is the fake's "accept, then never
+/// answer".) The health interval is long so that the watcher does not replace the engine inside this test.
+#[tokio::test]
+async fn a_warm_up_that_gets_no_answer_is_logged_and_the_engine_serves_anyway() {
+    let mon = Monitor::new(None);
+    let mut c = cfg(&[("FAKE_ENGINE_MODE", "hang".into())]);
+    c.warmup_timeout = Duration::from_millis(300);
+    c.health_interval = Duration::from_secs(60);
+    let sup = Supervisor::new(c, mon.clone());
+    let t0 = std::time::Instant::now();
+    let port = sup.ensure_model(&model("a", "a.gguf")).await.unwrap();
+    let took = t0.elapsed();
+    assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(8), "{took:?}");
+    let s = sup.status();
+    assert_eq!((s.state, s.port), (EngineState::Serving, Some(port)), "{s:?}");
+    assert!(s.load_ms.unwrap() >= 300, "load_ms includes the warm-up that timed out: {s:?}");
+    let logs = mon.logs_after(0);
+    let warns: Vec<&str> = logs.iter().filter(|l| l.level == "warn").map(|l| l.text.as_str()).collect();
+    assert_eq!(warns.len(), 1, "{warns:?}");
+    assert!(warns[0].starts_with("engine warm-up failed: ") && warns[0].len() > "engine warm-up failed: ".len(), "{warns:?}");
+    assert!(!logs.iter().any(|l| l.text.starts_with("engine warm-up ") && !l.text.starts_with("engine warm-up failed")), "no success line for a failed warm-up: {logs:?}");
+    sup.stop().await;
+}
+
+/// A warm-up is not a user request: it does not reach the Requests list or the request counter.
+#[tokio::test]
+async fn the_warm_up_is_not_a_request_of_the_user() {
+    let ev = events_file("warmup-not-a-request");
+    let mon = Monitor::new(None);
+    let sup = Supervisor::new(cfg(&[("FAKE_ENGINE_EVENTS", ev.display().to_string())]), mon.clone());
+    sup.ensure_model(&model("a", "a.gguf")).await.unwrap();
+    assert_eq!(request_lines(&ev).len(), 1, "the engine did get its warm-up");
+    assert!(mon.requests().is_empty(), "{:?}", mon.requests());
+    assert_eq!(mon.request_count(), 0);
+    sup.stop().await;
+}
+
+/// A restart is a start: the engine the supervisor brings back after a crash is warmed too (the demo killed the engine in
+/// Task Manager and the new one served at "engine 0.0 GB" again). The first engine crashes once, 300 ms after its banner.
+#[tokio::test]
+async fn an_engine_that_is_brought_back_after_a_crash_is_warmed_too() {
+    let ev = events_file("warmup-restart");
+    let marker = std::env::temp_dir().join(format!("lorren-sup-crash-once-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let sup = Supervisor::new(
+        cfg(&[
+            ("FAKE_ENGINE_EVENTS", ev.display().to_string()),
+            ("FAKE_ENGINE_MODE", "crash_after_ms:300".into()),
+            ("FAKE_ENGINE_CRASH_ONCE", marker.display().to_string()),
+        ]),
+        Monitor::new(None),
+    );
+    sup.ensure_model(&model("a", "a.gguf")).await.unwrap();
+    let first = sup.status().pid;
+    wait_for(&sup, EngineState::Restarting, 5).await;
+    let again = wait_for(&sup, EngineState::Serving, 5).await;
+    assert_ne!(again.pid, first, "a new process");
+    assert_eq!(request_lines(&ev).len(), 2, "one warm-up for each of the two engines: {:?}", request_lines(&ev));
+    let _ = std::fs::remove_file(&marker);
     sup.stop().await;
 }

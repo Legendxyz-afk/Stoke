@@ -6,7 +6,7 @@ import type { StreamEvent } from "../ipc/bindings/StreamEvent";
 export type Live = {
   /** From the moment Send is pressed until the reply ends. */
   busy: boolean;
-  /** The assistant message, once the engine has accepted the request. */
+  /** The assistant message, from the moment the host has stored its placeholder (`queued`), which is before the engine is asked for anything. */
   messageId: string | null;
   text: string;
   /** How many of the oldest turns were left out by the history budget. */
@@ -24,6 +24,8 @@ export function begin(): Live {
 
 export function applyEvent(s: Live, e: StreamEvent): Live {
   switch (e.kind) {
+    case "queued":
+      return { ...s, busy: true, messageId: e.message_id };
     case "started":
       return { ...s, busy: true, messageId: e.message_id, text: "", dropped: e.dropped_turns };
     case "token":
