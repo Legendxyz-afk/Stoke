@@ -19,6 +19,12 @@ const WORK = path.join(DESKTOP, "e2e", ".work");
 const APP = path.join(TAURI_DIR, "target", "debug", "lorren.exe");
 const FAKE = path.join(TAURI_DIR, "target", "debug", "fake-engine.exe");
 const CDP = 9222;
+// The stream step (demo D5): the fake engine's pace (55 ms a token is ~18 tok/s, a real engine's), where in the stream the UI's
+// CPU is read and for how long, and the CPU, as a percentage of one core, above which the step fails.
+const STREAM_TOKEN_MS = 55;
+const UI_CPU_SKIP_S = 10;
+const UI_CPU_WINDOW_S = 20;
+const UI_CPU_LIMIT_PCT = 10;
 const REPLY = "Verdict: HOLD. The trend is intact, so wait for a close above the range high before adding to the position today.";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,6 +43,55 @@ function sh(cmd, args, opts = {}) {
 function pids(image) {
   const out = execFileSync("tasklist", ["/FI", `IMAGENAME eq ${image}`, "/FO", "CSV", "/NH"], { encoding: "utf8" });
   return out.split(/\r?\n/).filter((l) => l.startsWith(`"${image}"`)).map((l) => Number(l.split('","')[1]));
+}
+
+// The CPU the UI uses (demo D5): lorren.exe and every process under it -- its WebView2 browser, renderer and GPU processes --
+// with the engine left out. A snapshot lists every process with its parent and the CPU time it has used (user plus kernel, in
+// 100 ns); two snapshots a window apart give the CPU used in between, as a percentage of one core.
+function processSnapshot() {
+  const script =
+    "Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; " +
+    "name = $_.Name; cmd = $_.CommandLine; cpu = [double]($_.UserModeTime + $_.KernelModeTime) } } | ConvertTo-Json -Compress";
+  const began = Date.now();
+  const out = execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", maxBuffer: 64 << 20, timeout: 60000 });
+  // The readings were taken somewhere inside the query: its middle is the moment they belong to.
+  return { at: (began + Date.now()) / 2, procs: JSON.parse(out) };
+}
+
+// The UI's processes in a snapshot: `rootPid` and everything below it, but not an engine.
+function uiProcesses(snapshot, rootPid) {
+  const children = new Map();
+  for (const p of snapshot.procs) children.set(p.ppid, [...(children.get(p.ppid) ?? []), p]);
+  const found = new Map();
+  const root = snapshot.procs.find((p) => p.pid === rootPid);
+  if (root) found.set(root.pid, root);
+  const walk = (pid) => {
+    for (const c of children.get(pid) ?? []) {
+      if (/engine/i.test(c.name) || found.has(c.pid)) continue;
+      found.set(c.pid, c);
+      walk(c.pid);
+    }
+  };
+  walk(rootPid);
+  return found;
+}
+
+// A process's part in the UI, for the breakdown: the app itself, or the kind of WebView2 process (renderer, gpu-process, ...).
+const uiKind = (p) => (p.name === "lorren.exe" ? "app" : (/--type=([\w-]+)/.exec(p.cmd ?? "")?.[1] ?? "webview2-browser"));
+
+// The CPU the UI used between two snapshots. A process that was born in between counts from its start.
+function uiCpu(from, to, rootPid) {
+  const before = uiProcesses(from, rootPid);
+  const seconds = (to.at - from.at) / 1000;
+  const used = {};
+  let total = 0;
+  for (const [pid, p] of uiProcesses(to, rootPid)) {
+    const s = (p.cpu - (before.get(pid)?.cpu ?? 0)) / 1e7;
+    total += s;
+    used[uiKind(p)] = (used[uiKind(p)] ?? 0) + s;
+  }
+  const pct = (s) => Math.round((s / seconds) * 1000) / 10;
+  return { window_s: Math.round(seconds * 10) / 10, pct: pct(total), by_kind_pct: Object.fromEntries(Object.entries(used).map(([k, s]) => [k, pct(s)])) };
 }
 
 function portOpen(port) {
@@ -514,47 +569,80 @@ const steps = [
     }
     if (defects.length) throw new Error(`${defects.length} layout defect(s): ${defects.join(" | ")}`);
   }],
-  // R66, measurement 2. A ~900-word Markdown reply streams at 10 ms a token; a requestAnimationFrame recorder runs
-  // from just before SEND is pressed until it returns, and the gaps between frames are the reading. A hidden window
-  // throttles rAF, so the reading is marked invalid then (and the step throws only if no frame came at all).
-  ["a long streaming reply's frame gaps are measured", async () => {
+  // R66, measurement 2, and demo D5. A ~900-word Markdown reply streams at 55 ms a token (~18 tok/s, a real engine's pace; it
+  // was 10 ms a token, 100 tok/s, before D5). A requestAnimationFrame recorder runs from just before SEND is pressed until the
+  // CPU window begins, and again from its end until the reply is done; the gaps between frames, within a segment, are the
+  // reading. A hidden window throttles rAF, so the reading is marked invalid then (and the step throws only if no frame came at
+  // all). The UI's CPU is read over UI_CPU_WINDOW_S seconds in the middle of the stream, with the recorder off (it keeps the page
+  // drawing at the display's rate, which would be most of the reading); spec §7 budget: under 5% of one core while streaming.
+  // The step FAILS above UI_CPU_LIMIT_PCT, a regression guard with headroom: the number to read against the budget is
+  // measurements.stream.ui_cpu_pct, of THIS build (the app is a debug build with a DevTools port, so the figure is higher than
+  // the release build's).
+  ["a long streaming reply's frame gaps and UI CPU are measured", async () => {
     const reply = longReply();
     const words = reply.split(" ").length; // = the tokens the fake engine streams
     if (words >= 1000) throw new Error(`the generated reply is ${words} tokens; the app cuts a reply at 1,024`);
     await close(true);
     await until("no orphan engine", async () => pids("fake-engine.exe").length === 0, 15000);
-    await launch({ FAKE_ENGINE_TOKEN_MS: "10", FAKE_ENGINE_REPLY: reply });
+    await launch({ FAKE_ENGINE_TOKEN_MS: String(STREAM_TOKEN_MS), FAKE_ENGINE_REPLY: reply });
     await page.getByRole("tab", { name: "Chat", exact: true }).click();
     await page.getByRole("button", { name: "+ NEW", exact: true }).click();
     await until("serving", async () => (await topbar()).includes("serving"));
+    // The frame recorder runs in two segments, before the CPU window and after it, and is OFF inside it: a requestAnimationFrame
+    // loop keeps the page drawing at the display's rate (300 Hz on the box this was written on), which is CPU of its own.
     const visibility_start = await page.evaluate(() => {
-      window.__frames = [];
-      window.__recording = true;
-      const tick = (t) => {
-        if (!window.__recording) return;
-        window.__frames.push(t);
+      window.__segments = [];
+      window.__record = (on) => {
+        window.__recording = on;
+        if (!on) return;
+        const segment = [];
+        window.__segments.push(segment);
+        const tick = (t) => {
+          if (!window.__recording || window.__segments.at(-1) !== segment) return;
+          segment.push(t);
+          requestAnimationFrame(tick);
+        };
         requestAnimationFrame(tick);
       };
-      requestAnimationFrame(tick);
+      window.__record(true);
       return document.visibilityState;
     });
     await sendMessage("Write the long reply.");
+    const sent = Date.now();
+    // The UI's CPU over a window in the middle of the stream. Nothing of this script touches the page while the window runs.
+    await sleep(UI_CPU_SKIP_S * 1000);
+    await page.evaluate(() => window.__record(false));
+    const cpuFrom = processSnapshot();
+    await sleep(UI_CPU_WINDOW_S * 1000);
+    const cpuTo = processSnapshot();
+    const streaming_at_window_end = await page.evaluate(() => [...document.querySelectorAll(".composer-actions button")].some((b) => b.textContent === "STOP"));
+    await page.evaluate(() => window.__record(true));
     // Waiting for SEND is polled from here and not with waitIdle(): Playwright's waitFor re-runs its locator on every
     // animation frame, which would add work to the very frames being timed.
     await until("SEND to return", () => page.evaluate(() => [...document.querySelectorAll(".composer-actions button")].some((b) => b.textContent === "SEND")), 90000);
-    const { frames, visibility_end } = await page.evaluate(() => {
-      window.__recording = false;
-      return { frames: window.__frames, visibility_end: document.visibilityState };
+    const stream_ms = Date.now() - sent;
+    const { segments, visibility_end } = await page.evaluate(() => {
+      window.__record(false);
+      return { segments: window.__segments, visibility_end: document.visibilityState };
     });
+    const frames = segments.flat();
     if (frames.length === 0) throw new Error(`no animation frame was recorded (page ${visibility_start} at the start, ${visibility_end} at the end)`);
     const chars_shown = (await page.locator(".messages .msg").last().locator(".md").innerText()).length;
-    const gaps = frames.slice(1).map((t, i) => t - frames[i]);
+    // Gaps are taken inside a segment: the stretch with the recorder off is not a gap.
+    const gaps = segments.flatMap((segment) => segment.slice(1).map((t, i) => t - segment[i]));
     const sorted = [...gaps].sort((a, b) => a - b);
     const r1 = (x) => Math.round(x * 10) / 10;
+    const cpu = uiCpu(cpuFrom, cpuTo, app.pid);
     const stream = {
       words,
       chars_shown,
-      duration_ms: r1(frames[frames.length - 1] - frames[0]),
+      duration_ms: r1(segments.reduce((sum, segment) => sum + (segment.length ? segment[segment.length - 1] - segment[0] : 0), 0)),
+      stream_ms,
+      tokens_per_s: r1((words * 1000) / stream_ms),
+      ui_cpu_pct: cpu.pct,
+      ui_cpu_window_s: cpu.window_s,
+      ui_cpu_by_kind_pct: cpu.by_kind_pct,
+      ui_cpu_limit_pct: UI_CPU_LIMIT_PCT,
       frames: frames.length,
       gap_max_ms: r1(sorted.length ? sorted[sorted.length - 1] : 0),
       gap_p95_ms: r1(sorted.length ? sorted[Math.ceil(0.95 * sorted.length) - 1] : 0),
@@ -565,6 +653,10 @@ const steps = [
     };
     if (!stream.valid) stream.reason = `the page was not visible (${visibility_start} at the start, ${visibility_end} at the end): a hidden window throttles requestAnimationFrame, so these gaps mean nothing`;
     measurements.stream = stream;
+    // CONTROLS: a reading of a window that was not inside the stream, or of no process, is not a reading of the stream.
+    if (!streaming_at_window_end) throw new Error(`the reply had ended before the ${UI_CPU_WINDOW_S} s window did: the UI's CPU (${cpu.pct}%) is not a reading of a streaming reply`);
+    if (Object.keys(cpu.by_kind_pct).length < 3) throw new Error(`the UI's processes were not found (${JSON.stringify(cpu.by_kind_pct)}): lorren.exe, the WebView2 browser and a renderer are the least there is`);
+    if (cpu.pct > UI_CPU_LIMIT_PCT) throw new Error(`the UI used ${cpu.pct}% of one core over ${cpu.window_s} s of streaming (${JSON.stringify(cpu.by_kind_pct)}): the limit of this step is ${UI_CPU_LIMIT_PCT}%, the spec's budget 5%`);
   }],
 ];
 

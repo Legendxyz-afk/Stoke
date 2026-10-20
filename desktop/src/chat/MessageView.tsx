@@ -1,5 +1,5 @@
 import type { MessageView } from "../ipc/bindings/MessageView";
-import { Markdown } from "./Markdown";
+import { Markdown, StreamingMarkdown } from "./Markdown";
 import { PendingStatus, type Pending } from "./Pending";
 
 export function MessageRow({ mv, liveText, pending, onVersion }: {
@@ -33,7 +33,11 @@ export function MessageRow({ mv, liveText, pending, onVersion }: {
         <div className="msg-user">{text}</div>
       ) : pending ? (
         <PendingStatus since={pending.since} loading={pending.loading} />
+      ) : liveText !== null ? (
+        // The reply being written is parsed block by block, so that only the block still growing is parsed on a flush (demo D5).
+        <StreamingMarkdown text={text} />
       ) : (
+        // A settled message is ONE parse of the whole text, with the exact semantics of the whole (lists, footnotes, references).
         <Markdown text={text} />
       )}
       {m.status === "error" && m.stats.error && <div className="msg-error">{m.stats.error}</div>}

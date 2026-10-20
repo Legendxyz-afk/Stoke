@@ -12,8 +12,11 @@ import { MessageRow } from "./MessageView";
 import { ReplyPanel } from "./ReplyPanel";
 import { applyEvent, begin, idle, statsOf, type Live } from "./stream";
 
-/** At most ~30 redraws a second while tokens stream, so the UI does not compete with the engine (spec §3.8). */
-const FLUSH_MS = 33;
+/** At most 10 redraws a second while tokens stream, so the UI does not compete with the engine (spec §3.8 allows 30). A redraw
+ *  has costs of its own that no parser takes away (React, layout, paint, the GPU process): at 15-20 tokens a second the old 33 ms
+ *  was a redraw per token, 19% of a core, and halving the redraws halves most of what is left once only the last block is parsed
+ *  (demo D5). A token that arrives after a quiet spell is shown at once; the ones that follow are drawn together. */
+export const FLUSH_MS = 100;
 
 /** The reader counts as being at the end of the transcript within this many pixels of it (R56). */
 const AT_BOTTOM_PX = 24;
@@ -169,8 +172,11 @@ export function ChatTab({ overview, active: shown = true }: {
     if (shown && el && atBottom.current) el.scrollTop = el.scrollHeight;
   }, [live.text, shown, view]);
 
+  /** When the text was last drawn (ms since the epoch): the next redraw is due FLUSH_MS after it. */
+  const drawnAt = useRef(0);
   const flush = () => {
     timer.current = null;
+    drawnAt.current = Date.now();
     const text = pending.current;
     pending.current = "";
     if (text) setLive((s) => applyEvent(s, { kind: "token", text }));
@@ -180,7 +186,7 @@ export function ChatTab({ overview, active: shown = true }: {
     if (active.current !== chatId) return; // the reply still lands in the store; reopening the chat shows it
     if (e.kind === "token") {
       pending.current += e.text;
-      if (timer.current == null) timer.current = window.setTimeout(flush, FLUSH_MS);
+      if (timer.current == null) timer.current = window.setTimeout(flush, Math.max(0, drawnAt.current + FLUSH_MS - Date.now()));
       return;
     }
     if (timer.current != null) window.clearTimeout(timer.current);

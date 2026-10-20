@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
 
-import { ChatTab } from "../chat/ChatTab";
+import { ChatTab, FLUSH_MS } from "../chat/ChatTab";
 import { api } from "../ipc/api";
 import type { Chat } from "../ipc/bindings/Chat";
 import type { ChatView } from "../ipc/bindings/ChatView";
@@ -919,7 +919,7 @@ describe("ChatTab, demo D2: the pending reply shows that work is going on", () =
     await t.say({ ...started, message_id: "a3", user_message_id: "u3" });
     expect(screen.getByText("thinking · 2 s")).toBeTruthy(); // started is not a token
     await t.say({ kind: "token", text: "Buy" });
-    await t.tick(40); // the flush that shows the tokens
+    await t.tick(FLUSH_MS); // the redraw that shows the tokens
     expect(screen.getByText("Buy")).toBeTruthy();
     expect(screen.queryByText(/thinking|reading the chat|pondering/)).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
@@ -968,5 +968,75 @@ describe("ChatTab, demo D2: the pending reply shows that work is going on", () =
       await vi.advanceTimersByTimeAsync(3000);
     });
     expect(screen.getByText("reading the chat · 3 s")).toBeTruthy();
+  });
+});
+
+// Demo D5: the reply is redrawn at most once every FLUSH_MS. The redraws of a streaming reply were 19% of a core at 15 tok/s
+// (the whole text parsed on each, one per token), and a redraw has costs that no parser fix takes away (React, layout, paint,
+// the GPU process): at 100 ms the tokens of ~two redraws' time arrive together. A token that arrives after a quiet spell is
+// shown at once, so the first word of a reply is not held back.
+describe("ChatTab, demo D5: streaming redraws are throttled", () => {
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset().mockResolvedValue(models);
+    vi.mocked(api.chats).mockReset().mockResolvedValue([chat]);
+    vi.mocked(api.chat).mockReset().mockResolvedValue(view);
+    vi.mocked(api.send).mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows a token at once after a quiet spell, and gathers the tokens that follow into one redraw per FLUSH_MS", async () => {
+    let say!: (e: StreamEvent) => void;
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      say = onEvent;
+      await new Promise<void>(() => {});
+    });
+    render(<ChatTab overview={overview} />);
+    await screen.findByText("Verdict: HOLD.");
+    vi.useFakeTimers();
+    vi.mocked(api.chat).mockResolvedValue(withTurn(view, "go", msg({ id: "a3", role: "assistant", parent_id: "u3", content: "", status: "streaming" })));
+    type("go");
+    const at = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    const tell = (e: StreamEvent) => act(async () => say(e));
+    await tell({ kind: "queued", message_id: "a3", user_message_id: "u3" });
+    await tell(started);
+    await at(FLUSH_MS + 1); // a quiet spell
+    await tell({ kind: "token", text: "A" });
+    await at(1);
+    expect(screen.getByText("A")).toBeTruthy(); // at once, not FLUSH_MS later
+    await tell({ kind: "token", text: "B" });
+    await at(20);
+    await tell({ kind: "token", text: "C" });
+    await at(20);
+    expect(screen.queryByText("ABC")).toBeNull(); // B and C wait for the interval
+    expect(screen.getByText("A")).toBeTruthy();
+    await at(FLUSH_MS);
+    expect(screen.getByText("ABC")).toBeTruthy(); // ... and are drawn together
+  });
+
+  it("draws at most once in FLUSH_MS however fast the tokens come", async () => {
+    let say!: (e: StreamEvent) => void;
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      say = onEvent;
+      await new Promise<void>(() => {});
+    });
+    render(<ChatTab overview={overview} />);
+    await screen.findByText("Verdict: HOLD.");
+    vi.useFakeTimers();
+    vi.mocked(api.chat).mockResolvedValue(withTurn(view, "go", msg({ id: "a3", role: "assistant", parent_id: "u3", content: "", status: "streaming" })));
+    type("go");
+    const at = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    await act(async () => say({ kind: "queued", message_id: "a3", user_message_id: "u3" }));
+    await act(async () => say(started));
+    await at(FLUSH_MS + 1);
+    const redraws = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      await act(async () => say({ kind: "token", text: "x" }));
+      await at(5); // 200 tokens a second
+      redraws.add(document.querySelector(".msg.assistant:last-child .md")?.textContent ?? "");
+    }
+    // 40 tokens over 200 ms: the first at once, then one redraw per FLUSH_MS
+    expect(redraws.size).toBeLessThanOrEqual(Math.ceil(200 / FLUSH_MS) + 3); // (the empty text before the first redraw counts too)
   });
 });

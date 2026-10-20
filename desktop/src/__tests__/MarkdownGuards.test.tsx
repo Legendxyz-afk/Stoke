@@ -2,15 +2,19 @@ import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import lock from "../../package-lock.json";
 
-// react-markdown builds a new processor on every render, so this plugin is attached once per parse of a message.
-// Counting the attachments counts the parses. The wrapper hands everything on to the real plugin.
+// The highlighter's transformer runs once per parse of a message, so counting its runs counts the parses. (Markdown.tsx makes
+// the transformer once and attaches it on every render, so the attachments are not the parses; its runs are.) The wrapper
+// hands everything on to the real plugin.
 const attached = vi.hoisted(() => ({ n: 0 }));
 vi.mock("rehype-highlight", async (importOriginal) => {
   const real = await importOriginal<typeof import("rehype-highlight")>();
   return {
     default: function countingHighlight(...args: Parameters<typeof real.default>) {
-      attached.n += 1;
-      return real.default(...args);
+      const transform = real.default(...args);
+      return (...run: Parameters<typeof transform>) => {
+        attached.n += 1;
+        return transform(...run);
+      };
     },
   };
 });
