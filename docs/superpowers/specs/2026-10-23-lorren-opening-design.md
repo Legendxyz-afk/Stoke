@@ -1,7 +1,7 @@
 # Lorren's opening — design
 
-Status: designed with Kabir on 2026-10-23 (brainstorming, ten mockup rounds); awaiting his approval of this
-document. Reference mockup: `stoke-lorren/.superpowers/brainstorm/1092-1792727290/content/opening-v10.html`
+Status: designed with Kabir on 2026-10-23 (brainstorming, ten mockup rounds); APPROVED by Kabir 2026-10-23 ("approved"). This
+is the authority for the opening's implementation plan. Reference mockup: `stoke-lorren/.superpowers/brainstorm/1092-1792727290/content/opening-v10.html`
 (git-ignored, throwaway: port its values, not its structure). Parent spec: `2026-09-25-lorren-desktop-design.md`.
 
 ## 1. Intent
