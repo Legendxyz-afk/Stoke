@@ -148,7 +148,8 @@ async fn an_engine_crash_marks_the_reply_interrupted_and_the_next_send_works() {
     assert!(matches!(seen.lock().unwrap().last(), Some(StreamEvent::Interrupted { .. })));
     assert_eq!(last_reply(&w, &chat).status, MsgStatus::Interrupted);
     for _ in 0..100 {
-        if w.svc.supervisor.status().state == EngineState::Serving {
+        let st = w.svc.supervisor.status();
+        if st.restarts >= 1 && st.state == EngineState::Serving {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
