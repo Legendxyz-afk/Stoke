@@ -51,7 +51,9 @@ fn env_ms(name: &str) -> Result<Option<u64>, String> {
 fn event(line: &str) {
     if let Some(p) = env("FAKE_ENGINE_EVENTS") {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-            let _ = writeln!(f, "{line}");
+            // One write for the whole line, newline included (R78). `writeln!` on an unbuffered File is two writes, and an engine killed
+            // between them leaves `done` without its newline, so the next engine's `argv` line joins it and the starts are miscounted.
+            let _ = f.write_all(format!("{line}\n").as_bytes());
         }
     }
 }
