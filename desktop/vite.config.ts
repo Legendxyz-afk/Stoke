@@ -7,5 +7,6 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 5173, strictPort: true },
   build: { target: "es2022", outDir: "dist" },
-  test: { environment: "jsdom", globals: true, reporters: ["default"] },
+  // The app's tests only: scripts/release/test holds the release scripts' tests, which run under node:test (npm run test:release).
+  test: { environment: "jsdom", globals: true, reporters: ["default"], include: ["src/**/*.test.{ts,tsx}"] },
 });
