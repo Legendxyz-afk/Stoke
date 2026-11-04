@@ -13,11 +13,11 @@ import { createHash, createPublicKey, verify as ed25519 } from 'node:crypto'
 
 const SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex') // the DER prefix that makes 32 raw bytes an Ed25519 public key
 
-// The text's lines, from either form, with a BOM and Windows line ends let go (but a line's own content left exactly as it is: the
+// The text's lines, from either form, with a BOM (trim() removes it: U+FEFF is white space to JavaScript) and Windows line ends let go (but a line's own content left exactly as it is: the
 // trusted comment is signed byte for byte).
 function lines(text) {
-  let t = String(text ?? '').replace(/^\uFEFF/, '').trim()
-  if (!t.startsWith('untrusted comment:')) t = Buffer.from(t, 'base64').toString('utf8').replace(/^\uFEFF/, '').trim()
+  let t = String(text ?? '').trim()
+  if (!t.startsWith('untrusted comment:')) t = Buffer.from(t, 'base64').toString('utf8').trim()
   return t.split('\n').map((line) => line.replace(/\r$/, ''))
 }
 
