@@ -93,7 +93,7 @@ CLI 2.12 through node (`node_modules/@tauri-apps/cli/tauri.js`), git.
     `desktop/e2e/.work/builds/0.0.2/Lorren_0.0.2_x64-setup.exe` and its `.sig`, `desktop/.keys/test.key.pub` -> ok;
     `desktop/.keys/wrong.key.pub` -> reason `'key id'`; skips with `t.skip('the M1 test kit has not been built here')` when the
     files are absent.
-- [ ] **Step 2: Run them to see them fail.** `node --test desktop/scripts/release/test/` (from `stoke-lorren/`). Expected: FAIL,
+- [ ] **Step 2: Run them to see them fail.** `node --test --test-reporter=tap "desktop/scripts/release/test/*.test.mjs"` (from `stoke-lorren/`). Expected: FAIL,
   `Cannot find module .../minisign.mjs`.
 - [ ] **Step 3: Implement `minisign.mjs`** as the Interfaces say. A text that is not a well-formed key or signature is
   `{ ok: false, reason: 'format' }`, never a throw.
@@ -136,7 +136,7 @@ CLI 2.12 through node (`node_modules/@tauri-apps/cli/tauri.js`), git.
   - `an older version is refused`: 0.1.2 then 0.1.1 throws `0.1.1 is not newer than 0.1.2, the stable feed's newest`.
   - `a beta release has no stable copy and leaves stable alone`: `app/stable` does not exist after a `0.1.0-beta.1` beta release.
   - `notes with nothing in them are refused`: `notes: []` throws `no release notes`.
-- [ ] **Step 2: Run them to see them fail.** `node --test desktop/scripts/release/test/`: FAIL, the modules are missing.
+- [ ] **Step 2: Run them to see them fail.** `node --test --test-reporter=tap "desktop/scripts/release/test/*.test.mjs"`: FAIL, the modules are missing.
 - [ ] **Step 3: Implement `semver.mjs` and `feed.mjs`.** The feedUrl loses its trailing slashes before joining; `layoutRelease`
   copies the installer (`copyFileSync`), writes the JSON with two-space indentation and a final newline, prunes by version order
   (never by file date), and writes `_headers` and `index.html` on every release.
