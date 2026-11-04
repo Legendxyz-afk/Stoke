@@ -68,6 +68,14 @@ test('a stable release lays out, checks, plans the deploy, serves and tags', asy
   }])
 })
 
+test('an https feed gets no insecure-transport flag in the build', async () => {
+  const s = setup()
+  writeFileSync(s.options.config, JSON.stringify({ feedUrl: 'https://lorren-test.pages.dev', appPublicKey: join(s.root, 'app.pub'), pagesProject: 'lorren-test' }))
+  // the live check serves locally and does not read the feed's address, so the release goes through to its end
+  await release(s.options, s.deps)
+  assert.deepEqual(s.calls.build[0].plugins.updater, { pubkey: PUB, endpoints: ['https://lorren-test.pages.dev/app/stable/latest.json'] })
+})
+
 test('a beta release serves and fetches its own manifest only', async () => {
   const s = setup()
   const result = await release({ ...s.options, version: '0.1.0-beta.1', channel: 'beta' }, s.deps)

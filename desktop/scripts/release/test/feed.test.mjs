@@ -80,6 +80,26 @@ test('the third release prunes the first installer and keeps every release note'
   assert.deepEqual(third.pruned, ['app/stable/Lorren_0.1.0_x64-setup.exe', 'app/stable/Lorren_0.1.0_x64-setup.exe.sig'])
 })
 
+test('pruning goes by version order, never by name: 0.11.0 and 0.10.0 are newer than 0.9.0', () => {
+  const s = fresh()
+  for (const v of ['0.9.0', '0.10.0', '0.11.0']) release(s, v)
+  const kept = readdirSync(join(s.site, 'app', 'stable')).filter((f) => f.endsWith('_x64-setup.exe')).sort()
+  assert.deepEqual(kept, ['Lorren_0.10.0_x64-setup.exe', 'Lorren_0.11.0_x64-setup.exe'])
+})
+
+test("the date is the release's local date, not UTC's", (t) => {
+  // Just after local midnight east of UTC (as in India), or just before it west of UTC, the UTC date is another day.
+  const offset = new Date(2026, 10, 20, 12).getTimezoneOffset()
+  if (offset === 0) {
+    t.skip('this machine keeps UTC: the two dates cannot differ here')
+    return
+  }
+  const now = offset < 0 ? new Date(2026, 10, 20, 0, 30) : new Date(2026, 10, 20, 23, 30)
+  const s = fresh()
+  release(s, '0.1.0', { now })
+  assert.equal(json(join(s.site, 'app', 'stable', 'releases.json'))[0].date, '2026-11-20')
+})
+
 test('the same version twice is refused and changes nothing (Review Focus 1)', () => {
   const s = fresh()
   release(s, '0.1.0')
