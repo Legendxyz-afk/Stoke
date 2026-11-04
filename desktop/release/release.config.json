@@ -1,0 +1,5 @@
+{
+  "feedUrl": "https://<feed>.pages.dev",
+  "appPublicKey": "release/keys/app.pub",
+  "pagesProject": "<feed>"
+}

@@ -1,0 +1,6 @@
+{
+  "feedUrl": "http://127.0.0.1:8765",
+  "appPublicKey": ".keys/test.key.pub",
+  "pagesProject": "lorren-test",
+  "insecureHttp": true
+}

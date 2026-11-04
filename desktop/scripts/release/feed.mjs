@@ -31,7 +31,7 @@ const VERSIONED = /^Lorren_(.+)_x64-setup\.exe$/
 export const parseNotes = (text) =>
   String(text)
     .split(/\r?\n/)
-    .map((line) => line.trim().replace(/^[-*]\s+/, '').trim())
+    .map((line) => line.trim().replace(/^[-*](\s+|$)/, '').trim()) // a bullet, even one with nothing after it
     .filter((line) => line !== '')
 
 const readJson = (path, otherwise) => (existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : otherwise)

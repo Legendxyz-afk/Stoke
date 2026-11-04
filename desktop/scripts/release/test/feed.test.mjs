@@ -41,6 +41,8 @@ function snapshot(dir, prefix = '') {
 test('notes are read as people write them (Review Focus 4)', () => {
   assert.deepEqual(parseNotes('- First\r\n\r\n* Second  \n   \n'), ['First', 'Second'])
   assert.deepEqual(parseNotes('\n \n'), [])
+  assert.deepEqual(parseNotes('-\n* \n- \r\n'), []) // bullets with nothing after them are no notes
+  assert.deepEqual(parseNotes('-x and -y'), ['-x and -y']) // a dash that is no bullet stays
 })
 
 test('a stable release is laid out exactly', () => {

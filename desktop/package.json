@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri": "tauri",
-    "e2e": "node e2e/run-demo-e2e.mjs"
+    "e2e": "node e2e/run-demo-e2e.mjs",
+    "release": "node scripts/release/release.mjs",
+    "test:release": "node --test scripts/release/test/"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",
