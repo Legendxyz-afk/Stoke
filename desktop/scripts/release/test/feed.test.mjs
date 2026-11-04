@@ -55,7 +55,7 @@ test('a stable release is laid out exactly', () => {
     pub_date: NOW.toISOString(),
     platforms: { 'windows-x86_64': { signature: 'c2lnLTAuMS4w', url: 'http://127.0.0.1:8765/app/stable/Lorren_0.1.0_x64-setup.exe' } },
   })
-  assert.deepEqual(json(join(ch, 'releases.json')), [{ version: '0.1.0', date: '2026-11-20', notes: ['First', 'Second'] }])
+  assert.deepEqual(json(join(ch, 'releases.json')), [{ version: '0.1.0', date: '2026-11-20', notes: ['First', 'Second'], size: 13 }]) // 'MZ fake 0.1.0'
   assert.equal(readFileSync(join(ch, 'Lorren_0.1.0_x64-setup.exe.sig'), 'utf8'), 'c2lnLTAuMS4w')
   assert.equal(readFileSync(join(ch, INSTALLER('0.1.0')), 'latin1'), 'MZ fake 0.1.0')
   assert.equal(readFileSync(join(ch, STABLE_COPY), 'latin1'), 'MZ fake 0.1.0')

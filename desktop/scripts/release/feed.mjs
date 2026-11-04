@@ -4,14 +4,15 @@
 
      app/<channel>/Lorren_<version>_x64-setup.exe and .sig   the versioned installer and its signature (what the updater takes)
      app/<channel>/latest.json                               the updater's manifest (the M1 test kit's shape, which it accepted)
-     app/<channel>/releases.json                             [{ version, date, notes }], newest first: the website's Updates page
+     app/<channel>/releases.json                             [{ version, date, notes, size }], newest first: the website's Updates
+                                                             page and the line beside its Download button (size: the installer's bytes)
      app/stable/Lorren-setup.exe                             a byte copy of the newest stable installer: the website's fixed link
      _headers, index.html                                    the Pages rules, and one line for whoever opens the address itself
 
    Each channel keeps the KEEP newest installers (an update that started downloading just before a release still finishes);
    releases.json keeps every release. Every refusal comes before anything is written.
    ========================================================================== */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { compareVersions, isVersion } from './semver.mjs'
 
@@ -74,7 +75,7 @@ export function layoutRelease({ site, channel, version, notes, installer, signat
     pub_date: now.toISOString(),
     platforms: { 'windows-x86_64': { signature, url } },
   })
-  writeJson(join(dir, 'releases.json'), [{ version, date: localDate(now), notes: [...notes] }, ...releases])
+  writeJson(join(dir, 'releases.json'), [{ version, date: localDate(now), notes: [...notes], size: statSync(installer).size }, ...releases])
   const written = [name, `${name}.sig`, 'latest.json', 'releases.json']
   if (channel === 'stable') {
     copyFileSync(installer, join(dir, STABLE_COPY))
