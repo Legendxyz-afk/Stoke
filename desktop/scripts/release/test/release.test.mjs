@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { DEFAULT_MASTER, USAGE, liveCheck, parseArgs, release } from '../release.mjs'
 import { makeKey, publicKeyText, signatureText, tauriForm } from './keys.mjs'
 
@@ -76,6 +76,23 @@ test('an https feed gets no insecure-transport flag in the build', async () => {
   assert.deepEqual(s.calls.build[0].plugins.updater, { pubkey: PUB, endpoints: ['https://lorren-test.pages.dev/app/stable/latest.json'] })
 })
 
+test('the key reaches the key check and the build as an absolute path (the Tauri CLI reads it from another folder)', async () => {
+  const s = setup()
+  const seen = []
+  s.deps.openKey = (keyPath) => seen.push(['openKey', keyPath])
+  const build = s.deps.build
+  s.deps.build = (args) => {
+    seen.push(['build', args.keyPath])
+    return build(args)
+  }
+  await release({ ...s.options, key: '.keys/test.key' }, s.deps)
+  assert.equal(seen.length, 2)
+  for (const [step, keyPath] of seen) {
+    assert.ok(isAbsolute(keyPath), `${step} got ${keyPath}`)
+    assert.ok(keyPath.endsWith(join('.keys', 'test.key')), `${step} got ${keyPath}`)
+  }
+})
+
 test('a beta release serves and fetches its own manifest only', async () => {
   const s = setup()
   const result = await release({ ...s.options, version: '0.1.0-beta.1', channel: 'beta' }, s.deps)
@@ -135,6 +152,12 @@ test('notes with nothing in them are refused before the build', async () => {
   const s = setup()
   writeFileSync(s.options.notes, '\n- \n')
   await assert.rejects(release(s.options, s.deps), { message: 'no release notes' })
+  assert.equal(s.calls.build.length, 0)
+})
+
+test('a release without --key is refused before the build', async () => {
+  const s = setup()
+  await assert.rejects(release({ ...s.options, key: null }, s.deps), { message: 'no --key: a release is signed with the private key, read from its file' })
   assert.equal(s.calls.build.length, 0)
 })
 

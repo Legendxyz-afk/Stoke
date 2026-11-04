@@ -128,15 +128,19 @@ export async function release(options, deps) {
   const notes = options.notes && existsSync(options.notes) ? parseNotes(readFileSync(options.notes, 'utf8')) : []
   if (notes.length === 0) throw new Error('no release notes')
   if (options.deploy) throw new Error('deploying arrives with the Cloudflare project (step 4)')
+  if (!options.key) throw new Error('no --key: a release is signed with the private key, read from its file')
+  // Absolute, for the build too: the Tauri CLI reads TAURI_SIGNING_PRIVATE_KEY from another folder, and a path it cannot find
+  // there it takes for the key's own text ("Invalid symbol 46, offset 0": the "." of .keys; the test release of 2026-11-04).
+  const keyPath = resolve(options.key)
   try {
-    deps.openKey(options.key, deps.password)
+    deps.openKey(keyPath, deps.password)
   } catch (e) {
     throw new Error(`the key does not open: ${e.message}`)
   }
 
   const updater = { pubkey: config.appPublicKey, endpoints: [`${withoutSlash(config.feedUrl)}/app/${channel}/latest.json`] }
   if (config.insecureHttp) updater.dangerousInsecureTransportProtocol = true
-  const built = deps.build({ version, overlay: { version, plugins: { updater } }, keyPath: options.key, password: deps.password })
+  const built = deps.build({ version, overlay: { version, plugins: { updater } }, keyPath, password: deps.password })
   const checked = verify(readFileSync(built.installer), built.signature, config.appPublicKey)
   if (!checked.ok) throw new Error(`the build's signature does not verify (${checked.reason}): nothing was laid out`)
 
