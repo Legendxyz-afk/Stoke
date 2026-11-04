@@ -99,6 +99,22 @@ A pre-release goes to the **beta** channel first, to prove the whole path (keys,
   store). Creating one needs his admin consent, so it is in the list below; without it, the test runs under his own account with the
   app's data folder moved aside, which is weaker and says so.
 
+## The website's claims against v0.1 (audit 2026-11-04, from `company/src/site/copy.js`)
+
+Every "today" badge holds for milestone 1 plus distribution: chats stream side by side (milestone 1 runs two at once), it runs on
+the processor, streaming replies, switching models from the chat, models installed inside the app (Discover, this design), no
+account, chats stay on the PC, signed automatic updates. The three "coming" ones (the local OpenAI API, the terminal, much faster
+long chats) are not in v0.1 and stay "coming". The app chapter's "Lorren loads it while you write" is milestone 1's D9 (the
+group-4 commit). One sentence does not hold, and three things follow:
+
+- **The privacy chapter says updates can be turned off** ("to check for updates, which you can turn off"), and the update setting
+  (auto, notify or off; desktop spec §3.7) lives in Settings, which is milestone 3. So **v0.1 includes the update setting**: a
+  Settings section with only that choice, kept in the store, which the update service obeys (off: no check at all; notify: check,
+  download nothing). The builder's call over changing the copy: the sentence is a privacy promise, and it is cheap to keep.
+- The speed numbers on the home page come only from the "as Lorren ships" run (`AS_SHIPPED`, spec §6): it is run on the v0.1 build
+  before the button goes live (it starts the engine: ghost's go), until then the chapter says benchmarks arrive with the release.
+- `TODAY_CONFIRMED_FOR` (`company/src/site/facts.js`) becomes `'0.1.0'` once this list is checked again on the real v0.1 build.
+
 ## Order
 
 0. Finish milestone 1: D9 B5-B8 (the measurements with the app's windows, the app's e2e, the group-4 commit, the worktree check).
@@ -106,6 +122,7 @@ A pre-release goes to the **beta** channel first, to prove the whole path (keys,
    packaging tests on a local feed.
 2. The catalog script, Discover, and downloads (§3.7: no account, no Hugging Face page, size and licence and disk room shown before,
    progress with pause and resume, retry with backoff, sha256 as the bytes arrive).
+   With them, the update setting (auto, notify, off) in a Settings section of its own: the website's privacy chapter promises it.
 3. The website's half: the line beside the button, the note after the click, the badges checked against the v0.1 build.
 4. With ghost's account and keys: the Cloudflare project, the first deploy (a beta pre-release), the live checks.
 5. The fresh-account test from the live feed; then v0.1.0 to stable and `VITE_DOWNLOAD_URL` set, and the button is live.
