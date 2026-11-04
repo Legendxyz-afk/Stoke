@@ -590,3 +590,412 @@ async fn the_engines_warm_up_is_not_a_request_the_chat_service_or_the_list_sees(
     let text: String = seen.lock().unwrap().iter().filter_map(|e| match e { StreamEvent::Token { text } => Some(text.clone()), _ => None }).collect();
     assert_eq!(text, "Verdict: HOLD.", "the warm-up's token is not in the reply");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Demo D9: the engine loads a chat's model when the user starts typing in it, not when a chat or a model is picked. The engine
+// moves ONLY on: (a) the app's start (the default model), (b) `prepare_model`, the first key of a draft, and (c) a send.
+// Each test was run RED first.
+// ---------------------------------------------------------------------------------------------
+
+/// Waits for the engine to be serving `model`.
+async fn wait_serving(w: &World, model: &str, secs: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    loop {
+        let s = w.svc.supervisor.status();
+        if s.state == EngineState::Serving && s.model_id.as_deref() == Some(model) {
+            return;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the engine never served {model}: {s:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn starts(w: &World) -> usize {
+    events(w).lines().filter(|l| l.starts_with("argv ")).count()
+}
+
+/// Picking a model for a chat stores it and nothing more. The engine used to switch at once (the demo's log shows the switch
+/// 20 s before the next send): now it stays where it was, and the chat has the model all the same.
+#[tokio::test]
+async fn setting_a_chats_model_stores_it_and_leaves_the_engine_where_it_was() {
+    let w = world("d9-set", &[("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let first = new_chat(&w, &w.qwen);
+    let (_seen, sink) = collector();
+    w.svc.send(&first, "hi", sink).await.unwrap(); // the engine serves qwen now
+    let before = w.svc.supervisor.status();
+    let other = new_chat(&w, &w.qwen);
+    lorren_lib::commands::switch_chat_model(&w.svc, &other, &w.nexus).unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await; // far longer than the fake takes to load
+    let after = w.svc.supervisor.status();
+    assert_eq!((after.state, after.model_id.as_deref(), after.pid), (EngineState::Serving, Some(w.qwen.as_str()), before.pid), "{after:?}");
+    assert_eq!(starts(&w), 1, "{}", events(&w));
+    assert_eq!(w.svc.store.lock().unwrap().get_chat(&other).unwrap().model_id, w.nexus, "the chat has the model it was given");
+}
+
+/// ... and a model that does not exist, or cannot run, is refused as before.
+#[tokio::test]
+async fn setting_a_chats_model_refuses_what_a_send_would_refuse() {
+    let w = world("d9-set-refused", &[], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    assert_eq!(lorren_lib::commands::switch_chat_model(&w.svc, &chat, "no-such-model").unwrap_err(), "no such model");
+    {
+        let mut lib = w.svc.library.write().unwrap();
+        let nexus = lib.iter_mut().find(|m| m.id == w.nexus).unwrap();
+        nexus.runnable = false;
+        nexus.reason = Some("the engine refused it".into());
+    }
+    let err = lorren_lib::commands::switch_chat_model(&w.svc, &chat, &w.nexus).unwrap_err();
+    assert_eq!(err, "nexus cannot run: the engine refused it");
+    assert_eq!(w.svc.store.lock().unwrap().get_chat(&chat).unwrap().model_id, w.qwen, "nothing was stored");
+}
+
+/// The first key of a draft: the engine, idle, starts the model, and the call does not wait for the load.
+#[tokio::test]
+async fn preparing_a_model_starts_it_when_the_engine_is_idle_without_waiting_for_the_load() {
+    let w = world("d9-start", &[("FAKE_ENGINE_LOAD_MS", "500"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let t0 = std::time::Instant::now();
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::Started);
+    assert!(t0.elapsed() < Duration::from_millis(300), "it came back without waiting for the 500 ms load: {:?}", t0.elapsed());
+    wait_serving(&w, &w.nexus, 10).await;
+    assert_eq!(starts(&w), 1, "{}", events(&w));
+    let logs = w.svc.monitor.logs_after(0);
+    let line = logs.iter().find(|l| l.text.starts_with("preparing ")).unwrap_or_else(|| panic!("no 'preparing' line: {logs:?}"));
+    assert_eq!((line.source.as_str(), line.level.as_str(), line.text.as_str()), ("app", "info", "preparing nexus: the user is typing"));
+}
+
+/// It switches the engine from the model it has to the one the chat has, and marks the model that the engine refuses CAN'T RUN
+/// (it goes through `start_model`, the app's only way to start an engine).
+#[tokio::test]
+async fn preparing_a_model_switches_from_the_model_that_is_serving() {
+    let w = world("d9-switch", &[("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (_seen, sink) = collector();
+    w.svc.send(&chat, "hi", sink).await.unwrap();
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::Started);
+    wait_serving(&w, &w.nexus, 10).await;
+    assert_eq!(starts(&w), 2, "{}", events(&w));
+}
+
+#[tokio::test]
+async fn preparing_a_model_the_engine_refuses_marks_it_cant_run() {
+    let w = world("d9-refuse", &[("FAKE_ENGINE_REFUSE_MODEL", "nexus"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::Started);
+    for _ in 0..200 {
+        if !w.svc.library.read().unwrap().iter().find(|m| m.id == w.nexus).unwrap().runnable {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("the refused model was never marked: {:?}", w.svc.library.read().unwrap().iter().find(|m| m.id == w.nexus));
+}
+
+/// Never under a reply: while any chat has a reply being written, the call does nothing to the engine (a send switches it as
+/// before). The reply is the one the engine is writing, so it goes on, and the engine is the same process until it has ended.
+/// The model that was asked for is not lost (R76): a stopped reply releases it too, and the engine moves to it then.
+#[tokio::test]
+async fn preparing_a_model_while_a_reply_streams_does_nothing_until_the_reply_ends() {
+    let long = "word ".repeat(60);
+    let w = world("d9-busy", &[("FAKE_ENGINE_REPLY", long.as_str()), ("FAKE_ENGINE_TOKEN_MS", "50")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    let (svc, c2) = (w.svc.clone(), chat.clone());
+    let task = tokio::spawn(async move { svc.send(&c2, "go", sink).await });
+    for _ in 0..200 {
+        if seen.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Token { .. })) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let before = w.svc.supervisor.status();
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::ReplyInProgress);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let during = w.svc.supervisor.status();
+    assert_eq!((during.state, during.model_id.as_deref(), during.pid), (EngineState::Serving, Some(w.qwen.as_str()), before.pid), "{during:?}");
+    w.svc.stop(&chat);
+    task.await.unwrap().unwrap();
+    // R76: the reply is over, and the model that was asked for during it loads now.
+    wait_serving(&w, &w.nexus, 10).await;
+    assert_eq!(starts(&w), 2, "{}", events(&w));
+}
+
+/// ... also while the reply is still waiting for the engine to load its own model: that load is not taken over (the reply is
+/// written by the model it waited for), and the model that was asked for meanwhile loads after the reply (R76).
+#[tokio::test]
+async fn preparing_a_model_while_a_reply_waits_for_its_own_model_waits_for_the_reply_too() {
+    let w = world("d9-waiting", &[("FAKE_ENGINE_LOAD_MS", "600"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    let (svc, c2) = (w.svc.clone(), chat.clone());
+    let task = tokio::spawn(async move { svc.send(&c2, "go", sink).await });
+    for _ in 0..200 {
+        if w.svc.supervisor.status().state == EngineState::Starting {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::ReplyInProgress);
+    task.await.unwrap().unwrap();
+    let evs = seen.lock().unwrap().clone();
+    assert!(matches!(evs.last(), Some(StreamEvent::Finished { .. })), "{evs:?}");
+    wait_serving(&w, &w.nexus, 10).await;
+    let argv: Vec<String> = events(&w).lines().filter(|l| l.starts_with("argv ")).map(|l| l.to_lowercase()).collect();
+    assert_eq!(argv.len(), 2, "{}", events(&w));
+    assert!(argv[0].contains("qwen3-4b") && argv[1].contains("nexus.gguf"), "the reply's model first, then the one asked for: {argv:?}");
+}
+
+/// The engine already serves the model, or is starting it, and no reply is under way: Ok, and nothing new is started. (Under a
+/// reply the model is kept all the same, R77: see the tests at the end.)
+#[tokio::test]
+async fn preparing_a_model_that_is_serving_or_starting_starts_nothing() {
+    let w = world("d9-there", &[("FAKE_ENGINE_LOAD_MS", "500"), ("FAKE_ENGINE_TOKEN_MS", "1")], 4096, fast());
+    let starting = w.svc.start_model(&w.svc.library.read().unwrap().iter().find(|m| m.id == w.qwen).cloned().unwrap());
+    for _ in 0..200 {
+        if w.svc.supervisor.status().state == EngineState::Starting {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(w.svc.supervisor.status().state, EngineState::Starting);
+    assert_eq!(w.svc.prepare_model(&w.qwen).unwrap(), Prepared::AlreadyThere, "while it is starting");
+    starting.await.unwrap().unwrap();
+    let pid = w.svc.supervisor.status().pid;
+    assert_eq!(w.svc.prepare_model(&w.qwen).unwrap(), Prepared::AlreadyThere, "once it serves");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!((w.svc.supervisor.status().state, w.svc.supervisor.status().pid), (EngineState::Serving, pid));
+    assert_eq!(starts(&w), 1, "{}", events(&w));
+    assert!(!w.svc.monitor.logs_after(0).iter().any(|l| l.text.starts_with("preparing ")), "nothing was prepared");
+}
+
+/// A model that is not in the library, or cannot run, gives the error a send would give.
+#[tokio::test]
+async fn preparing_a_model_that_is_unknown_or_cannot_run_gives_the_sends_error() {
+    let w = world("d9-refused", &[], 4096, fast());
+    assert!(matches!(w.svc.prepare_model("no-such-model"), Err(ChatError::UnknownModel(id)) if id == "no-such-model"));
+    {
+        let mut lib = w.svc.library.write().unwrap();
+        let nexus = lib.iter_mut().find(|m| m.id == w.nexus).unwrap();
+        nexus.runnable = false;
+        nexus.reason = Some("the engine refused it".into());
+    }
+    let err = w.svc.prepare_model(&w.nexus).unwrap_err();
+    assert!(matches!(err, ChatError::NotRunnable(..)), "{err}");
+    assert_eq!(err.to_string(), "nexus cannot run: the engine refused it");
+    assert_eq!(starts(&w), 0, "no engine was started");
+}
+
+// ---------------------------------------------------------------------------------------------
+// R76 (D9): a first key typed while a reply is being written is KEPT, not dropped. The reply is never interrupted for it; when the
+// LAST reply has ended, the engine moves to the model that was asked for last, unless a send or a regenerate began meanwhile (they
+// start their own model, so the user has moved on) or the engine has it by then. R77: the model asked for last is kept EVEN WHEN
+// the engine already has it, which is how a first key in the streaming chat's own model takes the place of a model kept for another
+// chat. Each test was run RED first, against a service that answers `ReplyInProgress` and forgets the model, except the negative
+// ones (a send or a regenerate lets go of the kept model; a kept model the engine has is not started): "nothing is loaded" is true
+// of that service too, so they are proved by mutation of the code they guard.
+// ---------------------------------------------------------------------------------------------
+
+/// What the engine says in these tests: twelve words, 60 ms apart, about 700 ms a reply, so that the calls of a test land in the
+/// middle of it.
+const TWELVE_WORDS: &str = "word word word word word word word word word word word word ";
+
+fn slow_world(tag: &str) -> World {
+    world(tag, &[("FAKE_ENGINE_REPLY", TWELVE_WORDS), ("FAKE_ENGINE_TOKEN_MS", "60")], 4096, fast())
+}
+
+/// Waits until the reply whose events `seen` collects has begun to stream.
+async fn wait_for_a_token(seen: &Arc<Mutex<Vec<StreamEvent>>>) {
+    for _ in 0..200 {
+        if seen.lock().unwrap().iter().any(|e| matches!(e, StreamEvent::Token { .. })) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let evs = seen.lock().unwrap().clone();
+    panic!("the reply never began to stream: {evs:?}");
+}
+
+/// The lines the engine was started with (its `argv` events), in order, lower-cased: one for each start, naming the model file.
+fn started_on(w: &World) -> Vec<String> {
+    events(w).lines().filter(|l| l.starts_with("argv ")).map(|l| l.to_lowercase()).collect()
+}
+
+/// One more model in the world's library, for the tests that need two models other than the one the engine serves: the world's
+/// folder is scanned again with one more file in it. `tag` is the one `world()` was given.
+fn add_a_model(w: &World, tag: &str, file_stem: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("lorren chat {}-{}", std::process::id(), tag));
+    fixture::write(&dir.join(format!("{file_stem}.gguf")), &Spec::llama("Another_Model")).unwrap();
+    let models = library::scan(&LibraryConfig {
+        folders: vec![dir],
+        ollama_models_dir: None,
+        default_prefix: "qwen3-4b-instruct-2507-q4_k_m".into(),
+    });
+    let id = models.iter().find(|m| m.name == file_stem).unwrap().id.clone();
+    *w.svc.library.write().unwrap() = models;
+    id
+}
+
+/// The first key of a draft during a reply: the reply is left alone, the answer is `ReplyInProgress`, and the model is kept. When the
+/// reply has ended, by itself and whole, the engine moves to that model, and the log says why.
+#[tokio::test]
+async fn a_model_asked_for_during_a_reply_loads_when_the_reply_ends() {
+    let w = slow_world("r76-kept");
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    let (svc, c2) = (w.svc.clone(), chat.clone());
+    let reply = tokio::spawn(async move { svc.send(&c2, "go", sink).await });
+    wait_for_a_token(&seen).await;
+    let before = w.svc.supervisor.status();
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::ReplyInProgress);
+
+    // The reply goes on, written by the engine it began on.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let during = w.svc.supervisor.status();
+    assert_eq!((during.state, during.model_id.as_deref(), during.pid), (EngineState::Serving, Some(w.qwen.as_str()), before.pid), "{during:?}");
+    assert!(!w.svc.monitor.logs_after(0).iter().any(|l| l.text.starts_with("preparing ")), "nothing is prepared while the reply goes on");
+
+    // It ends by itself, whole ...
+    reply.await.unwrap().unwrap();
+    let evs = seen.lock().unwrap().clone();
+    assert!(matches!(evs.last(), Some(StreamEvent::Finished { .. })), "{evs:?}");
+    let stored = last_reply(&w, &chat);
+    assert_eq!((stored.status, stored.content.split_whitespace().count()), (MsgStatus::Done, 12));
+    // ... and then the engine moves to the model that was asked for during it.
+    wait_serving(&w, &w.nexus, 10).await;
+    assert_eq!(starts(&w), 2, "{}", events(&w));
+    let logs = w.svc.monitor.logs_after(0);
+    let lines: Vec<_> = logs.iter().filter(|l| l.text.starts_with("preparing ")).collect();
+    assert_eq!(lines.len(), 1, "{logs:?}");
+    assert_eq!(
+        (lines[0].source.as_str(), lines[0].level.as_str(), lines[0].text.as_str()),
+        ("app", "info", "preparing nexus: the user typed during a reply")
+    );
+}
+
+/// Several first keys during one reply: the model asked for last wins, and the others are not loaded before or after it.
+#[tokio::test]
+async fn the_model_asked_for_last_during_a_reply_is_the_one_that_loads() {
+    let w = slow_world("r76-latest");
+    let another = add_a_model(&w, "r76-latest", "another");
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    let (svc, c2) = (w.svc.clone(), chat.clone());
+    let reply = tokio::spawn(async move { svc.send(&c2, "go", sink).await });
+    wait_for_a_token(&seen).await;
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::ReplyInProgress);
+    assert_eq!(w.svc.prepare_model(&another).unwrap(), Prepared::ReplyInProgress);
+    reply.await.unwrap().unwrap();
+    wait_serving(&w, &another, 10).await;
+    tokio::time::sleep(Duration::from_millis(600)).await; // time for a model kept by mistake to be started as well
+    let s = w.svc.supervisor.status();
+    assert_eq!((s.state, s.model_id.as_deref()), (EngineState::Serving, Some(another.as_str())), "{s:?}");
+    let started = started_on(&w);
+    assert_eq!(started.len(), 2, "{started:?}");
+    assert!(started[0].contains("qwen3-4b") && started[1].contains("another.gguf"), "{started:?}");
+}
+
+/// A send, or a regenerate, starts the model of its own chat, so the model kept for after the replies is let go: the user has moved
+/// on from it. Chats A and B are on the model the engine serves; a reply is being written in A; a first key asks for nexus; then a
+/// reply begins in B. When both have ended the engine is the same process on the same model, and nexus was never started. (The same
+/// flow without B's reply is the test above, where nexus does load.)
+async fn a_reply_that_begins_lets_go_of_the_kept_model(tag: &str, regenerate: bool) {
+    let w = slow_world(tag);
+    let (a, b) = (new_chat(&w, &w.qwen), new_chat(&w, &w.qwen));
+    if regenerate {
+        let (_seen, sink) = collector();
+        w.svc.send(&b, "hi", sink).await.unwrap(); // B has a reply to regenerate; this starts the engine
+    }
+    let (seen_a, sink_a) = collector();
+    let (svc, a2) = (w.svc.clone(), a.clone());
+    let first = tokio::spawn(async move { svc.send(&a2, "go", sink_a).await });
+    wait_for_a_token(&seen_a).await;
+    let before = w.svc.supervisor.status();
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::ReplyInProgress);
+
+    let (seen_b, sink_b) = collector();
+    let (svc, b2) = (w.svc.clone(), b.clone());
+    let second = tokio::spawn(async move {
+        if regenerate {
+            svc.regenerate(&b2, sink_b).await
+        } else {
+            svc.send(&b2, "and you?", sink_b).await
+        }
+    });
+    wait_for_a_token(&seen_b).await;
+    first.await.unwrap().unwrap();
+    second.await.unwrap().unwrap();
+    for seen in [&seen_a, &seen_b] {
+        let evs = seen.lock().unwrap().clone();
+        assert!(matches!(evs.last(), Some(StreamEvent::Finished { .. })), "{evs:?}");
+    }
+    tokio::time::sleep(Duration::from_millis(800)).await; // time for the model that was kept to be started, if it had been
+    let after = w.svc.supervisor.status();
+    assert_eq!((after.state, after.model_id.as_deref(), after.pid), (EngineState::Serving, Some(w.qwen.as_str()), before.pid), "{after:?}");
+    assert_eq!(starts(&w), 1, "{}", events(&w));
+    assert!(!w.svc.monitor.logs_after(0).iter().any(|l| l.text.starts_with("preparing ")), "nothing was prepared");
+}
+
+#[tokio::test]
+async fn a_send_during_a_reply_lets_go_of_the_model_kept_for_after_it() {
+    a_reply_that_begins_lets_go_of_the_kept_model("r76-send", false).await;
+}
+
+#[tokio::test]
+async fn a_regenerate_during_a_reply_lets_go_of_the_model_kept_for_after_it() {
+    a_reply_that_begins_lets_go_of_the_kept_model("r76-regen", true).await;
+}
+
+/// The kept model is loaded only if the engine does not have it by then. The test after this one has the engine on the kept model all
+/// along (R77); here the engine GETS it meanwhile: something else moves it to the model during the reply (directly; the reply under way
+/// is cut short by that). When the reply has ended there is nothing to start, and no line says there was.
+#[tokio::test]
+async fn a_kept_model_the_engine_already_has_is_not_started_again() {
+    let w = slow_world("r76-there");
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    let (svc, c2) = (w.svc.clone(), chat.clone());
+    let reply = tokio::spawn(async move { svc.send(&c2, "go", sink).await });
+    wait_for_a_token(&seen).await;
+    assert_eq!(w.svc.prepare_model(&w.nexus).unwrap(), Prepared::ReplyInProgress);
+    let nexus = w.svc.library.read().unwrap().iter().find(|m| m.id == w.nexus).cloned().unwrap();
+    w.svc.start_model(&nexus).await.unwrap().unwrap();
+    reply.await.unwrap().unwrap();
+    let evs = seen.lock().unwrap().clone();
+    assert!(matches!(evs.last(), Some(StreamEvent::Interrupted { .. })), "the switch cut the reply short: {evs:?}");
+    tokio::time::sleep(Duration::from_millis(600)).await; // time for a second start of nexus, if one were made
+    let s = w.svc.supervisor.status();
+    assert_eq!((s.state, s.model_id.as_deref()), (EngineState::Serving, Some(w.nexus.as_str())), "{s:?}");
+    assert_eq!(starts(&w), 2, "{}", events(&w));
+    assert!(!w.svc.monitor.logs_after(0).iter().any(|l| l.text.starts_with("preparing ")), "nothing was prepared: the engine had the model");
+}
+
+/// R77: the model asked for last during a reply is kept EVEN WHEN the engine already has it. Only the host knows that a reply is under
+/// way in some other chat, so a first key in the model of the chat that is streaming has to reach it as a kept model: it takes the
+/// place of the one kept for another chat's draft, which would otherwise be loaded at the end of the reply, with the user back in
+/// the streaming chat, and the next send there would switch the engine back. Here: a reply in chat A on qwen; a first key in a chat
+/// on nexus; then a first key in a chat on qwen. When the reply has ended the engine is the same process on qwen, nothing was started
+/// and no line says so. With no reply under way the same call is answered `AlreadyThere`, as before.
+#[tokio::test]
+async fn a_first_key_in_the_streaming_chats_own_model_takes_the_place_of_the_model_kept_for_another_chat() {
+    let w = slow_world("r77-own");
+    let chat = new_chat(&w, &w.qwen);
+    let (seen, sink) = collector();
+    let (svc, c2) = (w.svc.clone(), chat.clone());
+    let reply = tokio::spawn(async move { svc.send(&c2, "go", sink).await });
+    wait_for_a_token(&seen).await;
+    let before = w.svc.supervisor.status();
+    let other = w.svc.prepare_model(&w.nexus).unwrap(); // a first key in a chat on nexus
+    let own = w.svc.prepare_model(&w.qwen).unwrap(); // ... then a first key in a chat on the model that is being served
+    reply.await.unwrap().unwrap();
+    let evs = seen.lock().unwrap().clone();
+    assert!(matches!(evs.last(), Some(StreamEvent::Finished { .. })), "{evs:?}");
+    tokio::time::sleep(Duration::from_millis(800)).await; // time for the model kept for the other chat to be started, if it were
+
+    // What the user would have seen: the engine did not move. (Asserted before the answers, so that a failure shows this first.)
+    let after = w.svc.supervisor.status();
+    assert_eq!((after.state, after.model_id.as_deref(), after.pid), (EngineState::Serving, Some(w.qwen.as_str()), before.pid), "{after:?}");
+    assert_eq!(starts(&w), 1, "{}", events(&w));
+    assert!(!w.svc.monitor.logs_after(0).iter().any(|l| l.text.starts_with("preparing ")), "nothing was prepared");
+    // The answers: both calls were made during the reply, so both kept their model, the second although the engine had it.
+    assert_eq!((other, own), (Prepared::ReplyInProgress, Prepared::ReplyInProgress));
+    // With the reply over, the same call is answered as it always was.
+    assert_eq!(w.svc.prepare_model(&w.qwen).unwrap(), Prepared::AlreadyThere);
+}

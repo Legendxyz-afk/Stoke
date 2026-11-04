@@ -41,6 +41,7 @@ export function mockApi() {
     regenerate: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     setChatModel: vi.fn(async () => {}),
+    prepareModel: vi.fn(async () => {}),
     selectVersion: vi.fn(async () => {}),
     requests: vi.fn(async () => []),
     logs: vi.fn(async () => []),

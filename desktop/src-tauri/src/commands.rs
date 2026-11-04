@@ -171,19 +171,28 @@ pub fn stop(state: State<'_, AppState>, chat_id: String) {
     state.chat.stop(&chat_id);
 }
 
-/// Switches the chat's model and starts the engine on it right away, so the switch is visible. The start goes through
-/// `ChatService::start_model` (R38/R39), the app's only way to start or switch the engine: it marks a model the engine
-/// refuses as CAN'T RUN and keeps the load running when this command's handle is dropped. The command is `async` so
-/// it runs inside the tokio runtime that `start_model` spawns into.
-#[tauri::command]
-pub async fn set_chat_model(state: State<'_, AppState>, chat_id: String, model_id: String) -> Result<(), String> {
-    let model = state.library.read().unwrap().iter().find(|m| m.id == model_id).cloned().ok_or("no such model")?;
+/// Stores the chat's model, and nothing more (demo D9). It used to start the engine on it at once, so picking a model in the
+/// panel loaded it (the demo's log shows the switch 20 s before the next send); now the engine moves to a chat's model only
+/// when the user starts typing in the chat (`ChatService::prepare_model`) or sends. The model has to exist and be able to run,
+/// as for a send.
+pub fn switch_chat_model(svc: &ChatService, chat_id: &str, model_id: &str) -> Result<(), String> {
+    let model = svc.library.read().unwrap().iter().find(|m| m.id == model_id).cloned().ok_or("no such model")?;
     if !model.runnable {
         return Err(crate::chat::cannot_run_message(&model.name, model.reason.as_deref().unwrap_or_default()));
     }
-    state.store.lock().unwrap().set_chat_model(&chat_id, &model_id).map_err(err)?;
-    drop(state.chat.start_model(&model));
-    Ok(())
+    svc.store.lock().unwrap().set_chat_model(chat_id, model_id).map_err(err)
+}
+
+#[tauri::command]
+pub fn set_chat_model(state: State<'_, AppState>, chat_id: String, model_id: String) -> Result<(), String> {
+    switch_chat_model(&state.chat, &chat_id, &model_id)
+}
+
+/// The user has started typing in a chat (or in the box that makes one): see `ChatService::prepare_model`. `async` so that it
+/// runs inside the tokio runtime that `start_model` spawns into.
+#[tauri::command]
+pub async fn prepare_model(state: State<'_, AppState>, model_id: String) -> Result<(), String> {
+    state.chat.prepare_model(&model_id).map(|_| ()).map_err(err)
 }
 
 #[tauri::command]

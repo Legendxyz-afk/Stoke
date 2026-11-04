@@ -2,7 +2,7 @@
 //! the UI and the store, and handles Stop, crashes, the context limit and regenerate.
 
 use crate::budget::{self, Turn};
-use crate::engine::supervisor::{EngineError, ModelRef, Supervisor};
+use crate::engine::supervisor::{EngineError, EngineState, ModelRef, Supervisor};
 use crate::library::ModelInfo;
 use crate::monitor::Monitor;
 use crate::sse::{ChatChunk, SseEvent, SseParser, Usage};
@@ -101,6 +101,19 @@ pub fn model_ref(m: &ModelInfo) -> ModelRef {
     }
 }
 
+/// What `ChatService::prepare_model` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prepared {
+    /// No reply is being written, and the engine is serving this model or starting it: nothing to do.
+    AlreadyThere,
+    /// A reply is being written, or is waiting for the engine, in some chat: the engine is not touched now. The model is kept, even
+    /// when the engine has it (R77), and the engine moves to it when the last reply has ended (R76) unless it has it by then, or
+    /// a send or a regenerate begins first.
+    ReplyInProgress,
+    /// The switch to the model was started. It is not waited for.
+    Started,
+}
+
 enum Outcome {
     Done,
     Stopped,
@@ -115,6 +128,11 @@ pub struct ChatService {
     pub settings: ChatSettings,
     http: reqwest::Client,
     active: Mutex<HashMap<String, CancellationToken>>,
+    /// The model a first key asked for while a reply was being written (R76), to be settled when the last reply has ended: the one
+    /// asked for last, the engine's own included (R77). It is set only while `active` is not empty, and read or changed only with
+    /// the `active` lock held (taken first), so that a reply which ends cannot slip in between the check that a reply is under way
+    /// and the keeping of the model.
+    kept_model: Mutex<Option<String>>,
 }
 
 struct ActiveGuard<'a> {
@@ -124,7 +142,7 @@ struct ActiveGuard<'a> {
 
 impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
-        self.svc.active.lock().unwrap().remove(&self.chat_id);
+        self.svc.reply_ended(&self.chat_id);
     }
 }
 
@@ -156,6 +174,7 @@ impl ChatService {
                 .build()
                 .expect("http client"),
             active: Mutex::new(HashMap::new()),
+            kept_model: Mutex::new(None),
         })
     }
 
@@ -188,11 +207,89 @@ impl ChatService {
         })
     }
 
+    /// The user has started a draft in a chat on `model_id` (demo D9). The engine moves to a chat's model only on this, on Send,
+    /// and at the app's start; picking a chat or a model never moves it. The model has to exist and be able to run, or the error is
+    /// the one a send would give.
+    ///
+    /// Then, in this order (R77). First: while a reply is being written in any chat, or waits for the engine to load its own model,
+    /// the engine is not touched, since a switch would interrupt the reply, and the answer is `ReplyInProgress`. The model is KEPT,
+    /// the latest one asked for wins, and that holds even when the engine already has the model: only the host knows that a reply
+    /// is under way in some other chat, and a first key in the model the engine serves is what takes the place of the model kept
+    /// for another chat's draft when the user has come back. `reply_ended` settles the kept model when the last reply has ended
+    /// (R76); a send or a regenerate drops it, since it starts the model of its own chat. Second: with no reply under way, nothing
+    /// happens when the engine is serving or starting the model (`AlreadyThere`). Third: otherwise the switch to the model is
+    /// started, so that the model is loaded by the time Send is pressed, and is not waited for (`Started`).
+    ///
+    /// Uses `tokio::spawn` (`start_model`): call it inside a tokio runtime.
+    pub fn prepare_model(&self, model_id: &str) -> Result<Prepared, ChatError> {
+        let model = self.model(model_id)?;
+        // `active` holds every chat with a reply under way, from the moment it is accepted, so a reply that is still waiting for
+        // the engine to load its own model is in it too. It is looked at FIRST, before whether the engine has the model (R77). Its
+        // lock is held across the keeping, so that the last reply cannot end between the check and the keeping, and leave a model
+        // kept that nothing would ever settle.
+        {
+            let active = self.active.lock().unwrap();
+            if !active.is_empty() {
+                *self.kept_model.lock().unwrap() = Some(model.id.clone());
+                return Ok(Prepared::ReplyInProgress);
+            }
+        }
+        if self.engine_has(&model.id) {
+            return Ok(Prepared::AlreadyThere);
+        }
+        self.monitor.log("app", "info", format!("preparing {}: the user is typing", model.name));
+        drop(self.start_model(&model)); // not waited for: the load goes on in the task `start_model` spawned (R39)
+        Ok(Prepared::Started)
+    }
+
+    /// The engine is serving `model_id`, or starting it (or restarting it after a crash).
+    fn engine_has(&self, model_id: &str) -> bool {
+        let engine = self.supervisor.status();
+        engine.model_id.as_deref() == Some(model_id)
+            && matches!(engine.state, EngineState::Serving | EngineState::Starting | EngineState::Restarting)
+    }
+
+    /// A reply has ended in `chat_id`, however it ended (or the call that was writing it was dropped): the chat is no longer
+    /// active. When that was the last reply, the model a first key asked for meanwhile (R76) is settled now.
+    fn reply_ended(&self, chat_id: &str) {
+        // Taken under the `active` lock, in the same step as the removal (see `kept_model`).
+        let kept = {
+            let mut active = self.active.lock().unwrap();
+            active.remove(chat_id);
+            if active.is_empty() { self.kept_model.lock().unwrap().take() } else { None }
+        };
+        if let Some(model_id) = kept {
+            self.load_kept_model(&model_id);
+        }
+    }
+
+    /// Starts the model that was kept during the replies, unless it cannot run any more or the engine has it by now, and does
+    /// not wait for the load. The engine very often has it: a first key in the model of the chat that was streaming keeps that
+    /// very model (R77), and then there is nothing to load and nothing to log. `start_model` spawns into the tokio runtime, and a
+    /// reply is dropped outside one only when the app is closing, with nothing left to load for.
+    fn load_kept_model(&self, model_id: &str) {
+        let model = match self.model(model_id) {
+            Ok(m) => m,
+            Err(e) => {
+                self.monitor.log("app", "warn", format!("not preparing {model_id} after the reply: {e}"));
+                return;
+            }
+        };
+        if self.engine_has(&model.id) || tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        self.monitor.log("app", "info", format!("preparing {}: the user typed during a reply", model.name));
+        drop(self.start_model(&model)); // not waited for, as in `prepare_model`
+    }
+
     fn begin(&self, chat_id: &str) -> Result<(ActiveGuard<'_>, CancellationToken), ChatError> {
         let mut a = self.active.lock().unwrap();
         if a.contains_key(chat_id) {
             return Err(ChatError::Busy);
         }
+        // A send and a regenerate start the model of their own chat: a model that a first key asked for during a reply is no longer
+        // wanted, since the user has moved on from the draft that asked for it (R76).
+        *self.kept_model.lock().unwrap() = None;
         let t = CancellationToken::new();
         a.insert(chat_id.to_string(), t.clone());
         Ok((ActiveGuard { svc: self, chat_id: chat_id.to_string() }, t))

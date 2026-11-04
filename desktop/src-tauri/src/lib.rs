@@ -119,6 +119,7 @@ pub fn run() {
             commands::regenerate,
             commands::stop,
             commands::set_chat_model,
+            commands::prepare_model,
             commands::select_version,
             commands::requests,
             commands::logs,

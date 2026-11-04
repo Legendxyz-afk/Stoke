@@ -1040,3 +1040,238 @@ describe("ChatTab, demo D5: streaming redraws are throttled", () => {
     expect(redraws.size).toBeLessThanOrEqual(Math.ceil(200 / FLUSH_MS) + 3); // (the empty text before the first redraw counts too)
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Demo D9: the engine loads a chat's model when the user starts typing in it, not when a chat or a model is picked. The first key
+// of EVERY draft (the box was empty, now it is not) tells the host which model the draft is for, whatever the engine is doing
+// (R77): only the host knows whether a reply is under way in some other chat, and it alone decides what the call means (load the
+// model, keep it for after the replies, or nothing). The web remembers nothing, except a model the host refused. Each test was
+// run RED first, or says that it is a pin.
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe("ChatTab, demo D9: typing loads the chat's model", () => {
+  const messageBox = () => screen.getByLabelText("message") as HTMLTextAreaElement;
+  const modelBox = () => screen.getByLabelText("model") as HTMLSelectElement;
+  /** The engine serves the default model (qwen); the chat in the fixtures is on nexus, which it does not serve. */
+  const engineOn = (modelId: string, state: "serving" | "starting" | "restarting" | "failed" = "serving"): Overview => ({
+    ...overview,
+    engine: { ...overview.engine, model_id: modelId, state },
+  });
+  const key = (text: string) => fireEvent.change(messageBox(), { target: { value: text } });
+
+  beforeEach(() => {
+    vi.mocked(api.models).mockReset().mockResolvedValue(models);
+    vi.mocked(api.chats).mockReset().mockResolvedValue([chat]);
+    vi.mocked(api.chat).mockReset().mockResolvedValue(view);
+    vi.mocked(api.send).mockReset();
+    vi.mocked(api.setChatModel).mockReset().mockResolvedValue(undefined);
+    vi.mocked(api.prepareModel).mockReset().mockResolvedValue(undefined);
+  });
+
+  it("asks the host to prepare the chat's model at the first key of a draft", async () => {
+    render(<ChatTab overview={engineOn("file:q")} />);
+    await screen.findByText("Verdict: HOLD.");
+    expect(api.prepareModel).not.toHaveBeenCalled(); // opening the chat is not typing
+    key("L");
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+    expect(api.prepareModel).toHaveBeenCalledWith("file:n");
+  });
+
+  // R77: the web cannot tell whether a reply is under way in ANOTHER chat (the overview says nothing of it), so it cannot know
+  // whether "the engine has this model" is the end of the matter. The host knows, and it keeps the latest model asked for during a
+  // reply, the engine's own included. So the web asks at every draft, and the host decides.
+  it("a new draft's first key asks the host even when the engine already serves that model", async () => {
+    render(<ChatTab overview={engineOn("file:n")} />); // the chat in the fixtures is on nexus
+    await screen.findByText("Verdict: HOLD.");
+    key("hello");
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+    expect(api.prepareModel).toHaveBeenCalledWith("file:n");
+  });
+
+  it("asks while the engine is starting or restarting the chat's model, too", async () => {
+    for (const state of ["starting", "restarting"] as const) {
+      vi.mocked(api.prepareModel).mockClear();
+      const view_ = render(<ChatTab overview={engineOn("file:n", state)} />);
+      await screen.findByText("Verdict: HOLD.");
+      key("hello");
+      expect(api.prepareModel, state).toHaveBeenCalledWith("file:n");
+      view_.unmount();
+    }
+  });
+
+  it("asks once for each draft: the keys that follow ask nothing, and a draft that is started again asks again", async () => {
+    render(<ChatTab overview={engineOn("file:q")} />);
+    await screen.findByText("Verdict: HOLD.");
+    key("L");
+    key("Lo");
+    key("Lon");
+    expect(api.prepareModel).toHaveBeenCalledTimes(1); // one draft, however many keys
+    key("");
+    key("L"); // the draft was emptied and is started again
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+    key("Long or wait?");
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+  });
+
+  // The flow R77 is for: the reply of a send is still being written, and the user starts the next message. The engine serves this
+  // chat's model, and the host is told all the same: it may be holding the model of another chat's draft for after the reply, and
+  // the draft here is the later intent.
+  it("asks for the draft that follows a send, typed while the reply of that send is still being written", async () => {
+    vi.mocked(api.send).mockImplementation(async (_chatId, _text, onEvent) => {
+      onEvent(started);
+      await new Promise<void>(() => {}); // the reply goes on for the whole test
+    });
+    render(<ChatTab overview={engineOn("file:n")} />);
+    await screen.findByText("Verdict: HOLD.");
+    type("go"); // the first key of a draft, and then Send
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+    await screen.findByText("STOP"); // the reply is being written
+    key("and then");
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:n");
+  });
+
+  it("asks when the engine failed on the model, or serves another one", async () => {
+    render(<ChatTab overview={engineOn("file:n", "failed")} />);
+    await screen.findByText("Verdict: HOLD.");
+    key("hello");
+    expect(api.prepareModel).toHaveBeenCalledWith("file:n");
+  });
+
+  it("asks nothing for opening chats or changing the picker without typing", async () => {
+    const second = { ...chat, id: "c2", title: "Second chat", model_id: "file:q" };
+    vi.mocked(api.chats).mockResolvedValue([chat, second]);
+    vi.mocked(api.chat).mockImplementation(async (id) => ({ ...view, chat: id === "c2" ? second : chat }));
+    render(<ChatTab overview={engineOn("file:q")} />);
+    await screen.findByText("Verdict: HOLD.");
+    fireEvent.click(screen.getByText("Second chat"));
+    await waitFor(() => expect(api.chat).toHaveBeenCalledWith("c2"));
+    fireEvent.change(modelBox(), { target: { value: "file:n" } });
+    await waitFor(() => expect(api.setChatModel).toHaveBeenCalledWith("c2", "file:n"));
+    expect(api.prepareModel).not.toHaveBeenCalled();
+  });
+
+  it("asks for the model of the chat that is open when a draft starts", async () => {
+    const second = { ...chat, id: "c2", title: "Second chat", model_id: "file:q" };
+    vi.mocked(api.chats).mockResolvedValue([chat, second]);
+    vi.mocked(api.chat).mockImplementation(async (id) => ({ ...view, chat: id === "c2" ? second : chat }));
+    render(<ChatTab overview={engineOn("file:x")} />); // the engine serves neither
+    await screen.findByText("Verdict: HOLD.");
+    key("one");
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:n");
+    fireEvent.click(screen.getByText("Second chat"));
+    await waitFor(() => expect(api.chat).toHaveBeenCalledWith("c2"));
+    await waitFor(() => expect(messageBox().value).toBe("one")); // the draft stays with the composer
+    key("");
+    key("two");
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:q");
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+  });
+
+  // R75, kept as a pin of the flow its memo used to break, now that nothing is remembered: chat A (q) -> type -> the engine moves to
+  // q -> chat B (n) -> type -> the engine moves to n -> back to A -> type. Every draft asks, so the last one asks for q again.
+  it("asks for each draft as the user goes from chat A to chat B and back, whatever the engine does in between (R75)", async () => {
+    const a = { ...chat, id: "c1", title: "Chat A", model_id: "file:q" };
+    const b = { ...chat, id: "c2", title: "Chat B", model_id: "file:n" };
+    vi.mocked(api.chats).mockResolvedValue([a, b]);
+    vi.mocked(api.chat).mockImplementation(async (id) => ({ ...view, chat: id === "c2" ? b : a }));
+    const shown = render(<ChatTab overview={engineOn("file:x")} />); // the engine serves neither model
+    await screen.findByText("Verdict: HOLD.");
+    await waitFor(() => expect(modelBox().value).toBe("file:q")); // chat A is open
+    key("one");
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:q");
+    shown.rerender(<ChatTab overview={engineOn("file:q")} />); // the host moved the engine to q
+
+    fireEvent.click(screen.getByText("Chat B"));
+    await waitFor(() => expect(modelBox().value).toBe("file:n")); // chat B is open (the draft stays with the composer)
+    key("");
+    key("two");
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:n");
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+    shown.rerender(<ChatTab overview={engineOn("file:n")} />); // ... and on to n
+
+    fireEvent.click(screen.getByText("Chat A"));
+    await waitFor(() => expect(modelBox().value).toBe("file:q")); // back in chat A, which the engine no longer serves
+    key("");
+    key("three");
+    expect(api.prepareModel).toHaveBeenCalledTimes(3);
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:q");
+  });
+
+  it("with no chat open, prepares the model the picker shows", async () => {
+    vi.mocked(api.chats).mockResolvedValue([]);
+    render(<ChatTab overview={engineOn("file:x")} />);
+    await screen.findByText("Type a message to start a chat.");
+    await waitFor(() => expect(modelBox().value).toBe("file:q")); // the default
+    key("h");
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:q");
+    key("");
+    fireEvent.change(modelBox(), { target: { value: "file:n" } }); // picking asks nothing
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+    key("h"); // but it is another model now: the first key of this draft asks for it
+    expect(api.prepareModel).toHaveBeenLastCalledWith("file:n");
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("with no chat open, asks even when the engine already serves the model of the picker", async () => {
+    vi.mocked(api.chats).mockResolvedValue([]);
+    render(<ChatTab overview={engineOn("file:q")} />);
+    await screen.findByText("Type a message to start a chat.");
+    await waitFor(() => expect(modelBox().value).toBe("file:q"));
+    key("h");
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+    expect(api.prepareModel).toHaveBeenCalledWith("file:q");
+  });
+
+  it("shows a host failure in the notice, once, like the other host calls", async () => {
+    vi.mocked(api.prepareModel).mockRejectedValue("Qwen3 cannot run: the engine refused it");
+    render(<ChatTab overview={engineOn("file:q")} />);
+    await screen.findByText("Verdict: HOLD.");
+    key("hello");
+    expect((await screen.findByRole("alert")).textContent).toContain("cannot run");
+    expect(hostErrors.mock.calls).toEqual([["prepareModel failed:", "Qwen3 cannot run: the engine refused it"]]);
+    key("hello again"); // no second call, so no second failure
+    await act(async () => {});
+    expect(hostErrors.mock.calls).toHaveLength(1);
+  });
+
+  // The one thing the web remembers (R77): a model the host refused. Every draft asks, so a model that cannot run would give a notice
+  // for each draft; it is not asked for again until the list of models is another list (the host marks a refused model CAN'T RUN, and
+  // the Chat tab asks for the list again each time it is shown). The overview that arrives every second is not that list.
+  it("does not ask again for a model the host refused, until the list of models changes", async () => {
+    vi.mocked(api.prepareModel).mockRejectedValue("nexus cannot run: the engine refused it");
+    const shown = render(<ChatTab overview={engineOn("file:q")} active />);
+    await screen.findByText("Verdict: HOLD.");
+    key("one");
+    await waitFor(() => expect(hostErrors.mock.calls).toHaveLength(1)); // refused: one notice
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+
+    key("");
+    key("two"); // a new draft: the model the host refused is not asked for again
+    shown.rerender(<ChatTab overview={engineOn("file:q", "restarting")} active />); // the overview keeps arriving
+    shown.rerender(<ChatTab overview={{ ...engineOn("file:n"), request_count: 9 }} active />);
+    key("");
+    key("three");
+    expect(api.prepareModel).toHaveBeenCalledTimes(1);
+    expect(hostErrors.mock.calls).toHaveLength(1);
+
+    // The host has marked the model CAN'T RUN, and the tab is shown again: the list of models is not the list it was.
+    vi.mocked(api.models).mockResolvedValue(models.map((m) => (m.id === "file:n" ? { ...m, runnable: false, reason: "the engine refused it" } : m)));
+    shown.rerender(<ChatTab overview={engineOn("file:q")} active={false} />);
+    shown.rerender(<ChatTab overview={engineOn("file:q")} active />);
+    await waitFor(() => expect((screen.getByRole("option", { name: /nexus/ }) as HTMLOptionElement).disabled).toBe(true));
+    key("");
+    key("four"); // asked for again, and refused again: a second notice, now that the list says why
+    expect(api.prepareModel).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(hostErrors.mock.calls).toHaveLength(2));
+    key("");
+    key("five");
+    expect(api.prepareModel).toHaveBeenCalledTimes(2); // and once more it is not asked for again
+  });
+
+  it("says in the panel that the model loads when the user starts typing", async () => {
+    render(<ChatTab overview={engineOn("file:q")} />);
+    await screen.findByText("Verdict: HOLD.");
+    expect(screen.getByText("engine").nextElementSibling?.textContent).toBe("loads when you start typing");
+  });
+});

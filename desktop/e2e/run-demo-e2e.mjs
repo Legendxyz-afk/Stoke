@@ -20,10 +20,13 @@ const APP = path.join(TAURI_DIR, "target", "debug", "lorren.exe");
 const FAKE = path.join(TAURI_DIR, "target", "debug", "fake-engine.exe");
 const CDP = 9222;
 // The stream step (demo D5): the fake engine's pace (55 ms a token is ~18 tok/s, a real engine's), where in the stream the UI's
-// CPU is read and for how long, and the CPU, as a percentage of one core, above which the step fails.
+// CPU is read and for how long, how long the same launch's idle is read first, and the CPU OVER THAT IDLE, as a percentage of one
+// core, above which the step fails (R82; the idle is read at rest just after the reply. The idle baseline moves between sittings, 1.6-3.0% on 10-21 and 4.0% on 11-04, mostly the
+// WebView2 browser process at rest; over it the streaming cost read 5.6% then and 6.2% now, and the code before D5 about 21%).
 const STREAM_TOKEN_MS = 55;
 const UI_CPU_SKIP_S = 10;
 const UI_CPU_WINDOW_S = 20;
+const UI_CPU_IDLE_S = 10;
 const UI_CPU_LIMIT_PCT = 10;
 const REPLY = "Verdict: HOLD. The trend is intact, so wait for a close above the range high before adding to the position today.";
 
@@ -246,6 +249,18 @@ async function waitIdle(ms = 30000) {
   await page.getByRole("button", { name: "SEND" }).waitFor({ timeout: ms });
 }
 
+// "+ NEW" makes the chat in the host and then opens it, two round trips after the click, and until then the chat that was open
+// before is still the one on screen. A step that picks a model or types at once reaches THAT chat: on 2026-11-04 the Nexus step
+// picked nexus for the previous chat, three runs in three, and its first key then asked for the new chat's default model, which
+// the engine already had. So this clicks "+ NEW" and waits until the list has one more chat and the open one is the new, empty one.
+async function newChat() {
+  const before = await page.locator(".chat-item").count();
+  await page.getByRole("button", { name: "+ NEW", exact: true }).click();
+  await until("the new chat to open", async () =>
+    (await page.locator(".chat-item").count()) === before + 1 &&
+    (await page.locator(".chat-item.selected").innerText().catch(() => "")).startsWith("New chat"));
+}
+
 async function step(name, fn) {
   await fn();
   results.push(name);
@@ -410,14 +425,25 @@ const steps = [
       throw new Error(`the chat list after the first message: ${JSON.stringify(chats)}`);
     }
   }],
-  // The one step that still makes its chat with "+ NEW".
-  ["a new chat switched to Nexus restarts the engine on it", async () => {
+  // The one step that still makes its chat with "+ NEW". Demo D9: picking a model for a chat only stores it; the engine
+  // restarts on the model at the FIRST KEY typed in the chat (and on Send), not on the pick.
+  ["a new chat switched to Nexus restarts the engine on it when the user starts typing", async () => {
     await page.getByRole("tab", { name: "Chat" }).click();
-    await page.getByRole("button", { name: "+ NEW", exact: true }).click();
-    const t0 = Date.now();
+    await newChat();
     await page.locator("select[aria-label=model]").selectOption({ label: "nexus" });
+    // Picking is not loading: a while later the engine still serves the default model.
+    await sleep(1500);
+    const after_pick = await topbar();
+    if (!after_pick.includes("serving") || !after_pick.includes("Qwen3-4B-Instruct-2507-Q4_K_M") || after_pick.includes("nexus")) {
+      throw new Error(`picking a model moved the engine: the top bar says "${after_pick}"`);
+    }
+    if ((await page.locator("select[aria-label=model]").inputValue()) === "") throw new Error("the picker lost the model that was picked");
+    const t0 = Date.now();
+    await page.getByRole("textbox", { name: "message", exact: true }).pressSequentially("L"); // the first key
     await until("serving nexus", async () => { const t = await topbar(); return t.includes("serving") && t.includes("nexus"); });
     measurements.switch_ms = Date.now() - t0;
+    const log = (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("logs", { after: 0 }))).map((l) => l.text);
+    if (!log.some((t) => t.startsWith("preparing nexus: the user is typing"))) throw new Error("the log has no 'preparing nexus: the user is typing' line");
   }],
   ["a reply streams, and its first-token time is shown", async () => {
     await sendMessage("Long or wait?");
@@ -523,7 +549,7 @@ const steps = [
     // The app was relaunched two steps back, so the Requests table is empty and the top bar has only what the default model
     // gives it. One message to the default model gives the table a row to measure and the bar the long model name.
     await page.getByRole("tab", { name: "Chat", exact: true }).click();
-    await page.getByRole("button", { name: "+ NEW", exact: true }).click();
+    await newChat();
     await until("the default model serving", async () => { const t = await topbar(); return t.includes("serving") && t.includes("Qwen3-4B-Instruct-2507-Q4_K_M"); });
     await sendMessage("Layout check.");
     await waitIdle();
@@ -575,7 +601,7 @@ const steps = [
   // reading. A hidden window throttles rAF, so the reading is marked invalid then (and the step throws only if no frame came at
   // all). The UI's CPU is read over UI_CPU_WINDOW_S seconds in the middle of the stream, with the recorder off (it keeps the page
   // drawing at the display's rate, which would be most of the reading); spec §7 budget: under 5% of one core while streaming.
-  // The step FAILS above UI_CPU_LIMIT_PCT, a regression guard with headroom: the number to read against the budget is
+  // The step FAILS above UI_CPU_LIMIT_PCT OVER the same launch's idle (R82), a regression guard with headroom: the number to read against the budget is
   // measurements.stream.ui_cpu_pct, of THIS build (the app is a debug build with a DevTools port, so the figure is higher than
   // the release build's).
   ["a long streaming reply's frame gaps and UI CPU are measured", async () => {
@@ -586,7 +612,7 @@ const steps = [
     await until("no orphan engine", async () => pids("fake-engine.exe").length === 0, 15000);
     await launch({ FAKE_ENGINE_TOKEN_MS: String(STREAM_TOKEN_MS), FAKE_ENGINE_REPLY: reply });
     await page.getByRole("tab", { name: "Chat", exact: true }).click();
-    await page.getByRole("button", { name: "+ NEW", exact: true }).click();
+    await newChat();
     await until("serving", async () => (await topbar()).includes("serving"));
     // The frame recorder runs in two segments, before the CPU window and after it, and is OFF inside it: a requestAnimationFrame
     // loop keeps the page drawing at the display's rate (300 Hz on the box this was written on), which is CPU of its own.
@@ -625,6 +651,12 @@ const steps = [
       window.__record(false);
       return { segments: window.__segments, visibility_end: document.visibilityState };
     });
+    // The same launch at rest, just after the reply: the recorder is off, nothing of this script touches the page, and the start-up
+    // work is long over (read just after a relaunch, the idle took in that work: 7% once, against 4% settled). The streaming window is
+    // judged over this (R82).
+    const idleFrom = processSnapshot();
+    await sleep(UI_CPU_IDLE_S * 1000);
+    const idle = uiCpu(idleFrom, processSnapshot(), app.pid);
     const frames = segments.flat();
     if (frames.length === 0) throw new Error(`no animation frame was recorded (page ${visibility_start} at the start, ${visibility_end} at the end)`);
     const chars_shown = (await page.locator(".messages .msg").last().locator(".md").innerText()).length;
@@ -642,6 +674,9 @@ const steps = [
       ui_cpu_pct: cpu.pct,
       ui_cpu_window_s: cpu.window_s,
       ui_cpu_by_kind_pct: cpu.by_kind_pct,
+      ui_cpu_idle_pct: idle.pct,
+      ui_cpu_idle_window_s: idle.window_s,
+      ui_cpu_over_idle_pct: r1(cpu.pct - idle.pct),
       ui_cpu_limit_pct: UI_CPU_LIMIT_PCT,
       frames: frames.length,
       gap_max_ms: r1(sorted.length ? sorted[sorted.length - 1] : 0),
@@ -656,7 +691,9 @@ const steps = [
     // CONTROLS: a reading of a window that was not inside the stream, or of no process, is not a reading of the stream.
     if (!streaming_at_window_end) throw new Error(`the reply had ended before the ${UI_CPU_WINDOW_S} s window did: the UI's CPU (${cpu.pct}%) is not a reading of a streaming reply`);
     if (Object.keys(cpu.by_kind_pct).length < 3) throw new Error(`the UI's processes were not found (${JSON.stringify(cpu.by_kind_pct)}): lorren.exe, the WebView2 browser and a renderer are the least there is`);
-    if (cpu.pct > UI_CPU_LIMIT_PCT) throw new Error(`the UI used ${cpu.pct}% of one core over ${cpu.window_s} s of streaming (${JSON.stringify(cpu.by_kind_pct)}): the limit of this step is ${UI_CPU_LIMIT_PCT}%, the spec's budget 5%`);
+    if (stream.ui_cpu_over_idle_pct > UI_CPU_LIMIT_PCT) {
+      throw new Error(`the UI used ${cpu.pct}% of one core over ${cpu.window_s} s of streaming, ${stream.ui_cpu_over_idle_pct}% over the ${idle.pct}% it used at rest just before (${JSON.stringify(cpu.by_kind_pct)}): the limit of this step is ${UI_CPU_LIMIT_PCT}% over idle, the spec's budget 5%`);
+    }
   }],
 ];
 

@@ -18,7 +18,7 @@ export function ReplyPanel({ chat, modelId, models, overview, live, busy, last, 
 }) {
   const current = models.find((m) => m.id === modelId);
   const e = overview?.engine;
-  const engine = !chat ? "—" : e?.model_id === chat.model_id ? (e?.state ?? "—") : e?.state === "starting" ? "switching" : "loads on the next send";
+  const engine = !chat ? "—" : e?.model_id === chat.model_id ? (e?.state ?? "—") : e?.state === "starting" ? "switching" : "loads when you start typing";
   const stats = live.stats ?? last;
   const ctx = current?.ctx_engine ?? 4096;
   const used = stats?.prompt_tokens != null ? stats.prompt_tokens + (stats.completion_tokens ?? 0) : null;

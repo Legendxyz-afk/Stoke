@@ -58,6 +58,10 @@ export function ChatTab({ overview, active: shown = true }: {
   const [draft, setDraft] = useState("");
   /** With no chat open, the model picked in the panel for the chat that Send will make (demo D1). Null until one is picked. */
   const [picked, setPicked] = useState<string | null>(null);
+  /** The models the host refused when it was asked to prepare them (demo D9, R77), each with the list of models that was showing
+   *  then (`modelsKey`). A model that cannot run gives one notice, not one for each draft, and is asked for again once the list of
+   *  models has changed. It is the only thing remembered about those calls: every other draft asks. */
+  const refused = useRef(new Map<string, string>());
   /** A message typed with no chat open, waiting for the chat made for it to be open: opening a chat resets the live reply, so
    *  the send may only start after that has happened. The effect that opens a chat consumes it. */
   const sendOnOpen = useRef<{ chatId: string; text: string } | null>(null);
@@ -217,6 +221,32 @@ export function ChatTab({ overview, active: shown = true }: {
     }
   };
 
+  /** The text in the composer changed because the user typed or pasted (demo D9). The first key of EVERY draft (it was empty, now it
+   *  is not) tells the host which model the draft will be sent to: the open chat's model, or, with no chat open, the one in the
+   *  picker. What that means is the host's to decide (R77), since only the host knows whether a reply is being written in some
+   *  other chat: with the engine idle and not on that model it loads it, so that it is there by the time Send is pressed; with the
+   *  engine on it, nothing; while any reply is being written it keeps the model, the latest one asked for wins, the engine's own
+   *  included, and it settles it when the last reply has ended. So the engine's state is not looked at here and nothing is
+   *  remembered about earlier drafts, except a model the host refused (`refused`). Opening a chat and picking a model ask nothing:
+   *  the engine moves on the first key, or on Send, and not on a click, so that going through the chats does not load a model for
+   *  each. */
+  const typed = (text: string) => {
+    if (draft === "" && text !== "") prepareModelFor();
+    setDraft(text);
+  };
+  /** What the list of models says about which models exist and can run. It changes when a model comes, goes, or is marked CAN'T
+   *  RUN, and it is what makes a model the host refused worth asking for again. */
+  const modelsKey = models.map((m) => `${m.id}:${m.runnable ? 1 : 0}`).join("|");
+  const prepareModelFor = () => {
+    const modelId = chat?.model_id ?? modelForNewChat(models, picked);
+    if (!modelId || refused.current.get(modelId) === modelsKey) return;
+    const chatId = activeId ?? undefined;
+    api.prepareModel(modelId).catch((err) => {
+      refused.current.set(modelId, modelsKey);
+      fail("prepareModel", err, chatId);
+    });
+  };
+
   const send = (text: string) => {
     const id = activeId;
     if (!id) {
@@ -338,7 +368,7 @@ export function ChatTab({ overview, active: shown = true }: {
           ))}
         </div>
         {(notice ?? live.error) && <div className="notice" role="alert">{notice ?? live.error}</div>}
-        <Composer draft={draft} onDraft={setDraft} busy={busy} canRegenerate={!!lastAssistant}
+        <Composer draft={draft} onDraft={typed} busy={busy} canRegenerate={!!lastAssistant}
                   onSend={send} onStop={stop} onRegenerate={regenerate} />
       </section>
       <ReplyPanel chat={chat} modelId={picker} models={models} overview={overview} live={live} busy={busy}
