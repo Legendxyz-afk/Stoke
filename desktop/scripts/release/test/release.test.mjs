@@ -4,8 +4,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
-import { DEFAULT_MASTER, USAGE, liveCheck, parseArgs, release } from '../release.mjs'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { DEFAULT_MASTER, USAGE, liveCheck, parseArgs, release, tauriOpenKey } from '../release.mjs'
 import { makeKey, publicKeyText, signatureText, tauriForm } from './keys.mjs'
 
 const key = makeKey()
@@ -196,4 +197,16 @@ test('the arguments: their defaults, and a missing version', () => {
   assert.throws(() => parseArgs(['--notes', 'n.txt']), { message: USAGE })
   assert.throws(() => parseArgs(['0.1.0', '--notes']), { message: USAGE })
   assert.throws(() => parseArgs(['0.1.0', '--what']), { message: USAGE })
+})
+
+// The real key check, with the M1 kit's test key (skipped where the kit has not been built): the key opens with its password and not
+// with another, the password going to the Tauri CLI through its environment, never on a command line another process could read.
+test('the real key check opens the test key with its password, and refuses a wrong one', (t) => {
+  const keyPath = resolve(join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '.keys', 'test.key'))
+  if (!existsSync(keyPath)) {
+    t.skip('the M1 test kit has not made its keys here')
+    return
+  }
+  assert.doesNotThrow(() => tauriOpenKey(keyPath, 'lorren-test'))
+  assert.throws(() => tauriOpenKey(keyPath, 'not the password'))
 })

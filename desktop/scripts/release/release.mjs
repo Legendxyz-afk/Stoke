@@ -176,7 +176,10 @@ export function tauriOpenKey(keyPath, password) {
   const probe = join(dir, 'probe.txt')
   writeFileSync(probe, 'does the key open?')
   try {
-    const run = spawnSync(process.execPath, [TAURI, 'signer', 'sign', '-f', keyPath, '-p', password, probe], { encoding: 'utf8' })
+    // The password through the environment, which `tauri signer sign` reads as TAURI_SIGNING_PRIVATE_KEY_PASSWORD: a -p argument would
+    // sit in the process list, readable by any process of the user, for as long as the signer runs.
+    const env = { ...process.env, TAURI_SIGNING_PRIVATE_KEY_PASSWORD: password }
+    const run = spawnSync(process.execPath, [TAURI, 'signer', 'sign', '-f', keyPath, probe], { encoding: 'utf8', env })
     if (run.status !== 0) throw new Error((run.stderr || run.stdout || `exit ${run.status}`).trim().split('\n').pop())
   } finally {
     rmSync(dir, { recursive: true, force: true })
