@@ -45,13 +45,35 @@ test('a legacy Ed signature (the data unhashed) verifies', () => {
 
 test('CRLF line ends and a BOM in either text still verify', () => {
   const { publicKeyText: pub, signatureText: sig } = makeMinisign(data)
-  const windows = (text) => '﻿' + text.replace(/\n/g, '\r\n')
+  const windows = (text) => '\uFEFF' + text.replace(/\n/g, '\r\n')
   assert.deepEqual(verify(data, windows(sig), windows(pub)), { ok: true })
 })
 
 test("Tauri's base64 form of both texts verifies", () => {
   const { publicKeyText: pub, signatureText: sig } = makeMinisign(data)
   assert.deepEqual(verify(data, tauriForm(sig), tauriForm(pub)), { ok: true })
+})
+
+// The text with its second line (the algorithm, key id and signature bytes) rewritten by `edit`.
+function withBody(text, edit) {
+  const lines = text.split('\n')
+  lines[1] = edit(Buffer.from(lines[1], 'base64')).toString('base64')
+  return lines.join('\n')
+}
+
+test('an unknown algorithm is a format failure, even over a signature that would verify', () => {
+  const { publicKeyText: pub, signatureText: sig } = makeMinisign(data, { prehashed: false })
+  const odd = withBody(sig, (body) => {
+    const copy = Buffer.from(body)
+    copy.write('Xd', 0, 'latin1')
+    return copy
+  })
+  assert.deepEqual(verify(data, odd, pub), { ok: false, reason: 'format' })
+})
+
+test('a signature of the wrong length is a format failure', () => {
+  const { publicKeyText: pub, signatureText: sig } = makeMinisign(data)
+  assert.deepEqual(verify(data, withBody(sig, (body) => body.subarray(0, 70)), pub), { ok: false, reason: 'format' })
 })
 
 test('text that is no key or no signature is a format failure, never a throw', () => {

@@ -16,8 +16,8 @@ const SPKI_ED25519 = Buffer.from('302a300506032b6570032100', 'hex') // the DER p
 // The text's lines, from either form, with a BOM and Windows line ends let go (but a line's own content left exactly as it is: the
 // trusted comment is signed byte for byte).
 function lines(text) {
-  let t = String(text ?? '').replace(/^﻿/, '').trim()
-  if (!t.startsWith('untrusted comment:')) t = Buffer.from(t, 'base64').toString('utf8').replace(/^﻿/, '').trim()
+  let t = String(text ?? '').replace(/^\uFEFF/, '').trim()
+  if (!t.startsWith('untrusted comment:')) t = Buffer.from(t, 'base64').toString('utf8').replace(/^\uFEFF/, '').trim()
   return t.split('\n').map((line) => line.replace(/\r$/, ''))
 }
 

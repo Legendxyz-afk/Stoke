@@ -70,7 +70,7 @@ function readConfig(path) {
 
 // The site served on a free 127.0.0.1 port, files only, and fetched as the updater (latest.json) and the website (the stable
 // copy) fetch it. Returns the paths it fetched.
-async function liveCheck({ site, channel, version, installer }) {
+export async function liveCheck({ site, channel, version, installer }) {
   const root = resolve(site)
   const server = createServer((req, res) => {
     const parts = decodeURIComponent(new URL(req.url, 'http://local').pathname).split('/').filter(Boolean)

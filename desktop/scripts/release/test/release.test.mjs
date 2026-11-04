@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_MASTER, USAGE, parseArgs, release } from '../release.mjs'
+import { DEFAULT_MASTER, USAGE, liveCheck, parseArgs, release } from '../release.mjs'
 import { makeKey, publicKeyText, signatureText, tauriForm } from './keys.mjs'
 
 const key = makeKey()
@@ -142,6 +142,25 @@ test('--deploy is refused in this step, before anything is built', async () => {
   const s = setup()
   await assert.rejects(release({ ...s.options, deploy: true }, s.deps), { message: 'deploying arrives with the Cloudflare project (step 4)' })
   assert.equal(s.calls.build.length, 0)
+})
+
+test('the live check refuses a served feed that does not have the release, or not its installer', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'lorren feed '))
+  const site = join(root, 'site')
+  mkdirSync(join(site, 'app', 'stable'), { recursive: true })
+  const installer = join(root, 'built.exe')
+  writeFileSync(installer, 'MZ built')
+  writeFileSync(join(site, 'app', 'stable', 'latest.json'), JSON.stringify({ version: '0.0.9' }))
+  await assert.rejects(liveCheck({ site, channel: 'stable', version: '0.1.0', installer }), {
+    message: 'the served feed does not have 0.1.0 in app/stable/latest.json',
+  })
+  writeFileSync(join(site, 'app', 'stable', 'latest.json'), JSON.stringify({ version: '0.1.0' }))
+  writeFileSync(join(site, 'app', 'stable', 'Lorren-setup.exe'), 'MZ older')
+  await assert.rejects(liveCheck({ site, channel: 'stable', version: '0.1.0', installer }), {
+    message: 'the served feed does not have the built installer at app/stable/Lorren-setup.exe',
+  })
+  writeFileSync(join(site, 'app', 'stable', 'Lorren-setup.exe'), 'MZ built')
+  assert.deepEqual(await liveCheck({ site, channel: 'stable', version: '0.1.0', installer }), ['app/stable/latest.json', 'app/stable/Lorren-setup.exe'])
 })
 
 test('the arguments: their defaults, and a missing version', () => {
