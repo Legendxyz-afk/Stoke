@@ -1,5 +1,5 @@
 {
-  "feedUrl": "https://<feed>.pages.dev",
+  "feedUrl": "https://lorren-updates.pages.dev",
   "appPublicKey": "release/keys/app.pub",
-  "pagesProject": "<feed>"
+  "pagesProject": "lorren-updates"
 }
