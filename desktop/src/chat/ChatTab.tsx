@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../ipc/api";
+import { reportReady } from "../opening/ready";
 import type { Chat } from "../ipc/bindings/Chat";
 import type { ChatView } from "../ipc/bindings/ChatView";
 import type { ModelInfo } from "../ipc/bindings/ModelInfo";
@@ -125,8 +126,14 @@ export function ChatTab({ overview, active: shown = true }: {
       clearNotice("chat");
     } catch (e) {
       fail("chat", e, chatId);
+      reportReady("chat"); // spec 2026-10-23-lorren-opening-design.md section 3: a failed load is a settled one
     }
   }, [fail, clearNotice]);
+
+  useEffect(() => {
+    // Spec 2026-10-23-lorren-opening-design.md section 3: the open chat's messages are in the view.
+    if (view !== null) reportReady("chat");
+  }, [view]);
 
   useEffect(() => {
     if (!shown) return;
@@ -136,12 +143,19 @@ export function ChatTab({ overview, active: shown = true }: {
       (ms) => {
         setModels(ms);
         clearNotice("models");
+        reportReady("models"); // spec 2026-10-23-lorren-opening-design.md section 3
       },
-      (e) => fail("models", e),
+      (e) => {
+        fail("models", e);
+        reportReady("models"); // spec 2026-10-23-lorren-opening-design.md section 3: failed is settled too
+      },
     );
     if (!chatsLoaded.current) {
       void refreshChats().then((cs) => {
         if (cs && cs.length > 0) setActiveId((id) => id ?? cs[0].id);
+        // Spec 2026-10-23-lorren-opening-design.md section 3: the list is in; with no chat to open, there is nothing more.
+        reportReady("chats");
+        if (!cs || cs.length === 0) reportReady("chat");
       });
     }
   }, [shown, refreshChats, fail, clearNotice]);

@@ -7,6 +7,7 @@ import { StatusBar } from "./components/StatusBar";
 import { TopBar, type Tab } from "./components/TopBar";
 import { UpdateBadge } from "./components/UpdateBadge";
 import { api } from "./ipc/api";
+import { reportReady } from "./opening/ready";
 import type { Overview } from "./ipc/bindings/Overview";
 import { LogsTab } from "./tabs/LogsTab";
 import { ModelsTab } from "./tabs/ModelsTab";
@@ -53,6 +54,11 @@ export function App() {
       unlisten.then((f) => f());
     };
   }, []);
+
+  useEffect(() => {
+    // Spec 2026-10-23-lorren-opening-design.md section 3: the overview is in, or the host is known not to answer.
+    if (overview !== null || error !== undefined) reportReady("overview");
+  }, [overview, error]);
 
   return (
     <div className="app">
