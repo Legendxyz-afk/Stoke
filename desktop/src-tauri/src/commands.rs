@@ -21,6 +21,7 @@ pub struct AppState {
     pub supervisor: Arc<Supervisor>,
     pub chat: Arc<ChatService>,
     pub updates: Arc<crate::updater::UpdateService>,
+    pub catalog: Arc<crate::catalog::CatalogService>,
     pub started_ms: i64,
     /// Epoch ms at the top of `run()`: what the opening is measured from.
     pub launched_ms: i64,
@@ -538,4 +539,25 @@ mod opening_tests {
         assert_eq!(hold_left(1000, Some(6000), 1500), 5500);
         assert_eq!(hold_left(1000, Some(6000), 9000), 0);
     }
+}
+
+/// What Discover shows now: memory, else the saved copy verified again. Makes no request.
+#[tauri::command]
+pub fn catalog(state: State<'_, AppState>) -> crate::catalog::CatalogView {
+    state.catalog.view()
+}
+
+/// Reads the catalog from its address (Discover opening, or the user asking again).
+#[tauri::command]
+pub async fn refresh_catalog(state: State<'_, AppState>) -> Result<crate::catalog::CatalogView, String> {
+    Ok(state.catalog.refresh().await)
+}
+
+/// Opens a VERIFIED catalog entry's licence page in the default browser (§6: links open only when clicked). The UI cannot
+/// name an address: it names an entry, and the address is the one the signed catalog holds.
+#[tauri::command]
+pub fn open_licence(app: tauri::AppHandle, state: State<'_, AppState>, entry_id: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let entry = state.catalog.entry(&entry_id).ok_or_else(|| format!("no such model in the catalog: {entry_id}"))?;
+    app.opener().open_url(entry.licence.url, None::<&str>).map_err(err)
 }

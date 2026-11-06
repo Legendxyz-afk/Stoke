@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod catalog;
 pub mod chat;
 pub mod commands;
 pub mod engine;
@@ -44,6 +45,8 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Opens a catalog entry's licence page in the browser; the plugin's JS API is not granted to the UI (capabilities).
+        .plugin(tauri_plugin_opener::init())
         // The main window's state is saved when it is asked to close (demo D8).
         .on_window_event(window_state::on_window_event)
         .setup(move |app| {
@@ -71,8 +74,12 @@ pub fn run() {
             // NotConfigured, so the badge shows nothing from the first frame, and no check is ever scheduled.
             let configured = updater::endpoints_configured(app.config().plugins.0.get("updater"));
             let updates = updater::UpdateService::new(monitor.clone(), configured);
+            // The catalog is read only when Discover opens (`refresh_catalog`): nothing here touches the network.
+            let catalog_source = catalog::source_from_config(app.config().plugins.0.get(catalog::CATALOG_PLUGIN));
+            let app_version = semver::Version::parse(&app.package_info().version.to_string()).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
+            let catalog = catalog::CatalogService::new(catalog_source, store.clone(), monitor.clone(), app_version);
             let scan_monitor = monitor.clone();
-            app.manage(AppState { store, library: library.clone(), library_ready, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), started_ms: store::now_ms(), launched_ms, shown_ms });
+            app.manage(AppState { store, library: library.clone(), library_ready, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), catalog, started_ms: store::now_ms(), launched_ms, shown_ms });
 
             // Updates (spec §3.7): a check 5 s after start, then every 6 h. A configured endpoint can still answer
             // "not configured" (the plugin's own EmptyEndpoints), and then the loop ends.
@@ -138,7 +145,10 @@ pub fn run() {
             commands::logs,
             commands::update_state,
             commands::check_update,
-            commands::install_update
+            commands::install_update,
+            commands::catalog,
+            commands::refresh_catalog,
+            commands::open_licence
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lorren");
