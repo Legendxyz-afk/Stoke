@@ -1,6 +1,10 @@
 # Lorren's opening — design
 
-Status: designed with Kabir on 2026-10-23 (brainstorming, ten mockup rounds); APPROVED by Kabir 2026-10-23 ("approved"). This
+Status: designed with Kabir on 2026-10-23 (brainstorming, ten mockup rounds); APPROVED by Kabir 2026-10-23 ("approved"). BUILT
+2026-11-06 (plan `docs/superpowers/plans/2026-11-06-lorren-opening.md`, commits `4c7cb71`..`b4a7849`; e2e 17/17); Kabir on the
+installed build: "looks good". Measured on his PC (release, his library, fake engine): first frame 40-88 ms after the window,
+ready ~0.55 s and in the top bar ~3.5 s after launch, longest frame gap 33-40 ms, landing 0.00 px. The CSS is a linked
+stylesheet, not inline (Tauri nonces every <style>; the plan's R1), and the library scan runs beside the window (R9). This
 is the authority for the opening's implementation plan. Reference mockup: `stoke-lorren/.superpowers/brainstorm/1092-1792727290/content/opening-v10.html`
 (git-ignored, throwaway: port its values, not its structure). Parent spec: `2026-09-25-lorren-desktop-design.md`.
 
