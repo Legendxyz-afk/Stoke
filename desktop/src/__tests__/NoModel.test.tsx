@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ipc/api", async () => ({ api: (await import("./testApi")).mockApi() }));
@@ -40,6 +40,24 @@ describe("the chat with no model", () => {
     expect(await screen.findByText("Type a message to start a chat.")).toBeTruthy();
     expect((screen.getByLabelText("message") as HTMLTextAreaElement).disabled).toBe(false);
     expect(screen.queryByText("OPEN DISCOVER")).toBeNull();
+  });
+
+  it("a model that arrives while the chat is shown replaces the no-model view; a hidden tab asks for nothing", async () => {
+    vi.mocked(api.models).mockResolvedValue([]);
+    const { rerender } = render(<ChatTab overview={overview} onDiscover={() => {}} />);
+    expect(await screen.findByText("OPEN DISCOVER")).toBeTruthy();
+    // A download finished: the host says the library changed, and the list now has a model that can run.
+    vi.mocked(api.models).mockResolvedValue(models);
+    const subs = vi.mocked(api.onLibraryChanged).mock.calls as unknown as Array<[() => void]>;
+    expect(subs.length).toBeGreaterThan(0);
+    act(() => subs[subs.length - 1][0]());
+    expect(await screen.findByText("Type a message to start a chat.")).toBeTruthy();
+    expect((screen.getByLabelText("message") as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByText("OPEN DISCOVER")).toBeNull();
+    rerender(<ChatTab overview={overview} onDiscover={() => {}} active={false} />);
+    const asked = vi.mocked(api.models).mock.calls.length;
+    act(() => subs[subs.length - 1][0]());
+    expect(api.models).toHaveBeenCalledTimes(asked);
   });
 
   it("the chat's button opens the Models tab on Discover", async () => {

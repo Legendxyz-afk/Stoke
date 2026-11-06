@@ -140,10 +140,22 @@ export function ChatTab({ overview, active: shown = true, onDiscover = () => {} 
     if (view !== null) reportReady("chat");
   }, [view]);
 
+  // The library gained a model (a download finished): while the tab is shown the list is read again, so the chat that
+  // had no model gives way to the composer where the user waits; a hidden tab reads it when it is shown.
+  const [libraryTick, setLibraryTick] = useState(0);
+  useEffect(() => {
+    const off = api.onLibraryChanged(() => setLibraryTick((n) => n + 1)).catch((e) => {
+      console.error("library-changed listener failed:", e);
+      return () => {};
+    });
+    return () => void off.then((f) => f());
+  }, []);
+
   useEffect(() => {
     if (!shown) return;
-    // Each time the tab is shown (and when it first mounts): the model list again, since the host can mark a model as
-    // one that cannot run; the chat list only if it never loaded, since what changes it is done from here (R60).
+    // Each time the tab is shown (and when it first mounts), and when the library changes while it is shown: the model
+    // list again, since the host can mark a model as one that cannot run; the chat list only if it never loaded, since
+    // what changes it is done from here (R60).
     api.models().then(
       (ms) => {
         setModels(ms);
@@ -164,7 +176,7 @@ export function ChatTab({ overview, active: shown = true, onDiscover = () => {} 
         if (!cs || cs.length === 0) reportReady("chat");
       });
     }
-  }, [shown, refreshChats, fail, clearNotice]);
+  }, [shown, libraryTick, refreshChats, fail, clearNotice]);
 
   useEffect(() => {
     const previous = active.current;
