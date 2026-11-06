@@ -1,7 +1,10 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { CatalogView } from "./bindings/CatalogView";
 import type { Chat } from "./bindings/Chat";
 import type { ChatView } from "./bindings/ChatView";
+import type { DiskRoom } from "./bindings/DiskRoom";
+import type { DownloadView } from "./bindings/DownloadView";
 import type { EngineStatus } from "./bindings/EngineStatus";
 import type { LogLine } from "./bindings/LogLine";
 import type { ModelInfo } from "./bindings/ModelInfo";
@@ -39,8 +42,22 @@ export const api = {
   updateState: () => invoke<UpdateState>("update_state"),
   checkUpdate: () => invoke<void>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
+  /** The kept catalog, with no network. */
+  catalog: () => invoke<CatalogView>("catalog"),
+  /** Reads the catalog over the network and verifies it; on failure the kept view comes back stale, with its error. */
+  refreshCatalog: () => invoke<CatalogView>("refresh_catalog"),
+  downloads: () => invoke<DownloadView[]>("downloads"),
+  diskRoom: () => invoke<DiskRoom>("disk_room"),
+  startDownload: (entryId: string) => invoke<DownloadView>("start_download", { entryId }),
+  pauseDownload: (entryId: string) => invoke<void>("pause_download", { entryId }),
+  resumeDownload: (entryId: string) => invoke<void>("resume_download", { entryId }),
+  cancelDownload: (entryId: string) => invoke<void>("cancel_download", { entryId }),
+  openLicence: (entryId: string) => invoke<void>("open_licence", { entryId }),
   onEngineStatus: (cb: (s: EngineStatus) => void): Promise<UnlistenFn> =>
     listen<EngineStatus>("engine-status", (e) => cb(e.payload)),
+  onDownloadState: (cb: (d: DownloadView) => void): Promise<UnlistenFn> =>
+    listen<DownloadView>("download-state", (e) => cb(e.payload)),
+  onLibraryChanged: (cb: () => void): Promise<UnlistenFn> => listen<null>("library-changed", () => cb()),
   onUpdateState: (cb: (s: UpdateState) => void): Promise<UnlistenFn> =>
     listen<UpdateState>("update-state", (e) => cb(e.payload)),
 };

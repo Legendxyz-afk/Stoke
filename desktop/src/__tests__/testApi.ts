@@ -1,5 +1,9 @@
 import { vi } from "vitest";
 import type { Api } from "../ipc/api";
+import type { CatalogEntry } from "../ipc/bindings/CatalogEntry";
+import type { CatalogView } from "../ipc/bindings/CatalogView";
+import type { DiskRoom } from "../ipc/bindings/DiskRoom";
+import type { DownloadView } from "../ipc/bindings/DownloadView";
 import type { Chat } from "../ipc/bindings/Chat";
 import type { ChatView } from "../ipc/bindings/ChatView";
 import type { Message } from "../ipc/bindings/Message";
@@ -28,6 +32,36 @@ export const overview: Overview = {
   request_count: 3,
 };
 
+const GIB = 1073741824;
+
+export const qwenEntry: CatalogEntry = {
+  id: "qwen3-4b", name: "Qwen3-4B-Instruct-2507", version: 1,
+  description: "Qwen3 4B Instruct, July 2025: Lorren's default, quick and capable on the processor.",
+  architecture: "qwen3", quantization: "Q4_K_M", file: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", size: 2_497_280_736,
+  sha256: "2fde00ce", url: "https://huggingface.co/x/resolve/ae44f08/q.gguf",
+  licence: { name: "Apache-2.0", url: "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/main/LICENSE" },
+  source: { repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF", commit: "ae44f08f00d", path: "q.gguf" },
+  system_prompt: null, min_app_version: "0.1.0",
+};
+export const llamaEntry: CatalogEntry = {
+  ...qwenEntry, id: "llama-3.2-3b", name: "Llama-3.2-3B-Instruct", description: "Meta's Llama 3.2 3B Instruct.",
+  architecture: "llama", file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf", size: 2_019_377_696,
+  licence: { name: "Llama 3.2 Community License", url: "https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/blob/main/LICENSE.txt" },
+  source: { repo: "bartowski/Llama-3.2-3B-Instruct-GGUF", commit: "5ab33fa1234", path: "l.gguf" },
+};
+export const catalogView: CatalogView = {
+  configured: true, entries: [qwenEntry, llamaEntry], needs_app: [], fetched_ms: Date.now(), stale: false, error: null,
+};
+export const diskRoom: DiskRoom = { dir: "M:/New Drive/ai_models/lorren", free_bytes: 412 * GIB };
+
+export function dl(entryId: string, p: Partial<DownloadView>): DownloadView {
+  const e = [qwenEntry, llamaEntry].find((x) => x.id === entryId) ?? qwenEntry;
+  return {
+    entry_id: entryId, name: e.name, file: e.file, version: e.version, state: "downloading", done: 0, total: e.size,
+    bytes_per_sec: 0, retry_in_ms: null, error: null, ...p,
+  };
+}
+
 /** The module the tests put in place of `../ipc/api`. `satisfies Api` makes a mock that drifts from the real API (a call
  *  renamed, one missing, one whose arguments or result changed) a type error, not a test that runs against nothing. */
 export function mockApi() {
@@ -48,7 +82,18 @@ export function mockApi() {
     updateState: vi.fn(async (): Promise<UpdateState> => ({ state: "not_configured" })),
     checkUpdate: vi.fn(async () => {}),
     installUpdate: vi.fn(async () => {}),
+    catalog: vi.fn(async (): Promise<CatalogView> => catalogView),
+    refreshCatalog: vi.fn(async (): Promise<CatalogView> => catalogView),
+    downloads: vi.fn(async (): Promise<DownloadView[]> => []),
+    diskRoom: vi.fn(async (): Promise<DiskRoom> => diskRoom),
+    startDownload: vi.fn(async (id: string): Promise<DownloadView> => dl(id, { state: "downloading" })),
+    pauseDownload: vi.fn(async () => {}),
+    resumeDownload: vi.fn(async () => {}),
+    cancelDownload: vi.fn(async () => {}),
+    openLicence: vi.fn(async () => {}),
     onEngineStatus: vi.fn(async () => () => {}),
+    onDownloadState: vi.fn(async () => () => {}),
+    onLibraryChanged: vi.fn(async () => () => {}),
     onUpdateState: vi.fn(async () => () => {}),
   } satisfies Api;
 }

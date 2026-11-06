@@ -16,6 +16,7 @@ export function ReplyPanel({ chat, modelId, models, overview, live, busy, last, 
   last: SavedStats | null;
   onModel: (modelId: string) => void;
 }) {
+  const noModel = !models.some((m) => m.runnable);
   const current = models.find((m) => m.id === modelId);
   const e = overview?.engine;
   const engine = !chat ? "—" : e?.model_id === chat.model_id ? (e?.state ?? "—") : e?.state === "starting" ? "switching" : "loads when you start typing";
@@ -26,8 +27,9 @@ export function ReplyPanel({ chat, modelId, models, overview, live, busy, last, 
     <aside className="col right">
       <div className="section">
         <span className="cap">MODEL</span>
-        <select aria-label="model" value={modelId} disabled={busy} onChange={(ev) => onModel(ev.target.value)}>
-          {models.map((m) => (
+        <select aria-label="model" value={modelId} disabled={busy || noModel} onChange={(ev) => onModel(ev.target.value)}>
+          {noModel && <option value="">no model</option>}
+          {!noModel && models.map((m) => (
             <option key={m.id} value={m.id} disabled={!m.runnable} title={m.reason ?? ""}>
               {m.name}{m.is_default ? " (default)" : ""}{m.runnable ? "" : " (can't run)"}
             </option>

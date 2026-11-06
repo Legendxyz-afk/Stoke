@@ -10,13 +10,15 @@ import { api } from "./ipc/api";
 import { reportReady } from "./opening/ready";
 import type { Overview } from "./ipc/bindings/Overview";
 import { LogsTab } from "./tabs/LogsTab";
-import { ModelsTab } from "./tabs/ModelsTab";
+import { ModelsTab, type ModelsView } from "./tabs/ModelsTab";
 import { RequestsTab } from "./tabs/RequestsTab";
 
 export function App() {
   const [tab, setTab] = useState<Tab>("Chat");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [error, setError] = useState<string>();
+  /** The Models tab's view lives here so the chat's OPEN DISCOVER can set it. */
+  const [modelsView, setModelsView] = useState<ModelsView>("library");
 
   useEffect(() => {
     let alive = true;
@@ -68,9 +70,10 @@ export function App() {
             composer draft while another tab shows. `display: contents` keeps the three columns in
             the content row. */}
         <div style={{ display: tab === "Chat" ? "contents" : "none" }}>
-          <ChatTab overview={overview} active={tab === "Chat"} />
+          <ChatTab overview={overview} active={tab === "Chat"}
+                   onDiscover={() => { setModelsView("discover"); setTab("Models"); }} />
         </div>
-        {tab !== "Chat" && renderTab(tab, overview)}
+        {tab !== "Chat" && renderTab(tab, overview, modelsView, setModelsView)}
       </main>
       <StatusBar overview={overview}>
         <UpdateBadge />
@@ -80,10 +83,10 @@ export function App() {
 }
 
 /** Every tab but Chat, which App keeps mounted itself (R36a). These mount when shown and unmount when hidden, so their polls stop. */
-function renderTab(tab: Tab, overview: Overview | null): ReactNode {
+function renderTab(tab: Tab, overview: Overview | null, modelsView: ModelsView, setModelsView: (v: ModelsView) => void): ReactNode {
   switch (tab) {
     case "Models":
-      return <ModelsTab overview={overview} />;
+      return <ModelsTab overview={overview} view={modelsView} onView={setModelsView} />;
     case "Requests":
       return <RequestsTab />;
     case "Logs":

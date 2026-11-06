@@ -9,6 +9,7 @@ import type { StreamEvent } from "../ipc/bindings/StreamEvent";
 import "./chat.css";
 import { ChatList } from "./ChatList";
 import { Composer } from "./Composer";
+import { NoModel, NoModelComposer } from "./NoModel";
 import { MessageRow } from "./MessageView";
 import { ReplyPanel } from "./ReplyPanel";
 import { applyEvent, begin, idle, statsOf, type Live } from "./stream";
@@ -43,14 +44,18 @@ function modelForNewChat(models: ModelInfo[], picked: string | null): string | n
   return (runnable.find((m) => m.id === picked) ?? runnable.find((m) => m.is_default) ?? runnable[0])?.id ?? null;
 }
 
-export function ChatTab({ overview, active: shown = true }: {
+export function ChatTab({ overview, active: shown = true, onDiscover = () => {} }: {
   overview: Overview | null;
+  /** The way to the Models tab's Discover, for a library with no model that can run. */
+  onDiscover?: () => void;
   /** The Chat tab is showing. App keeps this component mounted while another tab shows (R36a), so each time this
    *  turns true it asks the host again for what can change in the meantime (R60). */
   active?: boolean;
 }) {
   const [chats, setChats] = useState<Chat[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  /** The model list has been read once, so an empty one means an empty library and not one still on its way. */
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [view, setView] = useState<ChatView | null>(null);
   const [live, setLive] = useState<Live>(idle);
@@ -142,6 +147,7 @@ export function ChatTab({ overview, active: shown = true }: {
     api.models().then(
       (ms) => {
         setModels(ms);
+        setModelsLoaded(true);
         clearNotice("models");
         reportReady("models"); // spec 2026-10-23-lorren-opening-design.md section 3
       },
@@ -337,6 +343,7 @@ export function ChatTab({ overview, active: shown = true }: {
   const busy = live.busy || messages.some((m) => m.message.status === "streaming");
   const dropped = live.dropped;
   const cutAfter = lastDroppedIndex(messages, dropped);
+  const noModel = modelsLoaded && !models.some((m) => m.runnable);
   const picker = chat?.model_id ?? modelForNewChat(models, picked) ?? "";
   // Demo D2: the reply being written has no token yet. Its row shows `<phase> · <N> s` in place of an empty text; while the
   // engine is not serving this chat's model (starting, restarting, or on another one) the phase is `loading <model>`.
@@ -364,7 +371,7 @@ export function ChatTab({ overview, active: shown = true }: {
             atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_PX;
           }}
         >
-          {!chat && <div className="dim mono" style={{ fontSize: 11 }}>Type a message to start a chat.</div>}
+          {!chat && !noModel && <div className="dim mono" style={{ fontSize: 11 }}>Type a message to start a chat.</div>}
           {messages.map((mv, i) => (
             <Fragment key={mv.message.id}>
               <MessageRow
@@ -380,12 +387,17 @@ export function ChatTab({ overview, active: shown = true }: {
               )}
             </Fragment>
           ))}
+          {noModel && <NoModel onDiscover={onDiscover} />}
         </div>
         {(notice ?? live.error) && <div className="notice" role="alert">{notice ?? live.error}</div>}
-        <Composer draft={draft} onDraft={typed} busy={busy} canRegenerate={!!lastAssistant}
-                  onSend={send} onStop={stop} onRegenerate={regenerate} />
+        {noModel ? (
+          <NoModelComposer />
+        ) : (
+          <Composer draft={draft} onDraft={typed} busy={busy} canRegenerate={!!lastAssistant}
+                    onSend={send} onStop={stop} onRegenerate={regenerate} />
+        )}
       </section>
-      <ReplyPanel chat={chat} modelId={picker} models={models} overview={overview} live={live} busy={busy}
+      <ReplyPanel chat={chat} modelId={picker} models={models} overview={overview} live={live} busy={busy || noModel}
                   last={lastAssistant ? statsOf(lastAssistant.message) : null} onModel={setModel} />
     </>
   );
