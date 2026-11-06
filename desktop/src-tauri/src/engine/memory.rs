@@ -77,6 +77,25 @@ mod tests {
         let (ws, private) = super::process_memory(std::process::id()).unwrap();
         assert!(ws > 0 && private > 0);
         assert!(super::total_physical_bytes() > super::available_physical_bytes());
-        assert!(super::tree_working_set(std::process::id(), None) >= ws);
+    }
+
+    /// The tree's working set holds its root's. Measured on an idle child (`ping` waiting between echoes): the test process
+    /// itself runs the other tests in parallel, so its own working set moves between two reads.
+    #[test]
+    fn a_process_tree_holds_its_root() {
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("ping starts");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let pid = child.id();
+        let (ws, _) = super::process_memory(pid).expect("the child's memory");
+        let tree = super::tree_working_set(pid, None);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(ws > 0);
+        assert!(tree >= ws, "tree {tree} < root {ws}");
     }
 }
