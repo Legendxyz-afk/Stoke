@@ -28,9 +28,15 @@ pub fn log_dir() -> PathBuf {
     }
 }
 
-/// %USERPROFILE%\Lorren\models: downloaded models (milestone 4 writes here).
+/// Downloaded models: `over` (LORREN_DOWNLOADS_DIR), else <LORREN_DATA_DIR>\models when `data_over` is set,
+/// else %USERPROFILE%\Lorren\models.
+fn downloads_dir_from(over: Option<PathBuf>, data_over: Option<PathBuf>, userprofile: PathBuf) -> PathBuf {
+    over.or_else(|| data_over.map(|d| d.join("models"))).unwrap_or_else(|| userprofile.join("Lorren").join("models"))
+}
+
+/// %USERPROFILE%\Lorren\models: the folder the app downloads models into.
 pub fn downloads_dir() -> PathBuf {
-    known("USERPROFILE").join("Lorren").join("models")
+    downloads_dir_from(env_path("LORREN_DOWNLOADS_DIR"), env_path("LORREN_DATA_DIR"), known("USERPROFILE"))
 }
 
 /// The engine sidecar: next to lorren.exe, where Tauri copies `externalBin`.
@@ -55,5 +61,16 @@ mod tests {
         let appdata = std::path::PathBuf::from("appdata");
         assert_eq!(super::data_dir_from(None, appdata.clone()), appdata.join("Lorren"));
         assert_eq!(super::data_dir_from(Some(std::path::PathBuf::from("over")), appdata), std::path::PathBuf::from("over"));
+    }
+
+    #[test]
+    fn downloads_dir_precedence() {
+        use std::path::PathBuf;
+        let home = PathBuf::from("home");
+        let over = Some(PathBuf::from("over"));
+        let data = Some(PathBuf::from("data"));
+        assert_eq!(super::downloads_dir_from(over, data.clone(), home.clone()), PathBuf::from("over"));
+        assert_eq!(super::downloads_dir_from(None, data, home.clone()), PathBuf::from("data").join("models"));
+        assert_eq!(super::downloads_dir_from(None, None, home.clone()), home.join("Lorren").join("models"));
     }
 }

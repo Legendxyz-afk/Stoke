@@ -47,8 +47,9 @@ pub fn run() {
         // The main window's state is saved when it is asked to close (demo D8).
         .on_window_event(window_state::on_window_event)
         .setup(move |app| {
-            // First of all, before the store (the library scan runs on a thread of its own after it): the window is created hidden (tauri.conf.json), placed as
-            // the last run left it (maximized the first time), and shown, so it appears as early as it can (demo D8).
+            // First of all, before the store (the library scan runs on a thread of its own after it): the window is
+            // created hidden (tauri.conf.json), placed as the last run left it (maximized the first time), and shown,
+            // so it appears as early as it can (demo D8).
             let window_note = window_state::restore(app);
             let shown_ms = store::now_ms();
             let monitor = monitor::Monitor::new(Some(paths::log_dir().join("lorren.log")));

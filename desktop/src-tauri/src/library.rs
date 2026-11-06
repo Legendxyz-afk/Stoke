@@ -52,14 +52,9 @@ impl LibraryConfig {
     /// Spec §3.6 defaults. `LORREN_MODEL_DIRS` (semicolon-separated) and `LORREN_OLLAMA_DIR`
     /// (`none` disables Ollama) override them for tests and the end-to-end run.
     pub fn from_env(downloads: PathBuf) -> Self {
-        let folders = match std::env::var("LORREN_MODEL_DIRS") {
-            Ok(v) => v.split(';').filter(|s| !s.trim().is_empty()).map(PathBuf::from).collect(),
-            Err(_) => vec![
-                PathBuf::from(r"M:\New Drive\ai_models"),
-                PathBuf::from(r"M:\New Drive\Desktop\Programming\stoke\models"),
-                downloads,
-            ],
-        };
+        let model_dirs = std::env::var("LORREN_MODEL_DIRS").ok();
+        let userprofile = std::env::var("USERPROFILE").ok();
+        let folders = Self::folders_from(downloads, model_dirs.as_deref(), userprofile.as_deref());
         let ollama_models_dir = match std::env::var("LORREN_OLLAMA_DIR") {
             Ok(v) if v == "none" => None,
             Ok(v) => Some(PathBuf::from(v)),
@@ -68,6 +63,35 @@ impl LibraryConfig {
             }),
         };
         LibraryConfig { folders, ollama_models_dir, default_prefix: "qwen3-4b-instruct-2507-q4_k_m".into() }
+    }
+}
+
+impl LibraryConfig {
+    /// The watched folders from the environment's values. The downloads folder is always in the list. Only the
+    /// default list (no `LORREN_MODEL_DIRS`) also holds the user's Windows Downloads folder, where the website
+    /// tells a new user to save a model; a test's list never reaches the real user folders.
+    pub fn folders_from(downloads: PathBuf, model_dirs: Option<&str>, userprofile: Option<&str>) -> Vec<PathBuf> {
+        let mut folders: Vec<PathBuf> = match model_dirs {
+            Some(v) => v.split(';').filter(|s| !s.trim().is_empty()).map(PathBuf::from).collect(),
+            None => {
+                let mut v = vec![
+                    PathBuf::from(r"M:\New Drive\ai_models"),
+                    PathBuf::from(r"M:\New Drive\Desktop\Programming\stoke\models"),
+                    downloads.clone(),
+                ];
+                if let Some(home) = userprofile.filter(|h| !h.is_empty()) {
+                    let win = PathBuf::from(home).join("Downloads");
+                    if !v.contains(&win) {
+                        v.push(win);
+                    }
+                }
+                v
+            }
+        };
+        if !folders.contains(&downloads) {
+            folders.push(downloads);
+        }
+        folders
     }
 }
 
@@ -132,16 +156,68 @@ pub fn scan(cfg: &LibraryConfig) -> Vec<ModelInfo> {
     if let Some(root) = &cfg.ollama_models_dir {
         scan_ollama(root, &mut out);
     }
-    out.sort_by(|a, b| {
-        b.runnable.cmp(&a.runnable).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    out.sort_by(library_order);
     out.dedup_by(|a, b| a.id == b.id);
-    let default = out
-        .iter()
-        .position(|m| m.runnable && file_name_lower(&m.path).starts_with(&cfg.default_prefix))
-        .or_else(|| out.iter().position(|m| m.runnable));
-    if let Some(i) = default {
+    if let Some(i) = default_index(&out, &cfg.default_prefix) {
         out[i].is_default = true;
+    }
+    out
+}
+
+/// The default model: the first runnable one whose file name starts with the prefix, else the first runnable.
+fn default_index(lib: &[ModelInfo], default_prefix: &str) -> Option<usize> {
+    lib.iter()
+        .position(|m| m.runnable && file_name_lower(&m.path).starts_with(default_prefix))
+        .or_else(|| lib.iter().position(|m| m.runnable))
+}
+
+/// The library's order: runnable first, then by name.
+fn library_order(a: &ModelInfo, b: &ModelInfo) -> std::cmp::Ordering {
+    b.runnable.cmp(&a.runnable).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+}
+
+/// The entry of one GGUF file, as `scan_folder` makes it (the id, the name, a sidecar Modelfile's system prompt).
+fn describe_file(p: &Path, modelfiles: &[Modelfile]) -> ModelInfo {
+    let own = file_name_lower(&p.to_string_lossy());
+    let system = modelfiles
+        .iter()
+        .find(|m| m.from.as_deref().map_or(false, |f| file_name_lower(f) == own))
+        .and_then(|m| m.system.clone());
+    let source = system.as_ref().map(|_| "Modelfile".to_string());
+    let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let id = format!("file:{}", p.to_string_lossy().to_lowercase());
+    describe(p, "folder", id, name, system, source)
+}
+
+/// Adds one file to a scanned library without scanning again: described exactly as `scan_folder` would, put in the
+/// library's order, and the default when the library has none. An id already present is returned unchanged.
+pub fn add_file(lib: &mut Vec<ModelInfo>, path: &Path, default_prefix: &str) -> ModelInfo {
+    let modelfiles = path.parent().map(read_modelfiles).unwrap_or_default();
+    let m = describe_file(path, &modelfiles);
+    if let Some(have) = lib.iter().find(|x| x.id == m.id) {
+        return have.clone();
+    }
+    let at = lib.iter().position(|x| library_order(&m, x).is_lt()).unwrap_or(lib.len());
+    lib.insert(at, m);
+    if !lib.iter().any(|x| x.is_default) {
+        if let Some(i) = default_index(lib, default_prefix) {
+            lib[i].is_default = true;
+        }
+    }
+    lib[at].clone()
+}
+
+/// The Modelfiles in a folder (top level only), as `scan_folder` reads them.
+fn read_modelfiles(dir: &Path) -> Vec<Modelfile> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == "Modelfile" || name.to_lowercase().ends_with(".modelfile") {
+            if let Ok(text) = std::fs::read_to_string(e.path()) {
+                out.push(parse_modelfile(&text));
+            }
+        }
     }
     out
 }
@@ -162,15 +238,7 @@ fn scan_folder(dir: &Path, out: &mut Vec<ModelInfo>) {
         }
     }
     for p in ggufs {
-        let own = file_name_lower(&p.to_string_lossy());
-        let system = modelfiles
-            .iter()
-            .find(|m| m.from.as_deref().map_or(false, |f| file_name_lower(f) == own))
-            .and_then(|m| m.system.clone());
-        let source = system.as_ref().map(|_| "Modelfile".to_string());
-        let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let id = format!("file:{}", p.to_string_lossy().to_lowercase());
-        out.push(describe(&p, "folder", id, name, system, source));
+        out.push(describe_file(&p, &modelfiles));
     }
 }
 
@@ -368,5 +436,119 @@ mod tests {
         assert_eq!(m.params, vec![("temperature".into(), "0.4".into()), ("stop".into(), "<|eot_id|>".into())]);
         let plain = parse_modelfile("FROM x.gguf\nSYSTEM be brief\n");
         assert_eq!(plain.system.as_deref(), Some("be brief"));
+    }
+
+    fn folders(downloads: &str, model_dirs: Option<&str>, userprofile: Option<&str>) -> Vec<PathBuf> {
+        LibraryConfig::folders_from(PathBuf::from(downloads), model_dirs, userprofile)
+    }
+
+    #[test]
+    fn the_downloads_folder_is_watched_even_with_model_dirs_set() {
+        let with_dirs = folders(r"D:\dl", Some(r"D:\a;D:\b"), Some(r"C:\Users\x"));
+        assert_eq!(with_dirs, vec![PathBuf::from(r"D:\a"), PathBuf::from(r"D:\b"), PathBuf::from(r"D:\dl")]);
+        // Already in the list: not added twice.
+        let held = folders(r"D:\dl", Some(r"D:\dl;D:\b"), None);
+        assert_eq!(held, vec![PathBuf::from(r"D:\dl"), PathBuf::from(r"D:\b")]);
+    }
+
+    #[test]
+    fn the_windows_downloads_folder_is_in_the_default_list_only() {
+        let win = PathBuf::from(r"C:\Users\x").join("Downloads");
+        let ours = PathBuf::from(r"C:\Users\x\Lorren\models");
+        let default = folders(ours.to_str().unwrap(), None, Some(r"C:\Users\x"));
+        let at = |p: &PathBuf| default.iter().position(|d| d == p);
+        assert_eq!(at(&win), Some(at(&ours).unwrap() + 1));
+        assert!(!folders(r"D:\dl", Some(r"D:\a"), Some(r"C:\Users\x")).contains(&win));
+        // Not twice when the downloads folder is that folder.
+        let same = folders(win.to_str().unwrap(), None, Some(r"C:\Users\x"));
+        assert_eq!(same.iter().filter(|d| **d == win).count(), 1);
+    }
+
+    /// A one-folder library root; the folder name has a space in it.
+    fn one_folder(tag: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("lorren add {}-{}", std::process::id(), tag));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("my models");
+        fs::create_dir_all(&dir).unwrap();
+        (root, dir)
+    }
+
+    fn cfg_for(dir: &Path, prefix: &str) -> LibraryConfig {
+        LibraryConfig { folders: vec![dir.to_path_buf()], ollama_models_dir: None, default_prefix: prefix.into() }
+    }
+
+    #[test]
+    fn add_file_gives_the_id_a_scan_gives() {
+        let (_root, dir) = one_folder("id");
+        let file = dir.join("Nexus-Q4.gguf");
+        fixture::write(&file, &Spec::llama("Nexus")).unwrap();
+        let mut lib = Vec::new();
+        let added = add_file(&mut lib, &file, "nexus");
+        let scanned = scan(&cfg_for(&dir, "nexus"));
+        assert_eq!(scanned.len(), 1);
+        let s = &scanned[0];
+        assert_eq!(added.id, s.id);
+        assert_eq!(added.name, s.name);
+        assert_eq!(added.path, s.path);
+        assert_eq!(added.size_bytes, s.size_bytes);
+        assert_eq!(added.runnable, s.runnable);
+        assert_eq!(added.arch, s.arch);
+        assert_eq!(added.run_bytes, s.run_bytes);
+        assert_eq!(added.is_default, s.is_default);
+        assert_eq!(added.source, "folder");
+        assert_eq!(lib.len(), 1);
+    }
+
+    #[test]
+    fn add_file_into_an_empty_library_makes_the_default() {
+        let (_root, dir) = one_folder("empty");
+        let file = dir.join("Other.gguf");
+        fixture::write(&file, &Spec::llama("Other")).unwrap();
+        let mut lib = Vec::new();
+        let added = add_file(&mut lib, &file, "qwen3-4b-instruct-2507-q4_k_m");
+        assert!(added.is_default);
+        assert!(lib[0].is_default);
+    }
+
+    #[test]
+    fn add_file_keeps_an_existing_default() {
+        let (_root, dir) = one_folder("keep");
+        let a = dir.join("Alpha.gguf");
+        let b = dir.join("Zeta.gguf");
+        fixture::write(&a, &Spec::llama("Alpha")).unwrap();
+        fixture::write(&b, &Spec::llama("Zeta")).unwrap();
+        let mut lib = Vec::new();
+        add_file(&mut lib, &b, "zzz");
+        assert!(lib[0].is_default, "the first file is the default");
+        let added = add_file(&mut lib, &a, "alpha");
+        assert!(!added.is_default, "the default stays where it was");
+        assert_eq!(lib.iter().filter(|m| m.is_default).count(), 1);
+        assert!(lib.iter().find(|m| m.name == "Zeta").unwrap().is_default);
+        // Runnable first, then by name.
+        assert_eq!(lib.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), vec!["Alpha", "Zeta"]);
+    }
+
+    #[test]
+    fn add_file_twice_adds_once() {
+        let (_root, dir) = one_folder("twice");
+        let file = dir.join("Nexus.gguf");
+        fixture::write(&file, &Spec::llama("Nexus")).unwrap();
+        let mut lib = Vec::new();
+        let first = add_file(&mut lib, &file, "nexus");
+        let second = add_file(&mut lib, &file, "nexus");
+        assert_eq!(lib.len(), 1);
+        assert_eq!(first.id, second.id);
+    }
+
+    #[test]
+    fn add_file_reads_a_sidecar_modelfile() {
+        let (_root, dir) = one_folder("sidecar");
+        let file = dir.join("nexus.gguf");
+        fixture::write(&file, &Spec::llama("Nexus")).unwrap();
+        fs::write(dir.join("Modelfile"), "FROM ./nexus.gguf\nSYSTEM \"You are Nexus AI.\"\n").unwrap();
+        let mut lib = Vec::new();
+        let added = add_file(&mut lib, &file, "nexus");
+        assert_eq!(added.system_prompt.as_deref(), Some("You are Nexus AI."));
+        assert_eq!(added.system_source.as_deref(), Some("Modelfile"));
     }
 }

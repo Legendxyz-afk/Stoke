@@ -120,6 +120,53 @@ CREATE INDEX IF NOT EXISTS messages_by_chat ON messages(chat_id, created_ms);
 CREATE INDEX IF NOT EXISTS messages_by_parent ON messages(parent_id);
 ";
 
+/// Schema 2 (distribution step 2): settings, the cached catalog (one row), and the downloads.
+const SCHEMA2: &str = "
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS catalog (id INTEGER PRIMARY KEY CHECK (id = 1), json BLOB NOT NULL, minisig TEXT NOT NULL, fetched_ms INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS downloads (entry_id TEXT PRIMARY KEY, name TEXT NOT NULL, version INTEGER NOT NULL, url TEXT NOT NULL,
+  file TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, system_prompt TEXT,
+  state TEXT NOT NULL CHECK (state IN ('downloading', 'paused', 'failed', 'done')), error TEXT,
+  created_ms INTEGER NOT NULL, updated_ms INTEGER NOT NULL);
+";
+
+/// One download the user started (the manager's record; the bytes live in the downloads folder).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DownloadRow {
+    pub entry_id: String,
+    pub name: String,
+    pub version: i64,
+    pub url: String,
+    pub file: String,
+    pub size: u64,
+    pub sha256: String,
+    pub system_prompt: Option<String>,
+    /// "downloading", "paused", "failed" or "done"
+    pub state: String,
+    pub error: Option<String>,
+    pub created_ms: i64,
+    pub updated_ms: i64,
+}
+
+const DL_COLS: &str = "entry_id, name, version, url, file, size, sha256, system_prompt, state, error, created_ms, updated_ms";
+
+fn download_row(r: &Row) -> rusqlite::Result<DownloadRow> {
+    Ok(DownloadRow {
+        entry_id: r.get(0)?,
+        name: r.get(1)?,
+        version: r.get(2)?,
+        url: r.get(3)?,
+        file: r.get(4)?,
+        size: r.get::<_, i64>(5)? as u64,
+        sha256: r.get(6)?,
+        system_prompt: r.get(7)?,
+        state: r.get(8)?,
+        error: r.get(9)?,
+        created_ms: r.get(10)?,
+        updated_ms: r.get(11)?,
+    })
+}
+
 const CHAT_COLS: &str = "id, title, model_id, system_prompt, active_leaf_id, created_ms, updated_ms";
 const MSG_COLS: &str = "id, chat_id, parent_id, role, content, status, model_id, \
                         prompt_tokens, completion_tokens, ttft_ms, total_ms, error, created_ms";
@@ -199,10 +246,91 @@ impl Store {
             ));
         }
         conn.execute_batch(SCHEMA)?;
-        conn.pragma_update(None, "user_version", 1)?;
+        conn.execute_batch(SCHEMA2)?;
+        conn.pragma_update(None, "user_version", 2)?;
         // A reply that was streaming when the app died is interrupted, never "still streaming".
         conn.execute("UPDATE messages SET status = 'interrupted' WHERE status = 'streaming'", [])?;
         Ok(Store { conn })
+    }
+
+    pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        self.conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).optional()
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Keeps one row: the last catalog read, with its signature, to be verified again when it is read back.
+    pub fn save_catalog(&self, json: &[u8], minisig: &str, fetched_ms: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO catalog (id, json, minisig, fetched_ms) VALUES (1, ?1, ?2, ?3) \
+             ON CONFLICT(id) DO UPDATE SET json = excluded.json, minisig = excluded.minisig, fetched_ms = excluded.fetched_ms",
+            params![json, minisig, fetched_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_catalog(&self) -> rusqlite::Result<Option<(Vec<u8>, String, i64)>> {
+        self.conn
+            .query_row("SELECT json, minisig, fetched_ms FROM catalog WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()
+    }
+
+    pub fn upsert_download(&self, row: &DownloadRow) -> rusqlite::Result<()> {
+        self.conn.execute(
+            &format!(
+                "INSERT OR REPLACE INTO downloads ({DL_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+            ),
+            params![
+                row.entry_id,
+                row.name,
+                row.version,
+                row.url,
+                row.file,
+                row.size as i64,
+                row.sha256,
+                row.system_prompt,
+                row.state,
+                row.error,
+                row.created_ms,
+                row.updated_ms
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_download_state(&self, entry_id: &str, state: &str, error: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE downloads SET state = ?2, error = ?3, updated_ms = ?4 WHERE entry_id = ?1",
+            params![entry_id, state, error, now_ms()],
+        )?;
+        Ok(())
+    }
+
+    pub fn downloads(&self) -> rusqlite::Result<Vec<DownloadRow>> {
+        let mut st = self.conn.prepare(&format!("SELECT {DL_COLS} FROM downloads ORDER BY created_ms, entry_id"))?;
+        let rows = st.query_map([], download_row)?;
+        rows.collect()
+    }
+
+    pub fn delete_download(&self, entry_id: &str) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM downloads WHERE entry_id = ?1", [entry_id])?;
+        Ok(())
+    }
+
+    /// At start nothing is running: every `downloading` row becomes `paused` (the user resumes it).
+    pub fn pause_running_downloads(&self) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE downloads SET state = 'paused', updated_ms = ?1 WHERE state = 'downloading'",
+            [now_ms()],
+        )
     }
 
     pub fn create_chat(&self, model_id: &str, system_prompt: Option<&str>) -> rusqlite::Result<Chat> {
@@ -528,5 +656,121 @@ more", MsgStatus::Done, None).unwrap();
         let r = s.append_message(&c.id, Some(&u.id), Role::Assistant, "a", MsgStatus::Done, None).unwrap();
         s.conn.execute("UPDATE messages SET parent_id = ?1 WHERE id = ?2", params![r.id, u.id]).unwrap();
         assert!(s.active_path(&c.id).is_err());
+    }
+
+    fn row(id: &str, state: &str) -> DownloadRow {
+        DownloadRow {
+            entry_id: id.into(),
+            name: format!("Model {id}"),
+            version: 1,
+            url: format!("https://huggingface.co/x/resolve/abc/{id}.gguf"),
+            file: format!("{id}.gguf"),
+            size: 2_497_280_736,
+            sha256: "ab".repeat(32),
+            system_prompt: None,
+            state: state.into(),
+            error: None,
+            created_ms: 10,
+            updated_ms: 10,
+        }
+    }
+
+    #[test]
+    fn a_version_1_database_opens_as_version_2_and_keeps_its_chats() {
+        let path = std::env::temp_dir().join(format!("lorren store v1 {}.db", std::process::id()));
+        let clean = || {
+            for ext in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+            }
+        };
+        clean();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            conn.execute(
+                "INSERT INTO chats (id, title, model_id, system_prompt, active_leaf_id, created_ms, updated_ms) \
+                 VALUES ('c1', 'Old chat', 'file:q', NULL, NULL, 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.get_chat("c1").unwrap().title, "Old chat");
+        let v: i64 = s.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 2);
+        for t in ["settings", "catalog", "downloads"] {
+            let n: i64 = s
+                .conn
+                .query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [t], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "table {t}");
+        }
+        drop(s);
+        clean();
+    }
+
+    #[test]
+    fn settings_round_trip_and_a_missing_key_is_none() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.get_setting("update_mode").unwrap(), None);
+        s.set_setting("update_mode", "notify").unwrap();
+        assert_eq!(s.get_setting("update_mode").unwrap().as_deref(), Some("notify"));
+        s.set_setting("update_mode", "off").unwrap();
+        assert_eq!(s.get_setting("update_mode").unwrap().as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn the_catalog_cache_keeps_one_row() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.load_catalog().unwrap(), None);
+        s.save_catalog(b"{\"format\":1}", "sig one", 100).unwrap();
+        s.save_catalog(&[0u8, 255, 10, 13], "sig two", 200).unwrap();
+        assert_eq!(s.load_catalog().unwrap(), Some((vec![0u8, 255, 10, 13], "sig two".to_string(), 200)));
+        let n: i64 = s.conn.query_row("SELECT count(*) FROM catalog", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn downloads_rows_round_trip_and_running_ones_pause_at_start() {
+        let s = Store::open_in_memory().unwrap();
+        let mut a = row("a", "downloading");
+        a.system_prompt = Some("be brief".into());
+        s.upsert_download(&a).unwrap();
+        s.upsert_download(&row("b", "downloading")).unwrap();
+        s.upsert_download(&row("c", "done")).unwrap();
+        s.upsert_download(&row("d", "failed")).unwrap();
+        let all = s.downloads().unwrap();
+        assert_eq!(all.len(), 4);
+        let got = all.iter().find(|r| r.entry_id == "a").unwrap();
+        assert_eq!(got.system_prompt.as_deref(), Some("be brief"));
+        assert_eq!(got.size, 2_497_280_736);
+        assert_eq!(got.sha256, "ab".repeat(32));
+        // An upsert replaces the row.
+        let mut a2 = a.clone();
+        a2.version = 2;
+        s.upsert_download(&a2).unwrap();
+        assert_eq!(s.downloads().unwrap().len(), 4);
+        assert_eq!(s.downloads().unwrap().iter().find(|r| r.entry_id == "a").unwrap().version, 2);
+        // The state and the error change together; the update time moves.
+        s.set_download_state("d", "failed", Some("the disk is full")).unwrap();
+        let d = s.downloads().unwrap().into_iter().find(|r| r.entry_id == "d").unwrap();
+        assert_eq!(d.error.as_deref(), Some("the disk is full"));
+        assert!(d.updated_ms > 10);
+        // A state outside the four is refused.
+        assert!(s.set_download_state("d", "bogus", None).is_err());
+        // At start every running row is paused, and only those.
+        assert_eq!(s.pause_running_downloads().unwrap(), 2);
+        for r in s.downloads().unwrap() {
+            let want = match r.entry_id.as_str() {
+                "a" | "b" => "paused",
+                "c" => "done",
+                _ => "failed",
+            };
+            assert_eq!(r.state, want, "{}", r.entry_id);
+        }
+        assert_eq!(s.pause_running_downloads().unwrap(), 0);
+        s.delete_download("a").unwrap();
+        assert_eq!(s.downloads().unwrap().len(), 3);
     }
 }
