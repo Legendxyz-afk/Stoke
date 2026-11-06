@@ -1,0 +1,470 @@
+<!doctype html>
+<!--
+  Lorren: Discover, the empty-library chat and the update setting. A clickable design demo (one file, plain HTML/CSS/JS).
+  It mirrors the real app (desktop/src): its CSS is copied verbatim, the class names are the app's. Nothing here is real:
+  the catalog is the two probed entries, the download is simulated, nothing is stored. The strip at the bottom is the demo's.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="theme-color" content="#090b0e">
+<title>Lorren: Discover, design demo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* ---- the app's CSS, verbatim: theme.css, tabs/tabs.css, chat/chat.css ---- */
+:root {
+  color-scheme: dark;
+  --bg: oklch(0.15 0.006 255); --text: oklch(0.95 0.004 255);
+  --l27: oklch(0.27 0.008 255); --l22: oklch(0.22 0.008 255); --l20: oklch(0.20 0.008 255);
+  --l24: oklch(0.24 0.008 255); --l30: oklch(0.30 0.008 255); --t21: oklch(0.21 0.008 255);
+  --sel: oklch(0.19 0.008 255); --field: oklch(0.185 0.006 255); --code: oklch(0.175 0.006 255);
+  --d50: oklch(0.50 0.008 255); --d52: oklch(0.52 0.008 255); --d55: oklch(0.55 0.008 255);
+  --d58: oklch(0.58 0.008 255); --d60: oklch(0.60 0.008 255); --d66: oklch(0.66 0.008 255);
+  --d68: oklch(0.68 0.008 255); --d70: oklch(0.70 0.008 255); --d72: oklch(0.72 0.008 255);
+  --d74: oklch(0.74 0.008 255); --d80: oklch(0.80 0.008 255); --d86: oklch(0.86 0.008 255);
+  --accent: oklch(0.76 0.09 70); --shared: oklch(0.70 0.07 250); --flame: oklch(0.66 0.09 30);
+  --sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+html, body, #app { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+body { font-family: var(--sans); font-size: 13px; overflow: hidden; }
+button, input, textarea, select { font-family: inherit; }
+::selection { background: oklch(0.70 0.07 250 / 0.35); }
+
+.app { display: flex; flex-direction: column; height: 100vh; }
+.content { flex: 1; min-height: 0; display: flex; }
+.mono { font-family: var(--mono); }
+.num { font-variant-numeric: tabular-nums; }
+.cap { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; color: var(--d60); }
+.ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dim { color: var(--d55); }
+.flame-text { color: var(--flame); }
+
+.topbar { height: 54px; flex-shrink: 0; border-bottom: 1px solid var(--l27); display: flex; align-items: stretch; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 22px; border-right: 1px solid var(--l22); }
+.wordmark { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.version { font-family: var(--mono); font-size: 10px; color: var(--d60); border: 1px solid var(--l30); padding: 2px 5px; }
+.tabs { display: flex; align-items: stretch; }
+.tab { display: flex; align-items: center; padding: 0 18px; font-size: 12.5px; cursor: pointer; background: none;
+       border: 0; border-bottom: 2px solid transparent; color: var(--d55); }
+.tab:hover { color: var(--d80); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.engine { margin-left: auto; display: flex; align-items: center; gap: 22px; padding: 0 22px;
+          font-family: var(--mono); font-size: 11px; color: var(--d68); min-width: 0; }
+/* Every item of the cluster stays on one line, whole; the model name (the only `.ell` in it) is the one that gives way. */
+.engine > * { white-space: nowrap; flex-shrink: 0; }
+.engine > .ell { flex-shrink: 1; min-width: 0; }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 7px; background: var(--d50); }
+.dot.serving { background: var(--accent); }
+.dot.starting, .dot.restarting { background: var(--shared); }
+.dot.failed { background: var(--flame); }
+
+.statusbar { height: 30px; flex-shrink: 0; border-top: 1px solid var(--l27); display: flex; align-items: center;
+             gap: 20px; padding: 0 22px; font-family: var(--mono); font-size: 10px; color: var(--d52); }
+.statusbar .spacer { flex: 1; }
+
+.col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.left { width: 260px; flex-shrink: 0; border-right: 1px solid var(--l22); }
+.center { flex: 1; border-right: 1px solid var(--l27); }
+.right { width: 396px; flex-shrink: 0; overflow-y: auto; }
+.head { padding: 13px 20px 11px; border-bottom: 1px solid var(--l27); display: flex; align-items: baseline; gap: 10px; }
+.title { font-size: 13px; font-weight: 600; }
+.section { padding: 16px 20px; border-bottom: 1px solid var(--l22); display: flex; flex-direction: column; gap: 10px; }
+.fact { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 14px; font-family: var(--mono); font-size: 11px; }
+.fact .k { color: var(--d58); flex-shrink: 0; }
+/* A value that does not fit beside its label goes under it, right-aligned, instead of being cut or drawn over it. */
+.fact .v { margin-left: auto; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btn { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; cursor: pointer; background: none;
+       border: 1px solid var(--l30); color: var(--d72); padding: 9px 14px; }
+.btn.accent { border-color: var(--accent); color: var(--accent); }
+.btn.accent:hover { background: oklch(0.76 0.09 70 / 0.12); }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--d55); font-family: var(--mono);
+        font-size: 10px; letter-spacing: 0.08em; }
+.link:hover { color: var(--text); }
+.pill { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; border: 1px solid currentColor; padding: 3px 6px; text-align: center; }
+.bar { height: 4px; background: var(--l24); position: relative; }
+.bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+.scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--l30) transparent; }
+.placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+.table-head { display: grid; gap: 14px; padding: 14px 22px 8px; font-family: var(--mono); font-size: 10px;
+              letter-spacing: 0.1em; color: var(--d55); border-bottom: 1px solid var(--l27); }
+.table-row { display: grid; gap: 14px; align-items: center; padding: 0 22px; border-bottom: 1px solid var(--l20); }
+.table-row.selected { background: var(--sel); }
+
+/* Up to 1279 px wide (the window's minimum is 1100) the bars and the side columns give up some room, so that the top bar's
+   engine cluster, the Models table and the Chat composer fit. One query for all of it. */
+@media (max-width: 1279px) {
+  .brand { padding: 0 16px; }
+  .tab { padding: 0 12px; }
+  .engine { gap: 14px; padding: 0 16px; }
+  .engine .static { display: none; }
+  .left { width: 220px; }
+  .right { width: 320px; }
+}
+.wide { border-right: 0; }
+.table-row.clickable { cursor: pointer; }
+.pill.tag { margin-left: 8px; }
+/* A model's name and its DEFAULT / LOADED tags: the name shortens first, the tags are never cut. */
+.name-cell { display: flex; align-items: center; min-width: 0; }
+.name-cell > .ell { min-width: 0; }
+.name-cell > .pill.tag { flex: none; }
+.accent-text { color: var(--accent); }
+.shared-text { color: var(--shared); }
+.tab-notice { padding: 10px 22px; border-bottom: 1px solid var(--l22); font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+.filters { margin-left: auto; display: flex; gap: 14px; }
+.link.on { color: var(--text); }
+.logbox { flex: 1; padding: 10px 22px; font-size: 11px; line-height: 1.7; white-space: pre-wrap; }
+/* A line that wraps continues under its message, not under the time column: a hanging indent of the prefix, which is the
+   clock's 8 characters, a space and the source padded to 8 (LogsTab). A long path breaks wherever it has to. */
+.logbox > div { padding-left: 17ch; text-indent: -17ch; overflow-wrap: anywhere; }
+.log-warn { color: var(--accent); }
+.log-error { color: var(--flame); }
+.chat-item { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; background: none; border: 0;
+             border-bottom: 1px solid var(--l20); padding: 12px 20px; color: var(--d80); cursor: pointer; font-size: 12.5px; }
+.chat-item.selected { background: var(--sel); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.messages { flex: 1; padding: 18px 28px; display: flex; flex-direction: column; gap: 18px; }
+.msg { display: flex; flex-direction: column; gap: 6px; max-width: 860px; }
+.msg-head { display: flex; gap: 12px; align-items: center; }
+.msg-user { white-space: pre-wrap; background: var(--field); border: 1px solid var(--l24); padding: 10px 14px; }
+.msg-error { color: var(--flame); font-family: var(--mono); font-size: 11px; }
+.versions { display: inline-flex; gap: 6px; align-items: center; }
+.status-stopped, .status-interrupted, .status-streaming { color: var(--shared); }
+.status-error { color: var(--flame); }
+.status-ok { color: var(--d72); }
+.history-cut { border-top: 1px dashed var(--l30); padding-top: 6px; }
+/* A reply that has no token yet (demo D2): `<phase> · <N> s`, the phase pulsing gently, and after 15 s a dim line under it. */
+.pending { display: flex; flex-direction: column; gap: 4px; color: var(--d60); font-family: var(--mono); font-size: 11px; }
+.pending-phase { animation: pending-pulse 1.6s ease-in-out infinite; }
+.pending-hint { font-size: 10.5px; line-height: 1.5; }
+@keyframes pending-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .pending-phase { animation: none; } }
+.notice { color: var(--flame); font-family: var(--mono); font-size: 11px; padding: 0 20px 8px; }
+.composer { border-top: 1px solid var(--l27); padding: 12px 20px; display: flex; gap: 12px; align-items: flex-end; }
+.composer textarea { flex: 1; min-height: 44px; max-height: 200px; resize: vertical; background: var(--field); color: var(--text);
+                     border: 1px solid var(--l30); padding: 10px 12px; font-size: 13px; }
+.composer-actions { display: flex; gap: 8px; }
+.md { line-height: 1.55; overflow-wrap: anywhere; }
+.md pre { background: var(--code); border: 1px solid var(--l24); padding: 10px 12px; overflow-x: auto; }
+.md code { font-family: var(--mono); font-size: 12px; }
+.md pre code.hljs { background: transparent; padding: 0; }
+.md table { border-collapse: collapse; }
+.md th, .md td { border: 1px solid var(--l27); padding: 4px 8px; }
+.md-link { color: var(--shared); text-decoration: underline dotted; }
+.right select { background: var(--field); color: var(--text); border: 1px solid var(--l30); padding: 7px 8px;
+                font-family: var(--mono); font-size: 11px; }
+
+/* ---- the demo's own parts ---- */
+.app { height: calc(100vh - 38px); }
+.demo { height: 38px; box-sizing: border-box; border-top: 1px dashed var(--l30); background: var(--code); display: flex; align-items: center;
+        gap: 22px; padding: 0 22px; font-family: var(--mono); font-size: 10px; color: var(--d60); position: fixed; left: 0; right: 0; bottom: 0; }
+.demo label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--d74); }
+.demo input { accent-color: oklch(0.76 0.09 70); margin: 0; }
+.search { border-top: 1px solid var(--l27); padding: 16px 22px; display: flex; align-items: center; gap: 12px; }
+.search .lab { font-family: var(--mono); font-size: 11px; color: var(--d60); }
+.search input { flex: 1; min-width: 0; border: 1px solid var(--l30); background: var(--field); padding: 9px 12px; font-family: var(--mono);
+                font-size: 12px; color: var(--text); outline: none; }
+.search input:focus { border-color: var(--d55); }
+.search .btn { padding: 9px 18px; }
+.choice { display: flex; gap: 14px; align-items: flex-start; padding: 14px 22px; text-align: left; width: 100%; background: none;
+          border: 0; border-bottom: 1px solid var(--l20); color: var(--d80); cursor: pointer; }
+.choice.selected { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); }
+.radio { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--d55); margin-top: 3px; flex-shrink: 0; }
+.choice.selected .radio { border-color: var(--accent); background: var(--accent); }
+.bar.thick { margin: 2px 0; }
+.rowline { display: flex; gap: 14px; align-items: center; font-family: var(--mono); font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="demo" id="demo"></div>
+<script>
+'use strict';
+/* ---------- data ---------- */
+const GIB = 1073741824, MIB = 1048576;
+const gb = b => (b / GIB).toFixed(1) + ' GB';
+const CATALOG = [
+  { id: 'qwen', name: 'Qwen3-4B-Instruct-2507',
+    desc: "Qwen3 4B Instruct, July 2025: Lorren's default, quick and capable on the processor.",
+    arch: 'qwen3', quant: 'Q4_K_M', bytes: 2497280736, template: 'chatml',
+    licence: 'Apache-2.0', licenceUrl: 'https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507/blob/main/LICENSE',
+    from: 'bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF @ ae44f08', file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf', sha: '2fde00ce' },
+  { id: 'llama', name: 'Llama-3.2-3B-Instruct',
+    desc: "Meta's Llama 3.2 3B Instruct: smaller and quicker, for everyday chats.",
+    arch: 'llama', quant: 'Q4_K_M', bytes: 2019377696, template: 'llama3',
+    licence: 'Llama 3.2 Community License', licenceUrl: 'https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct/blob/main/LICENSE.txt',
+    from: 'bartowski/Llama-3.2-3B-Instruct-GGUF @ 5ab33fa', file: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf', sha: '6c1a2b41' },
+];
+const FREE_OK = 412.0 * GIB, FREE_LOW = 1.2 * GIB;
+
+/* ---------- state ---------- */
+let S;
+function fresh() {
+  return { tab: 'Chat', lib: [], dl: {}, sel: 'qwen', q: '', qApplied: '', draft: '', chats: [], msgs: [],
+           fast: false, failNext: false, lowRoom: false, update: 'AUTO', upd: { phase: 'idle', pct: 0 } };
+}
+S = fresh();
+const entry = id => CATALOG.find(c => c.id === id);
+const dlOf = id => S.dl[id] || (S.dl[id] = { phase: 'idle', done: 0, dropped: false, cd: 0, err: '', speed: 0, vleft: 0, t: 0 });
+const free = () => (S.lowRoom ? FREE_LOW : FREE_OK);
+const inLib = id => S.lib.includes(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const pct = (d, e) => Math.floor((d.done / e.bytes) * 100);
+const dur = s => { s = Math.max(1, Math.round(s)); return s >= 60 ? Math.floor(s / 60) + ' min ' + (s % 60) + ' s' : s + ' s'; };
+const mbps = b => (b / MIB).toFixed(1) + ' MB/s';
+const defModel = () => entry(S.lib.includes('qwen') ? 'qwen' : S.lib[0]);
+
+/* ---------- the app's chrome ---------- */
+const TABS = ['Chat', 'Swarm', 'Models', 'Requests', 'Logs', 'Settings'];
+function topbar() {
+  const m = S.lib.length ? defModel().name : 'no model';
+  return `<header class="topbar">
+    <div class="brand"><span class="wordmark">lorren</span><span class="version">0.1.0</span></div>
+    <nav class="tabs" role="tablist">${TABS.map(t => `<button role="tab" class="tab" aria-selected="${t === S.tab}" data-a="tab" data-v="${t}">${t}</button>`).join('')}</nav>
+    <div class="engine" aria-label="engine">
+      <span><i class="dot"></i>stopped</span>
+      <span class="ell" style="max-width:260px" title="${esc(m)}">${esc(m)}</span>
+      <span class="dim static">t=auto</span><span class="dim static">kv q8</span>
+      <span class="dim">app 148 MB · engine 0.0 GB · 6.1/15.6 GB</span>
+    </div></header>`;
+}
+function badge() {
+  const v = '0.1.1';
+  if (S.update === 'OFF') return `<span id="upd">updates off</span>`;
+  if (S.update === 'AUTO') return `<button class="link" id="upd" data-a="noop">up to date (0.1.0)</button>`;
+  if (S.upd.phase === 'downloading') return `<span id="upd">downloading ${v} ${S.upd.pct}%</span>`;
+  if (S.upd.phase === 'ready') return `<button class="link accent-text" id="upd" data-a="noop">update ${v} ready · RESTART TO INSTALL</button>`;
+  return `<button class="link" id="upd" data-a="updget">update ${v} available · DOWNLOAD</button>`;
+}
+function statusbar() {
+  return `<footer class="statusbar"><span>session 4m</span><span>${S.msgs.length} request${S.msgs.length === 1 ? '' : 's'}</span>
+    <span>0 engine restarts</span><span class="spacer"></span>${badge()}<span>engine frozen b1ee6b3 · ctx 4096 · 2 parallel</span></footer>`;
+}
+function placeholder(t) {
+  const text = t === 'Swarm' ? 'The Swarm view arrives in milestone 3. Its engine panels need telemetry the engine adds after m7.'
+    : 'Arrives in a later milestone.';
+  return `<div class="placeholder"><span style="font-size:15px;font-weight:600">${t}</span><span class="mono dim" style="font-size:11px">${text}</span></div>`;
+}
+
+/* ---------- Chat ---------- */
+function chatTab() {
+  const empty = S.lib.length === 0;
+  const mname = empty ? '' : defModel().name;
+  const list = S.chats.length === 0 ? `<div class="dim mono" style="padding:20px;font-size:11px">No chats yet.</div>`
+    : S.chats.map(c => `<button class="chat-item selected" aria-current="true"><span class="ell">${esc(c)}</span><span class="cap ell">${esc(mname)}</span></button>`).join('');
+  const transcript = empty
+    ? `<div class="mono" style="font-size:11.5px;line-height:1.6;max-width:520px">No model yet. Lorren needs one to chat: get one from Discover (about 2 GB, a few minutes).</div>
+       <div><button class="btn accent" data-a="tab" data-v="Models">OPEN DISCOVER</button></div>`
+    : S.msgs.length === 0 ? `<div class="dim mono" style="font-size:11px">Type a message to start a chat.</div>`
+    : S.msgs.map(m => `<div class="msg"><div class="msg-user">${esc(m)}</div></div>`).join('');
+  const ph = empty ? 'Get a model from Discover to start chatting' : 'Message (Enter sends, Shift+Enter is a new line)';
+  const opts = empty ? '<option>no model</option>' : S.lib.map(id => `<option>${esc(entry(id).name)}${id === 'qwen' ? ' (default)' : ''}</option>`).join('');
+  return `<nav class="col left"><div class="head"><span class="title">Chats</span><button class="link" style="margin-left:auto" data-a="newchat">+ NEW</button></div>
+      <div class="scroll">${list}</div></nav>
+    <section class="col center"><div class="head"><span class="title ell">${S.chats.length ? esc(S.chats[0]) : 'Chat'}</span><span class="cap">${S.chats.length ? esc(mname) : ''}</span></div>
+      <div class="scroll messages" aria-label="messages">${transcript}</div>
+      <div class="composer"><textarea id="draft" aria-label="message" placeholder="${ph}" ${empty ? 'disabled' : ''}>${esc(S.draft)}</textarea>
+        <div class="composer-actions"><button class="btn accent" data-a="send" ${empty || !S.draft.trim() ? 'disabled' : ''}>SEND</button></div></div></section>
+    <aside class="col right"><div class="section"><span class="cap">MODEL</span><select aria-label="model" ${empty ? 'disabled' : ''}>${opts}</select>
+        <div class="fact"><span class="k">engine</span><span class="v">${S.chats.length ? 'stopped' : '—'}</span></div></div>
+      <div class="section"><span class="cap">LAST REPLY</span>
+        <div class="fact"><span class="k">first token</span><span class="v num">—</span></div>
+        <div class="fact"><span class="k">speed</span><span class="v num">—</span></div>
+        <div class="fact"><span class="k">tokens in · out</span><span class="v num">— · —</span></div>
+        <div class="fact"><span class="k">total</span><span class="v num">—</span></div></div>
+      <div class="section"><span class="cap">CONTEXT</span><div class="bar" aria-label="context used"><i style="width:0%"></i></div>
+        <div class="fact"><span class="k">last request</span><span class="v num">— / 4,096</span></div>
+        <span class="mono dim" style="font-size:10.5px;line-height:1.5">Each turn sends the last ~1,500 tokens of the chat. The engine re-reads them on every turn until it keeps a cache between turns, so more history means a longer wait for the first word.</span></div>
+    </aside>`;
+}
+
+/* ---------- Models + Discover ---------- */
+const LCOLS = 'minmax(140px, 1fr) 56px 64px 56px 64px 64px 80px';
+const DCOLS = 'minmax(140px, 1fr) 64px 64px 64px 150px 96px';
+function statusWord(e) {
+  const d = dlOf(e.id);
+  if (inLib(e.id)) return ['IN LIBRARY', 'shared-text'];
+  switch (d.phase) {
+    case 'downloading': return [pct(d, e) + '%', 'accent-text'];
+    case 'dropped': return [pct(d, e) + '%', 'flame-text'];
+    case 'paused': return ['PAUSED', ''];
+    case 'verifying': return ['VERIFYING', 'accent-text'];
+  }
+  return ['GET', 'accent-text'];
+}
+function modelsTab() {
+  const libRows = S.lib.length === 0
+    ? `<div class="dim mono" style="padding:20px 22px;font-size:11px">No models yet. Discover has two to start with.</div>`
+    : S.lib.map(id => { const e = entry(id); return `<div role="row" class="table-row" style="grid-template-columns:${LCOLS};height:44px">
+        <span class="name-cell"><span class="ell">${e.name}</span>${id === 'qwen' ? '<span class="pill tag accent-text">DEFAULT</span>' : ''}</span>
+        <span class="mono dim">discover</span><span class="mono">${e.arch}</span><span class="mono">${e.quant}</span><span class="mono num">${gb(e.bytes)}</span>
+        <span class="mono">${e.template}</span><span class="pill">RUNNABLE</span></div>`; }).join('');
+  const q = S.qApplied.trim().toLowerCase();
+  const shown = CATALOG.filter(e => e.name.toLowerCase().includes(q));
+  const rows = shown.length === 0 ? `<div class="dim mono" style="padding:20px 22px;font-size:11px">No match in the catalog.</div>`
+    : shown.map(e => { const [w, c] = statusWord(e); return `<div role="row" class="table-row clickable ${e.id === S.sel ? 'selected' : ''}" style="grid-template-columns:${DCOLS};height:44px" data-a="sel" data-v="${e.id}">
+        <span class="name-cell"><span class="ell">${e.name}</span></span><span class="mono">${e.arch}</span><span class="mono">${e.quant}</span>
+        <span class="mono num">${gb(e.bytes)}</span><span class="mono dim ell" title="${esc(e.licence)}">${esc(e.licence)}</span>
+        <span class="pill ${c}" data-p="st-${e.id}">${w}</span></div>`; }).join('');
+  return `<section class="col center"><div class="head"><span class="title">Models</span><span class="cap">${S.lib.length} IN LIBRARY · ${S.lib.length} RUNNABLE</span></div>
+    <div class="scroll" style="flex:1">
+      <div class="table-head" style="grid-template-columns:${LCOLS}"><span>NAME</span><span>SOURCE</span><span>ARCH</span><span>QUANT</span><span>SIZE</span><span>TEMPLATE</span><span>STATUS</span></div>
+      ${libRows}
+      <div class="head" style="border-top:1px solid var(--l27);margin-top:20px"><span class="title">Discover</span><span class="cap">${CATALOG.length} IN THE CATALOG</span></div>
+      <div class="table-head" style="grid-template-columns:${DCOLS}"><span>NAME</span><span>ARCH</span><span>QUANT</span><span>SIZE</span><span>LICENCE</span><span>STATUS</span></div>
+      ${rows}
+    </div>
+    <div class="search"><span class="lab">discover</span><input id="q" aria-label="search the catalog" placeholder="qwen" value="${esc(S.q)}" autocomplete="off"><button class="btn accent" data-a="search">SEARCH</button></div>
+    </section><aside class="col right">${detail(entry(S.sel))}</aside>`;
+}
+function prog(e, d) { return `${gb(d.phase === 'verifying' ? e.bytes : d.done)} / ${gb(e.bytes)} · ${d.phase === 'verifying' ? 100 : pct(d, e)}%`; }
+function spd(e, d) {
+  if (d.phase !== 'downloading') return '—';
+  return `${mbps(d.speed)} · ${dur((e.bytes - d.done) / d.speed)} left`;
+}
+function action(e) {
+  const d = dlOf(e.id);
+  const room = e.bytes <= free();
+  const need = `needs ${gb(e.bytes)} · ${(free() / GIB).toFixed(1)} GB free`;
+  if (inLib(e.id)) return `<div class="section"><span class="cap">IN LIBRARY</span><span class="mono dim" style="font-size:11px">Saved as ${e.file}. Chat can use it now.</span></div>`;
+  let body;
+  if (d.phase === 'idle') {
+    body = (room ? `<span class="mono" style="font-size:11px">${need}</span>` : `<span class="mono flame-text" style="font-size:11px">${need}: free some space first</span>`) +
+      (d.err ? `<span class="mono flame-text" style="font-size:11px">${esc(d.err)}</span>` : '') +
+      `<div><button class="btn accent" data-a="get" ${room ? '' : 'disabled'}>GET</button></div>`;
+  } else {
+    const p = pct(d, e);
+    const line = d.phase === 'verifying' ? 'checking the file against its sha256'
+      : d.phase === 'dropped' ? '<span class="flame-text" data-p="cd">connection lost · retrying in ' + d.cd + ' s</span>'
+      : d.phase === 'paused' ? 'paused at ' + p + '%' : '';
+    const ctl = d.phase === 'verifying' ? '' : `<span class="rowline">${d.phase === 'paused' ? '<button class="link" data-a="resume">RESUME</button>'
+      : d.phase === 'downloading' ? '<button class="link" data-a="pause">PAUSE</button>' : ''}<button class="link" data-a="cancel">CANCEL</button></span>`;
+    body = `<div class="bar thick"><i data-p="bar" style="width:${d.phase === 'verifying' ? 100 : (d.done / e.bytes) * 100}%"></i></div>
+      <div class="fact"><span class="k" data-p="done">${prog(e, d)}</span><span class="v num" data-p="speed">${spd(e, d)}</span></div>
+      ${line ? `<span class="mono dim" style="font-size:11px">${line}</span>` : ''}${ctl}`;
+  }
+  const cap = d.phase === 'idle' ? 'DISK ROOM' : d.phase === 'verifying' ? 'VERIFYING' : d.phase === 'paused' ? 'PAUSED' : 'DOWNLOADING';
+  return `<div class="section"><span class="cap">${cap}</span>${body}</div>`;
+}
+function detail(e) {
+  return `<div class="section"><span class="cap">MODEL</span><span class="title">${e.name}</span>
+      <span style="line-height:1.5;color:var(--d80)">${esc(e.desc)}</span></div>
+    <div class="section">
+      <div class="fact"><span class="k">architecture</span><span class="v">${e.arch}</span></div>
+      <div class="fact"><span class="k">quantization</span><span class="v">${e.quant}</span></div>
+      <div class="fact"><span class="k">size</span><span class="v num">${gb(e.bytes)}</span></div>
+      <div class="fact"><span class="k">licence</span><span class="v"><a class="md-link" href="${e.licenceUrl}" target="_blank" rel="noopener" title="${e.licenceUrl}">${esc(e.licence)}</a></span></div>
+      <div class="fact"><span class="k">comes from</span><span class="v" title="${esc(e.from)}">${esc(e.from)}</span></div>
+      <div class="fact"><span class="k">saved as</span><span class="v" title="${e.file}">${e.file}</span></div>
+    </div>${action(e)}`;
+}
+
+/* ---------- Settings ---------- */
+const CHOICES = [
+  ['AUTO', 'Downloads updates in the background and installs them when you restart.'],
+  ['NOTIFY', 'Tells you when there is one, and downloads only when you say.'],
+  ['OFF', 'Never checks.'],
+];
+function settingsTab() {
+  return `<nav class="col left"><div class="head"><span class="title">Settings</span></div>
+      <div class="scroll"><button class="chat-item selected" aria-current="true"><span class="cap">UPDATES</span></button></div></nav>
+    <section class="col center wide"><div class="head"><span class="title">Updates</span><span class="cap">WHEN A NEW VERSION COMES OUT</span></div>
+      <div class="scroll">${CHOICES.map(([k, t]) => `<button class="choice ${S.update === k ? 'selected' : ''}" data-a="upd" data-v="${k}" role="radio" aria-checked="${S.update === k}">
+        <i class="radio"></i><span style="display:flex;flex-direction:column;gap:6px;align-items:flex-start"><span style="display:flex;align-items:center;gap:8px"><span class="mono" style="font-size:11px;letter-spacing:0.08em">${k}</span>${k === 'AUTO' ? '<span class="pill">DEFAULT</span>' : ''}</span>
+        <span class="mono dim" style="font-size:11px">${t}</span></span></button>`).join('')}</div></section>`;
+}
+
+/* ---------- render ---------- */
+function body() {
+  switch (S.tab) {
+    case 'Chat': return chatTab();
+    case 'Models': return modelsTab();
+    case 'Settings': return settingsTab();
+    default: return placeholder(S.tab);
+  }
+}
+function render() {
+  const a = document.activeElement, id = a && a.id, ss = a && a.selectionStart, se = a && a.selectionEnd;
+  document.getElementById('app').innerHTML = `<div class="app">${topbar()}<div class="content">${body()}</div>${statusbar()}</div>`;
+  if (id) { const n = document.getElementById(id); if (n) { n.focus(); try { n.setSelectionRange(ss, se); } catch (e) {} } }
+  const lab = (k, t, on) => `<label><input type="checkbox" data-a="toggle" data-v="${k}" ${on ? 'checked' : ''}>${t}</label>`;
+  document.getElementById('demo').innerHTML = `<span>DEMO CONTROLS</span><span>demo clock ${S.fast ? 40 : 8}×</span>${lab('fast', 'fast downloads', S.fast)}${lab('failNext', 'fail the next checksum', S.failNext)}${lab('lowRoom', 'not enough room', S.lowRoom)}
+    <button class="link" data-a="reset">RESET TO FIRST RUN</button>`;
+}
+function patch() {
+  const e = entry(S.sel), d = dlOf(e.id);
+  const set = (k, h) => { const n = document.querySelector(`[data-p="${k}"]`); if (n && n.innerHTML !== h) n.innerHTML = h; };
+  const bar = document.querySelector('[data-p="bar"]'); if (bar) bar.style.width = (d.done / e.bytes) * 100 + '%';
+  set('done', prog(e, d)); set('speed', spd(e, d)); set('cd', 'connection lost · retrying in ' + d.cd + ' s');
+  CATALOG.forEach(c => { const w = statusWord(c); const n = document.querySelector(`[data-p="st-${c.id}"]`); if (n) { n.textContent = w[0]; n.className = 'pill ' + w[1]; } });
+  const u = document.getElementById('upd');
+  if (u && S.update === 'NOTIFY' && S.upd.phase === 'downloading') u.textContent = `downloading 0.1.1 ${Math.round(S.upd.pct)}%`;
+}
+
+/* ---------- simulation ---------- */
+const REAL_SPEED = 11.2 * MIB; // the speed shown, bytes per second
+const CLOCK = () => (S.fast ? 40 : 8); // the demo clock runs this many times faster than real time
+let last = performance.now();
+setInterval(() => {
+  const now = performance.now(), dt = (now - last) / 1000; last = now;
+  let structural = false, active = false;
+  for (const e of CATALOG) {
+    const d = dlOf(e.id);
+    if (d.phase === 'downloading') {
+      active = true;
+      d.speed = REAL_SPEED;
+      d.done = Math.min(e.bytes, d.done + d.speed * CLOCK() * dt);
+      if (!d.dropped && d.done >= 0.4 * e.bytes) { d.done = 0.4 * e.bytes; d.dropped = true; d.phase = 'dropped'; d.cd = 2; d.t = 2; structural = true; }
+      else if (d.done >= e.bytes) { d.phase = 'verifying'; d.vleft = 1.5; structural = true; }
+    } else if (d.phase === 'dropped') {
+      active = true; d.t -= dt;
+      d.cd = Math.max(1, Math.ceil(d.t));
+      if (d.t <= 0) { d.phase = 'downloading'; structural = true; }
+    } else if (d.phase === 'verifying') {
+      active = true; d.vleft -= dt;
+      if (d.vleft <= 0) {
+        if (S.failNext) { S.failNext = false; d.phase = 'idle'; d.done = 0; d.dropped = false; d.err = 'the file did not match its checksum and was deleted'; }
+        else { d.phase = 'done'; d.done = e.bytes; S.lib.push(e.id); }
+        structural = true;
+      }
+    }
+  }
+  if (S.update === 'NOTIFY' && S.upd.phase === 'downloading') {
+    active = true; S.upd.pct = Math.min(100, S.upd.pct + (100 / (S.fast ? 1.5 : 4)) * dt);
+    if (S.upd.pct >= 100) { S.upd.phase = 'ready'; structural = true; }
+  }
+  if (structural) render(); else if (active) patch();
+}, 100);
+
+/* ---------- events ---------- */
+document.addEventListener('click', ev => {
+  const t = ev.target.closest('[data-a]'); if (!t) return;
+  const a = t.dataset.a, v = t.dataset.v, e = entry(S.sel), d = dlOf(e.id);
+  if (a === 'tab') S.tab = v;
+  else if (a === 'sel') S.sel = v;
+  else if (a === 'search') S.qApplied = S.q;
+  else if (a === 'get') { if (e.bytes > free()) return; Object.assign(d, { phase: 'downloading', done: 0, dropped: false, err: '' }); }
+  else if (a === 'pause') d.phase = 'paused';
+  else if (a === 'resume') d.phase = 'downloading';
+  else if (a === 'cancel') Object.assign(d, { phase: 'idle', done: 0, dropped: false, err: '' });
+  else if (a === 'upd') { S.update = v; S.upd = { phase: 'idle', pct: 0 }; }
+  else if (a === 'updget') S.upd = { phase: 'downloading', pct: 0 };
+  else if (a === 'newchat') { S.chats = []; S.msgs = []; }
+  else if (a === 'send') { const m = S.draft.trim(); if (!m) return; S.msgs.push(m); if (!S.chats.length) S.chats.push(m.slice(0, 40)); S.draft = ''; }
+  else if (a === 'toggle') { S[v] = t.checked; }
+  else if (a === 'reset') { S = fresh(); }
+  render();
+});
+document.addEventListener('input', ev => {
+  if (ev.target.id === 'q') S.q = ev.target.value;
+  if (ev.target.id === 'draft') { S.draft = ev.target.value; const b = document.querySelector('[data-a="send"]'); if (b) b.disabled = !S.draft.trim(); }
+});
+document.addEventListener('keydown', ev => {
+  if (ev.target.id === 'q' && ev.key === 'Enter') { S.qApplied = S.q; render(); }
+  if (ev.target.id === 'draft' && ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); document.querySelector('[data-a="send"]').click(); }
+});
+render();
+</script>
+</body>
+</html>
