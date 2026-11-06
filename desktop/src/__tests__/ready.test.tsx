@@ -100,6 +100,23 @@ describe("the ready signal", () => {
     logged.mockRestore();
   });
 
+  it("fires when the model list fails", async () => {
+    const logged = captureHostErrors();
+    vi.mocked(api.models).mockRejectedValue("no models");
+    render(<App />);
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    logged.mockRestore();
+  });
+
+  it("fires when the open chat cannot be loaded", async () => {
+    const logged = captureHostErrors();
+    vi.mocked(api.chats).mockImplementation(async () => [chat]);
+    vi.mocked(api.chat).mockRejectedValue("no chat");
+    render(<App />);
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    logged.mockRestore();
+  });
+
   it("does not wait for the model to warm up", async () => {
     vi.mocked(api.overview).mockImplementation(async () => ({ ...overview, engine: { ...overview.engine, state: "starting" } }));
     render(<App />);
