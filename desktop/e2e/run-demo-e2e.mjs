@@ -163,6 +163,8 @@ function env() {
     LORREN_MODEL_DIRS: path.join(WORK, "models"),
     LORREN_OLLAMA_DIR: "none",
     LORREN_DATA_DIR: path.join(WORK, "data"),
+    // The e2e's own WebView2 profile (R5): a run never reads or leaves the user's.
+    WEBVIEW2_USER_DATA_FOLDER: path.join(WORK, "webview"),
     // The DevTools port is NOT opened from here (R68). WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS did not reach Lorren's WebView2
     // browser: probed on runtime 155.0.4283.62 (alone, with logging flags, and with a fresh WEBVIEW2_USER_DATA_FOLDER, which
     // WAS honoured) its command line carried only the arguments wry sets itself through AdditionalBrowserArguments. The flag
@@ -193,8 +195,11 @@ function longReply() {
   return blocks.join("\n\n");
 }
 
-async function launch(overrides = {}) {
+let lastLaunch = null;
+
+async function launch(overrides = {}, { keepOpening = false } = {}) {
   let exited = null;
+  const spawnedAt = Date.now();
   const child = spawn(APP, [], { env: { ...env(), ...overrides }, stdio: "ignore" });
   app = child;
   child.once("exit", (code) => { exited = { code }; });
@@ -212,7 +217,15 @@ async function launch(overrides = {}) {
   });
   browser = await until("a CDP connection", () => chromium.connectOverCDP(`http://127.0.0.1:${CDP}`), 30000, guard);
   page = await until("the app page", async () => browser.contexts()[0]?.pages()[0], 30000, guard);
-  await page.getByText("lorren", { exact: true }).waitFor({ timeout: 30000 });
+  await page.waitForFunction(() => !!document.getElementById("root"), null, { timeout: 30000 });
+  const firstFrame = await page.evaluate(openingSnapshot);
+  lastLaunch = { spawnedAt, firstFrame };
+  fs.mkdirSync(path.join(WORK, "shots"), { recursive: true });
+  await page.screenshot({ path: path.join(WORK, "shots", "opening-first.png") }).catch(() => {});
+  if (!keepOpening) {
+    await page.waitForFunction(() => window.__lorrenOpening?.phase === "done", null, { timeout: 20000 });
+    await page.locator(".topbar .wordmark").waitFor({ state: "visible", timeout: 30000 });
+  }
 }
 
 async function close(graceful = true) {
@@ -389,9 +402,69 @@ function layoutDefects({ tab, width }) {
   const defects = [...found.values()].map(({ message, more }) => (more ? `${message} (and ${more} more like it)` : message));
   return { defects, controls, facts };
 }
+// What the opening shows right now (R5). Runs IN THE PAGE.
+function openingSnapshot() {
+  const el = document.getElementById("opening");
+  const w = el?.querySelector(".op-word");
+  const r = w?.getBoundingClientRect();
+  const tab = [...document.querySelectorAll("[role=tab]")].find((t) => t.textContent.trim() === "Models");
+  const tr = tab?.getBoundingClientRect();
+  let hitsOpening = null;
+  if (tr && tr.width > 0 && tr.height > 0) {
+    const hit = document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2);
+    hitsOpening = !!(hit && el && el.contains(hit));
+  }
+  return {
+    present: !!el,
+    phase: window.__lorrenOpening?.phase ?? null,
+    word: r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null,
+    vw: innerWidth,
+    vh: innerHeight,
+    hitsOpening,
+  };
+}
 // </in-page>
 
+const centredOff = (s) => {
+  if (!s.word) return Infinity;
+  return Math.max(Math.abs(s.word.left + s.word.width / 2 - s.vw / 2), Math.abs(s.word.top + s.word.height / 2 - s.vh / 2));
+};
+const openingLines = async () =>
+  (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("logs", { after: 0 }))).map((l) => l.text).filter((t) => t.startsWith("opening: "));
+const waitDone = (ms = 20000) => page.waitForFunction(() => window.__lorrenOpening?.phase === "done", null, { timeout: ms });
+const getReport = () => page.evaluate(() => window.__lorrenOpening.report);
+const openingMeasure = (r) => ({
+  first_frame_ms: r.first_frame_ms - r.navigation_ms,
+  ready_ms: r.ready_ms === null ? null : r.ready_ms - r.first_frame_ms,
+  top_bar_ms: r.handover_end_ms - r.first_frame_ms,
+  longest_gap_ms: r.longest_gap_ms,
+  longest_task_ms: r.longest_task_ms,
+  landing_error_px: r.landing_error_px,
+  plan_ms: r.plan_ms,
+});
+
 const steps = [
+  ["the opening: on screen at the first frame, lit by 2.0 s, handed over onto the wordmark, logged", async () => {
+    const f = lastLaunch.firstFrame;
+    if (!f.present || f.phase === "done") throw new Error(`INSTRUMENT FAILURE: the harness connected after the opening ended (${Date.now() - lastLaunch.spawnedAt} ms after launch at the latest)`);
+    if (centredOff(f) > 1) throw new Error(`the word is not centred at the first frame (off by ${centredOff(f).toFixed(2)} px): ${JSON.stringify(f)}`);
+    const r = await getReport();
+    if (!r) throw new Error("no report");
+    if (r.ready_ms === null || r.valve || r.reduced_motion || r.error !== null) throw new Error(`report: ${JSON.stringify(r)}`);
+    if (r.finished_ms - r.first_frame_ms < 1983) throw new Error(`lit for ${r.finished_ms - r.first_frame_ms} ms, under 1983`);
+    if (r.handover_start_ms - Math.max(r.finished_ms, r.ready_ms) < 298) throw new Error(`hand-over began ${r.handover_start_ms - Math.max(r.finished_ms, r.ready_ms)} ms after the later of finished/ready, under 298`);
+    if (!(r.landing_error_px <= 0.5)) throw new Error(`landing error ${r.landing_error_px} px`);
+    const after = await page.evaluate(() => ({
+      el: !!document.getElementById("opening"),
+      cls: document.documentElement.classList.contains("opening"),
+      vis: getComputedStyle(document.querySelector(".topbar .wordmark")).visibility,
+    }));
+    if (after.el || after.cls || after.vis !== "visible") throw new Error(`after the hand-over: ${JSON.stringify(after)}`);
+    const lines = await until("the opening log line", async () => { const l = await openingLines(); return l.length ? l : false; }, 10000);
+    console.log("     " + lines.join("\n     "));
+    if (lines.length !== 1 || !lines[0].includes("landed within")) throw new Error(`log: ${JSON.stringify(lines)}`);
+    measurements.opening = openingMeasure(r);
+  }],
   ["the window: wordmark, six tabs, the engine serving the default model", async () => {
     const tabs = await page.getByRole("tab").allInnerTexts();
     if (tabs.join(",") !== "Chat,Swarm,Models,Requests,Logs,Settings") throw new Error(`tabs: ${tabs}`);
@@ -695,6 +768,48 @@ const steps = [
       throw new Error(`the UI used ${cpu.pct}% of one core over ${cpu.window_s} s of streaming, ${stream.ui_cpu_over_idle_pct}% over the ${idle.pct}% it used at rest just before (${JSON.stringify(cpu.by_kind_pct)}): the limit of this step is ${UI_CPU_LIMIT_PCT}% over idle, the spec's budget 5%`);
     }
   }],
+  ["the opening with the host held back 6 s: centred and taking the clicks until ready, then lands", async () => {
+    await close();
+    await launch({ LORREN_DEBUG_HOLD_MODELS_MS: "6000" }, { keepOpening: true });
+    const cap = Date.now() + 20000;
+    let playing = 0, first = null;
+    for (;;) {
+      const s = await page.evaluate(openingSnapshot);
+      if (s.phase === "handover" || s.phase === "done") { first = { s, at: Date.now() }; break; }
+      if (s.phase === "playing") {
+        if (centredOff(s) > 1) throw new Error(`held: the word is off centre by ${centredOff(s).toFixed(2)} px while playing`);
+        if (s.hitsOpening !== true) throw new Error(`held: the Models tab is not under the opening while playing (hitsOpening=${s.hitsOpening})`);
+        playing++;
+      }
+      if (Date.now() > cap) throw new Error("held: the opening never left 'playing' in 20 s");
+      await sleep(200);
+    }
+    if (playing < 10) throw new Error(`held: only ${playing} playing snapshots (need 10): the sampling did not run`);
+    const since = first.at - lastLaunch.spawnedAt;
+    if (since < 6000) throw new Error(`held: the first snapshot no longer playing came ${since} ms after spawn, under 6000`);
+    await waitDone();
+    const r = await getReport();
+    if (r.ready_ms - lastLaunch.spawnedAt < 6000) throw new Error(`held: ready ${r.ready_ms - lastLaunch.spawnedAt} ms after spawn, under 6000`);
+    if (r.valve) throw new Error("held: the valve ended it");
+    if (r.handover_start_ms < r.ready_ms) throw new Error("held: the hand-over began before ready");
+    if (r.finished_ms < r.ready_ms - 20) throw new Error(`held: it finished ${r.ready_ms - r.finished_ms} ms before ready`);
+    if (!(r.landing_error_px <= 0.5)) throw new Error(`held: landing error ${r.landing_error_px} px`);
+    const lines = await openingLines();
+    console.log(`     playing snapshots: ${playing}; first not playing at ${since} ms \n     ` + lines.join("\n     "));
+    if (lines.length < 1) throw new Error("held: no opening log line");
+    measurements.opening_held = openingMeasure(r);
+  }],
+  ["reduced motion: the lit word fades in, and out after ready", async () => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.reload();
+    await waitDone();
+    const r = await getReport();
+    if (r.reduced_motion !== true || r.landing_error_px !== null || r.ready_ms === null || r.handover_start_ms < r.ready_ms) throw new Error(`reduced-motion report: ${JSON.stringify(r)}`);
+    await page.locator(".topbar .wordmark").waitFor({ state: "visible", timeout: 10000 });
+    const lines = await until("the reduced-motion log line", async () => { const l = await openingLines(); return l.some((x) => x.includes("reduced motion: faded")) ? l : false; }, 10000);
+    console.log("     " + lines[lines.length - 1]);
+    if (!lines[lines.length - 1].includes("reduced motion: faded")) throw new Error(`newest opening line: ${lines[lines.length - 1]}`);
+  }],
 ];
 
 async function main() {
@@ -710,6 +825,7 @@ async function main() {
   fs.rmSync(WORK + "/engine-events.log", { force: true });
   // A failed run must not leave the last good run's numbers and pictures lying next to its verdict.
   fs.rmSync(WORK + "/shots", { recursive: true, force: true });
+  fs.rmSync(WORK + "/webview", { recursive: true, force: true });
   fs.rmSync(WORK + "/measurements.json", { force: true });
   sh(FAKE, ["write-fixtures", path.join(WORK, "models")]);
   await launch();
