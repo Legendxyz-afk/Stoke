@@ -3,17 +3,72 @@
 //! against the public key in tauri.conf.json; this module decides what a failure means and logs it.
 
 use crate::monitor::Monitor;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use ts_rs::TS;
 
+/// The update setting (distribution design): auto checks and downloads, notify checks and downloads nothing, off makes
+/// no request at all. Kept in the store under `MODE_KEY`; the default is auto (§3.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    Auto,
+    Notify,
+    Off,
+}
+
+/// The settings key the mode is kept under.
+pub const MODE_KEY: &str = "updates.mode";
+
+/// The state a mode change leaves, or None to leave it as it is. Work already running wins (a check, a download, a
+/// ready update); NotConfigured outranks the mode; Off shows `Off`; leaving Off shows `Idle`.
+pub fn state_after_mode_change(state: &UpdateState, mode: UpdateMode) -> Option<UpdateState> {
+    match (state, mode) {
+        (UpdateState::NotConfigured, _) => None,
+        (UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Ready { .. }, _) => None,
+        (UpdateState::Off, UpdateMode::Off) => None,
+        (_, UpdateMode::Off) => Some(UpdateState::Off),
+        (UpdateState::Off, _) => Some(UpdateState::Idle),
+        _ => None,
+    }
+}
+
+impl UpdateMode {
+    /// Anything unknown (a missing, empty or damaged value) is the default, Auto.
+    pub fn parse(s: &str) -> UpdateMode {
+        match s {
+            "notify" => UpdateMode::Notify,
+            "off" => UpdateMode::Off,
+            _ => UpdateMode::Auto,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpdateMode::Auto => "auto",
+            UpdateMode::Notify => "notify",
+            UpdateMode::Off => "off",
+        }
+    }
+}
+
+/// Whether the loop checks the feed at all in this mode: only Off does not.
+pub fn wants_check(mode: UpdateMode) -> bool {
+    mode != UpdateMode::Off
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[ts(export)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum UpdateState {
+    /// The user turned update checks off: no request is made.
+    Off,
+    /// Notify mode: a newer version is offered and nothing is downloaded until the user asks.
+    Available { version: String },
     /// No update endpoint is configured (every milestone-1 build except the test-feed ones).
     NotConfigured,
     Idle,
@@ -104,8 +159,16 @@ pub const NO_VERIFIED_UPDATE: &str = "no verified update is waiting";
 pub struct UpdateService {
     state: Mutex<UpdateState>,
     pending: Mutex<Option<(Update, Vec<u8>)>>,
+    /// Notify mode: the update the feed offered, kept for `download_offered`.
+    offered: Mutex<Option<Update>>,
+    mode: Mutex<UpdateMode>,
+    /// Woken when the mode leaves Off, so the loop checks now instead of at its next turn.
+    wake: tokio::sync::Notify,
     monitor: Arc<Monitor>,
 }
+
+/// What `download_offered` says when nothing was offered.
+pub const NO_OFFERED_UPDATE: &str = "no update is waiting to be downloaded";
 
 /// Whether the build's `plugins.updater` config names a feed to check: a non-empty `endpoints` array. Without one the
 /// service starts NotConfigured and no check is scheduled.
@@ -116,9 +179,52 @@ pub fn endpoints_configured(updater_config: Option<&serde_json::Value>) -> bool 
 impl UpdateService {
     /// `configured` is `endpoints_configured` of the build's config: with no endpoint the badge starts NotConfigured
     /// (and shows nothing) instead of Idle ("check for updates") until a first check, 5 s later, says so.
-    pub fn new(monitor: Arc<Monitor>, configured: bool) -> Arc<UpdateService> {
-        let state = if configured { UpdateState::Idle } else { UpdateState::NotConfigured };
-        Arc::new(UpdateService { state: Mutex::new(state), pending: Mutex::new(None), monitor })
+    /// With no endpoint the state is NotConfigured whatever the mode; otherwise Off for mode Off, else Idle.
+    pub fn new(monitor: Arc<Monitor>, configured: bool, mode: UpdateMode) -> Arc<UpdateService> {
+        let state = if !configured {
+            UpdateState::NotConfigured
+        } else if mode == UpdateMode::Off {
+            UpdateState::Off
+        } else {
+            UpdateState::Idle
+        };
+        Arc::new(UpdateService {
+            state: Mutex::new(state),
+            pending: Mutex::new(None),
+            offered: Mutex::new(None),
+            mode: Mutex::new(mode),
+            wake: tokio::sync::Notify::new(),
+            monitor,
+        })
+    }
+
+    pub fn mode(&self) -> UpdateMode {
+        *self.mode.lock().unwrap()
+    }
+
+    /// Resolves when `set_mode` turned checks back on (a permit is kept if nobody was waiting).
+    pub async fn woken(&self) {
+        self.wake.notified().await
+    }
+
+    /// Takes a new mode (the caller has stored it). Work already running wins: a check, a download or a ready update
+    /// keeps the state. Off shows `Off`; leaving Off shows `Idle` and wakes the loop to check now.
+    pub fn set_mode<R: Runtime>(&self, app: &AppHandle<R>, mode: UpdateMode) {
+        let prev = std::mem::replace(&mut *self.mode.lock().unwrap(), mode);
+        let new_state = {
+            let mut state = self.state.lock().unwrap();
+            let next = state_after_mode_change(&state, mode);
+            if let Some(n) = &next {
+                *state = n.clone();
+            }
+            next
+        };
+        if let Some(n) = new_state {
+            let _ = app.emit("update-state", n);
+        }
+        if prev == UpdateMode::Off && mode != UpdateMode::Off {
+            self.wake.notify_one();
+        }
     }
 
     pub fn state(&self) -> UpdateState {
@@ -159,12 +265,30 @@ impl UpdateService {
         true
     }
 
-    /// Checks the feed and, when it offers a newer version, downloads and verifies it. Never installs.
+    /// Checks the feed. Auto: when it offers a newer version, downloads and verifies it. Notify: keeps the offer
+    /// (`Available`) and downloads nothing. Off: returns before any request. Never installs.
     pub async fn check<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>) {
+        if self.mode() == UpdateMode::Off {
+            let busy = matches!(self.state(), UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Ready { .. });
+            if !busy {
+                self.set(app, UpdateState::Off);
+            }
+            return;
+        }
         if !self.begin_check() {
             return;
         }
         let _ = app.emit("update-state", UpdateState::Checking);
+        self.check_feed(app).await;
+        // The mode may have turned Off while this ran: the work ran to its end, and unless a verified update is
+        // waiting (or a download is running) the last thing shown is that checks are off.
+        if self.mode() == UpdateMode::Off && !matches!(self.state(), UpdateState::Downloading { .. } | UpdateState::Ready { .. }) {
+            *self.offered.lock().unwrap() = None;
+            self.set(app, UpdateState::Off);
+        }
+    }
+
+    async fn check_feed<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>) {
         let updater = match app.updater() {
             Ok(u) => u,
             Err(e) => return self.fail(app, None, &e),
@@ -180,6 +304,21 @@ impl UpdateService {
         };
         let version = update.version.clone();
         self.monitor.log("updater", "info", format!("update {version} offered at {}", update.download_url));
+        if is_unsigned(&update.signature) {
+            return self.refuse(app, version, unsigned());
+        }
+        if self.mode() == UpdateMode::Notify {
+            self.monitor.log("updater", "info", format!("update {version} offered; waiting for the user (notify)"));
+            *self.offered.lock().unwrap() = Some(update);
+            return self.set(app, UpdateState::Available { version });
+        }
+        self.run_download(app, update).await;
+    }
+
+    /// The download half, shared by Auto's check and `download_offered` so the two cannot drift: the unsigned refusal,
+    /// Downloading with progress every 250 ms, then `pending` and Ready, or the failure.
+    async fn run_download<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>, update: Update) {
+        let version = update.version.clone();
         if is_unsigned(&update.signature) {
             return self.refuse(app, version, unsigned());
         }
@@ -211,6 +350,24 @@ impl UpdateService {
             }
             Err(e) => self.fail(app, Some(version), &e),
         }
+    }
+
+    /// Notify mode: the user asked for the offered update. Downloads and verifies it as Auto does, ending `Ready`.
+    /// A press while a check or download is running, or an update is ready, starts nothing.
+    pub async fn download_offered<R: Runtime>(self: &Arc<Self>, app: &AppHandle<R>) -> Result<(), String> {
+        let update = {
+            let mut state = self.state.lock().unwrap();
+            if matches!(*state, UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Ready { .. }) {
+                return Ok(());
+            }
+            let Some(update) = self.offered.lock().unwrap().take() else {
+                return Err(NO_OFFERED_UPDATE.to_string());
+            };
+            *state = UpdateState::Downloading { version: update.version.clone(), done: 0, total: None };
+            update
+        };
+        self.run_download(app, update).await;
+        Ok(())
     }
 
     /// The version of the downloaded, verified update that is waiting for the user to restart, if there is one.
@@ -359,7 +516,7 @@ mod tests {
     // `Update::install` failing and handing its bytes back, can be checked by reading only.
     #[test]
     fn with_nothing_downloaded_no_update_is_ready_and_install_says_so_in_the_shared_words() {
-        let service = UpdateService::new(Monitor::new(None), true);
+        let service = UpdateService::new(Monitor::new(None), true, UpdateMode::Auto);
         assert_eq!(service.ready_version(), None);
         assert_eq!(NO_VERIFIED_UPDATE, "no verified update is waiting"); // the words the badge shows after "could not install the update: "
         assert_eq!(service.install(), Err(NO_VERIFIED_UPDATE.to_string()));
@@ -380,12 +537,12 @@ mod tests {
 
     #[test]
     fn a_service_without_an_endpoint_starts_not_configured_and_one_with_an_endpoint_starts_idle() {
-        assert_eq!(UpdateService::new(Monitor::new(None), false).state(), UpdateState::NotConfigured);
-        assert_eq!(UpdateService::new(Monitor::new(None), true).state(), UpdateState::Idle);
+        assert_eq!(UpdateService::new(Monitor::new(None), false, UpdateMode::Auto).state(), UpdateState::NotConfigured);
+        assert_eq!(UpdateService::new(Monitor::new(None), true, UpdateMode::Auto).state(), UpdateState::Idle);
     }
 
     fn service_in(state: UpdateState) -> Arc<UpdateService> {
-        let service = UpdateService::new(Monitor::new(None), true);
+        let service = UpdateService::new(Monitor::new(None), true, UpdateMode::Auto);
         *service.state.lock().unwrap() = state;
         service
     }
@@ -474,5 +631,69 @@ mod tests {
             bad.len(),
             &bad[..bad.len().min(10)]
         );
+    }
+
+    // ---- the update setting ----
+
+    #[test]
+    fn the_mode_is_auto_unless_the_store_says_otherwise() {
+        assert_eq!(UpdateMode::parse("auto"), UpdateMode::Auto);
+        assert_eq!(UpdateMode::parse("notify"), UpdateMode::Notify);
+        assert_eq!(UpdateMode::parse("off"), UpdateMode::Off);
+        assert_eq!(UpdateMode::parse(""), UpdateMode::Auto);
+        assert_eq!(UpdateMode::parse("OFF?"), UpdateMode::Auto);
+        for m in [UpdateMode::Auto, UpdateMode::Notify, UpdateMode::Off] {
+            assert_eq!(UpdateMode::parse(m.as_str()), m);
+        }
+        assert_eq!(MODE_KEY, "updates.mode");
+    }
+
+    #[test]
+    fn wants_check_is_false_only_for_off() {
+        assert!(wants_check(UpdateMode::Auto));
+        assert!(wants_check(UpdateMode::Notify));
+        assert!(!wants_check(UpdateMode::Off));
+    }
+
+    #[test]
+    fn not_configured_outranks_off_and_off_shows_off() {
+        for m in [UpdateMode::Auto, UpdateMode::Notify, UpdateMode::Off] {
+            assert_eq!(UpdateService::new(Monitor::new(None), false, m).state(), UpdateState::NotConfigured);
+        }
+        assert_eq!(UpdateService::new(Monitor::new(None), true, UpdateMode::Off).state(), UpdateState::Off);
+        assert_eq!(UpdateService::new(Monitor::new(None), true, UpdateMode::Notify).state(), UpdateState::Idle);
+    }
+
+    #[test]
+    fn work_already_running_keeps_its_state_when_the_mode_changes() {
+        for busy in [
+            UpdateState::Checking,
+            UpdateState::Downloading { version: "0.0.2".into(), done: 1, total: None },
+            UpdateState::Ready { version: "0.0.2".into() },
+        ] {
+            for m in [UpdateMode::Auto, UpdateMode::Notify, UpdateMode::Off] {
+                assert_eq!(state_after_mode_change(&busy, m), None, "{busy:?} {m:?}");
+            }
+        }
+        for m in [UpdateMode::Auto, UpdateMode::Notify, UpdateMode::Off] {
+            assert_eq!(state_after_mode_change(&UpdateState::NotConfigured, m), None);
+        }
+        let idle = UpdateState::UpToDate { version: "0.0.1".into() };
+        assert_eq!(state_after_mode_change(&idle, UpdateMode::Off), Some(UpdateState::Off));
+        assert_eq!(state_after_mode_change(&idle, UpdateMode::Notify), None);
+        assert_eq!(state_after_mode_change(&UpdateState::Off, UpdateMode::Auto), Some(UpdateState::Idle));
+        assert_eq!(state_after_mode_change(&UpdateState::Off, UpdateMode::Off), None);
+    }
+
+    #[test]
+    fn the_new_states_read_by_their_tags_and_the_ts_export_carries_them() {
+        assert_eq!(serde_json::to_value(UpdateState::Off).unwrap(), serde_json::json!({"state": "off"}));
+        assert_eq!(
+            serde_json::to_value(UpdateState::Available { version: "0.0.2".into() }).unwrap(),
+            serde_json::json!({"state": "available", "version": "0.0.2"})
+        );
+        assert_eq!(serde_json::to_value(UpdateMode::Notify).unwrap(), serde_json::json!("notify"));
+        let ts = UpdateState::export_to_string(&ts_rs::Config::default()).unwrap();
+        assert!(ts.contains("\"off\"") && ts.contains("\"available\""), "{ts}");
     }
 }

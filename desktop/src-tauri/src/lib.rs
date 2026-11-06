@@ -74,7 +74,16 @@ pub fn run() {
             // No endpoint in the build's config (every milestone-1 build but the test-feed ones): the service starts
             // NotConfigured, so the badge shows nothing from the first frame, and no check is ever scheduled.
             let configured = updater::endpoints_configured(app.config().plugins.0.get("updater"));
-            let updates = updater::UpdateService::new(monitor.clone(), configured);
+            // The update setting is read from the store before the service is built; missing or unreadable is Auto.
+            let update_mode = store
+                .lock()
+                .unwrap()
+                .get_setting(updater::MODE_KEY)
+                .ok()
+                .flatten()
+                .map(|v| updater::UpdateMode::parse(&v))
+                .unwrap_or(updater::UpdateMode::Auto);
+            let updates = updater::UpdateService::new(monitor.clone(), configured, update_mode);
             // The catalog is read only when Discover opens (`refresh_catalog`): nothing here touches the network.
             let catalog_source = catalog::source_from_config(app.config().plugins.0.get(catalog::CATALOG_PLUGIN));
             let catalog_insecure = catalog_source.as_ref().map(|s| s.insecure).unwrap_or(false);
@@ -117,13 +126,21 @@ pub fn run() {
             if configured {
                 let (updates_bg, handle_bg) = (updates.clone(), app.handle().clone());
                 tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                        _ = updates_bg.woken() => {}
+                    }
                     loop {
-                        updates_bg.check(&handle_bg).await;
+                        if updater::wants_check(updates_bg.mode()) {
+                            updates_bg.check(&handle_bg).await;
+                        }
                         if updates_bg.state() == updater::UpdateState::NotConfigured {
                             break;
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)) => {}
+                            _ = updates_bg.woken() => {}
+                        }
                     }
                 });
             }
@@ -177,6 +194,9 @@ pub fn run() {
             commands::update_state,
             commands::check_update,
             commands::install_update,
+            commands::update_mode,
+            commands::set_update_mode,
+            commands::download_update,
             commands::catalog,
             commands::refresh_catalog,
             commands::open_licence,

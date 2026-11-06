@@ -327,6 +327,26 @@ pub async fn check_update(app: tauri::AppHandle, state: State<'_, AppState>) -> 
 }
 
 #[tauri::command]
+pub fn update_mode(state: State<'_, AppState>) -> crate::updater::UpdateMode {
+    state.updates.mode()
+}
+
+/// The store first: on a store error nothing changes. Then the service takes the mode (state, loop wake).
+#[tauri::command]
+pub fn set_update_mode(app: tauri::AppHandle, state: State<'_, AppState>, mode: crate::updater::UpdateMode) -> Result<(), String> {
+    state.store.lock().unwrap().set_setting(crate::updater::MODE_KEY, mode.as_str()).map_err(|e| e.to_string())?;
+    state.updates.set_mode(&app, mode);
+    Ok(())
+}
+
+/// Notify mode: download the offered update (verified as in Auto), ending Ready.
+#[tauri::command]
+pub async fn download_update(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let updates = state.updates.clone();
+    updates.download_offered(&app).await
+}
+
+#[tauri::command]
 pub async fn install_update(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     // R64: with no verified update waiting there is nothing to install, so say so and leave the engine running.
     if state.updates.ready_version().is_none() {
