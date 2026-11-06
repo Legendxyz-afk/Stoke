@@ -53,6 +53,7 @@ const STRANGER_DATA = path.join(WORK, "stranger-data");
 const STRANGER_MODELS = path.join(WORK, "stranger-models");
 const DOWNLOADS = path.join(WORK, "downloads");
 const FIXTURE_BYTES = 3 * 1048576;
+const RESTART_BYTES = 16 * 1048576; // the restart step's file: long enough that the app is closed in the middle of its download
 const CATALOG_PACE = 1000000; // bytes per second: a 3 MiB file takes about 3 s
 const QWEN_FILE = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
 const LLAMA_FILE = "Llama-3.2-3B-Instruct-Q4_K_M.gguf";
@@ -332,21 +333,22 @@ function writeCatalogSite() {
   const fixtures = path.join(WORK, "fixtures");
   fs.rmSync(fixtures, { recursive: true, force: true });
   sh(FAKE, ["write-fixtures", fixtures]);
-  const padded = (name) => {
+  const padded = (name, total = FIXTURE_BYTES) => {
     const bytes = fs.readFileSync(path.join(fixtures, name));
-    if (bytes.length > FIXTURE_BYTES) throw new Error(`the fixture ${name} is ${bytes.length} bytes, over ${FIXTURE_BYTES}`);
-    return Buffer.concat([bytes, Buffer.alloc(FIXTURE_BYTES - bytes.length)]);
+    if (bytes.length > total) throw new Error(`the fixture ${name} is ${bytes.length} bytes, over ${total}`);
+    return Buffer.concat([bytes, Buffer.alloc(total - bytes.length)]);
   };
   const qwen = padded(QWEN_FILE);
   const llama = padded(LLAMA_FILE);
-  const served = { [QWEN_FILE]: qwen, [LLAMA_FILE]: llama, [BROKEN_FILE]: llama, [RESTART_FILE]: llama };
+  const restart = padded(LLAMA_FILE, RESTART_BYTES);
+  const served = { [QWEN_FILE]: qwen, [LLAMA_FILE]: llama, [BROKEN_FILE]: llama, [RESTART_FILE]: restart };
   fs.mkdirSync(path.join(SITE, "files"), { recursive: true });
   fs.mkdirSync(path.join(SITE, "catalog"), { recursive: true });
   for (const [file, bytes] of Object.entries(served)) fs.writeFileSync(path.join(SITE, "files", file), bytes);
-  catalogSite.sha = { [QWEN_FILE]: sha256(qwen), [LLAMA_FILE]: sha256(llama), [RESTART_FILE]: sha256(llama), [BROKEN_FILE]: sha256(qwen) };
+  catalogSite.sha = { [QWEN_FILE]: sha256(qwen), [LLAMA_FILE]: sha256(llama), [RESTART_FILE]: sha256(restart), [BROKEN_FILE]: sha256(qwen) };
   const entry = (id, name, architecture, file, description) => ({
     id, name, version: 1, description, architecture, quantization: "Q4_K_M", file,
-    size: FIXTURE_BYTES, sha256: catalogSite.sha[file], url: `http://127.0.0.1:${CATALOG_PORT}/files/${file}`,
+    size: file === RESTART_FILE ? RESTART_BYTES : FIXTURE_BYTES, sha256: catalogSite.sha[file], url: `http://127.0.0.1:${CATALOG_PORT}/files/${file}`,
     licence: { name: TEST_LICENCE, url: "https://example.com/LICENSE" },
     source: { repo: "test/catalog-fixtures", commit: "0123456789abcdef0123456789abcdef01234567", path: file },
     system_prompt: null, min_app_version: "0.0.1",
