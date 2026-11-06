@@ -22,6 +22,7 @@ pub struct AppState {
     pub chat: Arc<ChatService>,
     pub updates: Arc<crate::updater::UpdateService>,
     pub catalog: Arc<crate::catalog::CatalogService>,
+    pub downloads: Arc<crate::downloads::DownloadManager>,
     pub started_ms: i64,
     /// Epoch ms at the top of `run()`: what the opening is measured from.
     pub launched_ms: i64,
@@ -560,4 +561,41 @@ pub fn open_licence(app: tauri::AppHandle, state: State<'_, AppState>, entry_id:
     use tauri_plugin_opener::OpenerExt;
     let entry = state.catalog.entry(&entry_id).ok_or_else(|| format!("no such model in the catalog: {entry_id}"))?;
     app.opener().open_url(entry.licence.url, None::<&str>).map_err(err)
+}
+
+/// Every download the manager knows: running, paused, failed, and the done ones (Discover shows them as on disk).
+#[tauri::command]
+pub fn downloads(state: State<'_, AppState>) -> Vec<crate::downloads::DownloadView> {
+    state.downloads.list()
+}
+
+/// The downloads folder and the room on its disk, for the size line before a download.
+#[tauri::command]
+pub fn disk_room(state: State<'_, AppState>) -> crate::downloads::DiskRoom {
+    crate::downloads::disk_room(state.downloads.dir())
+}
+
+/// Starts (or resumes) a download of a VERIFIED catalog entry; the UI names the entry, never an address.
+#[tauri::command]
+pub fn start_download(state: State<'_, AppState>, entry_id: String) -> Result<crate::downloads::DownloadView, String> {
+    let entry = state.catalog.entry(&entry_id).ok_or_else(|| format!("no such model in the catalog: {entry_id}"))?;
+    if state.catalog.view().needs_app.contains(&entry_id) {
+        return Err(format!("{} needs a newer Lorren", entry.name));
+    }
+    state.downloads.start(&entry)
+}
+
+#[tauri::command]
+pub fn pause_download(state: State<'_, AppState>, entry_id: String) -> Result<(), String> {
+    state.downloads.pause(&entry_id)
+}
+
+#[tauri::command]
+pub fn resume_download(state: State<'_, AppState>, entry_id: String) -> Result<(), String> {
+    state.downloads.resume(&entry_id)
+}
+
+#[tauri::command]
+pub fn cancel_download(state: State<'_, AppState>, entry_id: String) -> Result<(), String> {
+    state.downloads.cancel(&entry_id)
 }

@@ -2,6 +2,7 @@ pub mod budget;
 pub mod catalog;
 pub mod chat;
 pub mod commands;
+pub mod downloads;
 pub mod engine;
 pub mod gguf;
 pub mod library;
@@ -76,10 +77,40 @@ pub fn run() {
             let updates = updater::UpdateService::new(monitor.clone(), configured);
             // The catalog is read only when Discover opens (`refresh_catalog`): nothing here touches the network.
             let catalog_source = catalog::source_from_config(app.config().plugins.0.get(catalog::CATALOG_PLUGIN));
+            let catalog_insecure = catalog_source.as_ref().map(|s| s.insecure).unwrap_or(false);
             let app_version = semver::Version::parse(&app.package_info().version.to_string()).unwrap_or_else(|_| semver::Version::new(0, 0, 0));
             let catalog = catalog::CatalogService::new(catalog_source, store.clone(), monitor.clone(), app_version);
             let scan_monitor = monitor.clone();
-            app.manage(AppState { store, library: library.clone(), library_ready, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), catalog, started_ms: store::now_ms(), launched_ms, shown_ms });
+            // Downloads: the manager shares the library the scan fills and adds a finished file to it once the scan is
+            // done (`library_ready`). A finished model tells the page (`library-changed`); when the library had no
+            // runnable model, it is started as the startup default is, so the stranger's first chat is quick.
+            let mut dl_cfg = downloads::DownloadConfig::new(
+                paths::downloads_dir(),
+                catalog_insecure,
+                library::LibraryConfig::from_env(paths::downloads_dir()).default_prefix,
+            );
+            dl_cfg.library_ready = Some(library_ready.clone());
+            let (dl_emit, dl_model, dl_chat) = (app.handle().clone(), app.handle().clone(), chat.clone());
+            let download_manager = downloads::DownloadManager::new(
+                dl_cfg,
+                store.clone(),
+                library.clone(),
+                Arc::new(move |v| {
+                    let _ = dl_emit.emit("download-state", v.clone());
+                }),
+                Arc::new(move |m, none_before| {
+                    let _ = dl_model.emit("library-changed", ());
+                    if none_before && m.runnable {
+                        let chat = dl_chat.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = chat.start_model(&m).await;
+                        });
+                    }
+                }),
+            );
+            // Nothing runs at start: running rows become paused, a `.part` no row owns goes (before any window event).
+            download_manager.reconcile_at_start();
+            app.manage(AppState { store, library: library.clone(), library_ready, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), catalog, downloads: download_manager, started_ms: store::now_ms(), launched_ms, shown_ms });
 
             // Updates (spec §3.7): a check 5 s after start, then every 6 h. A configured endpoint can still answer
             // "not configured" (the plugin's own EmptyEndpoints), and then the loop ends.
@@ -148,7 +179,13 @@ pub fn run() {
             commands::install_update,
             commands::catalog,
             commands::refresh_catalog,
-            commands::open_licence
+            commands::open_licence,
+            commands::downloads,
+            commands::disk_room,
+            commands::start_download,
+            commands::pause_download,
+            commands::resume_download,
+            commands::cancel_download
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lorren");
