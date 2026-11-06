@@ -1,7 +1,8 @@
 """The updater's test kit (milestone 1 only; the real keys and R2 arrive in milestone 4).
 
-  python scripts/update-feed.py keys            two TEST key pairs in .keys/ (git-ignored); the first
-                                                one's public key goes into tauri.conf.json
+  python scripts/update-feed.py keys            three TEST key pairs in .keys/ (git-ignored: test, wrong, catalog); the first
+                                                one's public key goes into tauri.conf.json, the
+                                                catalog's into src-tauri/tauri.catalog-test.conf.json
   python scripts/update-feed.py build <version> a signed NSIS installer of that version, built with
                                                 the test overlay (http feed on 127.0.0.1)
   python scripts/update-feed.py feeds           e2e/.work/feed/{good,tampered,wrongkey,nosig} from 0.0.2
@@ -21,6 +22,7 @@ KEYS = HERE / ".keys"
 WORK = HERE / "e2e" / ".work"
 CONF = HERE / "src-tauri" / "tauri.conf.json"
 OVERLAY = HERE / "src-tauri" / "tauri.updater-test.conf.json"
+CATALOG_OVERLAY = HERE / "src-tauri" / "tauri.catalog-test.conf.json"
 PASSWORD = "lorren-test"
 PORT = 8765
 TAURI = [shutil.which("node") or "node", str(HERE / "node_modules" / "@tauri-apps" / "cli" / "tauri.js")]
@@ -33,7 +35,7 @@ def run(args, env=None):
 
 def keys():
     KEYS.mkdir(exist_ok=True)
-    for name in ("test", "wrong"):
+    for name in ("test", "wrong", "catalog"):
         if not (KEYS / f"{name}.key").exists():
             run(TAURI + ["signer", "generate", "--ci", "-w", str(KEYS / f"{name}.key"), "-p", PASSWORD])
     pub = (KEYS / "test.key.pub").read_text().strip()
@@ -41,6 +43,14 @@ def keys():
     conf.setdefault("plugins", {}).setdefault("updater", {})["pubkey"] = pub
     CONF.write_text(json.dumps(conf, indent=2) + "\n", encoding="utf-8")
     print("test public key written to", CONF)
+    # The test catalog's address and key, for a test build of the app (a local catalog server on 8766; the key signs the catalog).
+    catalog = {"plugins": {"lorren-catalog": {
+        "url": "http://127.0.0.1:8766/catalog/catalog.json",
+        "pubkey": (KEYS / "catalog.key.pub").read_text().strip(),
+        "insecure": True,
+    }}}
+    CATALOG_OVERLAY.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    print("test catalog key written to", CATALOG_OVERLAY)
 
 
 def build(version):

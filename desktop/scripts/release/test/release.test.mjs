@@ -210,3 +210,51 @@ test('the real key check opens the test key with its password, and refuses a wro
   assert.doesNotThrow(() => tauriOpenKey(keyPath, 'lorren-test'))
   assert.throws(() => tauriOpenKey(keyPath, 'not the password'))
 })
+
+// ---- the catalog's address and key in the build (step 2, Task 2) ----
+const catalogKey = makeKey(Buffer.from('c1c2c3c4c5c6c7c8', 'hex'))
+const CATALOG_PUB = tauriForm(publicKeyText(catalogKey))
+function withCatalogKey(s, { feedUrl = 'http://127.0.0.1:8765', insecureHttp = true, catalog = true } = {}) {
+  writeFileSync(join(s.root, 'catalog.pub'), CATALOG_PUB)
+  writeFileSync(s.options.config, JSON.stringify({
+    feedUrl, appPublicKey: join(s.root, 'app.pub'), catalogPublicKey: join(s.root, 'catalog.pub'), pagesProject: 'lorren-test',
+    ...(insecureHttp ? { insecureHttp: true } : {}),
+  }))
+  if (catalog) {
+    const bytes = Buffer.from(`${JSON.stringify({ format: 1, generated: '2026-11-06T00:00:00.000Z', models: [] })}
+`)
+    mkdirSync(join(s.site, 'catalog'), { recursive: true })
+    writeFileSync(join(s.site, 'catalog', 'catalog.json'), bytes)
+    writeFileSync(join(s.site, 'catalog', 'catalog.json.minisig'), signatureText(bytes, catalogKey))
+  }
+}
+
+test("the build gets the catalog's address and key beside the updater's, insecure only for an http feed", async () => {
+  const s = setup()
+  withCatalogKey(s)
+  await release(s.options, s.deps)
+  assert.deepEqual(s.calls.build[0].plugins['lorren-catalog'], { url: 'http://127.0.0.1:8765/catalog/catalog.json', pubkey: CATALOG_PUB, insecure: true })
+  assert.deepEqual(Object.keys(s.calls.build[0].plugins), ['updater', 'lorren-catalog'])
+
+  const t = setup()
+  withCatalogKey(t, { feedUrl: 'https://lorren-test.pages.dev', insecureHttp: false })
+  await release(t.options, t.deps)
+  assert.deepEqual(t.calls.build[0].plugins['lorren-catalog'], { url: 'https://lorren-test.pages.dev/catalog/catalog.json', pubkey: CATALOG_PUB })
+})
+
+test('a config with a catalog key and a master with no catalog is refused by the feed check, and nothing is left', async () => {
+  const s = setup()
+  withCatalogKey(s, { catalog: false })
+  await assert.rejects(release(s.options, s.deps), /catalog: catalog\/catalog\.json is missing/)
+  assert.equal(existsSync(s.site), false)
+  assert.equal(s.calls.git.some((args) => args[0] === 'tag'), false)
+})
+
+test("a catalog key file that is not there yet (the placeholder) is refused like the feed's name", async () => {
+  const s = setup()
+  writeFileSync(s.options.config, JSON.stringify({
+    feedUrl: 'https://x.pages.dev', appPublicKey: join(s.root, 'app.pub'), catalogPublicKey: join(s.root, 'nope.pub'), pagesProject: 'p',
+  }))
+  await assert.rejects(release(s.options, s.deps), /release\.config\.json names the catalog public key .*nope\.pub, which is not there yet: make the catalog key first \(step 4\)/)
+  assert.equal(s.calls.build.length, 0)
+})

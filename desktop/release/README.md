@@ -40,6 +40,34 @@ npm run release -- 0.1.1-beta.1 --channel beta --notes notes.txt --key E:\lorren
 
 `notes.txt` has one note per line (`- ` or `* ` bullets are fine); they become the Updates page's list and the app's update notes.
 
+## The model catalog
+
+The catalog is the list of models Lorren's Discover screen offers: `release/catalog.sources.json` names each by a Hugging Face repo,
+a commit and a path. It is signed with the CATALOG key, which is not the app's key: a leaked catalog key must not be able to ship
+code. Make it once, with its own file and password, kept offline like the app key (the same command, a different file):
+
+```
+npm run tauri signer generate -- -w E:\lorren-catalog.key
+```
+
+Copy `E:\lorren-catalog.key.pub` to `desktop/release/keys/catalog.pub` (that is where `release.config.json` looks for it; until
+the file is there, `npm run release` and `npm run catalog` refuse the config). Then:
+
+```
+set LORREN_KEY_PASSWORD=<the catalog key's password>
+npm run catalog -- --key E:\lorren-catalog.key
+```
+
+It reads Hugging Face (reads only) for each source's commit, takes the size and sha256 of each file from the listing, signs the
+catalog, checks the signature with the catalog's public key and writes `catalog/catalog.json` and `catalog/catalog.json.minisig`
+into the master folder's `site/`. It refuses, writing nothing, when a file is not in the repo at that commit, is not an LFS file,
+has sizes that disagree, breaks an entry rule (ids, file names, sizes, sha256, https addresses, licence, versions, duplicates), or
+the signature does not verify with the catalog key (a catalog signed with the app key, for one).
+
+Run `npm run catalog` before the first release: with `catalogPublicKey` in the config, the feed check wants a signed, valid catalog
+in the feed (`catalog: catalog/catalog.json is missing` otherwise), and the build compiles in its address and the public key. The
+test config (`release.test.json`) uses `.keys/catalog.key` (made by `python scripts/update-feed.py keys`, password `lorren-test`).
+
 ## A test release (the M1 test key, a local feed, any time)
 
 ```
@@ -62,6 +90,7 @@ Every refusal comes before anything changes, or puts the folder back as it was.
 | deploying arrives with the Cloudflare project | `--deploy` comes in step 4 |
 | the key does not open | the key path or `LORREN_KEY_PASSWORD` is wrong |
 | the build's signature does not verify | the key is not the one whose `.pub` the config names |
+| catalog: ... is missing / fails its signature | run `npm run catalog`: the catalog is signed with the catalog key and checked with the catalog's public key |
 | the feed does not check | the master folder was changed by hand: the list says what is wrong |
 | this deploy would drop | a file the feed served is gone from the folder: restore it from the backup |
 | the served feed does not have | the folder and the release disagree: run the tests (`npm run test:release`) and look |

@@ -2,10 +2,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkFeed, dropped, manifest, readDeployed, writeDeployed } from '../check.mjs'
+import { checkCatalog, checkFeed, dropped, manifest, readDeployed, writeDeployed } from '../check.mjs'
 import { INSTALLER, STABLE_COPY, layoutRelease } from '../feed.mjs'
 import { makeKey, publicKeyText, signatureText, tauriForm } from './keys.mjs'
 
@@ -125,4 +125,58 @@ test('dropped lists what the last deploy had, is gone now, and was not pruned on
   const current = { 'a.txt': '1', 'd.txt': '4' }
   assert.deepEqual(dropped(previous, current, ['c.txt']), ['b.txt'])
   assert.deepEqual(dropped(null, current, []), [])
+})
+
+// ---- the catalog (step 2, Task 2) ----
+const catalogKey = makeKey(Buffer.from('c1c2c3c4c5c6c7c8', 'hex'))
+const CATALOG_PUB = tauriForm(publicKeyText(catalogKey))
+const model = (id, file, change = {}) => ({
+  id, name: 'A model', version: 1, description: 'A model.', architecture: 'llama', quantization: 'Q4_K_M', file, size: 1000, sha256: 'b'.repeat(64),
+  url: 'https://huggingface.co/x/y/resolve/c/f.gguf', licence: { name: 'MIT', url: 'https://example.com/LICENSE' },
+  source: { repo: 'x/y', commit: 'c', path: 'f.gguf' }, system_prompt: null, min_app_version: '0.1.0', ...change,
+})
+function withCatalog(models = [model('a', 'a.gguf'), model('b', 'b.gguf')], { signWith = catalogKey, minisig = true } = {}) {
+  const f = goodFeed()
+  mkdirSync(join(f.site, 'catalog'))
+  const bytes = Buffer.from(`${JSON.stringify({ format: 1, generated: '2026-11-06T00:00:00.000Z', models }, null, 2)}
+`)
+  writeFileSync(join(f.site, 'catalog', 'catalog.json'), bytes)
+  if (minisig) writeFileSync(join(f.site, 'catalog', 'catalog.json.minisig'), signatureText(bytes, signWith))
+  return f
+}
+const checkWith = (f) => checkFeed({ site: f.site, feedUrl: FEED, appPublicKey: PUB, catalogPublicKey: CATALOG_PUB })
+
+test('a feed with a good catalog has no problems; without a catalog key the catalog is not required', () => {
+  assert.deepEqual(checkWith(withCatalog()), [])
+  assert.deepEqual(check(goodFeed()), [])
+  assert.deepEqual(checkCatalog({ site: withCatalog().site, catalogPublicKey: CATALOG_PUB }), [])
+})
+
+test('a feed whose catalog fails its signature, or has a bad entry, or has no .minisig, is not deployable', () => {
+  assert.deepEqual(checkWith(withCatalog(undefined, { signWith: makeKey(Buffer.from('a1a2a3a4a5a6a7a8', 'hex')) })), [
+    'catalog: catalog/catalog.json fails its signature (key id)',
+  ])
+  assert.deepEqual(checkWith(withCatalog([model('a', 'a.gguf', { size: 0 })])), [
+    'catalog: models[0] (a): size is not a whole number from 1 to 68719476736',
+  ])
+  assert.deepEqual(checkWith(withCatalog(undefined, { minisig: false })), ['catalog: catalog/catalog.json.minisig is missing'])
+  const tampered = withCatalog()
+  writeFileSync(join(tampered.site, 'catalog', 'catalog.json'), readFileSync(join(tampered.site, 'catalog', 'catalog.json'), 'utf8').replace('A model.', 'A modeL.'))
+  assert.deepEqual(checkWith(tampered), ['catalog: catalog/catalog.json fails its signature (signature)'])
+  assert.deepEqual(checkWith(withCatalog([model('a', 'a.gguf'), model('a', 'c.gguf')])), ['catalog: id "a" appears twice'])
+  assert.deepEqual(checkWith(withCatalog([model('a', 'a.gguf'), model('b', 'a.gguf')])), ['catalog: file "a.gguf" appears twice'])
+})
+
+test('with a catalog key configured, a feed without a catalog is not deployable', () => {
+  assert.deepEqual(checkWith(goodFeed()), ['catalog: catalog/catalog.json is missing'])
+})
+
+test('a catalog that does not parse, or is not format 1, is reported', () => {
+  const f = withCatalog()
+  writeFileSync(join(f.site, 'catalog', 'catalog.json'), '{"format": 1')
+  assert.deepEqual(checkWith(f), ['catalog: catalog/catalog.json fails its signature (signature)', 'catalog: catalog/catalog.json does not parse'])
+  const bytes = Buffer.from(JSON.stringify({ format: 2, models: [] }))
+  writeFileSync(join(f.site, 'catalog', 'catalog.json'), bytes)
+  writeFileSync(join(f.site, 'catalog', 'catalog.json.minisig'), signatureText(bytes, catalogKey))
+  assert.deepEqual(checkWith(f), ['catalog: catalog/catalog.json is not format 1'])
 })

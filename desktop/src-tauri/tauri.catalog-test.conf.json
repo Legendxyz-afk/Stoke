@@ -1,0 +1,9 @@
+{
+  "plugins": {
+    "lorren-catalog": {
+      "url": "http://127.0.0.1:8766/catalog/catalog.json",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk5NkI1N0Y2RUU1ODAyMTkKUldRWkFsanU5bGRybVVxYjltK2hHa3UyRkJYWXVyZE9Bb0krQnlXN0dkd1ZhTXVnOWNvcjcyZlQK",
+      "insecure": true
+    }
+  }
+}

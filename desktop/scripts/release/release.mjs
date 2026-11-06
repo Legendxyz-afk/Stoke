@@ -51,7 +51,7 @@ export function parseArgs(argv) {
 }
 
 // The release config (paths in it are relative to desktop/): its feed, its public key's text, its Pages project.
-function readConfig(path) {
+export function readConfig(path) {
   const file = resolve(DESKTOP, path)
   const config = JSON.parse(readFileSync(file, 'utf8'))
   if (JSON.stringify(config).includes('<feed>')) {
@@ -60,9 +60,20 @@ function readConfig(path) {
   for (const field of ['feedUrl', 'appPublicKey', 'pagesProject']) {
     if (typeof config[field] !== 'string' || config[field] === '') throw new Error(`${basename(file)} has no ${field}`)
   }
+  // The catalog's public key is optional (a config without one compiles in no catalog); a named file that is not there yet is a
+  // placeholder, refused like the feed's name.
+  let catalogPublicKey = null
+  if (config.catalogPublicKey !== undefined) {
+    const catalogFile = resolve(DESKTOP, String(config.catalogPublicKey))
+    if (!existsSync(catalogFile)) {
+      throw new Error(`${basename(file)} names the catalog public key ${config.catalogPublicKey}, which is not there yet: make the catalog key first (step 4)`)
+    }
+    catalogPublicKey = readFileSync(catalogFile, 'utf8').trim()
+  }
   return {
     feedUrl: config.feedUrl,
     appPublicKey: readFileSync(resolve(DESKTOP, config.appPublicKey), 'utf8').trim(),
+    catalogPublicKey,
     pagesProject: config.pagesProject,
     insecureHttp: config.insecureHttp === true,
   }
@@ -140,7 +151,13 @@ export async function release(options, deps) {
 
   const updater = { pubkey: config.appPublicKey, endpoints: [`${withoutSlash(config.feedUrl)}/app/${channel}/latest.json`] }
   if (config.insecureHttp) updater.dangerousInsecureTransportProtocol = true
-  const built = deps.build({ version, overlay: { version, plugins: { updater } }, keyPath, password: deps.password })
+  const plugins = { updater }
+  if (config.catalogPublicKey) {
+    // The catalog's address and the key it is checked with, compiled in beside the updater's (the app reads it only when Discover opens).
+    plugins['lorren-catalog'] = { url: `${withoutSlash(config.feedUrl)}/catalog/catalog.json`, pubkey: config.catalogPublicKey }
+    if (config.insecureHttp) plugins['lorren-catalog'].insecure = true
+  }
+  const built = deps.build({ version, overlay: { version, plugins }, keyPath, password: deps.password })
   const checked = verify(readFileSync(built.installer), built.signature, config.appPublicKey)
   if (!checked.ok) throw new Error(`the build's signature does not verify (${checked.reason}): nothing was laid out`)
 
@@ -151,7 +168,7 @@ export async function release(options, deps) {
   let laid
   try {
     laid = layoutRelease({ site, channel, version, notes, installer: built.installer, signature: built.signature, feedUrl: config.feedUrl, now: deps.now() })
-    const problems = checkFeed({ site, feedUrl: config.feedUrl, appPublicKey: config.appPublicKey })
+    const problems = checkFeed({ site, feedUrl: config.feedUrl, appPublicKey: config.appPublicKey, catalogPublicKey: config.catalogPublicKey })
     if (problems.length > 0) throw new Error(`the feed does not check, so nothing was changed:\n  ${problems.join('\n  ')}`)
     const gone = dropped(readDeployed(state), manifest(site), laid.pruned)
     if (gone.length > 0) throw new Error(`this deploy would drop ${gone.join(', ')}, so nothing was changed`)

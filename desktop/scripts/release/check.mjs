@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from 'node:path'
 import { CHANNELS, INSTALLER, KEEP, STABLE_COPY } from './feed.mjs'
 import { verify } from './minisign.mjs'
+import { isVersion } from './semver.mjs'
 
 const VERSIONED = /^Lorren_(.+)_x64-setup\.exe$/
 const DEPLOYED = 'deployed.json'
@@ -76,14 +77,101 @@ function checkChannel(site, channel, feedUrl, publicKey, problems) {
   }
 }
 
-/** The feed's problems, as sentences; [] when it may be deployed. `appPublicKey` is the public key's text (either form). */
-export function checkFeed({ site, feedUrl, appPublicKey }) {
+// ---- The model catalog (step 2): the entry rules, the SAME list as src-tauri/src/catalog.rs `validate_entry` ----
+
+const MAX_SIZE = 68719476736 // 64 GiB
+const ID_RULE = /^[a-z0-9][a-z0-9._-]{0,63}$/
+const FILE_RULE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.gguf$/i
+const text = (v, min, max) => typeof v === 'string' && v.length >= min && v.length <= max
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/** One catalog entry's problems, each starting with the field it is about; [] for a good entry. `insecure`: http:// urls are allowed (a test build). */
+export function validateEntry(entry, { insecure = false } = {}) {
+  if (!isObject(entry)) return ['entry is not an object']
+  const out = []
+  const bad = (field, rule) => out.push(`${field} ${rule}`)
+  const url = (v) => typeof v === 'string' && (v.startsWith('https://') || (insecure && v.startsWith('http://'))) && v.length > 8
+  if (typeof entry.id !== 'string' || !ID_RULE.test(entry.id)) bad('id', 'is not 1 to 64 lowercase letters, digits, dots, dashes or underscores, starting with a letter or digit')
+  if (!text(entry.name, 1, 80)) bad('name', 'is not 1 to 80 characters')
+  if (!text(entry.description, 0, 400)) bad('description', 'is not text of at most 400 characters')
+  if (!Number.isSafeInteger(entry.version) || entry.version < 1) bad('version', 'is not a positive whole number')
+  if (entry.architecture !== 'qwen3' && entry.architecture !== 'llama') bad('architecture', 'is not qwen3 or llama')
+  if (!text(entry.quantization, 1, 16)) bad('quantization', 'is not 1 to 16 characters')
+  if (typeof entry.file !== 'string' || !FILE_RULE.test(entry.file) || entry.file.includes('..')) bad('file', 'is not a plain .gguf file name')
+  if (!Number.isSafeInteger(entry.size) || entry.size < 1 || entry.size > MAX_SIZE) bad('size', `is not a whole number from 1 to ${MAX_SIZE}`)
+  if (typeof entry.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(entry.sha256)) bad('sha256', 'is not 64 lowercase hex digits')
+  if (!url(entry.url)) bad('url', insecure ? 'is not an http:// or https:// address' : 'is not an https:// address')
+  if (!isObject(entry.licence)) bad('licence', 'is missing')
+  else {
+    if (!text(entry.licence.name, 1, 80)) bad('licence.name', 'is not 1 to 80 characters')
+    if (typeof entry.licence.url !== 'string' || !entry.licence.url.startsWith('https://') || entry.licence.url.length <= 8) bad('licence.url', 'is not an https:// address')
+  }
+  if (!isVersion(entry.min_app_version)) bad('min_app_version', 'is not a version')
+  if (entry.system_prompt !== null && !text(entry.system_prompt, 0, 4000)) bad('system_prompt', 'is neither null nor text of at most 4000 characters')
+  return out
+}
+
+/** Every problem of a catalog's `models` list: each entry's (named by its place and id), then ids and files that appear twice. */
+export function validateModels(models) {
+  if (!Array.isArray(models)) return ['models is not a list']
+  const out = []
+  models.forEach((entry, i) => {
+    const label = typeof entry?.id === 'string' ? `models[${i}] (${entry.id})` : `models[${i}]`
+    for (const problem of validateEntry(entry)) out.push(`${label}: ${problem}`)
+  })
+  // A file name collides with its other-case spelling on Windows, so files are compared in lower case.
+  for (const [field, key] of [['id', (v) => v], ['file', (v) => v.toLowerCase()]]) {
+    const first = new Map()
+    const said = new Set()
+    for (const entry of models) {
+      const value = entry?.[field]
+      if (typeof value !== 'string') continue
+      const k = key(value)
+      if (!first.has(k)) first.set(k, value)
+      else if (!said.has(k)) {
+        out.push(`${field} "${first.get(k)}" appears twice`)
+        said.add(k)
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * The catalog's own problems, as sentences prefixed `catalog: `: its signature (the catalog key's), its format and its entries.
+ * [] when `catalogPublicKey` is not given: a config without one neither requires nor compiles in a catalog.
+ */
+export function checkCatalog({ site, catalogPublicKey }) {
+  if (!catalogPublicKey) return []
+  const say = (sentence) => `catalog: ${sentence}`
+  const path = join(site, 'catalog', 'catalog.json')
+  if (!existsSync(path)) return [say('catalog/catalog.json is missing')]
+  const problems = []
+  const sigPath = `${path}.minisig`
+  if (!existsSync(sigPath)) problems.push(say('catalog/catalog.json.minisig is missing'))
+  else {
+    const result = verify(readFileSync(path), readFileSync(sigPath, 'utf8'), catalogPublicKey)
+    if (!result.ok) problems.push(say(`catalog/catalog.json fails its signature (${result.reason})`))
+  }
+  const parsed = readJson(path)?.value
+  if (!isObject(parsed)) problems.push(say('catalog/catalog.json does not parse'))
+  else if (parsed.format !== 1) problems.push(say('catalog/catalog.json is not format 1'))
+  else for (const problem of validateModels(parsed.models)) problems.push(say(problem))
+  return problems
+}
+
+/**
+ * The feed's problems, as sentences; [] when it may be deployed. `appPublicKey` is the public key's text (either form);
+ * `catalogPublicKey` (optional, the same) makes the catalog part of the feed: required, signed by that key, its entries checked.
+ */
+export function checkFeed({ site, feedUrl, appPublicKey, catalogPublicKey }) {
   const problems = []
   for (const channel of CHANNELS) {
     if (existsSync(join(site, 'app', channel))) checkChannel(site, channel, feedUrl, appPublicKey, problems)
   }
   for (const file of ['_headers', 'index.html']) if (!existsSync(join(site, file))) problems.push(`${file} is missing`)
-  if (existsSync(join(site, 'catalog')) && !readJson(join(site, 'catalog', 'catalog.json'))) {
+  if (catalogPublicKey) problems.push(...checkCatalog({ site, catalogPublicKey }))
+  else if (existsSync(join(site, 'catalog')) && !readJson(join(site, 'catalog', 'catalog.json'))) {
     problems.push('catalog/catalog.json does not parse')
   }
   return problems
