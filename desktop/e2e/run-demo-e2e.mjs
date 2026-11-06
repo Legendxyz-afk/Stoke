@@ -6,12 +6,14 @@
 // column, uncut tags, a hanging Logs indent, a 300 px composer). The last step is a MEASUREMENT (R66): it fails only when a
 // reading could not be taken, never on its value.
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { chromium } from "playwright-core";
+import { catalogText, signCatalog } from "../scripts/release/catalog.mjs";
 
 const DESKTOP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TAURI_DIR = path.join(DESKTOP, "src-tauri");
@@ -37,6 +39,33 @@ let app = null;
 let feed = null;
 let page = null;
 let browser = null;
+
+// The stranger's first run (task 9 of step 2): a local catalog and file server on 8766 (e2e/catalog-server.mjs), a catalog of four
+// entries signed with the TEST catalog key, fake-engine fixtures padded to 3 MiB as the files, and, for the update modes, the M1
+// kit's good feed served by the same server on 8765 so that its requests are logged.
+const CATALOG_PORT = 8766;
+const FEED_PORT = 8765;
+const SERVER_JS = path.join(DESKTOP, "e2e", "catalog-server.mjs");
+const SITE = path.join(WORK, "catalog-site");
+const REQUESTS = path.join(SITE, "requests.log");
+const FEED_REQUESTS = path.join(WORK, "feed-requests.log");
+const STRANGER_DATA = path.join(WORK, "stranger-data");
+const STRANGER_MODELS = path.join(WORK, "stranger-models");
+const DOWNLOADS = path.join(WORK, "downloads");
+const FIXTURE_BYTES = 3 * 1048576;
+const CATALOG_PACE = 1000000; // bytes per second: a 3 MiB file takes about 3 s
+const QWEN_FILE = "Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+const LLAMA_FILE = "Llama-3.2-3B-Instruct-Q4_K_M.gguf";
+const BROKEN_FILE = "Broken-Test-Q4_K_M.gguf";
+const RESTART_FILE = "Restart-Test-Q4_K_M.gguf";
+const LIBRARY_QWEN = "Qwen3-4B-Instruct-2507-Q4_K_M"; // the library's name for the downloaded Qwen file (the file name without .gguf)
+const TEST_LICENCE = "Test Licence 1.0"; // only the Discover rows carry it, which is how a test finds them among the library's rows
+const DROP_AT = 1200000;
+const KEYS = path.join(DESKTOP, ".keys");
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const servers = new Set();
+let catalogServer = null;
+const catalogSite = { sha: {} }; // file name -> the sha256 of the bytes served under it
 
 function sh(cmd, args, opts = {}) {
   console.log("+", cmd, args.join(" "));
@@ -250,6 +279,128 @@ async function serveFeed(name) {
 
 function stopFeed() {
   if (feed) { try { execFileSync("taskkill", ["/F", "/T", "/PID", String(feed.pid)], { stdio: "ignore" }); } catch {} feed = null; }
+}
+
+// ---- the catalog server and the stranger's environment ----
+
+function killServer(child) {
+  try { execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" }); } catch {}
+  servers.delete(child);
+}
+
+// Stops every server this run started. It runs at the end of every run, passed or failed, and once more when the process exits.
+function stopServers() {
+  for (const child of [...servers]) killServer(child);
+  catalogServer = null;
+}
+process.on("exit", stopServers);
+
+// Starts e2e/catalog-server.mjs on `port`. A port that is already open is refused (another server's files would be served as ours),
+// and the server ends by itself when this process dies (--exit-with-stdin).
+async function startServer(name, root, port, args) {
+  if (await portOpen(port)) throw new Error(`port ${port} is already open: the ${name} server cannot start there`);
+  const child = spawn(process.execPath, [SERVER_JS, root, "--port", String(port), "--exit-with-stdin", ...args], { cwd: DESKTOP, stdio: ["pipe", "ignore", "ignore"] });
+  const state = { exit: null };
+  child.once("exit", (code) => { state.exit = { code }; });
+  child.once("error", (e) => { state.exit = { code: `spawn failed: ${e.message}` }; });
+  child.stdin.on("error", () => {});
+  servers.add(child);
+  await until(`the ${name} server on :${port}`, () => portOpen(port), 15000, () => {
+    if (state.exit) throw new Error(`the ${name} server exited (code ${state.exit.code}) before it listened on :${port}`);
+  });
+  return child;
+}
+
+// The environment of a stranger's launch: no data, no models of their own, downloads into the run's own folder.
+const stranger = (extra = {}) => ({ LORREN_MODEL_DIRS: STRANGER_MODELS, LORREN_DATA_DIR: STRANGER_DATA, LORREN_DOWNLOADS_DIR: DOWNLOADS, ...extra });
+
+// A server's request log: one JSON line per request.
+const readLog = (file = REQUESTS) => fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const showLog = (log) => (log.length ? log.map((r) => `${r.method} ${r.path}${r.range ? ` [${r.range}]` : ""}`).join("; ") : "no request");
+const askedFor = (file) => readLog().filter((r) => r.path.endsWith(`/${file}`));
+const fileSha = (file) => sha256(fs.readFileSync(file));
+const sizeOf = (file) => (fs.existsSync(file) ? fs.statSync(file).size : null);
+const inDownloads = () => (fs.existsSync(DOWNLOADS) ? fs.readdirSync(DOWNLOADS) : []);
+
+// <work>/catalog-site: the four files under files/, the catalog and its signature under catalog/. Every file is a fake-engine fixture
+// padded with zeros to 3 MiB (the library reads a model's header from its front). `broken-test` serves the Llama bytes under a
+// catalog sha256 of other bytes (the padded Qwen's), so its download must end in a checksum mismatch.
+function writeCatalogSite() {
+  const keyPath = path.join(KEYS, "catalog.key");
+  if (!fs.existsSync(keyPath)) throw new Error("no .keys/catalog.key: run `python scripts/update-feed.py keys` first");
+  fs.rmSync(SITE, { recursive: true, force: true });
+  const fixtures = path.join(WORK, "fixtures");
+  fs.rmSync(fixtures, { recursive: true, force: true });
+  sh(FAKE, ["write-fixtures", fixtures]);
+  const padded = (name) => {
+    const bytes = fs.readFileSync(path.join(fixtures, name));
+    if (bytes.length > FIXTURE_BYTES) throw new Error(`the fixture ${name} is ${bytes.length} bytes, over ${FIXTURE_BYTES}`);
+    return Buffer.concat([bytes, Buffer.alloc(FIXTURE_BYTES - bytes.length)]);
+  };
+  const qwen = padded(QWEN_FILE);
+  const llama = padded(LLAMA_FILE);
+  const served = { [QWEN_FILE]: qwen, [LLAMA_FILE]: llama, [BROKEN_FILE]: llama, [RESTART_FILE]: llama };
+  fs.mkdirSync(path.join(SITE, "files"), { recursive: true });
+  fs.mkdirSync(path.join(SITE, "catalog"), { recursive: true });
+  for (const [file, bytes] of Object.entries(served)) fs.writeFileSync(path.join(SITE, "files", file), bytes);
+  catalogSite.sha = { [QWEN_FILE]: sha256(qwen), [LLAMA_FILE]: sha256(llama), [RESTART_FILE]: sha256(llama), [BROKEN_FILE]: sha256(qwen) };
+  const entry = (id, name, architecture, file, description) => ({
+    id, name, version: 1, description, architecture, quantization: "Q4_K_M", file,
+    size: FIXTURE_BYTES, sha256: catalogSite.sha[file], url: `http://127.0.0.1:${CATALOG_PORT}/files/${file}`,
+    licence: { name: TEST_LICENCE, url: "https://example.com/LICENSE" },
+    source: { repo: "test/catalog-fixtures", commit: "0123456789abcdef0123456789abcdef01234567", path: file },
+    system_prompt: null, min_app_version: "0.0.1",
+  });
+  const catalog = {
+    format: 1,
+    generated: new Date().toISOString(),
+    models: [
+      entry("qwen3-4b-instruct-2507-q4_k_m", "Qwen3-4B-Instruct-2507", "qwen3", QWEN_FILE, "A fake-engine fixture under Qwen's file name."),
+      entry("llama-3.2-3b-instruct-q4_k_m", "Llama-3.2-3B-Instruct", "llama", LLAMA_FILE, "A fake-engine fixture under Llama's file name."),
+      entry("broken-test", "Broken Test", "llama", BROKEN_FILE, "Its catalog checksum is that of other bytes."),
+      entry("restart-test", "Restart Test", "llama", RESTART_FILE, "For closing the app in the middle of a download."),
+    ],
+  };
+  const jsonPath = path.join(SITE, "catalog", "catalog.json");
+  fs.writeFileSync(jsonPath, catalogText(catalog));
+  fs.writeFileSync(`${jsonPath}.minisig`, signCatalog({ path: jsonPath, keyPath, password: "lorren-test" }));
+}
+
+// Discover's row for a catalog entry: the library's rows never carry the test licence.
+const discoverRow = (name) => page.getByRole("row").filter({ hasText: TEST_LICENCE }).filter({ hasText: name });
+// The panel on the right: the selected catalog entry's actions.
+const panel = () => page.locator("aside.right:visible"); // the Chat tab's reply panel stays in the DOM, hidden
+const panelButton = (name) => panel().getByRole("button", { name, exact: true });
+const statusOf = async (name) => (await discoverRow(name).locator(".pill").innerText().catch(() => "")).trim();
+const percentOf = async (name) => {
+  const m = /^(\d+)%$/.exec(await statusOf(name));
+  return m ? Number(m[1]) : null;
+};
+
+// The Models tab with Discover open. After a relaunch the library is not empty, so the tab opens on the library and OPEN is pressed.
+async function openDiscover() {
+  await page.getByRole("tab", { name: "Models", exact: true }).click();
+  await sleep(300);
+  if ((await discoverRow("Qwen").count()) === 0) {
+    const open = page.getByRole("button", { name: "OPEN", exact: true });
+    if (await open.count()) await open.click();
+  }
+  await until("the four Discover rows", async () => (await page.getByRole("row").filter({ hasText: TEST_LICENCE }).count()) === 4, 20000)
+    .catch(async (e) => {
+      throw new Error(`${e.message}; the rows read: ${JSON.stringify(await page.getByRole("row").allInnerTexts())}`);
+    });
+}
+
+async function startDownload(name) {
+  await discoverRow(name).click();
+  await panelButton("GET").click();
+}
+
+// Waits for a Discover row to read `word`; the failure says what the row and the panel read instead.
+async function waitStatus(name, word, ms) {
+  await until(`${name} to read ${word}`, async () => (await statusOf(name)) === word, ms).catch(async (e) => {
+    throw new Error(`${e.message}; the row says "${await statusOf(name)}", the panel: ${JSON.stringify(await panel().innerText().catch(() => ""))}`);
+  });
 }
 
 async function sendMessage(text) {
@@ -810,12 +961,201 @@ const steps = [
     console.log("     " + lines[lines.length - 1]);
     if (!lines[lines.length - 1].includes("reduced motion: faded")) throw new Error(`newest opening line: ${lines[lines.length - 1]}`);
   }],
+
+  // ---- The stranger's first run (step 2 of the distribution plan, task 9). From here every launch has no data of its own
+  // (<work>/stranger-data), an empty model folder and its own downloads folder, and the catalog server on :8766 serves four 3 MiB
+  // fake-engine files at 1 MB/s. The server cuts the first request for the Qwen file after 1,200,000 bytes.
+  ["a stranger's first run: no model, the chat says how to get one, and nothing has gone online", async () => {
+    await close(true);
+    await until("no orphan engine", async () => pids("fake-engine.exe").length === 0, 15000);
+    fs.mkdirSync(STRANGER_MODELS, { recursive: true });
+    catalogServer = await startServer("catalog", SITE, CATALOG_PORT, ["--pace", String(CATALOG_PACE), "--drop", `${QWEN_FILE}:${DROP_AT}`]);
+    await launch(stranger());
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    const transcript = () => page.locator(".messages").innerText().catch(() => "");
+    await page.getByText(/No model yet\. Lorren needs one to chat/).waitFor({ timeout: 15000 }).catch(async (e) => {
+      throw new Error(`${e.message}; the transcript reads ${JSON.stringify(await transcript())}`);
+    });
+    await page.getByRole("button", { name: "OPEN DISCOVER", exact: true }).waitFor({ timeout: 5000 });
+    if (await page.getByRole("textbox", { name: "message", exact: true }).isEnabled()) throw new Error("the composer is enabled with no model in the library");
+    if ((await page.locator(".chat-item").count()) !== 0) throw new Error("a stranger's first run already has a chat");
+    await sleep(6000);
+    const log = readLog();
+    if (log.length) throw new Error(`the app went online before Discover was opened: ${showLog(log)}`);
+  }],
+  ["Discover lists the catalog with size, licence and room", async () => {
+    await page.getByRole("button", { name: "OPEN DISCOVER", exact: true }).click();
+    await until("the four Discover rows", async () => (await page.getByRole("row").filter({ hasText: TEST_LICENCE }).count()) === 4, 20000).catch(async (e) => {
+      throw new Error(`${e.message}; the rows read ${JSON.stringify(await page.getByRole("row").allInnerTexts())}; the requests: ${showLog(readLog())}`);
+    });
+    await page.getByText("4 IN THE CATALOG", { exact: true }).waitFor({ timeout: 5000 });
+    const names = ["Qwen3-4B-Instruct-2507", "Llama-3.2-3B-Instruct", "Broken Test", "Restart Test"];
+    for (const name of names) {
+      const text = await discoverRow(name).innerText();
+      for (const want of ["0.0 GB", TEST_LICENCE, "GET", "Q4_K_M"]) {
+        if (!text.includes(want)) throw new Error(`the row of ${name} reads ${JSON.stringify(text)}: no "${want}" in it`);
+      }
+    }
+    // The first entry is selected: its panel gives the room the file needs and the disk has.
+    await until("the room line", async () => /needs 0\.0 GB · \d+(\.\d)? GB free/.test(await panel().innerText()), 10000).catch(async (e) => {
+      throw new Error(`${e.message}; the panel reads ${JSON.stringify(await panel().innerText().catch(() => ""))}`);
+    });
+    const paths = readLog().map((r) => `${r.method} ${r.path}`).sort();
+    const want = ["GET /catalog/catalog.json", "GET /catalog/catalog.json.minisig"];
+    if (paths.join("|") !== want.join("|")) throw new Error(`the server saw ${paths.length} requests, ${JSON.stringify(paths)}; wanted exactly ${JSON.stringify(want)}`);
+  }],
+  ["a download survives a dropped connection", async () => {
+    const name = "Qwen3-4B-Instruct-2507";
+    await startDownload(name);
+    await waitStatus(name, "IN LIBRARY", 90000);
+    const reqs = askedFor(QWEN_FILE);
+    if (reqs.length < 2) throw new Error(`the Qwen file was requested ${reqs.length} time(s), not twice: ${showLog(readLog())}`);
+    if (reqs[0].range !== null) throw new Error(`the first request for Qwen asked for ${reqs[0].range}, not the whole file`);
+    if (reqs[1].range !== `bytes=${DROP_AT}-`) throw new Error(`the second request for Qwen asked for ${reqs[1].range}, not bytes=${DROP_AT}- (the server cut the first after ${DROP_AT} bytes): ${showLog(readLog())}`);
+    const file = path.join(DOWNLOADS, QWEN_FILE);
+    if (!fs.existsSync(file)) throw new Error(`${QWEN_FILE} is not in ${DOWNLOADS}: it holds ${JSON.stringify(inDownloads())}`);
+    if (fileSha(file) !== catalogSite.sha[QWEN_FILE]) throw new Error(`the file in the downloads folder has sha256 ${fileSha(file)}, the fixture's is ${catalogSite.sha[QWEN_FILE]}`);
+    // The library lists it as the default (the file name is the default model's prefix), and the engine, which had no model, serves it.
+    const library = page.getByRole("row").filter({ hasText: LIBRARY_QWEN });
+    await until("the library row with DEFAULT", async () => (await library.innerText()).includes("DEFAULT"), 15000).catch(async (e) => {
+      throw new Error(`${e.message}; the rows read ${JSON.stringify(await page.getByRole("row").allInnerTexts())}`);
+    });
+    await until("serving the downloaded Qwen", async () => { const t = await topbar(); return t.includes("serving") && t.includes(LIBRARY_QWEN); }, 60000).catch(async (e) => {
+      throw new Error(`${e.message}; the top bar says: ${await topbar().catch(() => "?")}`);
+    });
+  }],
+  ["a chat streams on the downloaded model", async () => {
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    await until("the composer to be enabled", () => page.getByRole("textbox", { name: "message", exact: true }).isEnabled(), 15000).catch(async (e) => {
+      throw new Error(`${e.message}; the transcript reads ${JSON.stringify(await page.locator(".messages").innerText().catch(() => ""))}`);
+    });
+    await sendMessage("Hello from the stranger.");
+    await page.locator(".messages").getByText("Verdict: HOLD.").first().waitFor({ timeout: 30000 });
+    await waitIdle();
+    const chats = await page.locator(".chat-item").allInnerTexts();
+    if (chats.length !== 1 || !chats[0].includes(LIBRARY_QWEN)) throw new Error(`the chat list after the message: ${JSON.stringify(chats)}`);
+  }],
+  ["pause stops the bytes and resume finishes", async () => {
+    const name = "Llama-3.2-3B-Instruct";
+    const part = path.join(DOWNLOADS, `${LLAMA_FILE}.part`);
+    await openDiscover();
+    await startDownload(name);
+    await until(`${name} to be under way`, async () => { const p = await percentOf(name); return p !== null && p > 0; }, 30000).catch(async (e) => {
+      throw new Error(`${e.message}; the row says "${await statusOf(name)}"`);
+    });
+    await panelButton("PAUSE").click();
+    await waitStatus(name, "PAUSED", 10000);
+    await sleep(700); // the worker flushes the part and stops
+    const requests = askedFor(LLAMA_FILE).length;
+    const size = sizeOf(part);
+    if (size === null || size <= 0 || size >= FIXTURE_BYTES) throw new Error(`the part holds ${size} bytes after the pause, not some of the ${FIXTURE_BYTES}`);
+    await sleep(3000);
+    if (askedFor(LLAMA_FILE).length !== requests) throw new Error(`a request came while paused: ${showLog(askedFor(LLAMA_FILE))}`);
+    if (sizeOf(part) !== size) throw new Error(`the part grew while paused, from ${size} to ${sizeOf(part)} bytes`);
+    if ((await statusOf(name)) !== "PAUSED") throw new Error(`the row left PAUSED by itself: it says "${await statusOf(name)}"`);
+    await panelButton("RESUME").click();
+    await waitStatus(name, "IN LIBRARY", 60000);
+    const reqs = askedFor(LLAMA_FILE);
+    if (reqs.length < 2 || reqs.at(-1).range !== `bytes=${size}-`) throw new Error(`resume should ask for bytes=${size}-: ${showLog(reqs)}`);
+    const file = path.join(DOWNLOADS, LLAMA_FILE);
+    if (!fs.existsSync(file) || fileSha(file) !== catalogSite.sha[LLAMA_FILE]) throw new Error(`the finished Llama file is missing or its sha256 is wrong (${fs.existsSync(file) ? fileSha(file) : "no file"}, wanted ${catalogSite.sha[LLAMA_FILE]})`);
+    if (fs.existsSync(part)) throw new Error("the .part is still there after the download finished");
+  }],
+  ["a checksum mismatch deletes the file and says so", async () => {
+    const name = "Broken Test";
+    const says = "the file did not match its checksum and was deleted";
+    await startDownload(name);
+    await until("the checksum error in the panel", async () => (await panel().innerText()).includes(says), 60000).catch(async (e) => {
+      throw new Error(`${e.message}; the row says "${await statusOf(name)}", the panel: ${JSON.stringify(await panel().innerText().catch(() => ""))}`);
+    });
+    const left = inDownloads().filter((f) => f.toLowerCase().startsWith("broken-test"));
+    if (left.length) throw new Error(`the downloads folder still holds ${JSON.stringify(left)}`);
+    if ((await statusOf(name)) !== "GET") throw new Error(`the failed entry should offer GET again; its row says "${await statusOf(name)}"`);
+  }],
+  ["a download running at close is paused at the next start and resumes", async () => {
+    const name = "Restart Test";
+    const file = path.join(DOWNLOADS, RESTART_FILE);
+    const part = `${file}.part`;
+    await startDownload(name);
+    await until(`${name} to be under way`, async () => { const p = await percentOf(name); return p !== null && p > 0; }, 30000).catch(async (e) => {
+      throw new Error(`${e.message}; the row says "${await statusOf(name)}"`);
+    });
+    const seen = Date.now();
+    await close(true);
+    if (fs.existsSync(file)) throw new Error(`INSTRUMENT FAILURE: the download had finished ${Date.now() - seen} ms after its first progress, before the app was closed`);
+    if (!fs.existsSync(part)) throw new Error(`no ${RESTART_FILE}.part after the close: the downloads folder holds ${JSON.stringify(inDownloads())}`);
+    const before = askedFor(RESTART_FILE).length;
+    await until("no orphan engine", async () => pids("fake-engine.exe").length === 0, 15000);
+    await launch(stranger());
+    await openDiscover();
+    await waitStatus(name, "PAUSED", 15000);
+    await sleep(4000);
+    if (askedFor(RESTART_FILE).length !== before) throw new Error(`the app asked for ${RESTART_FILE} again by itself after the restart: ${showLog(askedFor(RESTART_FILE))}`);
+    await discoverRow(name).click();
+    await panelButton("RESUME").click();
+    await waitStatus(name, "IN LIBRARY", 60000);
+    const reqs = askedFor(RESTART_FILE);
+    if (reqs.length !== before + 1 || !/^bytes=[1-9]\d*-$/.test(reqs.at(-1).range ?? "")) throw new Error(`the resume should be one request with a range: ${showLog(reqs)}`);
+    if (!fs.existsSync(file) || fileSha(file) !== catalogSite.sha[RESTART_FILE]) throw new Error(`the finished Restart file is missing or its sha256 is wrong (${fs.existsSync(file) ? fileSha(file) : "no file"}, wanted ${catalogSite.sha[RESTART_FILE]})`);
+  }],
+  ["updates off makes no request; notify checks and downloads nothing until asked", async () => {
+    // The mode is chosen in Settings (and read back from the host), then the app is relaunched: the check is 5 s after a start.
+    const chooseMode = async (label) => {
+      await page.getByRole("tab", { name: "Settings", exact: true }).click();
+      await page.getByRole("radio", { name: new RegExp(`^${label}`) }).click();
+      await until(`${label} to be stored`, async () => (await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("update_mode"))) === label.toLowerCase(), 5000);
+    };
+    const relaunch = async () => {
+      await close(true);
+      await until("no orphan engine", async () => pids("fake-engine.exe").length === 0, 15000);
+      await launch(stranger());
+    };
+    const feedRoot = path.join(WORK, "feed", "good");
+    if (!fs.existsSync(path.join(feedRoot, "latest.json"))) throw new Error("no good feed: run `python scripts/update-feed.py build 0.0.2` then `feeds` (Task 15)");
+    await chooseMode("OFF");
+    await close(true);
+    await until("no orphan engine", async () => pids("fake-engine.exe").length === 0, 15000);
+    fs.writeFileSync(FEED_REQUESTS, "");
+    const feedServer = await startServer("feed", feedRoot, FEED_PORT, ["--log", FEED_REQUESTS]);
+    try {
+      await launch(stranger());
+      await sleep(8000); // the check would be 5 s after the start
+      let log = readLog(FEED_REQUESTS);
+      if (log.length) throw new Error(`with updates off the app made requests: ${showLog(log)}`);
+      if (!(await badge()).includes("updates off")) throw new Error(`the status bar should say "updates off": ${JSON.stringify(await badge())}`);
+
+      await chooseMode("NOTIFY");
+      fs.writeFileSync(FEED_REQUESTS, ""); // switching may wake a check by itself: the relaunch below is what is judged
+      await relaunch();
+      await until("the feed to be asked", async () => readLog(FEED_REQUESTS).some((r) => r.path === "/latest.json"), 30000).catch((e) => {
+        throw new Error(`${e.message}: ${showLog(readLog(FEED_REQUESTS))}`);
+      });
+      const download = page.locator(".statusbar").getByRole("button", { name: /update 0\.0\.2 available · DOWNLOAD/ });
+      await download.waitFor({ timeout: 30000 }).catch(async (e) => {
+        throw new Error(`${e.message}; the status bar says ${JSON.stringify(await badge())}`);
+      });
+      await sleep(3000);
+      log = readLog(FEED_REQUESTS);
+      if (log.some((r) => r.path.endsWith(".exe"))) throw new Error(`notify downloaded the installer without being asked: ${showLog(log)}`);
+      await download.click();
+      await until("the installer to be requested", async () => readLog(FEED_REQUESTS).some((r) => r.path.endsWith(".exe")), 30000).catch((e) => {
+        throw new Error(`${e.message}: ${showLog(readLog(FEED_REQUESTS))}`);
+      });
+      await until("the ready badge", async () => (await badge()).includes("update 0.0.2 ready · RESTART TO INSTALL"), 60000).catch(async (e) => {
+        throw new Error(`${e.message}; the status bar says ${JSON.stringify(await badge())}`);
+      });
+      const v = (await overview()).app_version;
+      if (v !== "0.0.1") throw new Error(`the app is ${v}; nothing may install in this run`);
+    } finally {
+      killServer(feedServer);
+    }
+  }],
 ];
 
 async function main() {
   if (!process.argv.includes("--no-build")) {
     checkE2eOverlay();
-    sh(process.execPath, ["node_modules/@tauri-apps/cli/tauri.js", "build", "--debug", "--no-bundle", "--config", "src-tauri/tauri.updater-test.conf.json", "--config", "src-tauri/tauri.e2e.conf.json"]);
+    sh(process.execPath, ["node_modules/@tauri-apps/cli/tauri.js", "build", "--debug", "--no-bundle", "--config", "src-tauri/tauri.updater-test.conf.json", "--config", "src-tauri/tauri.catalog-test.conf.json", "--config", "src-tauri/tauri.e2e.conf.json"]);
     sh("cargo", ["build", "--features", "fake-engine", "--bin", "fake-engine"], { cwd: TAURI_DIR });
   }
   if (pids("lorren.exe").length || pids("fake-engine.exe").length) throw new Error("close every running Lorren and fake engine first");
@@ -827,7 +1167,13 @@ async function main() {
   fs.rmSync(WORK + "/shots", { recursive: true, force: true });
   fs.rmSync(WORK + "/webview", { recursive: true, force: true });
   fs.rmSync(WORK + "/measurements.json", { force: true });
+  // The stranger's folders start empty, and a catalog server left by a dead run would serve its own files.
+  for (const dir of [STRANGER_DATA, STRANGER_MODELS, DOWNLOADS]) fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(FEED_REQUESTS, { force: true });
+  if (await portOpen(CATALOG_PORT)) throw new Error(`close whatever holds port ${CATALOG_PORT} (the catalog server of the stranger's run)`);
+  if (await portOpen(FEED_PORT)) throw new Error(`close whatever holds port ${FEED_PORT} (the update feed of the update steps)`);
   sh(FAKE, ["write-fixtures", path.join(WORK, "models")]);
+  writeCatalogSite();
   await launch();
   for (const [name, fn] of steps) {
     try {
@@ -850,6 +1196,7 @@ try {
   console.log(`e2e: FAILED before the steps: ${e.message}`);
 } finally {
   stopFeed();
+  stopServers();
   await close(false);
 }
 process.exit(code);
