@@ -404,9 +404,9 @@ git commit -m "desktop: one log line per opening (spec 2026-10-23 section 7), th
 - [ ] **Step 3: Run the whole e2e** (gate first; it builds the debug app and the fake engine).
 
 Run: `npm run e2e`
-Expected: the last line is `e2e: 16/16 OK` (13 existing steps + 3), and `measurements.json` has `opening` and `opening_held`. A failure is diagnosed (superpowers:systematic-debugging) before anything is changed.
+Expected: the last line is `e2e: 17/17 OK` (14 existing steps + 3), and `measurements.json` has `opening` and `opening_held`. A failure is diagnosed (superpowers:systematic-debugging) before anything is changed.
 
-- [ ] **Step 4: Run the held-host step red once.** Lowering `HANDOVER_DELAY_MS` proves nothing: `pace` never lets the word finish while loading, so the hand-over would still wait. Make the opposite edit instead. Temporarily make the runner treat the page as ready at its first frame (set `readyPerf = t0` there, ignoring `lorren:ready`), then run `npm run e2e`. It must rebuild, because the debug exe embeds `dist/`. Expected: the held-host step FAILS on "the first snapshot no longer playing is ≥ 6000 ms after spawn". Revert, run `npm run e2e` once more (16/16), and record the red line in the ledger.
+- [ ] **Step 4: Run the held-host step red once.** Lowering `HANDOVER_DELAY_MS` proves nothing: `pace` never lets the word finish while loading, so the hand-over would still wait. Make the opposite edit instead. Temporarily make the runner treat the page as ready at its first frame (set `readyPerf = t0` there, ignoring `lorren:ready`), then run `npm run e2e`. It must rebuild, because the debug exe embeds `dist/`. Expected: the held-host step FAILS on "the first snapshot no longer playing is ≥ 6000 ms after spawn". Revert, run `npm run e2e` once more (17/17), and record the red line in the ledger.
 
 - [ ] **Step 5: Commit**
 
@@ -449,7 +449,7 @@ git commit -m "e2e: the opening with a fast host, a host held back 6 s and reduc
 - [ ] **Step 1: The failing test:** `#[tokio::test] wait_library_returns_once_the_scan_is_published`. It spawns `wait_library` on a fresh channel (false), asserts the task is not finished after 50 ms, sends `true`, and asserts it finishes within 1 s. A second case: a dropped sender also returns.
 - [ ] **Step 2: Run it red:** `cargo test --lib wait_library`. Expected: a compile error naming `wait_library`.
 - [ ] **Step 3: Implement it, and move the scan.** The `library: …` log line keeps its text. The `ChatService` keeps the same `Arc<RwLock<…>>`.
-- [ ] **Step 4: Verify.** Run `cargo test --lib`, then `npm run e2e` (16/16), then Task 6's step 2 again. Expected: median `page - window` ≤ 150 ms, and the `library:` line still before `starting the engine`.
+- [ ] **Step 4: Verify.** Run `cargo test --lib`, then `npm run e2e` (17/17), then Task 6's step 2 again. Expected: median `page - window` ≤ 150 ms, and the `library:` line still before `starting the engine`.
 - [ ] **Step 5: Commit** `"desktop: the library is scanned beside the window, not before it, so the opening paints at once (R9)"`.
 
 ---
