@@ -6,7 +6,7 @@ use crate::engine::supervisor::{EngineStatus, Supervisor};
 use crate::library::ModelInfo;
 use crate::monitor::{LogLine, Monitor, RequestRecord};
 use crate::store::{Chat, Message, Store};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
@@ -20,6 +20,10 @@ pub struct AppState {
     pub chat: Arc<ChatService>,
     pub updates: Arc<crate::updater::UpdateService>,
     pub started_ms: i64,
+    /// Epoch ms at the top of `run()`: what the opening is measured from.
+    pub launched_ms: i64,
+    /// Epoch ms right after the window was shown.
+    pub shown_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -109,8 +113,97 @@ pub fn overview(app: tauri::AppHandle, state: State<'_, AppState>) -> Overview {
 }
 
 #[tauri::command]
-pub fn models(state: State<'_, AppState>) -> Vec<ModelInfo> {
-    state.library.read().unwrap().clone()
+pub async fn models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>, String> {
+    debug_hold(state.launched_ms).await;
+    Ok(state.library.read().unwrap().clone())
+}
+
+/// How long `models` still has to wait, counted from launch: `max(0, launched + hold - now)`; 0 without a hold.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub fn hold_left(launched_ms: i64, hold_ms: Option<u64>, now_ms: i64) -> u64 {
+    match hold_ms {
+        Some(h) => u64::try_from((launched_ms + i64::try_from(h).unwrap_or(i64::MAX / 2) - now_ms).max(0)).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Debug builds only: the e2e sets `LORREN_DEBUG_HOLD_MODELS_MS` to make the host look slow to answer `models`.
+#[cfg(debug_assertions)]
+async fn debug_hold(launched_ms: i64) {
+    let hold = std::env::var("LORREN_DEBUG_HOLD_MODELS_MS").ok().and_then(|v| v.trim().parse::<u64>().ok());
+    let left = hold_left(launched_ms, hold, crate::store::now_ms());
+    if left > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(left)).await;
+    }
+}
+
+#[cfg(not(debug_assertions))]
+async fn debug_hold(_launched_ms: i64) {}
+
+/// What the page's opening measured (`public/opening.js`), field for field, as sent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpeningReport {
+    pub navigation_ms: f64,
+    pub first_frame_ms: Option<f64>,
+    pub ready_ms: Option<f64>,
+    pub finished_ms: Option<f64>,
+    pub handover_start_ms: f64,
+    pub handover_end_ms: f64,
+    pub plan_ms: f64,
+    pub remembered_ms: Option<f64>,
+    pub longest_gap_ms: f64,
+    pub longest_task_ms: Option<f64>,
+    pub longest_task_at_ms: Option<f64>,
+    pub landing_error_px: Option<f64>,
+    pub font_ms: Option<f64>,
+    pub reduced_motion: bool,
+    pub valve: bool,
+    pub error: Option<String>,
+}
+
+/// The one log line for an opening (spec 2026-10-23 section 7): (level, text).
+pub fn opening_line(r: &OpeningReport, launched_ms: i64, shown_ms: i64) -> (&'static str, String) {
+    let l = launched_ms as f64;
+    let first = match r.first_frame_ms {
+        Some(v) => format!("first frame {:.0} ms", v - l),
+        None => "first frame never".to_string(),
+    };
+    let ready = match r.ready_ms {
+        Some(v) => format!("ready {:.0} ms", v - l),
+        None => "ready never came (the 12 s valve)".to_string(),
+    };
+    let start = match r.remembered_ms {
+        Some(v) => format!("last start {:.1} s", v / 1000.0),
+        None => "first start".to_string(),
+    };
+    let mut text = format!(
+        "opening: window {} ms, page {:.0} ms, {first}, {ready}, in the top bar {:.0} ms after launch; planned {:.1} s ({start}); longest frame gap {:.0} ms",
+        shown_ms - launched_ms,
+        r.navigation_ms - l,
+        r.handover_end_ms - l,
+        r.plan_ms / 1000.0,
+        r.longest_gap_ms,
+    );
+    if let (Some(t), Some(at)) = (r.longest_task_ms, r.longest_task_at_ms) {
+        text.push_str(&format!("; longest task {t:.0} ms at {at:.0} ms"));
+    }
+    if let Some(e) = r.landing_error_px {
+        text.push_str(&format!("; landed within {e:.2} px"));
+    } else if r.reduced_motion {
+        text.push_str("; reduced motion: faded");
+    } else {
+        text.push_str("; no wordmark to land on: faded");
+    }
+    if let Some(e) = &r.error {
+        text.push_str(&format!("; the opening failed: {e}"));
+    }
+    (if r.valve || r.error.is_some() { "warn" } else { "info" }, text)
+}
+
+#[tauri::command]
+pub fn opening_report(state: State<'_, AppState>, report: OpeningReport) {
+    let (level, text) = opening_line(&report, state.launched_ms, state.shown_ms);
+    state.monitor.log("app", level, text);
 }
 
 #[tauri::command]
@@ -324,5 +417,84 @@ mod tests {
         let lib = [entry("default", false, true), entry("broken", false, false)];
         assert_eq!(pick_model(&lib, None).unwrap_err(), "there is no runnable model in the library");
         assert_eq!(pick_model(&[], None).unwrap_err(), "there is no runnable model in the library");
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    fn normal() -> OpeningReport {
+        OpeningReport {
+            navigation_ms: 1_000_380.4,
+            first_frame_ms: Some(1_000_455.2),
+            ready_ms: Some(1_001_430.7),
+            finished_ms: Some(1_002_455.0),
+            handover_start_ms: 1_002_756.0,
+            handover_end_ms: 1_003_515.9,
+            plan_ms: 2000.0,
+            remembered_ms: None,
+            longest_gap_ms: 18.4,
+            longest_task_ms: Some(140.2),
+            longest_task_at_ms: Some(80.0),
+            landing_error_px: Some(0.0213),
+            font_ms: Some(60.0),
+            reduced_motion: false,
+            valve: false,
+            error: None,
+        }
+    }
+
+    const HEAD: &str = "opening: window 12 ms, page 380 ms, first frame 455 ms, ready 1431 ms, in the top bar 3516 ms after launch; planned 2.0 s (first start); longest frame gap 18 ms";
+
+    #[test]
+    fn opening_line_reads_a_normal_start() {
+        let (level, text) = opening_line(&normal(), 1_000_000, 1_000_012);
+        assert_eq!(level, "info");
+        assert_eq!(text, format!("{HEAD}; longest task 140 ms at 80 ms; landed within 0.02 px"));
+    }
+
+    #[test]
+    fn opening_line_reads_the_valve() {
+        let mut r = normal();
+        r.ready_ms = None;
+        r.valve = true;
+        r.plan_ms = 5000.0;
+        r.remembered_ms = Some(7200.0);
+        r.handover_end_ms = 1_013_080.0;
+        r.longest_task_ms = None;
+        r.landing_error_px = Some(0.03);
+        let (level, text) = opening_line(&r, 1_000_000, 1_000_012);
+        assert_eq!(level, "warn");
+        assert_eq!(text, "opening: window 12 ms, page 380 ms, first frame 455 ms, ready never came (the 12 s valve), in the top bar 13080 ms after launch; planned 5.0 s (last start 7.2 s); longest frame gap 18 ms; landed within 0.03 px");
+    }
+
+    #[test]
+    fn opening_line_reads_reduced_motion() {
+        let mut r = normal();
+        r.landing_error_px = None;
+        r.reduced_motion = true;
+        r.longest_task_ms = None;
+        let (level, text) = opening_line(&r, 1_000_000, 1_000_012);
+        assert_eq!(level, "info");
+        assert_eq!(text, format!("{HEAD}; reduced motion: faded"));
+    }
+
+    #[test]
+    fn opening_line_reads_a_failure() {
+        let mut r = normal();
+        r.landing_error_px = None;
+        r.longest_task_ms = None;
+        r.error = Some("TypeError: x is undefined".into());
+        let (level, text) = opening_line(&r, 1_000_000, 1_000_012);
+        assert_eq!(level, "warn");
+        assert_eq!(text, format!("{HEAD}; no wordmark to land on: faded; the opening failed: TypeError: x is undefined"));
+    }
+
+    #[test]
+    fn hold_left_counts_from_launch() {
+        assert_eq!(hold_left(1000, None, 1500), 0);
+        assert_eq!(hold_left(1000, Some(6000), 1500), 5500);
+        assert_eq!(hold_left(1000, Some(6000), 9000), 0);
     }
 }

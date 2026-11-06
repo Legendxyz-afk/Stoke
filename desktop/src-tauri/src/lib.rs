@@ -32,6 +32,7 @@ fn open_store(monitor: &monitor::Monitor, dir: &std::path::Path) -> Result<store
 }
 
 pub fn run() {
+    let launched_ms = store::now_ms();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -45,10 +46,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         // The main window's state is saved when it is asked to close (demo D8).
         .on_window_event(window_state::on_window_event)
-        .setup(|app| {
+        .setup(move |app| {
             // First of all, before the store and the library scan: the window is created hidden (tauri.conf.json), placed as
             // the last run left it (maximized the first time), and shown, so it appears as early as it can (demo D8).
             let window_note = window_state::restore(app);
+            let shown_ms = store::now_ms();
             let monitor = monitor::Monitor::new(Some(paths::log_dir().join("lorren.log")));
             monitor.log("app", "info", format!("Lorren {} starting", app.package_info().version));
             monitor.log("app", "info", window_note);
@@ -73,7 +75,7 @@ pub fn run() {
             // NotConfigured, so the badge shows nothing from the first frame, and no check is ever scheduled.
             let configured = updater::endpoints_configured(app.config().plugins.0.get("updater"));
             let updates = updater::UpdateService::new(monitor.clone(), configured);
-            app.manage(AppState { store, library, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), started_ms: store::now_ms() });
+            app.manage(AppState { store, library, monitor, supervisor: supervisor.clone(), chat, updates: updates.clone(), started_ms: store::now_ms(), launched_ms, shown_ms });
 
             // Updates (spec §3.7): a check 5 s after start, then every 6 h. A configured endpoint can still answer
             // "not configured" (the plugin's own EmptyEndpoints), and then the loop ends.
@@ -112,6 +114,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::overview,
             commands::models,
+            commands::opening_report,
             commands::chats,
             commands::chat,
             commands::new_chat,
