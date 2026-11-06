@@ -15,6 +15,8 @@ use ts_rs::TS;
 pub struct AppState {
     pub store: Arc<Mutex<Store>>,
     pub library: Arc<RwLock<Vec<ModelInfo>>>,
+    /// Turns `true` once the scan thread has written the library; `models` waits on it.
+    pub library_ready: tokio::sync::watch::Receiver<bool>,
     pub monitor: Arc<Monitor>,
     pub supervisor: Arc<Supervisor>,
     pub chat: Arc<ChatService>,
@@ -115,7 +117,14 @@ pub fn overview(app: tauri::AppHandle, state: State<'_, AppState>) -> Overview {
 #[tauri::command]
 pub async fn models(state: State<'_, AppState>) -> Result<Vec<ModelInfo>, String> {
     debug_hold(state.launched_ms).await;
+    let mut rx = state.library_ready.clone();
+    wait_library(&mut rx).await;
     Ok(state.library.read().unwrap().clone())
+}
+
+/// Returns once the library scan has been published (at once if it already has), or when the scan's sender is gone.
+pub async fn wait_library(rx: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = rx.wait_for(|ready| *ready).await;
 }
 
 /// How long `models` still has to wait, counted from launch: `max(0, launched + hold - now)`; 0 without a hold.
@@ -333,6 +342,38 @@ pub async fn install_update(app: tauri::AppHandle, state: State<'_, AppState>) -
         }
     }
     result
+}
+
+#[cfg(test)]
+mod library_gate_tests {
+    use super::wait_library;
+    use std::time::Duration;
+    use tokio::sync::watch;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn wait_library_returns_once_the_scan_is_published() {
+        let (tx, mut rx) = watch::channel(false);
+        let task = tokio::spawn(async move { wait_library(&mut rx).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!task.is_finished(), "returned before the scan was published");
+        tx.send_replace(true);
+        timeout(Duration::from_secs(1), task).await.expect("did not return after the publish").unwrap();
+    }
+
+    #[tokio::test]
+    async fn wait_library_returns_at_once_when_already_published() {
+        let (_tx, mut rx) = watch::channel(true);
+        timeout(Duration::from_millis(50), wait_library(&mut rx)).await.expect("waited though the library was ready");
+    }
+
+    #[tokio::test]
+    async fn wait_library_returns_when_the_scan_is_gone() {
+        let (tx, mut rx) = watch::channel(false);
+        let task = tokio::spawn(async move { wait_library(&mut rx).await });
+        drop(tx);
+        timeout(Duration::from_secs(1), task).await.expect("did not return after the sender was dropped").unwrap();
+    }
 }
 
 #[cfg(test)]
