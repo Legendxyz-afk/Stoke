@@ -247,13 +247,21 @@ async function launch(overrides = {}, { keepOpening = false } = {}) {
   });
   browser = await until("a CDP connection", () => chromium.connectOverCDP(`http://127.0.0.1:${CDP}`), 30000, guard);
   page = await until("the app page", async () => browser.contexts()[0]?.pages()[0], 30000, guard);
-  await page.waitForFunction(() => !!document.getElementById("root"), null, { timeout: 30000 });
+  // A page that closes during the launch (seen once, 2026-11-07, on a relaunch 0.8 s after the last one closed) says what
+  // was left: whether this app still runs, and the WebView2 browser processes of lorren.exe (an old one still shutting
+  // down would host the new page too).
+  const why = (e) => {
+    const alive = pids("lorren.exe").includes(child.pid);
+    const browsers = webviewCommandLine().split("\n").map((l) => l.split(" ")[0]).join(", ");
+    return new Error(`${e.message} (the app ${alive ? "still runs" : `has exited${exited ? `, code ${exited.code}` : ""}`}; WebView2 browser processes: ${browsers})`);
+  };
+  await page.waitForFunction(() => !!document.getElementById("root"), null, { timeout: 30000 }).catch((e) => { throw why(e); });
   const firstFrame = await page.evaluate(openingSnapshot);
   lastLaunch = { spawnedAt, firstFrame };
   fs.mkdirSync(path.join(WORK, "shots"), { recursive: true });
   await page.screenshot({ path: path.join(WORK, "shots", "opening-first.png") }).catch(() => {});
   if (!keepOpening) {
-    await page.waitForFunction(() => window.__lorrenOpening?.phase === "done", null, { timeout: 20000 });
+    await page.waitForFunction(() => window.__lorrenOpening?.phase === "done", null, { timeout: 20000 }).catch((e) => { throw why(e); });
     await page.locator(".topbar .wordmark").waitFor({ state: "visible", timeout: 30000 });
   }
 }
