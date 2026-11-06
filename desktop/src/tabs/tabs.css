@@ -25,3 +25,9 @@
 .search .btn { padding: 9px 18px; }
 .bar.thick { margin: 2px 0; }
 .rowline { display: flex; gap: 14px; align-items: center; font-family: var(--mono); font-size: 11px; }
+/* Settings (the design's demo): the update choice, three radio buttons. */
+.choice { display: flex; gap: 14px; align-items: flex-start; padding: 14px 22px; text-align: left; width: 100%; background: none;
+  border: 0; border-bottom: 1px solid var(--l20); color: var(--d80); cursor: pointer; }
+.choice.selected { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); color: var(--text); }
+.radio { width: 9px; height: 9px; border-radius: 50%; border: 1px solid var(--d55); margin-top: 3px; flex-shrink: 0; }
+.choice.selected .radio { border-color: var(--accent); background: var(--accent); }

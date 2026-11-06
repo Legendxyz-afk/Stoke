@@ -316,3 +316,37 @@ describe("UpdateBadge: the listener first, then the snapshot", () => {
     expect(container.textContent).toBe("update 0.0.2 ready · RESTART TO INSTALL");
   });
 });
+
+describe("UpdateBadge, updates off and an update available", () => {
+  beforeEach(() => {
+    vi.mocked(api.onUpdateState).mockReset().mockImplementation(async () => () => {});
+    vi.mocked(api.downloadUpdate).mockReset().mockImplementation(async () => {});
+  });
+
+  it("the_badge_says_updates_off_in_off_and_offers_nothing", async () => {
+    vi.mocked(api.updateState).mockResolvedValue({ state: "off" });
+    render(<UpdateBadge />);
+    expect(await screen.findByText("updates off")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("the_badge_offers_DOWNLOAD_for_available_and_calls_downloadUpdate", async () => {
+    vi.mocked(api.updateState).mockResolvedValue({ state: "available", version: "0.1.1" });
+    render(<UpdateBadge />);
+    const b = await screen.findByRole("button", { name: "update 0.1.1 available · DOWNLOAD" });
+    fireEvent.click(b);
+    await waitFor(() => expect(api.downloadUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows why a download could not start", async () => {
+    const errors = captureHostErrors();
+    vi.mocked(api.updateState).mockResolvedValue({ state: "available", version: "0.1.1" });
+    vi.mocked(api.downloadUpdate).mockRejectedValue("no update is waiting to be downloaded");
+    render(<UpdateBadge />);
+    fireEvent.click(await screen.findByRole("button", { name: /DOWNLOAD/ }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "could not download the update: no update is waiting to be downloaded",
+    );
+    errors.mockRestore();
+  });
+});

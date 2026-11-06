@@ -16,6 +16,7 @@ export function UpdateBadge() {
   const follow = useHostFailure("onUpdateState");
   const check = useHostFailure("checkUpdate");
   const install = useHostFailure("installUpdate");
+  const download = useHostFailure("downloadUpdate");
   useEffect(() => {
     let alive = true;
     /** An event has arrived. It is newer than a snapshot that is still on its way, so that snapshot is dropped. */
@@ -31,6 +32,7 @@ export function UpdateBadge() {
         follow.clear();
         check.clear();
         install.clear();
+        download.clear();
       })
       .catch((e) => {
         if (alive) follow.report(e);
@@ -52,16 +54,18 @@ export function UpdateBadge() {
       alive = false;
       unlisten.then((f) => f());
     };
-  }, [read.report, read.clear, follow.report, follow.clear, check.clear, install.clear]);
+  }, [read.report, read.clear, follow.report, follow.clear, check.clear, install.clear, download.clear]);
   const checkNow = () => api.checkUpdate().then(check.clear, check.report);
   const installNow = () => api.installUpdate().then(install.clear, install.report);
+  const downloadNow = () => api.downloadUpdate().then(download.clear, download.report);
   return (
     <>
       {read.failure !== null && <Notice what="could not read the update state" reason={read.failure} />}
       {follow.failure !== null && <Notice what="could not follow the update state" reason={follow.failure} />}
       {check.failure !== null && <Notice what="could not check for updates" reason={check.failure} />}
       {install.failure !== null && <Notice what="could not install the update" reason={install.failure} />}
-      {s && action(s, checkNow, installNow)}
+      {download.failure !== null && <Notice what="could not download the update" reason={download.failure} />}
+      {s && action(s, checkNow, installNow, downloadNow)}
     </>
   );
 }
@@ -77,8 +81,12 @@ function Notice({ what, reason }: { what: string; reason: string }) {
   );
 }
 
-function action(s: UpdateState, check: () => void, install: () => void): ReactNode {
+function action(s: UpdateState, check: () => void, install: () => void, download: () => void): ReactNode {
   switch (s.state) {
+    case "off":
+      return <span>updates off</span>;
+    case "available":
+      return <button className="link" onClick={download}>update {s.version} available · DOWNLOAD</button>;
     case "not_configured":
       return null;
     case "idle":

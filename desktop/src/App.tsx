@@ -11,6 +11,7 @@ import { reportReady } from "./opening/ready";
 import type { Overview } from "./ipc/bindings/Overview";
 import { LogsTab } from "./tabs/LogsTab";
 import { ModelsTab, type ModelsView } from "./tabs/ModelsTab";
+import { SettingsTab } from "./tabs/SettingsTab";
 import { RequestsTab } from "./tabs/RequestsTab";
 
 export function App() {
@@ -91,6 +92,8 @@ function renderTab(tab: Tab, overview: Overview | null, modelsView: ModelsView, 
       return <RequestsTab />;
     case "Logs":
       return <LogsTab />;
+    case "Settings":
+      return <SettingsTab />;
     default:
       return <Placeholder tab={tab} />;
   }

@@ -11,6 +11,7 @@ import type { ModelInfo } from "./bindings/ModelInfo";
 import type { Overview } from "./bindings/Overview";
 import type { RequestRecord } from "./bindings/RequestRecord";
 import type { StreamEvent } from "./bindings/StreamEvent";
+import type { UpdateMode } from "./bindings/UpdateMode";
 import type { UpdateState } from "./bindings/UpdateState";
 
 function channel(onEvent: (e: StreamEvent) => void): Channel<StreamEvent> {
@@ -42,6 +43,12 @@ export const api = {
   updateState: () => invoke<UpdateState>("update_state"),
   checkUpdate: () => invoke<void>("check_update"),
   installUpdate: () => invoke<void>("install_update"),
+  /** The stored update choice. */
+  updateMode: () => invoke<UpdateMode>("update_mode"),
+  /** Stores the choice; rejects with the reason when the store could not keep it (then nothing changed on the host). */
+  setUpdateMode: (mode: UpdateMode) => invoke<void>("set_update_mode", { mode }),
+  /** Downloads the kept update; rejects when none is waiting. */
+  downloadUpdate: () => invoke<void>("download_update"),
   /** The kept catalog, with no network. */
   catalog: () => invoke<CatalogView>("catalog"),
   /** Reads the catalog over the network and verifies it; on failure the kept view comes back stale, with its error. */
