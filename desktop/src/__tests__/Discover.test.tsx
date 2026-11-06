@@ -98,7 +98,8 @@ describe("Discover", () => {
     fire("onDownloadState", dl("qwen3-4b", { done: 1.2 * GIB, bytes_per_sec: 18.4 * 1048576 }));
     expect(within(row("Qwen3-4B-Instruct-2507")).getByText("51%")).toBeTruthy();
     expect(screen.getByText("1.2 GB / 2.3 GB · 51%")).toBeTruthy();
-    expect(screen.getByText(/18\.4 MB\/s · \d+ s left/)).toBeTruthy();
+    // 1.13 GiB to go at 18.4 MB/s is 62.7 s: past a minute, the demo's `dur` says minutes and seconds.
+    expect(screen.getByText("18.4 MB/s · 1 min 3 s left")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "PAUSE" }));
     await waitFor(() => expect(api.pauseDownload).toHaveBeenCalledWith("qwen3-4b"));
@@ -220,7 +221,7 @@ describe("Discover", () => {
     expect(await screen.findByText(`the list as read ${old.getDate()} ${months[old.getMonth()]} ${hh}:${mm} · reading it again failed: could not reach the catalog`)).toBeTruthy();
     fireEvent.click(screen.getByText("READ AGAIN"));
     await waitFor(() => expect(screen.queryByText(/reading it again failed/)).toBeNull());
-    expect(api.refreshCatalog).toHaveBeenCalledTimes(2);
+    expect(api.refreshCatalog).toHaveBeenCalledTimes(3); // one read per opening (two sessions), then READ AGAIN
   });
 
   it("says when the build has no catalog, and when the first read failed", async () => {
