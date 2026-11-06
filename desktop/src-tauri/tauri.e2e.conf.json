@@ -9,6 +9,7 @@
         "minWidth": 1100,
         "minHeight": 680,
         "visible": false,
+        "backgroundColor": "#090b0e",
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required --remote-debugging-port=9222"
       }
     ]

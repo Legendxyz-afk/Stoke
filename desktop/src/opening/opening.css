@@ -1,0 +1,104 @@
+/* Lorren's opening, "drawn, then lit" (docs/superpowers/specs/2026-10-23-lorren-opening-design.md): the static look of
+   the word at its first frame, the values of the approved mockup. The keyframes and the pacing live in public/opening.js,
+   which moves every layer below and removes #opening at the hand-over.
+   index.html links this file rather than holding it in a <style>: Tauri puts a nonce on every <style> element, and a nonce
+   in style-src makes the webview ignore 'unsafe-inline' for the style attributes the app sets. Vite bundles it into the
+   main stylesheet, which is render-blocking, so the opening is on screen at the webview's first paint. */
+
+@font-face {
+  font-family: "Lorren Opening";
+  src: url("../fonts/Archivo-600.ttf") format("truetype");
+  font-weight: 600;
+  font-display: block;
+}
+
+html { background: oklch(0.15 0.006 255); }
+
+#opening {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: grid;
+  place-items: center;
+  /* The last resort, for a page where public/opening.js never ran: the overlay fades out at 14 s. The script's own valve
+     hands over at 12 s and removes this element before then. */
+  animation: op-valve 520ms ease-out 14s forwards;
+}
+@keyframes op-valve { to { opacity: 0; visibility: hidden; } }
+
+/* The top bar's wordmark is hidden while the opening's word is on screen; the script shows it at the swap by taking the
+   class off <html>. Without the script it appears once the last-resort fade has ended. */
+html.opening .topbar .wordmark { visibility: hidden; animation: op-valve-mark 0s linear 14.52s forwards; }
+@keyframes op-valve-mark { to { visibility: visible; } }
+
+.op-backdrop { position: absolute; inset: 0; background: oklch(0.15 0.006 255); }
+
+.op-word {
+  position: relative;
+  font: 600 112px/1 "Lorren Opening", sans-serif;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  color: oklch(0.95 0.004 255);
+  transform-origin: 0 0;
+  visibility: hidden; /* until the script's first frame, so no frame shows a layer before its animation holds it */
+}
+
+/* The lit letters, uncovered by a soft mask edge that the light carries from left to right. */
+.op-lit {
+  display: block;
+  -webkit-mask-image: linear-gradient(90deg, #000 44%, transparent 56%);
+  mask-image: linear-gradient(90deg, #000 44%, transparent 56%);
+  -webkit-mask-size: 300% 100%;
+  mask-size: 300% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: 84% 0;
+  mask-position: 84% 0;
+}
+
+/* The letters settled into the surface: dark, slightly pressed in, a dark top edge and a faint light bottom edge. */
+.op-pressed {
+  position: absolute;
+  inset: 0;
+  color: oklch(0.205 0.007 255);
+  text-shadow: 0 -1px 0 oklch(0.09 0.005 255), 0 1px 0 oklch(0.34 0.008 255 / 0.7);
+  opacity: 0;
+}
+
+/* The hot spot on the letters the light is passing. */
+.op-spot {
+  position: absolute;
+  inset: 0;
+  color: transparent;
+  background: radial-gradient(ellipse 7% 75% at 50% 50%, #fffaf0 0%, #f2d9a6 40%, transparent 100%) 84% 0 / 300% 100% no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* The soft warm halo behind the light. */
+.op-halo {
+  position: absolute;
+  left: -280px;
+  top: 50%;
+  width: 560px;
+  height: 320px;
+  margin-top: -160px;
+  background: radial-gradient(closest-side, oklch(0.76 0.09 70 / 0.14), transparent);
+  opacity: 0;
+}
+
+/* The outline that draws itself: a 1.2 px light line. The script sizes the svg to the word and puts the text on its
+   baseline. */
+.op-trace { position: absolute; left: 0; top: 0; overflow: visible; }
+.op-line {
+  font: 600 112px "Lorren Opening", sans-serif;
+  letter-spacing: -0.01em;
+  fill: none;
+  stroke: #eef0f4;
+  stroke-width: 1.2;
+  stroke-dasharray: 360;
+  stroke-dashoffset: 360;
+  stroke-opacity: 0.9;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}

@@ -1,12 +1,30 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="opening">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lorren</title>
+    <!-- The opening (docs/superpowers/specs/2026-10-23-lorren-opening-design.md): its font, preloaded so that no frame
+         shows another face, and its look (src/opening/opening.css says why it is a file and not a style element). -->
+    <link rel="preload" href="/src/fonts/Archivo-600.ttf" as="font" type="font/ttf" crossorigin />
+    <link rel="stylesheet" href="/src/opening/opening.css" />
   </head>
   <body>
     <div id="root"></div>
+    <!-- Decoration, hidden from assistive technology and never focused. public/opening.js drives it and removes it. -->
+    <div id="opening" aria-hidden="true">
+      <div class="op-backdrop"></div>
+      <div class="op-word">
+        <span class="op-halo"></span>
+        <span class="op-pressed">lorren</span>
+        <span class="op-lit">lorren</span>
+        <span class="op-spot">lorren</span>
+        <svg class="op-trace"><text class="op-line">lorren</text></svg>
+      </div>
+    </div>
+    <!-- A classic script, before the app's bundle: the opening must not wait for the app's code, and the CSP allows no
+         inline script. -->
+    <script src="/opening.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
