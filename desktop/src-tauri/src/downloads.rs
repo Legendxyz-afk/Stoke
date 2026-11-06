@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use ts_rs::TS;
@@ -190,7 +190,8 @@ pub struct DownloadManager {
     library: Arc<RwLock<Vec<ModelInfo>>>,
     emit: EmitFn,
     on_model: ModelFn,
-    client: reqwest::Client,
+    /// Built by the first worker, not by `new`: `new` runs in `setup`, on the opening's path.
+    client: OnceLock<reqwest::Client>,
     jobs: Mutex<HashMap<String, Job>>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     next_gen: AtomicU64,
@@ -238,18 +239,13 @@ fn parse_range_start(h: Option<&reqwest::header::HeaderValue>) -> Option<u64> {
 
 impl DownloadManager {
     pub fn new(cfg: DownloadConfig, store: Arc<Mutex<Store>>, library: Arc<RwLock<Vec<ModelInfo>>>, emit: EmitFn, on_model: ModelFn) -> Arc<Self> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(20))
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .expect("an http client");
         let m = Arc::new(DownloadManager {
             cfg,
             store,
             library,
             emit,
             on_model,
-            client,
+            client: OnceLock::new(),
             jobs: Mutex::new(HashMap::new()),
             locks: Mutex::new(HashMap::new()),
             next_gen: AtomicU64::new(1),
@@ -439,16 +435,38 @@ impl DownloadManager {
         Ok(())
     }
 
+    fn client(&self) -> &reqwest::Client {
+        self.client.get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(20))
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()
+                .expect("an http client")
+        })
+    }
+
     fn lock_for(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.locks.lock().unwrap().entry(id.to_string()).or_default().clone()
     }
 
     /// Changes the job's view if it is still this worker's job; `f` says whether to emit at once (else at most every 250 ms).
+    ///
+    /// Not once the job's token is cancelled (`pause` cancels it under this same lock and sets "paused"): a worker that
+    /// had already taken a chunk must not move the view back to downloading. Terminal changes use `apply_terminal`.
     fn apply(&self, id: &str, gen: u64, f: impl FnOnce(&mut Job) -> bool) {
+        self.apply_at(id, gen, true, f)
+    }
+
+    /// For the end of a job (failed, done): applies even after a pause, which a finished download must win over.
+    fn apply_terminal(&self, id: &str, gen: u64, f: impl FnOnce(&mut Job) -> bool) {
+        self.apply_at(id, gen, false, f)
+    }
+
+    fn apply_at(&self, id: &str, gen: u64, live_only: bool, f: impl FnOnce(&mut Job) -> bool) {
         let view = {
             let mut jobs = self.jobs.lock().unwrap();
             let Some(j) = jobs.get_mut(id) else { return };
-            if j.gen != gen {
+            if j.gen != gen || (live_only && j.ctl.as_ref().is_some_and(|c| c.token.is_cancelled())) {
                 return;
             }
             let force = f(j);
@@ -472,7 +490,7 @@ impl DownloadManager {
             }
             let _ = self.store.lock().unwrap().set_download_state(id, "failed", Some(msg));
         }
-        self.apply(id, gen, |j| {
+        self.apply_terminal(id, gen, |j| {
             j.view.state = "failed".into();
             j.view.error = Some(msg.to_string());
             j.view.retry_in_ms = None;
@@ -561,7 +579,7 @@ impl DownloadManager {
             if have == size {
                 return self.finish(row, gen, ctl, hasher).await;
             }
-            let mut req = self.client.get(&row.url);
+            let mut req = self.client().get(&row.url);
             if have > 0 {
                 req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
             }
@@ -731,7 +749,7 @@ impl DownloadManager {
         };
         let _ = self.store.lock().unwrap().set_download_state(id, "done", None);
         let size = row.size;
-        self.apply(id, gen, |j| {
+        self.apply_terminal(id, gen, |j| {
             j.view.state = "done".into();
             j.view.done = size;
             j.view.error = None;
@@ -1182,6 +1200,56 @@ mod tests {
         let log = r.srv.log();
         assert_eq!(log.len(), 2);
         assert_eq!(log[1].range.as_deref(), Some("bytes=16384-"));
+        assert_eq!(std::fs::read(r.dir.join(FILE)).unwrap(), r.body);
+        r.end();
+    }
+
+    #[tokio::test]
+    async fn a_pause_during_a_write_stays_paused_and_resume_finishes() {
+        type Slot = Arc<Mutex<Option<Arc<DownloadManager>>>>;
+        struct PauseOnWrite {
+            inner: Box<dyn Write + Send>,
+            slot: Slot,
+            done: bool,
+        }
+        impl Write for PauseOnWrite {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                let n = self.inner.write(b)?;
+                if !self.done {
+                    self.done = true;
+                    // The pause lands while this chunk is being written: the worker has already taken the chunk.
+                    let m = self.slot.lock().unwrap().clone();
+                    if let Some(m) = m {
+                        m.pause("fixture").unwrap();
+                    }
+                }
+                Ok(n)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.inner.flush()
+            }
+        }
+        let slot: Slot = Arc::new(Mutex::new(None));
+        let s2 = slot.clone();
+        let r = Rig::with("pausewrite", move |c| {
+            c.open_part = Arc::new(move |p, off| Ok(Box::new(PauseOnWrite { inner: open_part(p, off)?, slot: s2.clone(), done: false })));
+        })
+        .await;
+        *slot.lock().unwrap() = Some(r.mgr.clone());
+        r.mgr.start(&r.entry()).unwrap();
+        until("the pause", || r.store.lock().unwrap().downloads().unwrap().first().is_some_and(|d| d.state == "paused")).await;
+        tokio::time::sleep(Duration::from_millis(300)).await; // the worker has stopped by now
+        assert_eq!(r.view().state, "paused");
+        assert_eq!(r.store.lock().unwrap().downloads().unwrap()[0].state, "paused");
+        {
+            let ev = r.events.lock().unwrap();
+            let at = ev.iter().position(|v| v.state == "paused").expect("a paused event");
+            assert!(ev[at..].iter().all(|v| v.state == "paused"), "after paused: {:?}", ev[at..].iter().map(|v| v.state.clone()).collect::<Vec<_>>());
+        }
+        // The slot's writer pauses once per open; a resumed worker opens a fresh one, so release the manager first.
+        *slot.lock().unwrap() = None;
+        r.mgr.resume("fixture").unwrap();
+        r.until_state("done").await;
         assert_eq!(std::fs::read(r.dir.join(FILE)).unwrap(), r.body);
         r.end();
     }
