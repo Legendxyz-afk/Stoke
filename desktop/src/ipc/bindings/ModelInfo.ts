@@ -6,9 +6,13 @@ export type ModelInfo = { id: string, name: string, path: string,
  */
 source: string, size_bytes: number, arch: string, quant: string, size_label: string, n_layer: number, n_head: number, n_head_kv: number, head_dim: number, vocab: number, ctx_file: number, ctx_engine: number, kv_bytes_per_token: number, 
 /**
- * The memory the engine needs to run this model: file + KV cache + runtime (`gguf::run_bytes`).
+ * The memory the engine needs to run this model at the fewest replies at once, 2: file + KV cache + runtime (`gguf::run_bytes`).
  */
 run_bytes: number, 
+/**
+ * The same at the most replies at once, 8.
+ */
+run_bytes_max: number, 
 /**
  * "chatml", "llama3" or "none"
  */

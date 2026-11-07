@@ -444,6 +444,7 @@ mod tests {
             ctx_engine: 4096,
             kv_bytes_per_token: 1,
             run_bytes: 1,
+            run_bytes_max: 1,
             template: "chatml".into(),
             runnable,
             reason: (!runnable).then(|| format!("{id} was refused")),

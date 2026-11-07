@@ -52,8 +52,50 @@ async fn it_starts_the_engine_and_reports_serving() {
     assert_eq!(s.state, EngineState::Serving);
     assert_eq!(s.port, Some(port));
     assert!(s.pid.is_some() && s.load_ms.is_some());
-    assert_eq!((s.ctx, s.seqs, s.kv.as_str()), (4096, 2, "q8"));
+    assert_eq!((s.ctx, s.seqs, s.kv.as_str()), (4096, 8, "q8"));
     sup.stop().await;
+}
+
+fn argv_of(ev: &PathBuf) -> Vec<String> {
+    let text = std::fs::read_to_string(ev).unwrap();
+    serde_json::from_str(text.lines().next().unwrap().strip_prefix("argv ").unwrap()).unwrap()
+}
+
+fn qwen_model() -> ModelRef {
+    ModelRef { id: "q".into(), path: PathBuf::from("q.gguf"), file_bytes: 2_497_280_736, kv_bytes_per_token: 78_336 }
+}
+
+#[tokio::test]
+async fn the_engine_runs_as_many_replies_as_the_memory_allows() {
+    let ev = events_file("seqs4");
+    let mut c = cfg(&[("FAKE_ENGINE_EVENTS", ev.display().to_string())]);
+    c.check_memory = true;
+    c.memory = Some(MemoryFigures { available: 5 << 30, total: 16 << 30 });
+    let sup = Supervisor::new(c, Monitor::new(None));
+    sup.ensure_model(&qwen_model()).await.unwrap();
+    let argv = argv_of(&ev);
+    assert!(argv.windows(2).any(|w| w[0] == "--seqs" && w[1] == "4"), "{argv:?}");
+    assert_eq!(sup.status().seqs, 4);
+    sup.stop().await;
+}
+
+#[tokio::test]
+async fn a_pc_without_room_for_two_replies_refuses_the_load() {
+    let mut c = cfg(&[]);
+    c.check_memory = true;
+    c.memory = Some(MemoryFigures { available: 4 << 30, total: 16 << 30 });
+    let sup = Supervisor::new(c, Monitor::new(None));
+    let err = sup.ensure_model(&qwen_model()).await.unwrap_err();
+    assert!(matches!(err, EngineError::NotEnoughMemory { need_mb: 3249, free_mb: 4096, .. }), "{err}");
+    let s = sup.status();
+    assert_eq!(s.seqs, 0);
+    assert_eq!(s.state, EngineState::Failed);
+}
+
+#[tokio::test]
+async fn before_the_first_start_the_status_gives_no_count() {
+    let sup = Supervisor::new(cfg(&[]), Monitor::new(None));
+    assert_eq!(sup.status().seqs, 0);
 }
 
 /// Review Focus 1: every one of Kabir's model paths has a space in it.
@@ -67,7 +109,7 @@ async fn a_model_path_with_spaces_arrives_as_one_argument() {
     assert_eq!(argv[1], "serve");
     assert_eq!(argv[2], "M:/New Drive/ai models/nexus.gguf");
     assert!(argv.windows(2).any(|w| w[0] == "--ctx" && w[1] == "4096"));
-    assert!(argv.windows(2).any(|w| w[0] == "--seqs" && w[1] == "2"));
+    assert!(argv.windows(2).any(|w| w[0] == "--seqs" && w[1] == "8"));
     assert!(argv.windows(2).any(|w| w[0] == "--kv" && w[1] == "q8"));
     sup.stop().await;
 }

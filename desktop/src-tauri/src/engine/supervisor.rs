@@ -36,6 +36,7 @@ pub struct EngineStatus {
     pub port: Option<u16>,
     pub pid: Option<u32>,
     pub ctx: u32,
+    /// The parallel replies the running (or last) engine was started with; 0 before the first start.
     pub seqs: u32,
     pub threads: Option<u32>,
     pub kv: String,
@@ -45,11 +46,21 @@ pub struct EngineStatus {
     pub last_error: Option<String>,
 }
 
+/// The PC's physical memory, in bytes, as the memory check reads it.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryFigures {
+    pub available: u64,
+    pub total: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub exe: PathBuf,
     pub ctx: u32,
-    pub seqs: u32,
+    /// The most parallel replies the engine is started with; the memory check may choose fewer (down to 2).
+    pub max_seqs: u32,
+    /// Memory figures for the check. `None` reads the PC's own; the tests set it.
+    pub memory: Option<MemoryFigures>,
     pub threads: Option<u32>,
     pub kv: String,
     pub load_timeout: Duration,
@@ -72,7 +83,8 @@ impl EngineConfig {
         EngineConfig {
             exe,
             ctx: gguf::ENGINE_MAX_CTX,
-            seqs: gguf::ENGINE_SEQS,
+            max_seqs: gguf::ENGINE_SEQS_MAX,
+            memory: None,
             threads: None,
             kv: "q8".into(),
             load_timeout: Duration::from_secs(120),
@@ -93,7 +105,7 @@ impl EngineConfig {
         }
     }
 
-    fn args(&self, model: &Path) -> Vec<String> {
+    fn args(&self, model: &Path, seqs: u32) -> Vec<String> {
         let mut a: Vec<String> = vec![
             "serve".into(),
             model.to_string_lossy().to_string(),
@@ -104,7 +116,7 @@ impl EngineConfig {
             "--ctx".into(),
             self.ctx.to_string(),
             "--seqs".into(),
-            self.seqs.to_string(),
+            seqs.to_string(),
             "--kv".into(),
             self.kv.clone(),
         ];
@@ -304,7 +316,7 @@ impl Supervisor {
             port: None,
             pid: None,
             ctx: cfg.ctx,
-            seqs: cfg.seqs,
+            seqs: 0,
             threads: cfg.threads,
             kv: cfg.kv.clone(),
             load_ms: None,
@@ -434,34 +446,58 @@ impl Supervisor {
         Ok(())
     }
 
-    fn memory_check(&self, model: &ModelRef) -> Result<(), EngineError> {
+    /// The parallel replies to start with, or the refusal when even 2 do not fit (see `gguf::choose_seqs`).
+    fn memory_check(&self, model: &ModelRef) -> Result<u32, EngineError> {
         if !self.cfg.check_memory {
-            return Ok(());
+            self.monitor.log("app", "info", format!("parallel replies: {} (memory not checked)", self.cfg.max_seqs));
+            return Ok(self.cfg.max_seqs);
         }
-        // The same number the Models tab shows as the memory to run; `min_free_bytes` is the spare on top.
-        let need = gguf::run_bytes(model.file_bytes, model.kv_bytes_per_token, self.cfg.ctx, self.cfg.seqs);
-        let free = memory::available_physical_bytes();
-        // Saturating: `need` is u64::MAX for a hostile GGUF header, and adding the spare to that must not wrap
-        // (release) or panic (debug) into "fits".
-        if free < need.saturating_add(self.cfg.min_free_bytes) {
-            return Err(EngineError::NotEnoughMemory { model: model.id.clone(), need_mb: need >> 20, free_mb: free >> 20 });
+        let mem = self.cfg.memory.unwrap_or_else(|| MemoryFigures {
+            available: memory::available_physical_bytes(),
+            total: memory::total_physical_bytes(),
+        });
+        // `min_free_bytes` is the spare on top of the Models tab's memory to run. All of it saturates: a hostile
+        // GGUF header makes `run_bytes` u64::MAX, and adding the spare must not wrap into "fits".
+        match gguf::choose_seqs(
+            model.file_bytes,
+            model.kv_bytes_per_token,
+            self.cfg.ctx,
+            self.cfg.max_seqs,
+            mem.available,
+            mem.total,
+            self.cfg.min_free_bytes,
+        ) {
+            Some(n) => {
+                self.monitor.log(
+                    "app",
+                    "info",
+                    format!("parallel replies: {n} (up to {}; {} MB of {} MB free)", self.cfg.max_seqs, mem.available >> 20, mem.total >> 20),
+                );
+                Ok(n)
+            }
+            None => {
+                let need = gguf::run_bytes(model.file_bytes, model.kv_bytes_per_token, self.cfg.ctx, gguf::ENGINE_SEQS_MIN);
+                Err(EngineError::NotEnoughMemory { model: model.id.clone(), need_mb: need >> 20, free_mb: mem.available >> 20 })
+            }
         }
-        Ok(())
     }
 
     async fn start_locked(self: &Arc<Self>, inner: &mut Inner, model: ModelRef, restart: bool) -> Result<u16, EngineError> {
-        if let Err(e) = self.memory_check(&model) {
+        let seqs = match self.memory_check(&model) {
+            Ok(n) => n,
+            Err(e) => {
             // The refusal names the model it refused (R40), not the one that ran before: a Models row keyed
             // on model_id must not be marked CAN'T RUN for the wrong model.
-            self.set(|s| {
-                s.state = EngineState::Failed;
-                s.model_id = Some(model.id.clone());
-                s.model_path = Some(model.path.to_string_lossy().to_string());
-                s.last_error = Some(e.to_string());
-            });
-            self.monitor.log("app", "error", e.to_string());
-            return Err(e);
-        }
+                self.set(|s| {
+                    s.state = EngineState::Failed;
+                    s.model_id = Some(model.id.clone());
+                    s.model_path = Some(model.path.to_string_lossy().to_string());
+                    s.last_error = Some(e.to_string());
+                });
+                self.monitor.log("app", "error", e.to_string());
+                return Err(e);
+            }
+        };
         inner.generation += 1;
         let gen = inner.generation;
         let path = model.path.to_string_lossy().to_string();
@@ -469,6 +505,7 @@ impl Supervisor {
             s.state = if restart { EngineState::Restarting } else { EngineState::Starting };
             s.model_id = Some(model.id.clone());
             s.model_path = Some(path.clone());
+            s.seqs = seqs;
             s.port = None;
             s.pid = None;
             s.last_error = None;
@@ -476,7 +513,7 @@ impl Supervisor {
         self.monitor.log("app", "info", format!("starting the engine with {path}"));
         let t0 = Instant::now();
         let mut cmd = Command::new(&self.cfg.exe);
-        cmd.args(self.cfg.args(&model.path))
+        cmd.args(self.cfg.args(&model.path, seqs))
             .envs(self.cfg.env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -906,11 +943,11 @@ mod tests {
     fn threads_are_passed_only_when_set() {
         let mut c = EngineConfig::defaults(PathBuf::from("lorren-engine.exe"));
         let model = Path::new("M:/New Drive/ai models/m.gguf");
-        let a = c.args(model);
+        let a = c.args(model, 2);
         assert_eq!(a[..3], ["serve", "M:/New Drive/ai models/m.gguf", "--host"]);
         assert!(!a.iter().any(|x| x == "--threads"), "{a:?}");
         c.threads = Some(6);
-        let a = c.args(model);
+        let a = c.args(model, 2);
         assert_eq!(a[a.len() - 2..], ["--threads", "6"]);
     }
 }

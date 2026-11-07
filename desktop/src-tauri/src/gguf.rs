@@ -9,8 +9,10 @@ use std::path::Path;
 
 /// The engine clamps every model to this context (STOKE_M2_MAX_CTX, model.c:43).
 pub const ENGINE_MAX_CTX: u32 = 4096;
-/// Parallel sequences the app runs the engine with (`--seqs`, Global Constraints).
-pub const ENGINE_SEQS: u32 = 2;
+/// The fewest parallel replies the app runs the engine with (`--seqs`).
+pub const ENGINE_SEQS_MIN: u32 = 2;
+/// The most parallel replies the app runs the engine with.
+pub const ENGINE_SEQS_MAX: u32 = 8;
 /// The engine's own working memory on top of the file and the KV cache: 256 MiB.
 pub const RUN_OVERHEAD_BYTES: u64 = 256 << 20;
 
@@ -121,6 +123,20 @@ pub fn run_bytes(file_bytes: u64, kv_bytes_per_token: u64, ctx: u32, seqs: u32) 
     file_bytes
         .saturating_add(kv_bytes_per_token.saturating_mul(ctx as u64).saturating_mul(seqs as u64))
         .saturating_add(RUN_OVERHEAD_BYTES)
+}
+
+/// How many parallel replies to start the engine with: the largest n from `ENGINE_SEQS_MIN` to `max_seqs` (a
+/// `max_seqs` below 2 is read as 2) that meets two conditions. The memory to run with n replies (`run_bytes`) plus
+/// the `spare` fits in the `available` physical memory; and, for any n above 2, the memory to run is at most half
+/// of the `total` physical memory. `None` when 2 does not fit the available memory (the half-of-total cap never
+/// refuses 2). The arithmetic saturates, so a hostile header fits nowhere.
+pub fn choose_seqs(file_bytes: u64, kv_bytes_per_token: u64, ctx: u32, max_seqs: u32, available: u64, total: u64, spare: u64) -> Option<u32> {
+    let ceiling = max_seqs.max(ENGINE_SEQS_MIN);
+    // run_bytes grows with n, so scanning down from the ceiling, the first n that fits is the largest.
+    (ENGINE_SEQS_MIN..=ceiling).rev().find(|&n| {
+        let need = run_bytes(file_bytes, kv_bytes_per_token, ctx, n);
+        available >= need.saturating_add(spare) && (n == ENGINE_SEQS_MIN || need <= total / 2)
+    })
 }
 
 fn bad(msg: &str) -> io::Error {
@@ -508,6 +524,56 @@ mod tests {
 
     fn tmp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("lorren-gguf-{}-{}", std::process::id(), name))
+    }
+
+    const QFILE: u64 = 2_497_280_736;
+    const QKV: u64 = 78_336;
+    const GIB: u64 = 1 << 30;
+    fn pick(max: u32, available: u64, total: u64) -> Option<u32> {
+        choose_seqs(QFILE, QKV, 4096, max, available, total, GIB)
+    }
+
+    #[test]
+    fn plenty_of_memory_runs_eight() {
+        assert_eq!(pick(8, 8 * GIB, 16 * GIB), Some(8));
+    }
+    #[test]
+    fn the_available_memory_limits_the_count() {
+        assert_eq!(pick(8, 5 * GIB, 16 * GIB), Some(4));
+    }
+    #[test]
+    fn half_the_total_caps_the_count() {
+        assert_eq!(pick(8, 6 * GIB, 7 * GIB), Some(3));
+    }
+    #[test]
+    fn the_cap_never_refuses_the_floor() {
+        // run_bytes(2) is above the 3 GiB cap (half of 6 GiB), yet 2 still runs.
+        assert_eq!(pick(8, 4_831_838_208, 6 * GIB), Some(2));
+    }
+    #[test]
+    fn no_room_for_two_refuses() {
+        assert_eq!(pick(8, 4 * GIB, 16 * GIB), None);
+    }
+    #[test]
+    fn the_edge_is_exact() {
+        assert_eq!(run_bytes(QFILE, QKV, 4096, 8) + GIB, 6_406_372_064);
+        assert_eq!(pick(8, 6_406_372_064, 16 * GIB), Some(8));
+        assert_eq!(pick(8, 6_406_372_063, 16 * GIB), Some(7));
+    }
+    #[test]
+    fn a_hostile_header_fits_nowhere() {
+        assert_eq!(choose_seqs(QFILE, u64::MAX, 4096, 8, 16 * GIB, 16 * GIB, GIB), None);
+        assert_eq!(choose_seqs(1 << 60, QKV, 4096, 8, 16 * GIB, 16 * GIB, GIB), None);
+    }
+    #[test]
+    fn the_ceiling_is_kept() {
+        assert_eq!(pick(4, 16 * GIB, 64 * GIB), Some(4));
+        assert_eq!(pick(0, 16 * GIB, 64 * GIB), Some(2));
+    }
+    /// The Models tab's memory lines name these two numbers (`desktop/src/tabs/ModelsTab.tsx`).
+    #[test]
+    fn the_counts_are_two_and_eight() {
+        assert!(ENGINE_SEQS_MIN == 2 && ENGINE_SEQS_MAX == 8);
     }
 
     #[test]
