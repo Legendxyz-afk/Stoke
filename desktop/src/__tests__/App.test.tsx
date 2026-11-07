@@ -208,6 +208,14 @@ describe("the bars keep the full text of what they cut off", () => {
     expect(screen.getByText("12 engine restarts")).toBeTruthy();
   });
 
+  it("the status bar names the parallel replies the engine runs, and says nothing before the first start", () => {
+    const withSeqs = (seqs: number) => ({ ...overview, engine: { ...overview.engine, seqs } });
+    const { rerender } = render(<StatusBar overview={withSeqs(8)} />);
+    expect(screen.getByText(/parallel/).textContent).toBe("engine frozen b1ee6b3 · ctx 4096 · 8 parallel");
+    rerender(<StatusBar overview={withSeqs(0)} />);
+    expect(screen.queryByText(/parallel/)).toBeNull();
+  });
+
   it("the status bar counts nothing before the first overview arrives", () => {
     render(<StatusBar overview={null} />);
     expect(screen.getByText("0 requests")).toBeTruthy();

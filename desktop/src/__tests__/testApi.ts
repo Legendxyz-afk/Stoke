@@ -118,7 +118,7 @@ export function model(p: Partial<ModelInfo>): ModelInfo {
     id: "file:x", name: "x", path: "M:\\New Drive\\ai_models\\x.gguf", source: "folder",
     size_bytes: 2_019_377_696, arch: "llama", quant: "Q4_K_M", size_label: "3B",
     n_layer: 28, n_head: 24, n_head_kv: 8, head_dim: 128, vocab: 128256,
-    ctx_file: 131072, ctx_engine: 4096, kv_bytes_per_token: 60928, run_bytes: 2_786_935_328, template: "llama3",
+    ctx_file: 131072, ctx_engine: 4096, kv_bytes_per_token: 60928, run_bytes: 2_786_935_328, run_bytes_max: 4_284_301_856, template: "llama3",
     runnable: true, reason: null, system_prompt: null, system_source: null, is_default: false,
     ...p,
   };
@@ -126,7 +126,7 @@ export function model(p: Partial<ModelInfo>): ModelInfo {
 
 export const models: ModelInfo[] = [
   model({ id: "file:q", name: "Qwen3-4B-Instruct-2507-Q4_K_M", arch: "qwen3", template: "chatml", n_layer: 36,
-          kv_bytes_per_token: 78336, size_bytes: 2_497_280_736, run_bytes: 3_407_444_704, is_default: true }),
+          kv_bytes_per_token: 78336, size_bytes: 2_497_280_736, run_bytes: 3_407_444_704, run_bytes_max: 5_332_630_240, is_default: true }),
   model({ id: "file:n", name: "nexus", system_source: "Modelfile",
           system_prompt: "You are Nexus AI, a professional quantitative trader. You give concise, decisive trading verdicts." }),
   model({ id: "ollama:qwen2.5vl:3b", name: "qwen2.5vl:3b", source: "ollama", arch: "qwen2vl", runnable: false,

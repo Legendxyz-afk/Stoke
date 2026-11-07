@@ -37,13 +37,15 @@ describe("ModelsTab", () => {
     expect(screen.getByText(/architecture qwen2vl/)).toBeTruthy();
   });
 
-  it("shows the memory a model needs to run: its file, its KV cache for 2 x 4,096 tokens and the runtime", async () => {
+  it("shows the memory a model needs to run with 2 and with 8 chats at once", async () => {
     vi.mocked(api.models).mockResolvedValue(models);
     render(<ModelsTab overview={overview} />);
     await screen.findByText("qwen2.5vl:3b");
     // Qwen3-4B: run_bytes 3,407,444,704 B = 2,497,280,736 (file) + 641,728,512 (78,336 B/token x 4,096 x 2) + 268,435,456 (256 MiB)
     // 3,407,444,704 / 1,073,741,824 = 3.173 GB, shown with one decimal
     expect(screen.getByText("~3.2 GB")).toBeTruthy();
+    // run_bytes_max 5,332,630,240 B = 2,497,280,736 + 2,566,914,048 (78,336 x 4,096 x 8) + 268,435,456; / 1,073,741,824 = 4.966
+    expect(screen.getByText("~5.0 GB")).toBeTruthy();
   });
 });
 

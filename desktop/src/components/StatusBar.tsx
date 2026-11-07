@@ -15,7 +15,7 @@ export function StatusBar({ overview, children }: { overview: Overview | null; c
       )}
       <span className="spacer" />
       {children}
-      <span>engine frozen b1ee6b3 · ctx {e?.ctx ?? 4096} · {e?.seqs ?? 2} parallel</span>
+      <span>engine frozen b1ee6b3 · ctx {e?.ctx ?? 4096}{e && e.seqs > 0 ? ` · ${e.seqs} parallel` : ""}</span>
     </footer>
   );
 }
