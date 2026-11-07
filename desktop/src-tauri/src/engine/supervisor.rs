@@ -449,8 +449,10 @@ impl Supervisor {
     /// The parallel replies to start with, or the refusal when even 2 do not fit (see `gguf::choose_seqs`).
     fn memory_check(&self, model: &ModelRef) -> Result<u32, EngineError> {
         if !self.cfg.check_memory {
-            self.monitor.log("app", "info", format!("parallel replies: {} (memory not checked)", self.cfg.max_seqs));
-            return Ok(self.cfg.max_seqs);
+            // A ceiling below 2 reads as 2, as `choose_seqs` reads it (`--seqs 0` would mean 8 to the engine).
+            let n = self.cfg.max_seqs.max(gguf::ENGINE_SEQS_MIN);
+            self.monitor.log("app", "info", format!("parallel replies: {n} (memory not checked)"));
+            return Ok(n);
         }
         let mem = self.cfg.memory.unwrap_or_else(|| MemoryFigures {
             available: memory::available_physical_bytes(),
@@ -486,8 +488,8 @@ impl Supervisor {
         let seqs = match self.memory_check(&model) {
             Ok(n) => n,
             Err(e) => {
-            // The refusal names the model it refused (R40), not the one that ran before: a Models row keyed
-            // on model_id must not be marked CAN'T RUN for the wrong model.
+                // The refusal names the model it refused (R40), not the one that ran before: a Models row keyed
+                // on model_id must not be marked CAN'T RUN for the wrong model.
                 self.set(|s| {
                     s.state = EngineState::Failed;
                     s.model_id = Some(model.id.clone());
