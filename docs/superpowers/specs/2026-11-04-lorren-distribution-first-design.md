@@ -101,7 +101,7 @@ A pre-release goes to the **beta** channel first, to prove the whole path (keys,
 
 ## The website's claims against v0.1 (audit 2026-11-04, from `company/src/site/copy.js`)
 
-Every "today" badge holds for milestone 1 plus distribution: chats stream side by side (milestone 1 runs two at once; v0.1 runs as many as memory allows, 2 to 8: ghost's call 2026-11-07), it runs on
+Every "today" badge holds for milestone 1 plus distribution: chats stream side by side (milestone 1 runs two at once; v0.1 runs as many as memory allows, 2 to 32: ghost's call 2026-11-07), it runs on
 the processor, streaming replies, switching models from the chat, models installed inside the app (Discover, this design), no
 account, chats stay on the PC, signed automatic updates. The three "coming" ones (the local OpenAI API, the terminal, much faster
 long chats) are not in v0.1 and stay "coming". The app chapter's "Lorren loads it while you write" is milestone 1's D9 (the

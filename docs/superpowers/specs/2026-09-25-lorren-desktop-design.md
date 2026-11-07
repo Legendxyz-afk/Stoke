@@ -117,18 +117,21 @@ engine; depends on the sidecar binary and the settings.
   engine's limit.)*
 - **Always explicit sizes.** Without `--seqs`, the engine reserves KV for 8
   full-length sequences (`stoke.c` ~198–226). Defaults: context 4,096;
-  parallel replies as many as memory allows, from 2 to 8 (below); KV `q8`;
+  parallel replies as many as memory allows, from 2 to 32 (below); KV `q8`;
   threads "auto", meaning the engine's default of 12 when `--seqs` is above 1.
   *(Changed 2026-11-07, ghost's call: milestone 1 ran a fixed 2 while the
-  website says many chats at once.)*
+  website says many chats at once; the ceiling, first 8, raised the same day
+  to 32, the most the engine's milestone gates ran.)*
 - **Memory estimate before loading:** the file size (it is memory-mapped)
   plus seqs × ctx × KV bytes per token, plus the runtime's 256 MiB. The KV
   cost comes from the GGUF's layers × KV heads × head dimension × 2 × 34/32
   bytes at `q8`. That is 59.5 KiB per token for Llama-3.2-3B and 76.5 KiB for
   Qwen3-4B, so each reply at once costs about 0.23 GiB and 0.3 GiB of KV
   cache. At each start (and restart) the app picks the most parallel replies,
-  from 2 to 8, whose estimate leaves 1 GB of RAM free and, above 2, is at most
-  half the PC's total memory (`gguf::choose_seqs`; changed 2026-11-07). A load
+  from 2 to 32, whose estimate leaves 1 GB of RAM free and, above 2, is at most
+  half the PC's total memory (`gguf::choose_seqs`; changed 2026-11-07). On a
+  16 GB PC the half caps Qwen3-4B at about 17. The Models tab shows the
+  memory at 2 and what each more reply adds. A load
   that would leave less than 1 GB free even at 2 is not started; the app
   offers smaller settings instead.
 - **Health:** `GET /health` every 5 s. Three misses in a row means the engine
