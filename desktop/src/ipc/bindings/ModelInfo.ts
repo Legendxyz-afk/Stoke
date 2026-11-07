@@ -10,9 +10,9 @@ source: string, size_bytes: number, arch: string, quant: string, size_label: str
  */
 run_bytes: number, 
 /**
- * The same at the most replies at once, 8.
+ * The memory each more reply at once adds, up to `gguf::ENGINE_SEQS_MAX`: its KV cache at the engine's context.
  */
-run_bytes_max: number, 
+reply_bytes: number, 
 /**
  * "chatml", "llama3" or "none"
  */

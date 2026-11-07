@@ -31,9 +31,9 @@ pub struct ModelInfo {
     /// The memory the engine needs to run this model at the fewest replies at once, 2: file + KV cache + runtime (`gguf::run_bytes`).
     #[ts(type = "number")]
     pub run_bytes: u64,
-    /// The same at the most replies at once, 8.
+    /// The memory each more reply at once adds, up to `gguf::ENGINE_SEQS_MAX`: its KV cache at the engine's context.
     #[ts(type = "number")]
-    pub run_bytes_max: u64,
+    pub reply_bytes: u64,
     /// "chatml", "llama3" or "none"
     pub template: String,
     pub runnable: bool,
@@ -302,7 +302,7 @@ fn describe(
         ctx_engine: 0,
         kv_bytes_per_token: 0,
         run_bytes: 0,
-        run_bytes_max: 0,
+        reply_bytes: 0,
         template: "none".into(),
         runnable: false,
         reason: None,
@@ -327,7 +327,7 @@ fn describe(
                 m.ctx_engine = f.engine_ctx();
                 m.kv_bytes_per_token = f.kv_bytes_per_token_q8();
                 m.run_bytes = gguf::run_bytes(m.size_bytes, m.kv_bytes_per_token, gguf::ENGINE_MAX_CTX, gguf::ENGINE_SEQS_MIN);
-                m.run_bytes_max = gguf::run_bytes(m.size_bytes, m.kv_bytes_per_token, gguf::ENGINE_MAX_CTX, gguf::ENGINE_SEQS_MAX);
+                m.reply_bytes = m.kv_bytes_per_token.saturating_mul(u64::from(gguf::ENGINE_MAX_CTX));
                 m.template = f.template.as_str().into();
                 match gguf::check_runnable(&h, &f) {
                     Ok(()) => m.runnable = true,
@@ -400,8 +400,8 @@ mod tests {
         assert_eq!(nexus.ctx_engine, 4096);
         // run_bytes = the file + 60,928 B/token x 4,096 x 2 (499,122,176 B of KV cache) + 256 MiB (268,435,456 B), at the fewest replies, 2
         assert_eq!(nexus.run_bytes, nexus.size_bytes + 499_122_176 + 268_435_456);
-        // 60,928 B/token x 4,096 x 8
-        assert_eq!(nexus.run_bytes_max, nexus.size_bytes + 1_996_488_704 + 268_435_456);
+        // each more reply at once: 60,928 B/token x 4,096 = 249,561,088 B of KV cache
+        assert_eq!(nexus.reply_bytes, 249_561_088);
     }
 
     #[test]

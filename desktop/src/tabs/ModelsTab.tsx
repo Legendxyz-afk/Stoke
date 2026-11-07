@@ -256,7 +256,7 @@ function ModelDetails({ m }: { m: ModelInfo }) {
         <div className="fact"><span className="k">context (file / engine)</span><span className="v num">{commas(m.ctx_file)} / {commas(m.ctx_engine)}</span></div>
         <div className="fact"><span className="k">KV per token (q8)</span><span className="v num">{(m.kv_bytes_per_token / 1024).toFixed(1)} KiB</span></div>
         <div className="fact"><span className="k">memory to run, 2 chats at once (model + KV cache + runtime)</span><span className="v num">{m.run_bytes > 0 ? `~${gb(m.run_bytes)}` : "—"}</span></div>
-        <div className="fact"><span className="k">memory to run, 8 chats at once</span><span className="v num">{m.run_bytes > 0 ? `~${gb(m.run_bytes_max)}` : "—"}</span></div>
+        <div className="fact"><span className="k">each more chat at once, up to 32 as memory allows</span><span className="v num">{m.run_bytes > 0 ? `+~${gb(m.reply_bytes)}` : "—"}</span></div>
       </div>
       <div className="section">
         <span className="cap">SYSTEM PROMPT{m.system_source ? ` · FROM ${m.system_source.toUpperCase()}` : ""}</span>

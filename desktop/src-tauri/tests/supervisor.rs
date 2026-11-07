@@ -52,7 +52,7 @@ async fn it_starts_the_engine_and_reports_serving() {
     assert_eq!(s.state, EngineState::Serving);
     assert_eq!(s.port, Some(port));
     assert!(s.pid.is_some() && s.load_ms.is_some());
-    assert_eq!((s.ctx, s.seqs, s.kv.as_str()), (4096, 8, "q8"));
+    assert_eq!((s.ctx, s.seqs, s.kv.as_str()), (4096, 32, "q8"));
     sup.stop().await;
 }
 
@@ -109,7 +109,7 @@ async fn a_model_path_with_spaces_arrives_as_one_argument() {
     assert_eq!(argv[1], "serve");
     assert_eq!(argv[2], "M:/New Drive/ai models/nexus.gguf");
     assert!(argv.windows(2).any(|w| w[0] == "--ctx" && w[1] == "4096"));
-    assert!(argv.windows(2).any(|w| w[0] == "--seqs" && w[1] == "8"));
+    assert!(argv.windows(2).any(|w| w[0] == "--seqs" && w[1] == "32"));
     assert!(argv.windows(2).any(|w| w[0] == "--kv" && w[1] == "q8"));
     sup.stop().await;
 }

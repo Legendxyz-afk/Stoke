@@ -11,8 +11,9 @@ use std::path::Path;
 pub const ENGINE_MAX_CTX: u32 = 4096;
 /// The fewest parallel replies the app runs the engine with (`--seqs`).
 pub const ENGINE_SEQS_MIN: u32 = 2;
-/// The most parallel replies the app runs the engine with.
-pub const ENGINE_SEQS_MAX: u32 = 8;
+/// The most parallel replies the app runs the engine with: as many as memory allows up to this (ghost's call 2026-11-07),
+/// the most the engine's milestone gates ran.
+pub const ENGINE_SEQS_MAX: u32 = 32;
 /// The engine's own working memory on top of the file and the KV cache: 256 MiB.
 pub const RUN_OVERHEAD_BYTES: u64 = 256 << 20;
 
@@ -570,10 +571,21 @@ mod tests {
         assert_eq!(pick(4, 16 * GIB, 64 * GIB), Some(4));
         assert_eq!(pick(0, 16 * GIB, 64 * GIB), Some(2));
     }
+    #[test]
+    fn with_room_the_ceiling_is_thirty_two() {
+        // run_bytes(32) = 2,497,280,736 + 78,336 x 4,096 x 32 + 268,435,456 = 13,033,372,384, under 15 GiB free and half of 32 GiB
+        assert_eq!(pick(ENGINE_SEQS_MAX, 16 * GIB, 32 * GIB), Some(32));
+        assert_eq!(pick(ENGINE_SEQS_MAX, 64 * GIB, 128 * GIB), Some(32));
+    }
+    #[test]
+    fn a_sixteen_gigabyte_pc_stops_at_half_its_memory() {
+        // 11 GiB above the spare would hold 28; half of 16 GiB (8,589,934,592) holds run_bytes(18) = 8,541,272,800, not 19's 8,862,137,056
+        assert_eq!(pick(ENGINE_SEQS_MAX, 12 * GIB, 16 * GIB), Some(18));
+    }
     /// The Models tab's memory lines name these two numbers (`desktop/src/tabs/ModelsTab.tsx`).
     #[test]
-    fn the_counts_are_two_and_eight() {
-        assert!(ENGINE_SEQS_MIN == 2 && ENGINE_SEQS_MAX == 8);
+    fn the_counts_are_two_and_thirty_two() {
+        assert!(ENGINE_SEQS_MIN == 2 && ENGINE_SEQS_MAX == 32);
     }
 
     #[test]
