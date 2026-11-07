@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { HEADERS, INDEX_HTML, INSTALLER, KEEP, STABLE_COPY, channelState, layoutRelease, parseNotes } from '../feed.mjs'
+import { HEADERS, INDEX_HTML, INSTALLER, KEEP, NOT_FOUND_HTML, STABLE_COPY, channelState, layoutRelease, parseNotes } from '../feed.mjs'
 
 const FEED = 'http://127.0.0.1:8765/' // written with a trailing slash (Review Focus 5)
 const NOW = new Date(2026, 10, 20, 12) // local noon on 20 November 2026: the same date wherever the test runs
@@ -61,6 +61,8 @@ test('a stable release is laid out exactly', () => {
   assert.equal(readFileSync(join(ch, STABLE_COPY), 'latin1'), 'MZ fake 0.1.0')
   assert.equal(readFileSync(join(s.site, '_headers'), 'utf8'), HEADERS)
   assert.equal(readFileSync(join(s.site, 'index.html'), 'utf8'), INDEX_HTML)
+  // Pages answers a missing path with index.html and a 200 unless the site has a 404.html: with it, a missing file is a 404
+  assert.equal(readFileSync(join(s.site, '404.html'), 'utf8'), NOT_FOUND_HTML)
 })
 
 test('the third release prunes the first installer and keeps every release note', () => {

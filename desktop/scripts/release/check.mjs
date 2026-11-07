@@ -169,7 +169,7 @@ export function checkFeed({ site, feedUrl, appPublicKey, catalogPublicKey }) {
   for (const channel of CHANNELS) {
     if (existsSync(join(site, 'app', channel))) checkChannel(site, channel, feedUrl, appPublicKey, problems)
   }
-  for (const file of ['_headers', 'index.html']) if (!existsSync(join(site, file))) problems.push(`${file} is missing`)
+  for (const file of ['_headers', 'index.html', '404.html']) if (!existsSync(join(site, file))) problems.push(`${file} is missing`)
   if (catalogPublicKey) problems.push(...checkCatalog({ site, catalogPublicKey }))
   else if (existsSync(join(site, 'catalog')) && !readJson(join(site, 'catalog', 'catalog.json'))) {
     problems.push('catalog/catalog.json does not parse')

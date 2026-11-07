@@ -102,17 +102,18 @@ test('an older kept installer that no longer verifies is reported too', () => {
   assert.deepEqual(check(f), ['app/stable: Lorren_0.1.0_x64-setup.exe fails its signature (signature)'])
 })
 
-test('_headers and index.html are part of every feed', () => {
+test('_headers, index.html and 404.html are part of every feed', () => {
   const f = goodFeed()
   rmSync(join(f.site, '_headers'))
   rmSync(join(f.site, 'index.html'))
-  assert.deepEqual(check(f), ['_headers is missing', 'index.html is missing'])
+  rmSync(join(f.site, '404.html'))
+  assert.deepEqual(check(f), ['_headers is missing', 'index.html is missing', '404.html is missing'])
 })
 
 test('the manifest is every file and its sha256, and the deploy record reads back as written', () => {
   const f = goodFeed()
   const m = manifest(f.site)
-  assert.equal(Object.keys(m).length, 9) // two pairs, latest.json, releases.json, the stable copy, _headers, index.html
+  assert.equal(Object.keys(m).length, 10) // two pairs, latest.json, releases.json, the stable copy, _headers, index.html, 404.html
   assert.equal(m['app/stable/latest.json'], createHash('sha256').update(readFileSync(join(f.ch, 'latest.json'))).digest('hex'))
   const state = join(f.root, 'state')
   assert.equal(readDeployed(state), null)

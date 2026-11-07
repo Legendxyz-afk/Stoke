@@ -8,6 +8,8 @@
                                                              page and the line beside its Download button (size: the installer's bytes)
      app/stable/Lorren-setup.exe                             a byte copy of the newest stable installer: the website's fixed link
      _headers, index.html                                    the Pages rules, and one line for whoever opens the address itself
+     404.html                                                what a missing path answers, with a 404: without it Pages answers
+                                                             every missing path with index.html and a 200 (its single-page mode)
 
    Each channel keeps the KEEP newest installers (an update that started downloading just before a release still finishes);
    releases.json keeps every release. Every refusal comes before anything is written.
@@ -25,6 +27,9 @@ export const HEADERS = '/app/stable/Lorren-setup.exe\n  Content-Disposition: att
 export const INDEX_HTML =
   '<!doctype html><meta charset="utf-8"><title>Lorren updates</title><p>This is Lorren\'s update feed: there is nothing to read here. ' +
   'Lorren comes from the castagents website.</p>\n'
+export const NOT_FOUND_HTML =
+  '<!doctype html><meta charset="utf-8"><title>Not found - Lorren updates</title><p>There is no file at this address in Lorren\'s ' +
+  'update feed. Lorren comes from the castagents website.</p>\n'
 
 const VERSIONED = /^Lorren_(.+)_x64-setup\.exe$/
 
@@ -46,8 +51,8 @@ export function channelState(site, channel) {
 }
 
 /**
- * Lays one release out: the versioned pair, latest.json, releases.json, the stable copy (stable only), the pruning, _headers and
- * index.html. `installer` is the built file's path, `signature` its .sig text (Tauri's base64), `now` the release's moment.
+ * Lays one release out: the versioned pair, latest.json, releases.json, the stable copy (stable only), the pruning, _headers,
+ * index.html and 404.html. `installer` is the built file's path, `signature` its .sig text (Tauri's base64), `now` the release's moment.
  * Returns the files written and the files pruned, as paths under `site/` with "/" between their parts.
  */
 export function layoutRelease({ site, channel, version, notes, installer, signature, feedUrl, now }) {
@@ -97,5 +102,6 @@ export function layoutRelease({ site, channel, version, notes, installer, signat
 
   writeFileSync(join(site, '_headers'), HEADERS)
   writeFileSync(join(site, 'index.html'), INDEX_HTML)
-  return { written: [...written.map(at), '_headers', 'index.html'], pruned }
+  writeFileSync(join(site, '404.html'), NOT_FOUND_HTML)
+  return { written: [...written.map(at), '_headers', 'index.html', '404.html'], pruned }
 }
