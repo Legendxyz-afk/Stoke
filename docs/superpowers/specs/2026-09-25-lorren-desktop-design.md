@@ -117,14 +117,20 @@ engine; depends on the sidecar binary and the settings.
   engine's limit.)*
 - **Always explicit sizes.** Without `--seqs`, the engine reserves KV for 8
   full-length sequences (`stoke.c` ~198–226). Defaults: context 4,096;
-  parallel replies 2; KV `q8`; threads "auto", meaning the engine's default of
-  12 when `--seqs` is above 1.
+  parallel replies as many as memory allows, from 2 to 8 (below); KV `q8`;
+  threads "auto", meaning the engine's default of 12 when `--seqs` is above 1.
+  *(Changed 2026-11-07, ghost's call: milestone 1 ran a fixed 2 while the
+  website says many chats at once.)*
 - **Memory estimate before loading:** the file size (it is memory-mapped)
-  plus seqs × ctx × KV bytes per token. The KV cost comes from the GGUF's
-  layers × KV heads × head dimension × 2 × 34/32 bytes at `q8`. That is
-  59.5 KiB per token for Llama-3.2-3B and 76.5 KiB for Qwen3-4B, so the
-  defaults cost about 0.47 GiB and 0.6 GiB. A load that would leave less than
-  1 GB of RAM free is not started; the app offers smaller settings instead.
+  plus seqs × ctx × KV bytes per token, plus the runtime's 256 MiB. The KV
+  cost comes from the GGUF's layers × KV heads × head dimension × 2 × 34/32
+  bytes at `q8`. That is 59.5 KiB per token for Llama-3.2-3B and 76.5 KiB for
+  Qwen3-4B, so each reply at once costs about 0.23 GiB and 0.3 GiB of KV
+  cache. At each start (and restart) the app picks the most parallel replies,
+  from 2 to 8, whose estimate leaves 1 GB of RAM free and, above 2, is at most
+  half the PC's total memory (`gguf::choose_seqs`; changed 2026-11-07). A load
+  that would leave less than 1 GB free even at 2 is not started; the app
+  offers smaller settings instead.
 - **Health:** `GET /health` every 5 s. Three misses in a row means the engine
   is hung.
 - **Crash or hang:** restart after 1 s, then after 5 s; a third failure
@@ -175,7 +181,7 @@ store. Depends on the supervisor, the store and the request monitor.
   for 45 s, the app treats the engine as hung.
 - **Limits:** a request body over 1 MiB is refused with 413; the context runs
   out long before that.
-- **Background work:** with 2 parallel replies, one chat reply can run next to
+- **Background work:** with at least 2 parallel replies (§3.1), a chat reply can run next to
   one background job. After a chat's first reply, the background job asks the
   model for a 3–6 word title.
 
